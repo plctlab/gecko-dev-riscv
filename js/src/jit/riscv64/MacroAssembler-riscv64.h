@@ -7,7 +7,7 @@
 #ifndef jit_riscv64_MacroAssembler_riscv64_h
 #define jit_riscv64_MacroAssembler_riscv64_h
 
-#include "jit/riscv-shared/MacroAssembler-riscv-shared.h"
+#include "jit/shared/MacroAssembler-shared.h"
 #include "jit/MoveResolver.h"
 #include "vm/BytecodeUtil.h"
 #include "wasm/WasmBuiltins.h"

@@ -12,7 +12,7 @@
 #include "jit/JitFrames.h"
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
-#include "jit/riscv-shared/SharedICHelpers-riscv-shared.h"
+#include "jit/shared/SharedICHelpers-shared.h"
 #include "jit/riscv64/Bailouts-riscv64.h"
 #ifdef JS_ION_PERF
 #  include "jit/PerfSpewer.h"

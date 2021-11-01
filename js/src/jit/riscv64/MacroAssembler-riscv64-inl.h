@@ -11,7 +11,7 @@
 
 #include "vm/BigIntType.h"  // JS::BigInt
 
-#include "jit/riscv-shared/MacroAssembler-riscv-shared-inl.h"
+#include "jit/shared/MacroAssembler-shared-inl.h"
 
 namespace js {
 namespace jit {

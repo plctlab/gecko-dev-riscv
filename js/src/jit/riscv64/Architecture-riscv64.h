@@ -12,7 +12,7 @@
 #include <limits.h>
 #include <stdint.h>
 
-#include "jit/riscv-shared/Architecture-riscv-shared.h"
+#include "jit/shared/Architecture-shared.h"
 
 #include "js/Utility.h"
 

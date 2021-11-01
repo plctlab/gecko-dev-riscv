@@ -9,7 +9,7 @@
 
 #include <iterator>
 
-#include "jit/riscv-shared/Assembler-riscv-shared.h"
+#include "jit/shared/Assembler-shared.h"
 
 #include "jit/riscv64/Architecture-riscv64.h"
 

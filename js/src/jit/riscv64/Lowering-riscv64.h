@@ -7,7 +7,7 @@
 #ifndef jit_riscv64_Lowering_riscv64_h
 #define jit_riscv64_Lowering_riscv64_h
 
-#include "jit/riscv-shared/Lowering-riscv-shared.h"
+#include "jit/shared/Lowering-shared.h"
 
 namespace js {
 namespace jit {

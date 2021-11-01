@@ -7,7 +7,7 @@
 #ifndef jit_riscv64_CodeGenerator_riscv64_h
 #define jit_riscv64_CodeGenerator_riscv64_h
 
-#include "jit/riscv-shared/CodeGenerator-riscv-shared.h"
+#include "jit/shared/CodeGenerator-shared.h"
 
 namespace js {
 namespace jit {

@@ -7,7 +7,7 @@
 #ifndef jit_riscv64_MoveEmitter_riscv64_h
 #define jit_riscv64_MoveEmitter_riscv64_h
 
-#include "jit/riscv-shared/MoveEmitter-riscv-shared.h"
+#include "jit/shared/MoveEmitter-shared.h"
 
 namespace js {
 namespace jit {
