@@ -32,11 +32,11 @@ static constexpr Register ICStubReg = a5;
 static constexpr Register ExtractTemp0 = s6;
 static constexpr Register ExtractTemp1 = s7;
 
-// Register used internally by MacroAssemblerMIPS.
+// Register used internally by MacroAssemblerRISCV.
 static constexpr Register BaselineSecondScratchReg = SecondScratchReg;
 
 // Note that ICTailCallReg is actually just the link register.
-// In MIPS code emission, we do not clobber ICTailCallReg since we keep
+// In RISCV code emission, we do not clobber ICTailCallReg since we keep
 // the return address for calls there.
 
 // FloatReg0 must be equal to ReturnFloatReg.

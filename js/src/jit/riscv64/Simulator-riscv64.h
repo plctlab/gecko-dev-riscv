@@ -124,7 +124,7 @@ class Simulator {
   friend class RiscvDebugger;
 
  public:
-  // Registers are declared in order. See "See MIPS Run Linux" chapter 2.
+  // Registers are declared in order. See "See RISCV Run Linux" chapter 2.
   enum Register {
     no_reg = -1,
     zero_reg = 0,
@@ -225,7 +225,7 @@ class Simulator {
 
   uintptr_t* addressOfStackLimit();
 
-  // Accessors for register state. Reading the pc value adheres to the MIPS
+  // Accessors for register state. Reading the pc value adheres to the RISCV
   // architecture specification and is off by a 8 from the currently executing
   // instruction.
   void setRegister(int reg, int64_t value);
@@ -263,7 +263,7 @@ class Simulator {
   bool overRecursed(uintptr_t newsp = 0) const;
   bool overRecursedWithExtra(uint32_t extra) const;
 
-  // Executes MIPS instructions until the PC reaches end_sim_pc.
+  // Executes RISCV instructions until the PC reaches end_sim_pc.
   template <bool enableStopSimAt>
   void execute();
 

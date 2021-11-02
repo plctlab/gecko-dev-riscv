@@ -12,10 +12,10 @@
 namespace js {
 namespace jit {
 
-class CodeGeneratorriscv64 : public CodeGeneratorMIPSShared {
+class CodeGeneratorriscv64 : public CodeGeneratorRISCVShared {
  protected:
   CodeGeneratorriscv64(MIRGenerator* gen, LIRGraph* graph, MacroAssembler* masm)
-      : CodeGeneratorMIPSShared(gen, graph, masm) {}
+      : CodeGeneratorRISCVShared(gen, graph, masm) {}
 
   void testNullEmitBranch(Assembler::Condition cond, const ValueOperand& value,
                           MBasicBlock* ifTrue, MBasicBlock* ifFalse) {

@@ -210,7 +210,7 @@ void CodeGenerator::visitDivOrModI64(LDivOrModI64* lir) {
     masm.bind(&notOverflow);
   }
 
-#ifdef MIPSR6
+#ifdef RISCVR6
   if (lir->mir()->isMod()) {
     masm.as_dmod(output, lhs, rhs);
   } else {
@@ -242,7 +242,7 @@ void CodeGenerator::visitUDivOrModI64(LUDivOrModI64* lir) {
     masm.bind(&nonZero);
   }
 
-#ifdef MIPSR6
+#ifdef RISCVR6
   if (lir->mir()->isMod()) {
     masm.as_dmodu(output, lhs, rhs);
   } else {
@@ -264,7 +264,7 @@ void CodeGeneratorriscv64::emitBigIntDiv(LBigIntDiv* ins, Register dividend,
                                         Label* fail) {
   // Callers handle division by zero and integer overflow.
 
-#ifdef MIPSR6
+#ifdef RISCVR6
   masm.as_ddiv(/* result= */ dividend, dividend, divisor);
 #else
   masm.as_ddiv(dividend, divisor);
@@ -281,7 +281,7 @@ void CodeGeneratorriscv64::emitBigIntMod(LBigIntMod* ins, Register dividend,
                                         Label* fail) {
   // Callers handle division by zero and integer overflow.
 
-#ifdef MIPSR6
+#ifdef RISCVR6
   masm.as_dmod(/* result= */ dividend, dividend, divisor);
 #else
   masm.as_ddiv(dividend, divisor);

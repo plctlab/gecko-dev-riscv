@@ -24,19 +24,19 @@ static const uint32_t ShadowStackSpace = 0;
 
 // riscv64 have 64 bit floating-point coprocessor. There are 32 double
 // precision register which can also be used as single precision registers.
-class FloatRegisters : public FloatRegistersMIPSShared {
+class FloatRegisters : public FloatRegistersRISCVShared {
  public:
   enum ContentType { Single, Double, NumTypes };
 
   static const char* GetName(uint32_t i) {
     MOZ_ASSERT(i < TotalPhys);
-    return FloatRegistersMIPSShared::GetName(Encoding(i));
+    return FloatRegistersRISCVShared::GetName(Encoding(i));
   }
 
   static Encoding FromName(const char* name);
 
   static const uint32_t Total = 32 * NumTypes;
-#ifdef MIPSR6
+#ifdef RISCVR6
   static const uint32_t Allocatable = 60;
 #else
   static const uint32_t Allocatable = 62;
@@ -75,7 +75,7 @@ class FloatRegisters : public FloatRegistersMIPSShared {
 
   static const SetType WrapperMask = VolatileMask;
 
-#ifdef MIPSR6
+#ifdef RISCVR6
   static const SetType NonAllocatableMask =
       ((1U << FloatRegisters::f23) | (1U << FloatRegisters::f24)) * Spread;
 #else
@@ -89,7 +89,7 @@ class FloatRegisters : public FloatRegistersMIPSShared {
 template <typename T>
 class TypedRegisterSet;
 
-class FloatRegister : public FloatRegisterMIPSShared {
+class FloatRegister : public FloatRegisterRISCVShared {
  public:
   typedef FloatRegisters Codes;
   typedef size_t Code;

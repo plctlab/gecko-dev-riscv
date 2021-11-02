@@ -58,18 +58,18 @@ class ScratchTagScopeRelease {
   ~ScratchTagScopeRelease() { ts_->reacquire(); }
 };
 
-class MacroAssemblerriscv64 : public MacroAssemblerMIPSShared {
+class MacroAssemblerriscv64 : public MacroAssemblerRISCVShared {
  public:
-  using MacroAssemblerMIPSShared::ma_b;
-  using MacroAssemblerMIPSShared::ma_cmp_set;
-  using MacroAssemblerMIPSShared::ma_ld;
-  using MacroAssemblerMIPSShared::ma_li;
-  using MacroAssemblerMIPSShared::ma_load;
-  using MacroAssemblerMIPSShared::ma_ls;
-  using MacroAssemblerMIPSShared::ma_sd;
-  using MacroAssemblerMIPSShared::ma_ss;
-  using MacroAssemblerMIPSShared::ma_store;
-  using MacroAssemblerMIPSShared::ma_sub32TestOverflow;
+  using MacroAssemblerRISCVShared::ma_b;
+  using MacroAssemblerRISCVShared::ma_cmp_set;
+  using MacroAssemblerRISCVShared::ma_ld;
+  using MacroAssemblerRISCVShared::ma_li;
+  using MacroAssemblerRISCVShared::ma_load;
+  using MacroAssemblerRISCVShared::ma_ls;
+  using MacroAssemblerRISCVShared::ma_sd;
+  using MacroAssemblerRISCVShared::ma_ss;
+  using MacroAssemblerRISCVShared::ma_store;
+  using MacroAssemblerRISCVShared::ma_sub32TestOverflow;
 
   void ma_li(Register dest, CodeLabel* label);
   void ma_li(Register dest, ImmWord imm);

@@ -198,7 +198,7 @@ void MacroAssembler::add64(Imm64 imm, Register64 dest) {
 
 CodeOffset MacroAssembler::sub32FromStackPtrWithPatch(Register dest) {
   CodeOffset offset = CodeOffset(currentOffset());
-  MacroAssemblerMIPSShared::ma_liPatchable(dest, Imm32(0));
+  MacroAssemblerRISCVShared::ma_liPatchable(dest, Imm32(0));
   as_dsubu(dest, StackPointer, dest);
   return offset;
 }
@@ -209,7 +209,7 @@ void MacroAssembler::patchSub32FromStackPtr(CodeOffset offset, Imm32 imm) {
   MOZ_ASSERT(lui->extractOpcode() == ((uint32_t)op_lui >> OpcodeShift));
   MOZ_ASSERT(lui->next()->extractOpcode() == ((uint32_t)op_ori >> OpcodeShift));
 
-  MacroAssemblerMIPSShared::UpdateLuiOriValue(lui, lui->next(), imm.value);
+  MacroAssemblerRISCVShared::UpdateLuiOriValue(lui, lui->next(), imm.value);
 }
 
 void MacroAssembler::subPtr(Register src, Register dest) {
@@ -242,7 +242,7 @@ void MacroAssembler::sub64(Imm64 imm, Register64 dest) {
 }
 
 void MacroAssembler::mulPtr(Register rhs, Register srcDest) {
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_dmulu(srcDest, srcDest, rhs);
 #else
   as_dmultu(srcDest, rhs);
@@ -253,7 +253,7 @@ void MacroAssembler::mulPtr(Register rhs, Register srcDest) {
 void MacroAssembler::mul64(Imm64 imm, const Register64& dest) {
   MOZ_ASSERT(dest.reg != ScratchRegister);
   mov(ImmWord(imm.value), ScratchRegister);
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_dmulu(dest.reg, ScratchRegister, dest.reg);
 #else
   as_dmultu(dest.reg, ScratchRegister);
@@ -270,7 +270,7 @@ void MacroAssembler::mul64(Imm64 imm, const Register64& dest,
 void MacroAssembler::mul64(const Register64& src, const Register64& dest,
                            const Register temp) {
   MOZ_ASSERT(temp == InvalidReg);
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_dmulu(dest.reg, src.reg, dest.reg);
 #else
   as_dmultu(dest.reg, src.reg);
@@ -774,7 +774,7 @@ void MacroAssembler::cmpPtrMovePtr(Condition cond, Register lhs, Register rhs,
   Register scratch = ScratchRegister;
   MOZ_ASSERT(src != scratch && dest != scratch);
   cmpPtrSet(cond, lhs, rhs, scratch);
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_selnez(src, src, scratch);
   as_seleqz(dest, dest, scratch);
   as_or(dest, dest, src);

@@ -545,7 +545,7 @@ void MacroAssemblerriscv64::ma_subPtrTestOverflow(Register rd, Register rs,
 
 void MacroAssemblerriscv64::ma_dmult(Register rs, Imm32 imm) {
   ma_li(ScratchRegister, imm);
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_dmul(rs, ScratchRegister, SecondScratchReg);
   as_dmuh(rs, ScratchRegister, rs);
   ma_move(rs, SecondScratchReg);
@@ -556,7 +556,7 @@ void MacroAssemblerriscv64::ma_dmult(Register rs, Imm32 imm) {
 
 void MacroAssemblerriscv64::ma_mulPtrTestOverflow(Register rd, Register rs,
                                                  Register rt, Label* overflow) {
-#ifdef MIPSR6
+#ifdef RISCVR6
   if (rd == rs) {
     ma_move(SecondScratchReg, rs);
     rs = SecondScratchReg;
@@ -1325,7 +1325,7 @@ void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
   as_roundwd(ScratchDoubleReg, input);
   ma_li(ScratchRegister, Imm32(255));
   as_mfc1(output, ScratchDoubleReg);
-#ifdef MIPSR6
+#ifdef RISCVR6
   as_slti(SecondScratchReg, output, 0);
   as_seleqz(output, output, SecondScratchReg);
   as_sltiu(SecondScratchReg, output, 255);
@@ -1602,7 +1602,7 @@ Register MacroAssemblerriscv64Compat::extractTag(const BaseIndex& address,
 }
 
 /////////////////////////////////////////////////////////////////
-// X86/X64-common/ARM/MIPS interface.
+// X86/X64-common/ARM/RISCV interface.
 /////////////////////////////////////////////////////////////////
 void MacroAssemblerriscv64Compat::storeValue(ValueOperand val, Operand dst) {
   storeValue(val, Address(Register::FromCode(dst.base()), dst.disp()));

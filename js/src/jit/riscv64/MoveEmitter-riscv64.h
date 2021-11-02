@@ -12,7 +12,7 @@
 namespace js {
 namespace jit {
 
-class MoveEmitterriscv64 : public MoveEmitterMIPSShared {
+class MoveEmitterriscv64 : public MoveEmitterRISCVShared {
   void emitDoubleMove(const MoveOperand& from, const MoveOperand& to);
   void breakCycle(const MoveOperand& from, const MoveOperand& to,
                   MoveOp::Type type, uint32_t slot);
@@ -20,7 +20,7 @@ class MoveEmitterriscv64 : public MoveEmitterMIPSShared {
                      MoveOp::Type type, uint32_t slot);
 
  public:
-  MoveEmitterriscv64(MacroAssembler& masm) : MoveEmitterMIPSShared(masm) {}
+  MoveEmitterriscv64(MacroAssembler& masm) : MoveEmitterRISCVShared(masm) {}
 };
 
 typedef MoveEmitterriscv64 MoveEmitter;

@@ -196,7 +196,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   // Make stack algined
   masm.ma_and(s0, reg_argc, Imm32(1));
   masm.ma_dsubu(s1, StackPointer, Imm32(sizeof(Value)));
-#ifdef MIPSR6
+#ifdef RISCVR6
   masm.as_selnez(s1, s1, s0);
   masm.as_seleqz(StackPointer, StackPointer, s0);
   masm.as_or(StackPointer, StackPointer, s1);

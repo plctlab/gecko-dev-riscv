@@ -78,13 +78,13 @@ static uint32_t GetFCSRConditionBit(uint32_t cc) {
 }
 
 // -----------------------------------------------------------------------------
-// MIPS assembly various constants.
+// RISCV assembly various constants.
 
 class SimInstruction {
  public:
   enum {
     kInstrSize = 4,
-    // On MIPS PC cannot actually be directly accessed. We behave as if PC was
+    // On RISCV PC cannot actually be directly accessed. We behave as if PC was
     // always the value of the current instruction being executed.
     kPCReadOffset = 0
   };
@@ -113,7 +113,7 @@ class SimInstruction {
   // Get the encoding type of the instruction.
   Type instructionType() const;
 
-  // Accessors for the different named fields used in the MIPS encoding.
+  // Accessors for the different named fields used in the RISCV encoding.
   inline OpcodeField opcodeValue() const {
     return static_cast<OpcodeField>(
         bits(OpcodeShift + OpcodeBits - 1, OpcodeShift));
@@ -542,7 +542,7 @@ Simulator* Simulator::Create() {
   }
 
   int64_t stopAt;
-  char* stopAtStr = getenv("MIPS_SIM_STOP_AT");
+  char* stopAtStr = getenv("RISCV_SIM_STOP_AT");
   if (stopAtStr && sscanf(stopAtStr, "%" PRIi64, &stopAt) == 1) {
     fprintf(stderr, "\nStopping simulation at icount %" PRIi64 "\n", stopAt);
     Simulator::StopSimAt = stopAt;
@@ -962,7 +962,7 @@ void RiscvDebugger::debug() {
           printf("deleting breakpoint failed\n");
         }
       } else if (strcmp(cmd, "flags") == 0) {
-        printf("No flags on MIPS !\n");
+        printf("No flags on RISCV !\n");
       } else if (strcmp(cmd, "stop") == 0) {
         int64_t value;
         intptr_t stop_pc = sim_->get_pc() - 2 * SimInstruction::kInstrSize;
@@ -1316,7 +1316,7 @@ Simulator::~Simulator() { js_free(stack_); }
 
 SimulatorProcess::SimulatorProcess()
     : cacheLock_(mutexid::SimulatorCacheLock), redirection_(nullptr) {
-  if (getenv("MIPS_SIM_ICACHE_CHECKS")) {
+  if (getenv("RISCV_SIM_ICACHE_CHECKS")) {
     ICacheCheckingDisableCount = 0;
   }
 }
@@ -1519,13 +1519,13 @@ static bool AllowUnaligned() {
   static bool hasReadFlag = false;
   static bool unalignedAllowedFlag = false;
   if (!hasReadFlag) {
-    unalignedAllowedFlag = !!getenv("MIPS_UNALIGNED");
+    unalignedAllowedFlag = !!getenv("RISCV_UNALIGNED");
     hasReadFlag = true;
   }
   return unalignedAllowedFlag;
 }
 
-// MIPS memory instructions (except lw(d)l/r , sw(d)l/r) trap on unaligned
+// RISCV memory instructions (except lw(d)l/r , sw(d)l/r) trap on unaligned
 // memory access enabling the OS to handle them via trap-and-emulate. Note that
 // simulator runs have the runtime system running directly on the host system
 // and only generated code is executed in the simulator. Since the host is
@@ -2587,7 +2587,7 @@ void Simulator::configureTypeRegister(SimInstruction* instr, int64_t& alu_out,
             alu_out = I64(I32(U32(I32_CHECK(rt)) >> sa));
           } else {
             // Logical right-rotate of a word by a fixed number of bits. This
-            // is special case of SRL instruction, added in MIPS32 Release 2.
+            // is special case of SRL instruction, added in RISCV32 Release 2.
             // RS field is equal to 00001.
             alu_out = I64(I32((U32(I32_CHECK(rt)) >> sa) |
                               (U32(I32_CHECK(rt)) << (32 - sa))));
@@ -2639,7 +2639,7 @@ void Simulator::configureTypeRegister(SimInstruction* instr, int64_t& alu_out,
             alu_out = I64(I32(U32(I32_CHECK(rt)) >> rs));
           } else {
             // Logical right-rotate of a word by a variable number of bits.
-            // This is special case od SRLV instruction, added in MIPS32
+            // This is special case od SRLV instruction, added in RISCV32
             // Release 2. SA field is equal to 00001.
             alu_out = I64(I32((U32(I32_CHECK(rt)) >> rs) |
                               (U32(I32_CHECK(rt)) << (32 - rs))));

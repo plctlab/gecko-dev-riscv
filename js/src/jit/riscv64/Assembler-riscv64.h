@@ -176,7 +176,7 @@ static_assert(JitStackAlignment % sizeof(Value) == 0 &&
                   JitStackValueAlignment >= 1,
               "Stack alignment should be a non-zero multiple of sizeof(Value)");
 
-// TODO this is just a filler to prevent a build failure. The MIPS SIMD
+// TODO this is just a filler to prevent a build failure. The RISCV SIMD
 // alignment requirements still need to be explored.
 // TODO Copy the static_asserts from x64/x86 assembler files.
 static constexpr uint32_t SimdMemoryAlignment = 16;
@@ -191,13 +191,13 @@ static constexpr uint32_t WasmCheckedTailEntryOffset = 16u;
 
 static constexpr Scale ScalePointer = TimesEight;
 
-class Assembler : public AssemblerMIPSShared {
+class Assembler : public AssemblerRISCVShared {
  public:
-  Assembler() : AssemblerMIPSShared() {}
+  Assembler() : AssemblerRISCVShared() {}
 
   static uintptr_t GetPointer(uint8_t*);
 
-  using AssemblerMIPSShared::bind;
+  using AssemblerRISCVShared::bind;
 
   static void Bind(uint8_t* rawCode, const CodeLabel& label);
 

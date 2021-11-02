@@ -12,10 +12,10 @@
 namespace js {
 namespace jit {
 
-class LIRGeneratorriscv64 : public LIRGeneratorMIPSShared {
+class LIRGeneratorriscv64 : public LIRGeneratorRISCVShared {
  protected:
   LIRGeneratorriscv64(MIRGenerator* gen, MIRGraph& graph, LIRGraph& lirGraph)
-      : LIRGeneratorMIPSShared(gen, graph, lirGraph) {}
+      : LIRGeneratorRISCVShared(gen, graph, lirGraph) {}
 
   void lowerInt64PhiInput(MPhi*, uint32_t, LBlock*, size_t);
   void defineInt64Phi(MPhi*, size_t);

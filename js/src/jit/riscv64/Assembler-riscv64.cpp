@@ -209,7 +209,7 @@ void Assembler::bind(InstImm* inst, uintptr_t branch, uintptr_t target) {
     addLongJump(BufferOffset(branch), BufferOffset(target));
     Assembler::WriteLoad64Instructions(inst, ScratchRegister,
                                        LabelBase::INVALID_OFFSET);
-#ifdef MIPSR6
+#ifdef RISCVR6
     inst[4] =
         InstReg(op_special, ScratchRegister, zero, zero, ff_jalr).encode();
 #else
@@ -223,7 +223,7 @@ void Assembler::bind(InstImm* inst, uintptr_t branch, uintptr_t target) {
     addLongJump(BufferOffset(branch + sizeof(uint32_t)), BufferOffset(target));
     Assembler::WriteLoad64Instructions(&inst[1], ScratchRegister,
                                        LabelBase::INVALID_OFFSET);
-#ifdef MIPSR6
+#ifdef RISCVR6
     inst[5] =
         InstReg(op_special, ScratchRegister, zero, zero, ff_jalr).encode();
 #else
