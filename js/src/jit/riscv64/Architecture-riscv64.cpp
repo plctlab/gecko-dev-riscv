@@ -11,6 +11,7 @@
 namespace js {
 namespace jit {
 
+// ABI Names of RISC-V architecture registers
 const char* const Registers::RegNames[] = {
     "zero","sp", "gp", "tp", "ra",
     "a0", "a1", "a2", "a3", "a4", "a5", "a6","a7",   
