@@ -3957,32 +3957,96 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
       }
       break;
       // ------------- Arithmetic instructions.
+    //RISCV
+    // Add and Subtract with both word and immeditate versions
+    case op_and:
     case op_addi:
-    case op_daddi:
-    case op_addiu:
-    case op_daddiu:
+    case op_addw:
+    case op_addiw:
+    case op_sub:
+    case op_subi:
+    case op_subw:
+    case op_subiw:
+
+    // Set less than with signed and unsigned, immediate versions
+    case op_slt:
+    case op_sltu:
     case op_slti:
     case op_sltiu:
+
+    // AND, OR, XOR, both register - register and register immediate versiosn
+    case op_and:
+    case op_or:
+    case op_xor:
     case op_andi:
     case op_ori:
     case op_xori:
+
+    // Load Upper immediate. Loads bits 31..12 of a register with immediate value. upper 32 bits are set to 0
     case op_lui:
+
+    // Sums and immediate and ipper 20 bots of the PC into a register, used for building a branch to 32 bit address
+    case op_auipc:
+
+   // Logical and Arithmetic Shift left and Right Immediate and word versions
+    case op_sll:
+    case op_srl:
+    case op_sra:
+    case op_slli:
+    case op_srli:
+    case op_srai:
+    case op_sllw:
+    case op_slliw:
+    case op_srli:
+    case op_srliw:
+    case op_srai:
+    case op_sraiw:
+
+    // Integer multiply, divide, remainder, signed and unsigned with support for 64 bits with word versions.
+    case mul:
+    case mulw:
+    case mulh:
+    case mulhsu:
+    case mulhu:
+    case div:
+    case divw:
+    case divu:
+    case rem:
+    case remu:
+    case remw:
+    case remuw:
+
+    //MIPS
+    // case op_addi:
+    // case op_daddi:
+    // case op_addiu:
+    // case op_daddiu:
+    // case op_slti:
+    // case op_sltiu:
+    // case op_andi:
+    // case op_ori:
+    // case op_xori:
+    // case op_lui:
       setRegister(rt_reg, alu_out);
       break;
       // ------------- Memory instructions.
-    case op_lbu:
-    case op_lb:
-    case op_lhu:
-    case op_lh:
-    case op_lwu:
-    case op_lw:
-    case op_lwl:
-    case op_lwr:
-    case op_ll:
-    case op_lld:
-    case op_ld:
-    case op_ldl:
-    case op_ldr:
+    //RISCV
+
+
+    //MIPS
+    // case op_lbu:
+    // case op_lb:
+    // case op_lhu:
+    // case op_lh:
+    // case op_lwu:
+    // case op_lw:
+    // case op_lwl:
+    // case op_lwr:
+    // case op_ll:
+    // case op_lld:
+    // case op_ld:
+    // case op_ldl:
+    // case op_ldr:
       setRegister(rt_reg, alu_out);
       break;
     case op_sb:
