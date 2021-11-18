@@ -3746,6 +3746,11 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
       do_branch = rs > 0;
       break;
       // ------------- Arithmetic instructions.
+
+    // Register - Register
+    // case op_add:
+    //   alut_out = rs + se_imm16;
+    //   break;
     case op_addi:
       alu_out = I32_CHECK(rs) + se_imm16;
       if ((alu_out << 32) != (alu_out << 31)) {
@@ -3753,18 +3758,58 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
       }
       alu_out = I32_CHECK(alu_out);
       break;
-    case op_daddi:
-      temp = alu_out = rs + se_imm16;
-      if ((temp << 64) != (temp << 63)) {
+    case op_addw:
+      alu_out = rs + se_imm16;
+      alu_out = I64(alu_out);
+      break;
+    case op_addiw:
+      alu_out = I64(rs) + I64(se_imm16);
+      if ((alu_out << 32) != (alu_out << 31)) {
         exceptions[kIntegerOverflow] = 1;
       }
-      alu_out = I64(temp);
+      alu_out = I64(alu_out);
       break;
-    case op_addiu:
-      alu_out = I32(I32_CHECK(rs) + se_imm16);
+
+    //MIPS
+    // case op_daddi:
+    //   temp = alu_out = rs + se_imm16;
+    //   if ((temp << 64) != (temp << 63)) {
+    //     exceptions[kIntegerOverflow] = 1;
+    //   }
+    //   alu_out = I64(temp);
+    //   break;
+    // case op_addiu:
+    //   alu_out = I32(I32_CHECK(rs) + se_imm16);
+    //   break;
+    // case op_daddiu:
+    //   alu_out = rs + se_imm16;
+    //   break;
+
+    // Register - Register
+    // case op_sub:
+    //   alut_out = rs + se_imm16;
+    //   break;
+    case op_subi:
+      alu_out = I32_CHECK(rs) - se_imm16;
+      if ((alu_out << 32) != (alu_out << 31)) {
+        exceptions[kIntegerOverflow] = 1;
+      }
+      alu_out = I32_CHECK(alu_out);
       break;
-    case op_daddiu:
-      alu_out = rs + se_imm16;
+    case op_subw:
+      alu_out = rs - se_imm16;
+      alu_out = I64(alu_out);
+      break;
+    case op_subiw:
+      alu_out = I64(rs) - I64(se_imm16);
+      if ((alu_out << 32) != (alu_out << 31)) {
+        exceptions[kIntegerOverflow] = 1;
+      }
+      alu_out = I64(alu_out);
+      break;
+
+    case op_sltu:
+      alu_out = (U32(rs) < U32(se_imm16)) ? 1 : 0;
       break;
     case op_slti:
       alu_out = (rs < se_imm16) ? 1 : 0;
@@ -3784,6 +3829,10 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
     case op_lui:
       alu_out = (se_imm16 << 16);
       break;
+    case op_auipc:
+      alu_out = I32(rs) + (se_imm16 << 20);
+      break;
+
       // ------------- Memory instructions.
     case op_lbu:
       addr = rs + se_imm16;
@@ -3959,25 +4008,25 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
       // ------------- Arithmetic instructions.
     //RISCV
     // Add and Subtract with both word and immeditate versions
-    case op_and:
+    // case op_add:
     case op_addi:
     case op_addw:
     case op_addiw:
-    case op_sub:
+    // case op_sub:
     case op_subi:
     case op_subw:
     case op_subiw:
 
     // Set less than with signed and unsigned, immediate versions
-    case op_slt:
+    // case op_slt:
     case op_sltu:
     case op_slti:
     case op_sltiu:
 
-    // AND, OR, XOR, both register - register and register immediate versiosn
-    case op_and:
-    case op_or:
-    case op_xor:
+    // AND, OR, XOR, both register - register and register immediate versions
+    // case op_and:
+    // case op_or:
+    // case op_xor:
     case op_andi:
     case op_ori:
     case op_xori:
@@ -3985,13 +4034,13 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
     // Load Upper immediate. Loads bits 31..12 of a register with immediate value. upper 32 bits are set to 0
     case op_lui:
 
-    // Sums and immediate and ipper 20 bots of the PC into a register, used for building a branch to 32 bit address
+    // Sums and immediate and upper 20 bits of the PC into a register, used for building a branch to 32 bit address
     case op_auipc:
 
    // Logical and Arithmetic Shift left and Right Immediate and word versions
-    case op_sll:
-    case op_srl:
-    case op_sra:
+    // case op_sll:
+    // case op_srl:
+    // case op_sra:
     case op_slli:
     case op_srli:
     case op_srai:
@@ -4003,6 +4052,7 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
     case op_sraiw:
 
     // Integer multiply, divide, remainder, signed and unsigned with support for 64 bits with word versions.
+    // To add definitions
     case mul:
     case mulw:
     case mulh:
@@ -4027,11 +4077,18 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
     // case op_ori:
     // case op_xori:
     // case op_lui:
-      setRegister(rt_reg, alu_out);
-      break;
+      // setRegister(rt_reg, alu_out);
+      // break;
       // ------------- Memory instructions.
     //RISCV
-
+    case op_lbu:
+    case op_lb:
+    case op_lhu:
+    case op_lh:
+    case op_lwu:
+    case op_lw:
+    case op_ld:
+    // Add higher instructions
 
     //MIPS
     // case op_lbu:
