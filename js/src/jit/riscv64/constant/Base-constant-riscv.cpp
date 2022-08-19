@@ -1,21 +1,21 @@
 // Copyright 2021 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#include "jit/riscv64/disasm/Base-constant-riscv.h"
+#include "jit/riscv64/constant/Base-constant-riscv.h"
 
 #  include "mozilla/Assertions.h"
 #  include "mozilla/Types.h"
 
 #  include <stdio.h>
 
-#include "jit/riscv64/disasm/Constant-riscv-c.h"
-#include "jit/riscv64/disasm/Constant-riscv-d.h"
-#include "jit/riscv64/disasm/Constant-riscv-f.h"
-#include "jit/riscv64/disasm/Constant-riscv-i.h"
-#include "jit/riscv64/disasm/Constant-riscv-m.h"
-#include "jit/riscv64/disasm/Constant-riscv-v.h"
-#include "jit/riscv64/disasm/Constant-riscv-zicsr.h"
-#include "jit/riscv64/disasm/Constant-riscv-zifencei.h"
+#include "jit/riscv64/constant/Constant-riscv-c.h"
+#include "jit/riscv64/constant/Constant-riscv-d.h"
+#include "jit/riscv64/constant/Constant-riscv-f.h"
+#include "jit/riscv64/constant/Constant-riscv-i.h"
+#include "jit/riscv64/constant/Constant-riscv-m.h"
+#include "jit/riscv64/constant/Constant-riscv-v.h"
+#include "jit/riscv64/constant/Constant-riscv-zicsr.h"
+#include "jit/riscv64/constant/Constant-riscv-zifencei.h"
 namespace js {
 namespace jit {
 bool InstructionBase::IsShortInstruction() const {

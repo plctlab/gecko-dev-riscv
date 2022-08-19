@@ -4,23 +4,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jit_riscv64_disasm_Constant_riscv64_h
-#define jit_riscv64_disasm_Constant_riscv64_h
+#ifndef jit_riscv64_constant_Constant_riscv64_h
+#define jit_riscv64_constant_Constant_riscv64_h
 #include "mozilla/Assertions.h"
 #include "mozilla/Types.h"
 
 #include <stdio.h>
 
-#include "jit/riscv64/disasm/Base-constant-riscv.h"
-#include "jit/riscv64/disasm/Constant-riscv-a.h"
-#include "jit/riscv64/disasm/Constant-riscv-c.h"
-#include "jit/riscv64/disasm/Constant-riscv-d.h"
-#include "jit/riscv64/disasm/Constant-riscv-f.h"
-#include "jit/riscv64/disasm/Constant-riscv-i.h"
-#include "jit/riscv64/disasm/Constant-riscv-m.h"
-#include "jit/riscv64/disasm/Constant-riscv-v.h"
-#include "jit/riscv64/disasm/Constant-riscv-zicsr.h"
-#include "jit/riscv64/disasm/Constant-riscv-zifencei.h"
+#include "jit/riscv64/constant/Base-constant-riscv.h"
+#include "jit/riscv64/constant/Constant-riscv-a.h"
+#include "jit/riscv64/constant/Constant-riscv-c.h"
+#include "jit/riscv64/constant/Constant-riscv-d.h"
+#include "jit/riscv64/constant/Constant-riscv-f.h"
+#include "jit/riscv64/constant/Constant-riscv-i.h"
+#include "jit/riscv64/constant/Constant-riscv-m.h"
+#include "jit/riscv64/constant/Constant-riscv-v.h"
+#include "jit/riscv64/constant/Constant-riscv-zicsr.h"
+#include "jit/riscv64/constant/Constant-riscv-zifencei.h"
 
 namespace js {
 namespace jit {
@@ -93,17 +93,8 @@ class EmbeddedVector : public V8Vector<T> {
   T buffer_[kSize];
 };
 
-// Helper function for printing to a Vector.
-static int MOZ_FORMAT_PRINTF(2, 3)
-    SNPrintF(V8Vector<char> str, const char* format, ...) {
-  va_list args;
-  va_start(args, format);
-  int result = vsnprintf(str.start(), str.length(), format, args);
-  va_end(args);
-  return result;
-}
 }  // namespace disasm
 }  // namespace jit
 }  // namespace js
 
-#endif  // jit_riscv64_disasm_Constant_riscv64_h
+#endif  // jit_riscv64_constant_Constant_riscv64_h

@@ -1,10 +1,10 @@
 // Copyright 2022 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#ifndef jit_riscv64_disasm_Constant_riscv64_m_h_
-#define jit_riscv64_disasm_Constant_riscv64_m_h_
+#ifndef jit_riscv64_constant_Constant_riscv64_m_h_
+#define jit_riscv64_constant_Constant_riscv64_m_h_
 
-#include "jit/riscv64/disasm/Base-constant-riscv.h"
+#include "jit/riscv64/constant/Base-constant-riscv.h"
 namespace js {
 namespace jit {
 
@@ -31,4 +31,4 @@ enum OpcodeRISCVM : uint32_t {
 }  // namespace jit
 }  // namespace js
 
-#endif  // V8_CODEGEN_RISCV_CONSTANT_RISCV_M_H_
+#endif  // jit_riscv64_extension_CONSTANT_RISCV_M_h_

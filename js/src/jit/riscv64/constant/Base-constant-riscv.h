@@ -1,8 +1,8 @@
 // Copyright 2022 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#ifndef jit_riscv64_disasm_Base_constant_riscv__h_
-#define jit_riscv64_disasm_Base_constant_riscv__h_
+#ifndef jit_riscv64_constant_Base_constant_riscv__h_
+#define jit_riscv64_constant_Base_constant_riscv__h_
 namespace js {
 namespace jit {
 
@@ -252,6 +252,40 @@ enum BaseOpcode : uint32_t {
   FUNCT2_3 = 0b11,
 };
 
+// ----- Emulated conditions.
+// On RISC-V we use this enum to abstract from conditional branch instructions.
+// The 'U' prefix is used to specify unsigned comparisons.
+// Opposite conditions must be paired as odd/even numbers
+// because 'NegateCondition' function flips LSB to negate condition.
+enum RiscvCondition {  // Any value < 0 is considered no_condition.
+  overflow = 0,
+  no_overflow = 1,
+  Uless = 2,
+  Ugreater_equal = 3,
+  Uless_equal = 4,
+  Ugreater = 5,
+  equal = 6,
+  not_equal = 7,  // Unordered or Not Equal.
+  less = 8,
+  greater_equal = 9,
+  less_equal = 10,
+  greater = 11,
+  cc_always = 12,
+
+  // Aliases.
+  eq = equal,
+  ne = not_equal,
+  ge = greater_equal,
+  lt = less,
+  gt = greater,
+  le = less_equal,
+  al = cc_always,
+  ult = Uless,
+  uge = Ugreater_equal,
+  ule = Uless_equal,
+  ugt = Ugreater,
+};
+
 // ----- Coprocessor conditions.
 enum FPUCondition {
   kNoFPUCondition = -1,
@@ -262,6 +296,7 @@ enum FPUCondition {
   LE = 0x06,  // Ordered and Less Than or Equal
   GT = 0x07,  // Ordered and Greater Than
 };
+
 
 enum CheckForInexactConversion {
   kCheckForInexactConversion,
@@ -331,54 +366,7 @@ enum FClassFlag {
   kQuietNaN = 1 << 9
 };
 
-enum TailAgnosticType {
-  ta = 0x1,  // Tail agnostic
-  tu = 0x0,  // Tail undisturbed
-};
 
-enum MaskAgnosticType {
-  ma = 0x1,  // Mask agnostic
-  mu = 0x0,  // Mask undisturbed
-};
-enum MaskType {
-  Mask = 0x0,  // use the mask
-  NoMask = 0x1,
-};
-
-// Instruction type.
-enum Type {
-  kRType,
-  kR4Type,  // Special R4 for Q extension
-  kIType,
-  kSType,
-  kBType,
-  kUType,
-  kJType,
-  // C extension
-  kCRType,
-  kCIType,
-  kCSSType,
-  kCIWType,
-  kCLType,
-  kCSType,
-  kCAType,
-  kCBType,
-  kCJType,
-  // V extension
-  kVType,
-  kVLType,
-  kVSType,
-  kVAMOType,
-  kVIVVType,
-  kVFVVType,
-  kVMVVType,
-  kVIVIType,
-  kVIVXType,
-  kVFVFType,
-  kVMVXType,
-  kVSETType,
-  kUnsupported = -1
-};
 // -----------------------------------------------------------------------------
 // Specific instructions, constants, and masks.
 // These constants are declared in assembler-riscv64.cc, as they use named
@@ -972,4 +960,4 @@ class Instruction : public InstructionGetters<InstructionBase> {
 };
 } // namespace jit
 } // namespace js
-#endif //  jit_riscv64_disasm_Base_constant_riscv__h_
+#endif //  jit_riscv64_constant_Base_constant_riscv__h_

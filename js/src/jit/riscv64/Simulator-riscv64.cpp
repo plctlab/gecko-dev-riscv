@@ -182,7 +182,7 @@ class SimInstruction {
   }
 
   inline int Rs1Value() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kRType ||
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
     //        this->InstructionType() == InstructionBase::kR4Type ||
     //        this->InstructionType() == InstructionBase::kIType ||
     //        this->InstructionType() == InstructionBase::kSType ||
@@ -193,7 +193,7 @@ class SimInstruction {
   }
 
   inline int Rs2Value() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kRType ||
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
     //        this->InstructionType() == InstructionBase::kR4Type ||
     //        this->InstructionType() == InstructionBase::kSType ||
     //        this->InstructionType() == InstructionBase::kBType ||
@@ -203,12 +203,12 @@ class SimInstruction {
   }
 
   inline int Rs3Value() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kR4Type);
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kR4Type);
     return bits(kRs3Shift + kRs3Bits - 1, kRs3Shift);
   }
 
   inline int RdValue() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kRType ||
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
     //        this->InstructionType() == InstructionBase::kR4Type ||
     //        this->InstructionType() == InstructionBase::kIType ||
     //        this->InstructionType() == InstructionBase::kSType ||
@@ -224,13 +224,13 @@ class SimInstruction {
   }
 
   inline int Imm12Value() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kIType);
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kIType);
     int Value = bits(kImm12Shift + kImm12Bits - 1, kImm12Shift);
     return Value << 20 >> 20;
   }
 
   inline int Imm20UValue() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kUType);
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kUType);
     // | imm[31:12] | rd | opcode |
     //  31        12
     int32_t Bits = instructionBits();
@@ -238,7 +238,7 @@ class SimInstruction {
   }
 
   inline int Imm20JValue() const {
-    // DCHECK(this->InstructionType() == InstructionBase::kJType);
+    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kJType);
     // | imm[20|10:1|11|19:12] | rd | opcode |
     //  31                   12
     uint32_t Bits = instructionBits();

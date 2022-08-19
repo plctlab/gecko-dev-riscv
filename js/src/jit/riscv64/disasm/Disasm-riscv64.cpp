@@ -41,6 +41,16 @@ namespace disasm {
    printf("Unsupported instruction %d.\n", __LINE__)
 //------------------------------------------------------------------------------
 
+// Helper function for printing to a Vector.
+static int MOZ_FORMAT_PRINTF(2, 3)
+    SNPrintF(V8Vector<char> str, const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  int result = vsnprintf(str.start(), str.length(), format, args);
+  va_end(args);
+  return result;
+}
+
 // Decoder decodes and disassembles instructions into an output buffer.
 // It uses the converter to convert register names and call destinations into
 // more informative description.

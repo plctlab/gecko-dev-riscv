@@ -14,94 +14,20 @@
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
 #include "jit/riscv64/Architecture-riscv64.h"
+#include "jit/riscv64/extension/base-assembler-riscv.h"
+#include "jit/riscv64/extension/base-riscv-i.h"
+#include "jit/riscv64/extension/extension-riscv-a.h"
+#include "jit/riscv64/extension/extension-riscv-c.h"
+#include "jit/riscv64/extension/extension-riscv-d.h"
+#include "jit/riscv64/extension/extension-riscv-f.h"
+#include "jit/riscv64/extension/extension-riscv-m.h"
+#include "jit/riscv64/extension/extension-riscv-v.h"
+#include "jit/riscv64/extension/extension-riscv-zicsr.h"
+#include "jit/riscv64/extension/extension-riscv-zifencei.h"
+#include "jit/riscv64/Register-riscv64.h"
 #include "jit/shared/Assembler-shared.h"
-
 namespace js {
 namespace jit {
-
-static constexpr Register zero{Registers::zero};
-static constexpr Register ra{Registers::ra};
-static constexpr Register tp{Registers::tp};
-static constexpr Register sp{Registers::sp};
-static constexpr Register a0{Registers::a0};
-static constexpr Register a1{Registers::a1};
-static constexpr Register a2{Registers::a2};
-static constexpr Register a3{Registers::a3};
-static constexpr Register a4{Registers::a4};
-static constexpr Register a5{Registers::a5};
-static constexpr Register a6{Registers::a6};
-static constexpr Register a7{Registers::a7};
-static constexpr Register t0{Registers::t0};
-static constexpr Register t1{Registers::t1};
-static constexpr Register t2{Registers::t2};
-static constexpr Register t3{Registers::t3};
-static constexpr Register t4{Registers::t4};
-static constexpr Register t5{Registers::t5};
-static constexpr Register t6{Registers::t6};
-static constexpr Register fp{Registers::fp};
-static constexpr Register s1{Registers::s1};
-static constexpr Register s2{Registers::s2};
-static constexpr Register s3{Registers::s3};
-static constexpr Register s4{Registers::s4};
-static constexpr Register s5{Registers::s5};
-static constexpr Register s6{Registers::s6};
-static constexpr Register s7{Registers::s7};
-static constexpr Register s8{Registers::s8};
-static constexpr Register s9{Registers::s9};
-static constexpr Register s10{Registers::s10};
-static constexpr Register s11{Registers::s11};
-
-
-static constexpr FloatRegister ft0{FloatRegisters::f0};
-static constexpr FloatRegister ft1{FloatRegisters::f1};
-static constexpr FloatRegister ft2{FloatRegisters::f2};
-static constexpr FloatRegister ft3{FloatRegisters::f3};
-static constexpr FloatRegister ft4{FloatRegisters::f4};
-static constexpr FloatRegister ft5{FloatRegisters::f5};
-static constexpr FloatRegister ft6{FloatRegisters::f6};
-static constexpr FloatRegister ft7{FloatRegisters::f7};
-static constexpr FloatRegister fs0{FloatRegisters::f8};
-static constexpr FloatRegister fs1{FloatRegisters::f9};
-static constexpr FloatRegister fa0{FloatRegisters::f10};
-static constexpr FloatRegister fa1{FloatRegisters::f11};
-static constexpr FloatRegister fa2{FloatRegisters::f12};
-static constexpr FloatRegister fa3{FloatRegisters::f13};
-static constexpr FloatRegister fa4{FloatRegisters::f14};
-static constexpr FloatRegister fa5{FloatRegisters::f15};
-static constexpr FloatRegister fa6{FloatRegisters::f16};
-static constexpr FloatRegister fa7{FloatRegisters::f17};
-static constexpr FloatRegister fs2{FloatRegisters::f18};
-static constexpr FloatRegister fs3{FloatRegisters::f19};
-static constexpr FloatRegister fs4{FloatRegisters::f20};
-static constexpr FloatRegister fs5{FloatRegisters::f21};
-static constexpr FloatRegister fs6{FloatRegisters::f22};
-static constexpr FloatRegister fs7{FloatRegisters::f23};
-static constexpr FloatRegister fs8{FloatRegisters::f24};
-static constexpr FloatRegister fs9{FloatRegisters::f25};
-static constexpr FloatRegister fs10{FloatRegisters::f26};
-static constexpr FloatRegister fs11{FloatRegisters::f27};
-static constexpr FloatRegister ft8{FloatRegisters::f28};
-static constexpr FloatRegister ft9{FloatRegisters::f29};
-static constexpr FloatRegister ft10{FloatRegisters::f30};
-static constexpr FloatRegister ft11{FloatRegisters::f31};
-
-class MacroAssembler;
-
-static constexpr Register StackPointer{Registers::sp};
-static constexpr Register FramePointer{Registers::fp};
-static constexpr Register ReturnReg{Registers::a0};
-
-static constexpr Register ScratchRegister{Registers::t5};
-static constexpr Register SecondScratchReg{Registers::t6};
-
-static constexpr FloatRegister ReturnFloat32Reg{FloatRegisters::fa0};
-static constexpr FloatRegister ReturnDoubleReg{FloatRegisters::fa0};
-static constexpr FloatRegister ReturnSimd128Reg{FloatRegisters::invalid_reg};
-static constexpr FloatRegister ScratchSimd128Reg{FloatRegisters::invalid_reg};
-static constexpr FloatRegister InvalidFloatReg{FloatRegisters::invalid_reg};
-
-static constexpr FloatRegister ScratchFloat32Reg{FloatRegisters::ft10};
-static constexpr FloatRegister ScratchDoubleReg{FloatRegisters::ft10};
 
 struct ScratchFloat32Scope : public AutoFloatRegisterScope {
   explicit ScratchFloat32Scope(MacroAssembler& masm)
@@ -113,42 +39,7 @@ struct ScratchDoubleScope : public AutoFloatRegisterScope {
       : AutoFloatRegisterScope(masm, ScratchDoubleReg) {}
 };
 
-static constexpr Register OsrFrameReg{Registers::a3};
-static constexpr Register PreBarrierReg{Registers::a1};
-static constexpr Register InterpreterPCReg{Registers::t0};
-static constexpr Register CallTempReg0{Registers::t0};
-static constexpr Register CallTempReg1{Registers::t1};
-static constexpr Register CallTempReg2{Registers::t2};
-static constexpr Register CallTempReg3{Registers::t3};
-static constexpr Register CallTempReg4{Registers::t4};
-static constexpr Register CallTempReg5{Registers::t5};
-static constexpr Register InvalidReg{Registers::invalid_reg};
-static constexpr Register CallTempNonArgRegs[] = {t0, t1, t2, t3};
-static const uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
-
-static constexpr Register IntArgReg0{Registers::a0};
-static constexpr Register IntArgReg1{Registers::a1};
-static constexpr Register IntArgReg2{Registers::a2};
-static constexpr Register IntArgReg3{Registers::a3};
-static constexpr Register IntArgReg4{Registers::a4};
-static constexpr Register IntArgReg5{Registers::a5};
-static constexpr Register IntArgReg6{Registers::a6};
-static constexpr Register IntArgReg7{Registers::a7};
-static constexpr Register HeapReg{Registers::s7};
-
-static constexpr Register RegExpTesterRegExpReg{CallTempReg0};
-static constexpr Register RegExpTesterStringReg{CallTempReg1};
-static constexpr Register RegExpTesterLastIndexReg{CallTempReg2};
-static constexpr Register RegExpTesterStickyReg{Registers::invalid_reg};
-
-static constexpr Register RegExpMatcherRegExpReg{CallTempReg0};
-static constexpr Register RegExpMatcherStringReg{CallTempReg1};
-static constexpr Register RegExpMatcherLastIndexReg{CallTempReg2};
-static constexpr Register RegExpMatcherStickyReg{Registers::invalid_reg};
-
-static constexpr Register JSReturnReg_Type{Registers::a3};
-static constexpr Register JSReturnReg_Data{Registers::s2};
-static constexpr Register JSReturnReg{Registers::a2};
+class MacroAssembler;
 
 #if defined(JS_NUNBOX32)
 static constexpr ValueOperand JSReturnOperand(InvalidReg, InvalidReg);
@@ -160,42 +51,6 @@ static constexpr Register64 ReturnReg64(InvalidReg);
 #  error "Bad architecture"
 #endif
 
-// These registers may be volatile or nonvolatile.
-static constexpr Register ABINonArgReg0{Registers::t0};
-static constexpr Register ABINonArgReg1{Registers::t1};
-static constexpr Register ABINonArgReg2{Registers::t2};
-static constexpr Register ABINonArgReg3{Registers::t3};
-
-// These registers may be volatile or nonvolatile.
-// Note: these three registers are all guaranteed to be different
-static constexpr Register ABINonArgReturnReg0{Registers::t0};
-static constexpr Register ABINonArgReturnReg1{Registers::t1};
-static constexpr Register ABINonVolatileReg{Registers::s1};
-
-// This register is guaranteed to be clobberable during the prologue and
-// epilogue of an ABI call which must preserve both ABI argument, return
-// and non-volatile registers.
-static constexpr Register ABINonArgReturnVolatileReg{Registers::ra};
-
-static constexpr FloatRegister ABINonArgDoubleReg = {
-    FloatRegisters::invalid_reg};
-
-static constexpr Register WasmTableCallScratchReg0{ABINonArgReg0};
-static constexpr Register WasmTableCallScratchReg1{ABINonArgReg1};
-static constexpr Register WasmTableCallSigReg{ABINonArgReg2};
-static constexpr Register WasmTableCallIndexReg{ABINonArgReg3};
-
-// Instance pointer argument register for WebAssembly functions. This must not
-// alias any other register used for passing function arguments or return
-// values. Preserved by WebAssembly functions. Must be nonvolatile.
-static constexpr Register InstanceReg{Registers::s4};
-
-static constexpr Register WasmJitEntryReturnScratch{Registers::t1};
-
-static constexpr Register WasmCallRefCallScratchReg0{ABINonArgReg0};
-static constexpr Register WasmCallRefCallScratchReg1{ABINonArgReg1};
-static constexpr Register WasmCallRefReg{ABINonArgReg3};
-
 static constexpr uint32_t ABIStackAlignment = 16;
 static constexpr uint32_t CodeAlignment = 16;
 static constexpr uint32_t JitStackAlignment = 16;
@@ -204,7 +59,15 @@ static constexpr uint32_t JitStackValueAlignment =
 
 static const Scale ScalePointer = TimesEight;
 
-class Assembler : public AssemblerShared {
+class Assembler : public AssemblerShared,
+                  public AssemblerRISCVI,
+                  public AssemblerRISCVA,
+                  public AssemblerRISCVF,
+                  public AssemblerRISCVD,
+                  public AssemblerRISCVM,
+                  public AssemblerRISCVC,
+                  public AssemblerRISCVZicsr,
+                  public AssemblerRISCVZifencei {
  public:
   enum Condition {
     Equal,
@@ -228,6 +91,8 @@ class Assembler : public AssemblerShared {
   };
 
   enum DoubleCondition {
+    // These conditions will only evaluate to true if the comparison is ordered
+    // - i.e. neither operand is NaN.
     DoubleOrdered,
     DoubleEqual,
     DoubleNotEqual,
@@ -235,6 +100,7 @@ class Assembler : public AssemblerShared {
     DoubleGreaterThanOrEqual,
     DoubleLessThan,
     DoubleLessThanOrEqual,
+    // If either operand is NaN, these conditions always evaluate to true.
     DoubleUnordered,
     DoubleEqualOrUnordered,
     DoubleNotEqualOrUnordered,
@@ -243,6 +109,14 @@ class Assembler : public AssemblerShared {
     DoubleLessThanOrUnordered,
     DoubleLessThanOrEqualOrUnordered
   };
+
+  virtual int32_t branch_offset_helper(Label* L, OffsetSize bits) { MOZ_CRASH(); }
+
+  virtual void emit(Instr x) { MOZ_CRASH(); }
+  virtual void emit(ShortInstr x) { MOZ_CRASH(); }
+  virtual void emit(uint64_t x) { MOZ_CRASH(); }
+
+  virtual void BlockTrampolinePoolFor(int instructions) { MOZ_CRASH(); }
 
   static Condition InvertCondition(Condition) { MOZ_CRASH(); }
 

@@ -36,7 +36,7 @@
 #include <vector>
 
 #  include "jit/IonTypes.h"
-#  include "jit/riscv64/disasm/Base-constant-riscv.h"
+#  include "jit/riscv64/constant/Base-constant-riscv.h"
 #  include "jit/riscv64/disasm/Disasm-riscv64.h"
 #  include "js/ProfilingFrameIterator.h"
 #  include "threading/Thread.h"

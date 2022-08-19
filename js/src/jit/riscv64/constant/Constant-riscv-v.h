@@ -1,12 +1,27 @@
 // Copyright 2022 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#ifndef jit_riscv64_disasm_Constant_riscv64_v_h_
-#define jit_riscv64_disasm_Constant_riscv64_v_h_
-
-#include "jit/riscv64/disasm/Base-constant-riscv.h"
+#ifndef jit_riscv64_constant_Constant_riscv64_v_h_
+#define jit_riscv64_constant_Constant_riscv64_v_h_
+#include "jit/riscv64/constant/Base-constant-riscv.h"
 namespace js {
 namespace jit {
+
+namespace RVV {
+enum TailAgnosticType {
+  ta = 0x1,  // Tail agnostic
+  tu = 0x0,  // Tail undisturbed
+};
+
+enum MaskAgnosticType {
+  ma = 0x1,  // Mask agnostic
+  mu = 0x0,  // Mask undisturbed
+};
+enum MaskType {
+  Mask = 0x0,  // use the mask
+  NoMask = 0x1,
+};
+} //  namespace RVV
 
 enum OpcodeRISCVV : uint32_t {
   // RVV Extension
@@ -490,4 +505,4 @@ enum OpcodeRISCVV : uint32_t {
 }  // namespace jit
 }  // namespace js
 
-#endif  // jit_riscv64_disasm_Constant_riscv64_v_h_
+#endif  // jit_riscv64_constant_Constant_riscv64_v_h_
