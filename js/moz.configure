@@ -461,6 +461,20 @@ def jit_disasm_arm(jit_enabled, spew, simulator, target, debug):
 set_config("JS_DISASM_ARM", jit_disasm_arm)
 set_define("JS_DISASM_ARM", jit_disasm_arm)
 
+@depends("--enable-jit", "--enable-jitspew", simulator, target, moz_debug)
+def jit_disasm_riscv(jit_enabled, spew, simulator, target, debug):
+    if not jit_enabled:
+        return
+
+    if simulator and (debug or spew):
+        if getattr(simulator, "riscv64", None):
+            return True
+
+    if target.cpu == "riscv64" and (debug or spew):
+        return True
+
+set_config("JS_DISASM_RISCV64", jit_disasm_riscv)
+set_define("JS_DISASM_RISCV64", jit_disasm_riscv)
 
 @depends("--enable-jit", "--enable-jitspew", simulator, target, moz_debug)
 def jit_disasm_arm64(jit_enabled, spew, simulator, target, debug):
