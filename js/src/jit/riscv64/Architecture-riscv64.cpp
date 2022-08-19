@@ -30,5 +30,7 @@ FloatRegisters::Code FloatRegisters::FromName(const char* name) {
   return Invalid;
 }
 
+void FlushICache(void* code, size_t size) { MOZ_CRASH(); }
+
 }
 }

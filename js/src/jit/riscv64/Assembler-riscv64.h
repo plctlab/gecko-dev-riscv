@@ -11,14 +11,13 @@
 
 #include <stdint.h>
 
-#include "jit/riscv64/Architecture-riscv64.h"
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
+#include "jit/riscv64/Architecture-riscv64.h"
 #include "jit/shared/Assembler-shared.h"
 
 namespace js {
 namespace jit {
-
 
 static constexpr Register zero{Registers::zero};
 static constexpr Register ra{Registers::ra};
@@ -308,7 +307,24 @@ struct SecondScratchRegisterScope : public AutoRegisterScope {
       : AutoRegisterScope(masm, SecondScratchReg) {}
 };
 
+static const uint32_t NumIntArgRegs = 8;
+static const uint32_t NumFloatArgRegs = 8;
 
+static inline bool GetIntArgReg(uint32_t usedIntArgs, Register& out) {
+  if (usedIntArgs < NumIntArgRegs) {
+    out = Register::FromCode(a0.code() + usedIntArgs);
+    return true;
+  }
+  return false;
+}
+
+static inline bool GetFloatArgReg(uint32_t usedFloatArgs, FloatRegister* out) {
+  if (usedFloatArgs < NumFloatArgRegs) {
+    *out = FloatRegister::FromCode(fa0.code() + usedFloatArgs);
+    return true;
+  }
+  return false;
+}
 }  // namespace jit
 }  // namespace js
 
