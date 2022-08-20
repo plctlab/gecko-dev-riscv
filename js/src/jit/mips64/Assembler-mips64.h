@@ -283,9 +283,6 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
   return true;
 }
 
-enum OpcodeField {
-}
-
 }  // namespace jit
 }  // namespace js
 

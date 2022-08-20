@@ -32,5 +32,11 @@ FloatRegisters::Code FloatRegisters::FromName(const char* name) {
 
 void FlushICache(void* code, size_t size) { MOZ_CRASH(); }
 
+bool CPUFlagsHaveBeenComputed() {
+  // TODO Add CPU flags support
+  // Flags were computed above.
+  return true;
+}
+
 }
 }

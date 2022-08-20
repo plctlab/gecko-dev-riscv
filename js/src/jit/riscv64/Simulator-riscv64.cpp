@@ -26,7 +26,7 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+#ifdef JS_SIMULATOR_RISCV64
 #include "jit/riscv64/Simulator-riscv64.h"
 
 #include "mozilla/Casting.h"
@@ -2528,3 +2528,4 @@ uintptr_t Simulator::popAddress() {
 }  // namespace js
 
 js::jit::Simulator* JSContext::simulator() const { return simulator_; }
+#endif // JS_SIMULATOR_RISCV64

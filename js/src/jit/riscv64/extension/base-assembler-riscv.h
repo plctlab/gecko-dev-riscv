@@ -44,7 +44,7 @@
 #include "jit/riscv64/constant/Constant-riscv64.h"
 #include "jit/riscv64/Register-riscv64.h"
 
-
+#define kBitsPerByte  8UL
 // Check number width.
 inline constexpr bool is_intn(int64_t x, unsigned n) {
   MOZ_ASSERT((0 < n) && (n < 64));
@@ -56,7 +56,7 @@ inline constexpr bool is_uintn(int64_t x, unsigned n) {
   MOZ_ASSERT((0 < n) && (n < (sizeof(x) * kBitsPerByte)));
   return !(x >> n);
 }
-
+#undef kBitsPerByte
 // clang-format off
 #define INT_1_TO_63_LIST(V)                                   \
   V(1) V(2) V(3) V(4) V(5) V(6) V(7) V(8) V(9) V(10)          \
@@ -78,6 +78,7 @@ inline constexpr bool is_uintn(int64_t x, unsigned n) {
     return is_uintn(x, N);                \
   }
 INT_1_TO_63_LIST(DECLARE_IS_INT_N)
+INT_1_TO_63_LIST(DECLARE_IS_UINT_N)
 
 #undef DECLARE_IS_INT_N
 #undef INT_1_TO_63_LIST

@@ -24,8 +24,8 @@
 namespace js {
 namespace jit {
 
-CodeOffset MacroAssembler::call(Label* label){
-    MOZ_CRASH();
+CodeOffset MacroAssembler::call(Label* label) {
+  MOZ_CRASH();
 }
 
 void MacroAssembler::branchPtrInNurseryChunk(Assembler::Condition,
@@ -295,5 +295,43 @@ void MacroAssembler::widenInt32(Register r) {
 CodeOffset MacroAssembler::moveNearAddressWithPatch(Register dest) {
   MOZ_CRASH();
 }
+
+void MacroAssembler::comment(char const*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::clampDoubleToUint8(FloatRegister, Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::floorDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::floorFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::ceilDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::ceilFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::roundDoubleToInt32(FloatRegister,
+                                        Register,
+                                        FloatRegister,
+                                        Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::roundFloat32ToInt32(FloatRegister,
+                                         Register,
+                                         FloatRegister,
+                                         Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::truncDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::truncFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+
 }  // namespace jit
 }  // namespace js
