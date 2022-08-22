@@ -59,9 +59,9 @@ class MacroAssemblerRiscv64 : public Assembler {
     MOZ_CRASH();
   }
 
-  static bool SupportsFloatingPoint() { return false; }
-  static bool SupportsUnalignedAccesses() { return false; }
-  static bool SupportsFastUnalignedFPAccesses() { return false; }
+  static bool SupportsFloatingPoint() { return true; }
+  static bool SupportsUnalignedAccesses() { return true; }
+  static bool SupportsFastUnalignedFPAccesses() { return true; }
 
   void executableCopy(void*, bool = true) { MOZ_CRASH(); }
   void copyJumpRelocationTable(uint8_t*) { MOZ_CRASH(); }
