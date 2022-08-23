@@ -11,6 +11,9 @@
 
 #include <stdint.h>
 
+#include "jit/CompactBuffer.h"
+#include "jit/JitCode.h"
+#include "jit/JitSpewer.h"
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
 #include "jit/riscv64/Architecture-riscv64.h"
@@ -26,9 +29,40 @@
 #include "jit/riscv64/extension/extension-riscv-zifencei.h"
 #include "jit/riscv64/Register-riscv64.h"
 #include "jit/shared/Assembler-shared.h"
+#include "jit/shared/Disassembler-shared.h"
+#include "jit/shared/IonAssemblerBuffer.h"
+#include "wasm/WasmTypeDecls.h"
 namespace js {
 namespace jit {
 
+#define DEBUG_PRINTF(...) \
+  if (FLAG_riscv_debug) { \
+    printf(__VA_ARGS__);  \
+  }
+
+// Difference between address of current opcode and value read from pc
+// register.
+static constexpr int kPcLoadDelta = 4;
+
+// Bits available for offset field in branches
+static constexpr int kBranchOffsetBits = 13;
+
+// Bits available for offset field in jump
+static constexpr int kJumpOffsetBits = 21;
+
+// Bits available for offset field in compresed jump
+static constexpr int kCJalOffsetBits = 12;
+
+// Bits available for offset field in compressed branch
+static constexpr int kCBranchOffsetBits = 9;
+
+// Max offset for b instructions with 12-bit offset field (multiple of 2)
+static constexpr int kMaxBranchOffset = (1 << (13 - 1)) - 1;
+
+// Max offset for jal instruction with 20-bit offset field (multiple of 2)
+static constexpr int kMaxJumpOffset = (1 << (21 - 1)) - 1;
+
+static constexpr int kTrampolineSlotsSize = 2 * kInstrSize;
 struct ScratchFloat32Scope : public AutoFloatRegisterScope {
   explicit ScratchFloat32Scope(MacroAssembler& masm)
       : AutoFloatRegisterScope(masm, ScratchFloat32Reg) {}
@@ -41,15 +75,6 @@ struct ScratchDoubleScope : public AutoFloatRegisterScope {
 
 class MacroAssembler;
 
-#if defined(JS_NUNBOX32)
-static constexpr ValueOperand JSReturnOperand(InvalidReg, InvalidReg);
-static constexpr Register64 ReturnReg64(InvalidReg, InvalidReg);
-#elif defined(JS_PUNBOX64)
-static constexpr ValueOperand JSReturnOperand(InvalidReg);
-static constexpr Register64 ReturnReg64(InvalidReg);
-#else
-#  error "Bad architecture"
-#endif
 
 static constexpr uint32_t ABIStackAlignment = 16;
 static constexpr uint32_t CodeAlignment = 16;
@@ -59,6 +84,8 @@ static constexpr uint32_t JitStackValueAlignment =
 
 static const Scale ScalePointer = TimesEight;
 
+static constexpr int32_t SliceSize = 1024;
+typedef js::jit::AssemblerBuffer<SliceSize, Instruction> Buffer;
 class Assembler : public AssemblerShared,
                   public AssemblerRISCVI,
                   public AssemblerRISCVA,
@@ -68,7 +95,46 @@ class Assembler : public AssemblerShared,
                   public AssemblerRISCVC,
                   public AssemblerRISCVZicsr,
                   public AssemblerRISCVZifencei {
+ Buffer m_buffer;
+ CompactBufferWriter jumpRelocations_;
+ CompactBufferWriter dataRelocations_;
+
+#ifdef JS_JITSPEW
+  Sprinter* printer;
+#endif
+
+ protected:
+  bool isFinished;
+
+  Instruction* editSrc(BufferOffset bo) { return m_buffer.getInst(bo); }
+
  public:
+  static bool FLAG_riscv_debug;
+
+  Assembler()
+      : m_buffer(),
+#ifdef JS_JITSPEW
+        printer(nullptr),
+#endif
+        isFinished(false) {
+  }
+  bool oom() const;
+  BufferOffset nextOffset() { return m_buffer.nextOffset(); }
+
+#ifdef JS_JITSPEW
+  inline void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3) {
+    if (MOZ_UNLIKELY(printer || JitSpewEnabled(JitSpew_Codegen))) {
+      va_list va;
+      va_start(va, fmt);
+      spew(fmt, va);
+      va_end(va);
+    }
+  }
+
+#else
+  MOZ_ALWAYS_INLINE void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3) {}
+#endif
+
   enum Condition {
     Equal,
     NotEqual,
@@ -110,6 +176,10 @@ class Assembler : public AssemblerShared,
     DoubleLessThanOrEqualOrUnordered
   };
 
+  void disassembleInstr(Instr instr);
+  int target_at(BufferOffset pos, bool is_internal);
+  uint32_t next_link(Label* label, bool is_internal);
+  void target_at_put(BufferOffset pos, BufferOffset target_pos);
   virtual int32_t branch_offset_helper(Label* L, OffsetSize bits) { MOZ_CRASH(); }
 
   virtual void emit(Instr x) { MOZ_CRASH(); }
@@ -138,6 +208,12 @@ class Assembler : public AssemblerShared,
   static void ToggleCall(CodeLocationLabel, bool) { MOZ_CRASH(); }
 
   static void Bind(uint8_t*, const CodeLabel&) { MOZ_CRASH(); }
+  // label operations
+  void bind(Label* label, BufferOffset boff = BufferOffset());
+  void bind(CodeLabel* label) {
+    label->target()->bind(currentOffset());
+  }
+  uint32_t currentOffset() { return nextOffset().getOffset(); }
 
   static uintptr_t GetPointer(uint8_t*) { MOZ_CRASH(); }
 
@@ -162,11 +238,17 @@ class Operand {
 
 class ABIArgGenerator {
  public:
-  ABIArgGenerator() { MOZ_CRASH(); }
-  ABIArg next(MIRType) { MOZ_CRASH(); }
-  ABIArg& current() { MOZ_CRASH(); }
-  uint32_t stackBytesConsumedSoFar() const { MOZ_CRASH(); }
-  void increaseStackOffset(uint32_t) { MOZ_CRASH(); }
+  ABIArgGenerator()
+      : intRegIndex_(0), floatRegIndex_(0), stackOffset_(0), current_() {}
+  ABIArg next(MIRType);
+  ABIArg& current() { return current_; }
+  uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
+  void increaseStackOffset(uint32_t bytes) { stackOffset_ += bytes; }
+ protected:
+  unsigned intRegIndex_;
+  unsigned floatRegIndex_;
+  uint32_t stackOffset_;
+  ABIArg current_;
 };
 
 // Helper classes for ScratchRegister usage. Asserts that only one piece

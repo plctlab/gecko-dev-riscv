@@ -33,7 +33,7 @@ class ScratchTagScopeRelease {
 
 class MacroAssemblerRiscv64 : public Assembler {
  public:
-  MacroAssemblerRiscv64() { MOZ_CRASH(); }
+  MacroAssemblerRiscv64() {}
 
   MoveResolver moveResolver_;
 
@@ -71,10 +71,6 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   void flushBuffer() { MOZ_CRASH(); }
 
-  template <typename T>
-  void bind(T) {
-    MOZ_CRASH();
-  }
   template <typename T>
   void j(Condition, T) {
     MOZ_CRASH();
