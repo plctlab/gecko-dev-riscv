@@ -128,9 +128,16 @@ class Registers {
 
   typedef uint32_t SetType;
 
-  static uint32_t SetSize(SetType) { MOZ_CRASH(); }
-  static uint32_t FirstBit(SetType) { MOZ_CRASH(); }
-  static uint32_t LastBit(SetType) { MOZ_CRASH(); }
+  static uint32_t SetSize(SetType x) {
+    static_assert(sizeof(SetType) == 4, "SetType must be 32 bits");
+    return mozilla::CountPopulation32(x);
+  }
+  static uint32_t FirstBit(SetType x) {
+    return mozilla::CountTrailingZeroes32(x);
+  }
+  static uint32_t LastBit(SetType x) {
+    return 31 - mozilla::CountLeadingZeroes32(x);
+  }
   static const char* GetName(uint32_t code) {
     static const char* const Names[] = {
         "zero", "ra", "sp", "gp", "tp",  "t0",  "t1", "t2", "fp", "s1", "a0",
@@ -178,8 +185,10 @@ class Registers {
       (1 << Registers::zero) |  // Always be zero.
       (1 << Registers::t5) |    // Scratch reg
       (1 << Registers::t6) |    // Scratch reg
+      (1 << Registers::s10) |    // Scratch reg
+      (1 << Registers::s11) |    // Scratch reg
       (1 << Registers::ra) | (1 << Registers::tp) | (1 << Registers::sp) |
-      (1 << Registers::fp);
+      (1 << Registers::fp) | (1 << Registers::gp) ;
 
   static const SetType AllocatableMask = AllMask & ~NonAllocatableMask;
 
@@ -406,6 +415,8 @@ private:
     MOZ_ASSERT(!invalid_);
     return kind_ == FloatRegisters::Double;
   }
+
+  Encoding code() { return encoding_; }
 };
 
 inline bool hasUnaliasedDouble() { MOZ_CRASH(); }

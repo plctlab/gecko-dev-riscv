@@ -137,7 +137,7 @@ int Assembler::target_at(BufferOffset pos, bool is_internal) {
   Instruction* instruction = editSrc(pos);
   DEBUG_PRINTF("target_at: %p (%d)\n\t", reinterpret_cast<Instr*>(instruction),
                pos.getOffset());
-  Instr instr = instruction->InstructionBits();
+  // Instr instr = instruction->InstructionBits();
   disassembleInstr(instruction->InstructionBits());
   switch (instruction->InstructionOpcodeType()) {
     case BRANCH: {
@@ -168,7 +168,7 @@ void Assembler::bind(Label* label, BufferOffset boff) {
   // then we want to bind to the location of the next instruction
   BufferOffset dest = boff.assigned() ? boff : nextOffset();
   if (label->used()) {
-    int32_t next;
+    uint32_t next;
 
     // A used label holds a link to branch that uses it.
     BufferOffset b(label);
@@ -182,7 +182,7 @@ void Assembler::bind(Label* label, BufferOffset boff) {
 
       Instruction* instruction = editSrc(b);
       Instr instr = instruction->InstructionBits();
-      uint32_t next = next_link(label, false);
+      next = next_link(label, false);
       if (IsBranch(instr)) {
         if (dist > kMaxBranchOffset) {
           UNIMPLEMENTED_RISCV();
@@ -193,6 +193,165 @@ void Assembler::bind(Label* label, BufferOffset boff) {
     } while (next != LabelBase::INVALID_OFFSET);
   }
   label->bind(dest.getOffset());
+}
+
+bool Assembler::is_near(Label* L) {
+  MOZ_ASSERT(L->bound());
+  return is_intn((currentOffset() - L->offset()), kJumpOffsetBits);
+}
+
+bool Assembler::is_near(Label* L, OffsetSize bits) {
+  if (L == nullptr || !L->bound()) return true;
+  return is_intn((currentOffset() - L->offset()), bits);
+}
+
+bool Assembler::is_near_branch(Label* L) {
+  MOZ_ASSERT(L->bound());
+  return is_intn((currentOffset() - L->offset()), kBranchOffsetBits);
+}
+
+int32_t Assembler::branch_long_offset(Label* L) {
+  intptr_t target_pos;
+
+  DEBUG_PRINTF("branch_long_offset: %p to (%d)\n", L,
+               currentOffset());
+  if (L->bound()) {
+    target_pos = L->offset();
+  } else {
+    if (L->used()) {
+      target_pos = L->offset();  // L's link.
+      L->bind(currentOffset());
+    } else {
+      L->bind(currentOffset());
+      if (!trampoline_emitted_) {
+        unbound_labels_count_++;
+        next_buffer_check_ -= kTrampolineSlotsSize;
+      }
+      DEBUG_PRINTF("\tstarted link\n");
+      return kEndOfJumpChain;
+    }
+  }
+  intptr_t offset = target_pos - currentOffset();
+  MOZ_ASSERT((offset & 3) == 0);
+  MOZ_ASSERT(is_int32(offset));
+  return static_cast<int32_t>(offset);
+}
+
+int32_t Assembler::branch_offset_helper(Label* L, OffsetSize bits) {
+  int32_t target_pos;
+
+  DEBUG_PRINTF("branch_offset_helper: %p to %d\n", L,
+               currentOffset());
+  if (L->bound()) {
+    target_pos = L->offset();
+    DEBUG_PRINTF("\tbound: %d", target_pos);
+  } else {
+    if (L->used()) {
+      target_pos = L->offset();
+      L->bind(currentOffset());
+      DEBUG_PRINTF("\tadded to link: %d\n", target_pos);
+    } else {
+      L->bind(currentOffset());
+      if (!trampoline_emitted_) {
+        unbound_labels_count_++;
+        next_buffer_check_ -= kTrampolineSlotsSize;
+      }
+      DEBUG_PRINTF("\tstarted link\n");
+      return kEndOfJumpChain;
+    }
+  }
+
+  int32_t offset = target_pos - currentOffset();
+  MOZ_ASSERT(is_intn(offset, bits));
+  MOZ_ASSERT((offset & 1) == 0);
+  DEBUG_PRINTF("\toffset = %d\n", offset);
+  return offset;
+}
+
+
+void Assembler::CheckTrampolinePool() {
+  // Some small sequences of instructions must not be broken up by the
+  // insertion of a trampoline pool; such sequences are protected by setting
+  // either trampoline_pool_blocked_nesting_ or no_trampoline_pool_before_,
+  // which are both checked here. Also, recursive calls to CheckTrampolinePool
+  // are blocked by trampoline_pool_blocked_nesting_.
+  DEBUG_PRINTF("\tcurrentOffset %d no_trampoline_pool_before:%d\n", currentOffset(),
+               no_trampoline_pool_before_);
+  DEBUG_PRINTF("\ttrampoline_pool_blocked_nesting:%d\n",
+               trampoline_pool_blocked_nesting_);
+  if ((trampoline_pool_blocked_nesting_ > 0) ||
+      (currentOffset() < no_trampoline_pool_before_)) {
+    // Emission is currently blocked; make sure we try again as soon as
+    // possible.
+    if (trampoline_pool_blocked_nesting_ > 0) {
+      next_buffer_check_ = currentOffset() + kInstrSize;
+    } else {
+      next_buffer_check_ = no_trampoline_pool_before_;
+    }
+    return;
+  }
+
+  MOZ_ASSERT(!trampoline_emitted_);
+  MOZ_ASSERT(unbound_labels_count_ >= 0);
+  if (unbound_labels_count_ > 0) {
+    // First we emit jump, then we emit trampoline pool.
+    {
+      DEBUG_PRINTF("inserting trampoline pool at %d\n",
+                   currentOffset());
+      BlockTrampolinePoolScope block_trampoline_pool(this);
+      Label after_pool;
+      j(&after_pool);
+
+      int pool_start = currentOffset();
+      for (int i = 0; i < unbound_labels_count_; i++) {
+        int32_t imm;
+        imm = branch_long_offset(&after_pool);
+        MOZ_RELEASE_ASSERT(is_int32(imm + 0x800));
+        int32_t Hi20 = (((int32_t)imm + 0x800) >> 12);
+        int32_t Lo12 = (int32_t)imm << 20 >> 20;
+        auipc(t6, Hi20);  // Read PC + Hi20 into t6
+        jr(t6, Lo12);     // jump PC + Hi20 + Lo12
+      }
+      // If unbound_labels_count_ is big enough, label after_pool will
+      // need a trampoline too, so we must create the trampoline before
+      // the bind operation to make sure function 'bind' can get this
+      // information.
+      trampoline_ = Trampoline(pool_start, unbound_labels_count_);
+      bind(&after_pool);
+
+      trampoline_emitted_ = true;
+      // As we are only going to emit trampoline once, we need to prevent any
+      // further emission.
+      next_buffer_check_ = INT32_MAX;
+    }
+  } else {
+    // Number of branches to unbound label at this point is zero, so we can
+    // move next buffer check to maximum.
+    next_buffer_check_ =
+        currentOffset() + kMaxBranchOffset - kTrampolineSlotsSize * 16;
+  }
+  return;
+}
+
+
+UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)
+    : available_(assembler->GetScratchRegisterList()),
+      old_available_(*available_) {}
+
+UseScratchRegisterScope::~UseScratchRegisterScope() {
+  *available_ = old_available_;
+}
+
+Register UseScratchRegisterScope::Acquire() {
+  MOZ_ASSERT(available_ != nullptr);
+  MOZ_ASSERT(!available_->empty());
+  Register index = GeneralRegisterSet::FirstRegister(available_->bits());
+  available_->takeRegisterIndex(index);
+  return index;
+}
+
+bool UseScratchRegisterScope::hasAvailable() const {
+  return (available_->size()) != 0;
 }
 
 }  // namespace jit

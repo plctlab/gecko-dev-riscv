@@ -11103,9 +11103,9 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
 #endif
 
 #ifdef DEBUG
-#ifdef defined(JS_CODEGEN_RISCV64)
+#ifdef JS_CODEGEN_RISCV64
   if (op.getBoolOption("riscv-debug")) {
-    jit::Assembler::FLAG_riscv_debug = 0;
+    jit::Assembler::FLAG_riscv_debug = true;
   }
 #endif
 #endif
@@ -11962,9 +11962,8 @@ int main(int argc, char** argv) {
                        "Stop the LoongArch64 simulator after the given "
                        "NUMBER of instructions.",
                        -1) ||
-      !op.addIntOption('\0', "riscv-debug", "NUMBER",
-                       "debug print riscv info.",
-                       -1) ||
+      !op.addBoolOption('\0', "riscv-debug",
+                       "debug print riscv info.") ||
       !op.addIntOption('\0', "nursery-size", "SIZE-MB",
                        "Set the maximum nursery size in MB",
                        JS::DefaultNurseryMaxBytes / 1024 / 1024) ||
