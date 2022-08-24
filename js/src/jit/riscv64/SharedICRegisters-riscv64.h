@@ -9,7 +9,7 @@
 
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
-#include "jit/riscv64/Assembler-riscv64.h"
+#include "jit/riscv64/MacroAssembler-riscv64.h"
 
 namespace js {
 namespace jit {
@@ -21,20 +21,17 @@ static constexpr ValueOperand R0(a2);
 static constexpr ValueOperand R1(s1);
 static constexpr ValueOperand R2(a0);
 
+
 // ICTailCallReg and ICStubReg
 // These use registers that are not preserved across calls.
 static constexpr Register ICTailCallReg = ra;
 static constexpr Register ICStubReg = t0;
 
-// Note that ICTailCallReg is actually just the link register.
-// In LoongArch code emission, we do not clobber ICTailCallReg since we keep
-// the return address for calls there.
-
 // FloatReg0 must be equal to ReturnFloatReg.
-static constexpr FloatRegister FloatReg0 = f0;
-static constexpr FloatRegister FloatReg1 = f1;
-static constexpr FloatRegister FloatReg2 = f2;
-static constexpr FloatRegister FloatReg3 = f3;
+static constexpr FloatRegister FloatReg0 = fa0;
+static constexpr FloatRegister FloatReg1 = fa1;
+static constexpr FloatRegister FloatReg2 = fa2;
+static constexpr FloatRegister FloatReg3 = fa3;
 
 }  // namespace jit
 }  // namespace js

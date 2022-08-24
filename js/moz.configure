@@ -182,6 +182,7 @@ def jit_default(target, enable_record_tuple):
         "mips32",
         "mips64",
         "loongarch64",
+        "riscv64"
     ):
         return True
     return False
@@ -239,7 +240,7 @@ set_define("JS_SIMULATOR_ARM64", simulator.arm64)
 set_define("JS_SIMULATOR_MIPS32", simulator.mips32)
 set_define("JS_SIMULATOR_MIPS64", simulator.mips64)
 set_define("JS_SIMULATOR_LOONG64", simulator.loong64)
-set_define("JS_SIMULATOR_RISCV64", simulator.riscv64)
+
 
 @depends("--enable-jit", simulator, target)
 def jit_codegen(jit_enabled, simulator, target):
@@ -263,6 +264,7 @@ set_config("JS_CODEGEN_ARM64", jit_codegen.arm64)
 set_config("JS_CODEGEN_MIPS32", jit_codegen.mips32)
 set_config("JS_CODEGEN_MIPS64", jit_codegen.mips64)
 set_config("JS_CODEGEN_LOONG64", jit_codegen.loong64)
+set_config("JS_CODEGEN_RISCV64", jit_codegen.riscv64)
 set_config("JS_CODEGEN_X86", jit_codegen.x86)
 set_config("JS_CODEGEN_X64", jit_codegen.x64)
 set_config("JS_CODEGEN_WASM32", jit_codegen.wasm32)
@@ -273,6 +275,7 @@ set_define("JS_CODEGEN_ARM64", jit_codegen.arm64)
 set_define("JS_CODEGEN_MIPS32", jit_codegen.mips32)
 set_define("JS_CODEGEN_MIPS64", jit_codegen.mips64)
 set_define("JS_CODEGEN_LOONG64", jit_codegen.loong64)
+set_define("JS_CODEGEN_RISCV64", jit_codegen.riscv64)
 set_define("JS_CODEGEN_X86", jit_codegen.x86)
 set_define("JS_CODEGEN_X64", jit_codegen.x64)
 set_define("JS_CODEGEN_WASM32", jit_codegen.wasm32)
@@ -459,6 +462,20 @@ def jit_disasm_arm(jit_enabled, spew, simulator, target, debug):
 set_config("JS_DISASM_ARM", jit_disasm_arm)
 set_define("JS_DISASM_ARM", jit_disasm_arm)
 
+@depends("--enable-jit", "--enable-jitspew", simulator, target, moz_debug)
+def jit_disasm_riscv(jit_enabled, spew, simulator, target, debug):
+    if not jit_enabled:
+        return
+
+    if simulator and (debug or spew):
+        if getattr(simulator, "riscv64", None):
+            return True
+
+    if target.cpu == "riscv64" and (debug or spew):
+        return True
+
+set_config("JS_DISASM_RISCV64", jit_disasm_riscv)
+set_define("JS_DISASM_RISCV64", jit_disasm_riscv)
 
 @depends("--enable-jit", "--enable-jitspew", simulator, target, moz_debug)
 def jit_disasm_arm64(jit_enabled, spew, simulator, target, debug):

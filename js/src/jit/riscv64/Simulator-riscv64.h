@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
  * vim: set ts=8 sts=2 et sw=2 tw=80: */
-// Copyright 2020 the V8 project authors. All rights reserved.
+// Copyright 2021 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,11 +30,14 @@
 #ifndef jit_riscv64_Simulator_riscv64_h
 #define jit_riscv64_Simulator_riscv64_h
 
-#ifdef JS_SIMULATOR_LOONG64
-
+#ifdef JS_SIMULATOR_RISCV64
 #  include "mozilla/Atomics.h"
 
+#include <vector>
+
 #  include "jit/IonTypes.h"
+#  include "jit/riscv64/constant/Base-constant-riscv.h"
+#  include "jit/riscv64/disasm/Disasm-riscv64.h"
 #  include "js/ProfilingFrameIterator.h"
 #  include "threading/Thread.h"
 #  include "vm/MutexIDs.h"
@@ -72,50 +75,23 @@ const int kPCRegister = 32;
 const int kNumFPURegisters = 32;
 
 // FPU (coprocessor 1) control registers. Currently only FCSR is implemented.
-// TODO fcsr0 fcsr1 fcsr2 fcsr3
-const int kFCSRRegister = 0;
+const int kFCSRRegister = 31;
 const int kInvalidFPUControlRegister = -1;
 const uint32_t kFPUInvalidResult = static_cast<uint32_t>(1 << 31) - 1;
-const int32_t kFPUInvalidResultNegative = static_cast<int32_t>(1u << 31);
-const uint64_t kFPU64InvalidResult =
-    static_cast<uint64_t>(static_cast<uint64_t>(1) << 63) - 1;
-const int64_t kFPU64InvalidResultNegative =
-    static_cast<int64_t>(static_cast<uint64_t>(1) << 63);
-
-const uint32_t kFPURoundingModeShift = 8;
-const uint32_t kFPURoundingModeMask = 0b11 << kFPURoundingModeShift;
-
-// FPU rounding modes.
-enum FPURoundingMode {
-  RN = 0b00 << kFPURoundingModeShift,  // Round to Nearest.
-  RZ = 0b01 << kFPURoundingModeShift,  // Round towards zero.
-  RP = 0b10 << kFPURoundingModeShift,  // Round towards Plus Infinity.
-  RM = 0b11 << kFPURoundingModeShift,  // Round towards Minus Infinity.
-
-  // Aliases.
-  kRoundToNearest = RN,
-  kRoundToZero = RZ,
-  kRoundToPlusInf = RP,
-  kRoundToMinusInf = RM,
-
-  mode_round = RN,
-  mode_ceil = RP,
-  mode_floor = RM,
-  mode_trunc = RZ
-};
+const uint64_t kFPUInvalidResult64 = static_cast<uint64_t>(1ULL << 63) - 1;
 
 // FCSR constants.
-const uint32_t kFCSRInexactFlagBit = 16;
-const uint32_t kFCSRUnderflowFlagBit = 17;
-const uint32_t kFCSROverflowFlagBit = 18;
-const uint32_t kFCSRDivideByZeroFlagBit = 19;
-const uint32_t kFCSRInvalidOpFlagBit = 20;
+const uint32_t kFCSRInexactFlagBit = 2;
+const uint32_t kFCSRUnderflowFlagBit = 3;
+const uint32_t kFCSROverflowFlagBit = 4;
+const uint32_t kFCSRDivideByZeroFlagBit = 5;
+const uint32_t kFCSRInvalidOpFlagBit = 6;
 
-const uint32_t kFCSRInexactCauseBit = 24;
-const uint32_t kFCSRUnderflowCauseBit = 25;
-const uint32_t kFCSROverflowCauseBit = 26;
-const uint32_t kFCSRDivideByZeroCauseBit = 27;
-const uint32_t kFCSRInvalidOpCauseBit = 28;
+const uint32_t kFCSRInexactCauseBit = 12;
+const uint32_t kFCSRUnderflowCauseBit = 13;
+const uint32_t kFCSROverflowCauseBit = 14;
+const uint32_t kFCSRDivideByZeroCauseBit = 15;
+const uint32_t kFCSRInvalidOpCauseBit = 16;
 
 const uint32_t kFCSRInexactFlagMask = 1 << kFCSRInexactFlagBit;
 const uint32_t kFCSRUnderflowFlagMask = 1 << kFCSRUnderflowFlagBit;
@@ -129,7 +105,7 @@ const uint32_t kFCSRFlagMask =
 
 const uint32_t kFCSRExceptionFlagMask = kFCSRFlagMask ^ kFCSRInexactFlagMask;
 
-// On LoongArch64 Simulator breakpoints can have different codes:
+// On RISC-V Simulator breakpoints can have different codes:
 // - Breaks between 0 and kMaxWatchpointCode are treated as simple watchpoints,
 //   the simulator will run through them and print the registers.
 // - Breaks between kMaxWatchpointCode and kMaxStopCode are treated as stop()
@@ -138,75 +114,91 @@ const uint32_t kFCSRExceptionFlagMask = kFCSRFlagMask ^ kFCSRInexactFlagMask;
 //   debugger.
 const uint32_t kMaxWatchpointCode = 31;
 const uint32_t kMaxStopCode = 127;
-const uint32_t kWasmTrapCode = 6;
+static_assert(kMaxWatchpointCode < kMaxStopCode);
 
 // -----------------------------------------------------------------------------
 // Utility functions
 
-typedef uint32_t Instr;
 class SimInstruction;
 
 // Per thread simulator state.
 class Simulator {
-  friend class riscv64Debugger;
+  friend class RiscvDebugger;
 
  public:
   // Registers are declared in order.
   enum Register {
     no_reg = -1,
-    zero_reg = 0,
-    ra,
-    gp,
-    sp,
-    a0,
-    a1,
-    a2,
-    a3,
-    a4,
-    a5,
-    a6,
-    a7,
-    t0,
-    t1,
-    t2,
-    t3,
-    t4,
-    t5,
-    t6,
-    t7,
-    t8,
-    tp,
-    fp,
-    s0,
-    s1,
-    s2,
-    s3,
-    s4,
-    s5,
-    s6,
-    s7,
-    s8,
-    pc,  // pc must be the last register.
+    x0 = 0,
+    x1,
+    x2,
+    x3,
+    x4,
+    x5,
+    x6,
+    x7,
+    x8,
+    x9,
+    x10,
+    x11,
+    x12,
+    x13,
+    x14,
+    x15,
+    x16,
+    x17,
+    x18,
+    x19,
+    x20,
+    x21,
+    x22,
+    x23,
+    x24,
+    x25,
+    x26,
+    x27,
+    x28,
+    x29,
+    x30,
+    x31,
+    pc,
     kNumSimuRegisters,
-    // aliases
-    v0 = a0,
-    v1 = a1,
+    //alias
+    zero = x0,
+    ra = x1,
+    sp = x2,
+    gp = x3,
+    tp = x4,
+    t0 = x5,
+    t1 = x6,
+    t2 = x7,
+    fp = x8,
+    s1 = x9,
+    a0 = x10,
+    a1 = x11,
+    a2 = x12,
+    a3 = x13,
+    a4 = x14,
+    a5 = x15,
+    a6 = x16,
+    a7 = x17,
+    s2 = x18,
+    s3 = x19,
+    s4 = x20,
+    s5 = x21,
+    s6 = x22,
+    s7 = x23,
+    s8 = x24,
+    s9 = x25,
+    s10 = x26,
+    s11 = x27,
+    t3 = x28,
+    t4 = x29,
+    t5 = x30,
+    t6 = x31,
   };
 
-  // Condition flag registers.
-  enum CFRegister {
-    fcc0,
-    fcc1,
-    fcc2,
-    fcc3,
-    fcc4,
-    fcc5,
-    fcc6,
-    fcc7,
-    kNumCFRegisters
-  };
-
-  // Floating point registers.
+  // Coprocessor registers.
   enum FPURegister {
     f0,
     f1,
@@ -240,7 +232,40 @@ class Simulator {
     f29,
     f30,
     f31,
-    kNumFPURegisters
+    kNumFPURegisters,
+    //alias
+    ft0 = f0,
+    ft1 = f1,
+    ft2 = f2,
+    ft3 = f3,
+    ft4 = f4,
+    ft5 = f5,
+    ft6 = f6,
+    ft7 = f7,
+    fs0 = f8,
+    fs1 = f9,
+    fa0 = f10,
+    fa1 = f11,
+    fa2 = f12,
+    fa3 = f13,
+    fa4 = f14,
+    fa5 = f15,
+    fa6 = f16,
+    fa7 = f17,
+    fs2 = f18,
+    fs3 = f19,
+    fs4 = f20,
+    fs5 = f21,
+    fs6 = f22,
+    fs7 = f23,
+    fs8 = f24,
+    fs9 = f25,
+    fs10 = f26,
+    fs11 = f27,
+    ft8 = f28,
+    ft9 = f29,
+    ft10 = f30,
+    ft11 = f31
   };
 
   // Returns nullptr on OOM.
@@ -263,54 +288,26 @@ class Simulator {
 
   uintptr_t* addressOfStackLimit();
 
-  // Accessors for register state. Reading the pc value adheres to the LOONG64
+  // Accessors for register state. Reading the pc value adheres to the MIPS
   // architecture specification and is off by a 8 from the currently executing
   // instruction.
   void setRegister(int reg, int64_t value);
   int64_t getRegister(int reg) const;
   // Same for FPURegisters.
   void setFpuRegister(int fpureg, int64_t value);
-  void setFpuRegisterWord(int fpureg, int32_t value);
-  void setFpuRegisterHiWord(int fpureg, int32_t value);
+  void setFpuRegisterLo(int fpureg, int32_t value);
+  void setFpuRegisterHi(int fpureg, int32_t value);
   void setFpuRegisterFloat(int fpureg, float value);
   void setFpuRegisterDouble(int fpureg, double value);
-
-  void setFpuRegisterWordInvalidResult(float original, float rounded,
-                                       int fpureg);
-  void setFpuRegisterWordInvalidResult(double original, double rounded,
-                                       int fpureg);
-  void setFpuRegisterInvalidResult(float original, float rounded, int fpureg);
-  void setFpuRegisterInvalidResult(double original, double rounded, int fpureg);
-  void setFpuRegisterInvalidResult64(float original, float rounded, int fpureg);
-  void setFpuRegisterInvalidResult64(double original, double rounded,
-                                     int fpureg);
-
   int64_t getFpuRegister(int fpureg) const;
-  //  int32_t getFpuRegisterLo(int fpureg) const;
-  //  int32_t getFpuRegisterHi(int fpureg) const;
-  int32_t getFpuRegisterWord(int fpureg) const;
-  int32_t getFpuRegisterSignedWord(int fpureg) const;
-  int32_t getFpuRegisterHiWord(int fpureg) const;
+  int32_t getFpuRegisterLo(int fpureg) const;
+  int32_t getFpuRegisterHi(int fpureg) const;
   float getFpuRegisterFloat(int fpureg) const;
   double getFpuRegisterDouble(int fpureg) const;
-
-  void setCFRegister(int cfreg, bool value);
-  bool getCFRegister(int cfreg) const;
-
-  void set_fcsr_rounding_mode(FPURoundingMode mode);
-
   void setFCSRBit(uint32_t cc, bool value);
   bool testFCSRBit(uint32_t cc);
-  unsigned int getFCSRRoundingMode();
   template <typename T>
   bool setFCSRRoundError(double original, double rounded);
-  bool setFCSRRound64Error(float original, float rounded);
-
-  template <typename T>
-  void roundAccordingToFCSR(T toRound, T* rounded, int32_t* rounded_int);
-
-  template <typename T>
-  void round64AccordingToFCSR(T toRound, T* rounded, int64_t* rounded_int);
 
   // Special case of set_register and get_register to access the raw PC value.
   void set_pc(int64_t value);
@@ -329,7 +326,7 @@ class Simulator {
   bool overRecursed(uintptr_t newsp = 0) const;
   bool overRecursedWithExtra(uint32_t extra) const;
 
-  // Executes LOONG64 instructions until the PC reaches end_sim_pc.
+  // Executes MIPS instructions until the PC reaches end_sim_pc.
   template <bool enableStopSimAt>
   void execute();
 
@@ -370,10 +367,10 @@ class Simulator {
   void format(SimInstruction* instr, const char* format);
 
   // Read and write memory.
-  inline uint8_t readBU(uint64_t addr);
-  inline int8_t readB(uint64_t addr);
-  inline void writeB(uint64_t addr, uint8_t value);
-  inline void writeB(uint64_t addr, int8_t value);
+  inline uint8_t readBU(uint64_t addr, SimInstruction* instr);
+  inline int8_t readB(uint64_t addr, SimInstruction* instr);
+  inline void writeB(uint64_t addr, uint8_t value, SimInstruction* instr);
+  inline void writeB(uint64_t addr, int8_t value, SimInstruction* instr);
 
   inline uint16_t readHU(uint64_t addr, SimInstruction* instr);
   inline int16_t readH(uint64_t addr, SimInstruction* instr);
@@ -386,6 +383,8 @@ class Simulator {
   inline void writeW(uint64_t addr, int32_t value, SimInstruction* instr);
 
   inline int64_t readDW(uint64_t addr, SimInstruction* instr);
+  inline int64_t readDWL(uint64_t addr, SimInstruction* instr);
+  inline int64_t readDWR(uint64_t addr, SimInstruction* instr);
   inline void writeDW(uint64_t addr, int64_t value, SimInstruction* instr);
 
   inline double readD(uint64_t addr, SimInstruction* instr);
@@ -399,68 +398,13 @@ class Simulator {
   inline int storeConditionalD(uint64_t addr, int64_t value,
                                SimInstruction* instr);
 
-  // Executing is handled based on the instruction type.
-  void decodeTypeOp6(SimInstruction* instr);
-  void decodeTypeOp7(SimInstruction* instr);
-  void decodeTypeOp8(SimInstruction* instr);
-  void decodeTypeOp10(SimInstruction* instr);
-  void decodeTypeOp11(SimInstruction* instr);
-  void decodeTypeOp12(SimInstruction* instr);
-  void decodeTypeOp14(SimInstruction* instr);
-  void decodeTypeOp15(SimInstruction* instr);
-  void decodeTypeOp16(SimInstruction* instr);
-  void decodeTypeOp17(SimInstruction* instr);
-  void decodeTypeOp22(SimInstruction* instr);
-  void decodeTypeOp24(SimInstruction* instr);
 
-  inline int32_t rj_reg(SimInstruction* instr) const;
-  inline int64_t rj(SimInstruction* instr) const;
-  inline uint64_t rj_u(SimInstruction* instr) const;
-  inline int32_t rk_reg(SimInstruction* instr) const;
-  inline int64_t rk(SimInstruction* instr) const;
-  inline uint64_t rk_u(SimInstruction* instr) const;
-  inline int32_t rd_reg(SimInstruction* instr) const;
-  inline int64_t rd(SimInstruction* instr) const;
-  inline uint64_t rd_u(SimInstruction* instr) const;
-  inline int32_t fa_reg(SimInstruction* instr) const;
-  inline float fa_float(SimInstruction* instr) const;
-  inline double fa_double(SimInstruction* instr) const;
+// Executing is handled based on the instruction type.
+//   void decodeTypeRegister(SimInstruction* instr);
+//   void decodeTypeImmediate(SimInstruction* instr);
+//   void decodeTypeJump(SimInstruction* instr);
 
-  inline int32_t fj_reg(SimInstruction* instr) const;
-  inline float fj_float(SimInstruction* instr) const;
-  inline double fj_double(SimInstruction* instr) const;
-
-  inline int32_t fk_reg(SimInstruction* instr) const;
-  inline float fk_float(SimInstruction* instr) const;
-  inline double fk_double(SimInstruction* instr) const;
-  inline int32_t fd_reg(SimInstruction* instr) const;
-  inline float fd_float(SimInstruction* instr) const;
-  inline double fd_double(SimInstruction* instr) const;
-
-  inline int32_t cj_reg(SimInstruction* instr) const;
-  inline bool cj(SimInstruction* instr) const;
-
-  inline int32_t cd_reg(SimInstruction* instr) const;
-  inline bool cd(SimInstruction* instr) const;
-
-  inline int32_t ca_reg(SimInstruction* instr) const;
-  inline bool ca(SimInstruction* instr) const;
-  inline uint32_t sa2(SimInstruction* instr) const;
-  inline uint32_t sa3(SimInstruction* instr) const;
-  inline uint32_t ui5(SimInstruction* instr) const;
-  inline uint32_t ui6(SimInstruction* instr) const;
-  inline uint32_t lsbw(SimInstruction* instr) const;
-  inline uint32_t msbw(SimInstruction* instr) const;
-  inline uint32_t lsbd(SimInstruction* instr) const;
-  inline uint32_t msbd(SimInstruction* instr) const;
-  inline uint32_t cond(SimInstruction* instr) const;
-  inline int32_t si12(SimInstruction* instr) const;
-  inline uint32_t ui12(SimInstruction* instr) const;
-  inline int32_t si14(SimInstruction* instr) const;
-  inline int32_t si16(SimInstruction* instr) const;
-  inline int32_t si20(SimInstruction* instr) const;
-
-  // Used for breakpoints.
+  // Used for breakpoints and traps.
   void softwareInterrupt(SimInstruction* instr);
 
   // Stop helper functions.
@@ -473,6 +417,17 @@ class Simulator {
   void disableStop(uint32_t code);
   void increaseStopCounter(uint32_t code);
   void printStopInfo(uint32_t code);
+
+  // Simulator breakpoints.
+  struct Breakpoint {
+    SimInstruction* location;
+    bool enabled;
+    bool is_tbreak;
+  };
+  std::vector<Breakpoint> breakpoints_;
+  void SetBreakpoint(SimInstruction* breakpoint, bool is_tbreak);
+  void ListBreakpoints();
+  void CheckBreakpoints();
 
   JS::ProfilingFrameIterator::RegisterState registerState();
 
@@ -528,10 +483,8 @@ class Simulator {
   // Architecture state.
   // Registers.
   int64_t registers_[kNumSimuRegisters];
-  // Floating point Registers.
+  // Coprocessor Registers.
   int64_t FPUregisters_[kNumFPURegisters];
-  // Condition flags Registers.
-  bool CFregisters_[kNumCFRegisters];
   // FPU control register.
   uint32_t FCSR_;
 
@@ -548,6 +501,9 @@ class Simulator {
 
   // Debugger input.
   char* lastDebuggerInput_;
+
+  intptr_t* watch_address_ = nullptr;
+  intptr_t watch_value_ = 0;
 
   // Registered breakpoints.
   SimInstruction* break_pc_;
@@ -617,7 +573,7 @@ class SimulatorProcess {
   // This lock creates a critical section around 'redirection_' and
   // 'icache_', which are referenced both by the execution engine
   // and by the off-thread compiler (see Redirection::Get in the cpp file).
-  Mutex cacheLock_;
+  Mutex cacheLock_ MOZ_UNANNOTATED;
 
   Redirection* redirection_;
   ICacheMap icache_;
@@ -645,6 +601,6 @@ class SimulatorProcess {
 }  // namespace jit
 }  // namespace js
 
-#endif /* JS_SIMULATOR_LOONG64 */
+#endif /* JS_SIMULATOR_MIPS64 */
 
 #endif /* jit_riscv64_Simulator_riscv64_h */

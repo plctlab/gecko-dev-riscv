@@ -8,11 +8,8 @@
 
 #include "jit/FlushICache.h"  // js::jit::FlushICache
 #include "jit/RegisterSets.h"
-#include "jit/riscv64/Simulator-riscv64.h"
-
 namespace js {
 namespace jit {
-
 Registers::Code Registers::FromName(const char* name) {
   for (size_t i = 0; i < Total; i++) {
     if (strcmp(GetName(i), name) == 0) {
@@ -33,55 +30,13 @@ FloatRegisters::Code FloatRegisters::FromName(const char* name) {
   return Invalid;
 }
 
-FloatRegisterSet FloatRegister::ReduceSetForPush(const FloatRegisterSet& s) {
-#ifdef ENABLE_WASM_SIMD
-#  error "Needs more careful logic if SIMD is enabled"
-#endif
-
-  LiveFloatRegisterSet ret;
-  for (FloatRegisterIterator iter(s); iter.more(); ++iter) {
-    ret.addUnchecked(FromCode((*iter).encoding()));
-  }
-  return ret.set();
-}
-
-uint32_t FloatRegister::GetPushSizeInBytes(const FloatRegisterSet& s) {
-#ifdef ENABLE_WASM_SIMD
-#  error "Needs more careful logic if SIMD is enabled"
-#endif
-
-  return s.size() * sizeof(double);
-}
-
-uint32_t FloatRegister::getRegisterDumpOffsetInBytes() {
-#ifdef ENABLE_WASM_SIMD
-#  error "Needs more careful logic if SIMD is enabled"
-#endif
-
-  return encoding() * sizeof(double);
-}
+void FlushICache(void* code, size_t size) { MOZ_CRASH(); }
 
 bool CPUFlagsHaveBeenComputed() {
-  // TODO(riscv64): Add CPU flags support.
+  // TODO Add CPU flags support
+  // Flags were computed above.
   return true;
 }
 
-uint32_t GetLOONG64Flags() { return 0; }
-
-void FlushICache(void* code, size_t size) {
-#if defined(JS_SIMULATOR)
-  js::jit::SimulatorProcess::FlushICache(code, size);
-
-#elif defined(__GNUC__)
-  intptr_t end = reinterpret_cast<intptr_t>(code) + size;
-  __builtin___clear_cache(reinterpret_cast<char*>(code),
-                          reinterpret_cast<char*>(end));
-
-#else
-  _flush_cache(reinterpret_cast<char*>(code), size, BCACHE);
-
-#endif
 }
-
-}  // namespace jit
-}  // namespace js
+}
