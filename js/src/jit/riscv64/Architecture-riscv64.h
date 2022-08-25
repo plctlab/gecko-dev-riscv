@@ -187,7 +187,6 @@ class Registers {
       (1 << Registers::t6) |    // call reg
       (1 << Registers::s9) |    // Scratch reg
       (1 << Registers::s10) |    // Scratch reg
-      (1 << Registers::s11) |    // Scratch reg
       (1 << Registers::ra) | (1 << Registers::tp) | (1 << Registers::sp) |
       (1 << Registers::fp) | (1 << Registers::gp) ;
 
@@ -304,6 +303,7 @@ class FloatRegisters {
   static const uint32_t Total = 32;
   static const uint32_t TotalPhys = 32;
   static const uint32_t Allocatable = 23;
+  static const SetType AllPhysMask = ((SetType(1) << TotalPhys) - 1);
   static const SetType AllMask = 0xFFFFFFFF;
   static const SetType AllDoubleMask = AllMask;
   static const SetType AllSingleMask = AllMask;
@@ -333,10 +333,23 @@ struct FloatRegister {
   typedef Codes::Encoding Encoding;
   typedef Codes::SetType SetType;
 
+  static uint32_t SetSize(SetType x) {
+    MOZ_CRASH();
+  }
 
-  static uint32_t FirstBit(SetType) { MOZ_CRASH(); }
-  static uint32_t LastBit(SetType) { MOZ_CRASH(); }
-  static FloatRegister FromCode(uint32_t) { MOZ_CRASH(); }
+  static uint32_t FirstBit(SetType x) {
+    static_assert(sizeof(SetType) == 4, "SetType");
+    return mozilla::CountTrailingZeroes64(x);
+  }
+  static uint32_t LastBit(SetType x) {
+    static_assert(sizeof(SetType) == 4, "SetType");
+    return 31 - mozilla::CountLeadingZeroes64(x);
+  }
+
+  static FloatRegister FromCode(uint32_t i) {
+    uint32_t code = i & 0x1f;
+    return FloatRegister(Code(code));
+  }
   bool isSimd128() const { MOZ_CRASH(); }
   bool isInvalid() const { MOZ_CRASH(); }
   FloatRegister asSingle() const { MOZ_CRASH(); }
@@ -359,7 +372,7 @@ struct FloatRegister {
 
   static constexpr RegTypeName DefaultType = RegTypeName::Float64;
 
-  template <RegTypeName = DefaultType>
+  template <RegTypeName Name = DefaultType>
   static SetType LiveAsIndexableSet(SetType s) {
     return SetType(0);
   }
@@ -367,15 +380,16 @@ struct FloatRegister {
   template <RegTypeName Name = DefaultType>
   static SetType AllocatableAsIndexableSet(SetType s) {
     static_assert(Name != RegTypeName::Any, "Allocatable set are not iterable");
-    return SetType(0);
+    printf("AllocatableAsIndexableSet\n");
+    return LiveAsIndexableSet<Name>(s);
   }
 
-  template <typename T>
-  static T ReduceSetForPush(T) {
-    MOZ_CRASH();
-  }
+  FloatRegister singleOverlay() const;
+  FloatRegister doubleOverlay() const;
+  
+  static TypedRegisterSet<FloatRegister> ReduceSetForPush(
+      const TypedRegisterSet<FloatRegister>& s);
   uint32_t getRegisterDumpOffsetInBytes() { MOZ_CRASH(); }
-  static uint32_t SetSize(SetType x) { MOZ_CRASH(); }
   static Code FromName(const char* name) { MOZ_CRASH(); }
 
   // This is used in static initializers, so produce a bogus value instead of
@@ -419,6 +433,24 @@ private:
 
   Encoding code() { return encoding_; }
 };
+
+  template <>
+  inline FloatRegister::SetType
+  FloatRegister::LiveAsIndexableSet<RegTypeName::Float32>(SetType set) {
+    return set & FloatRegisters::AllSingleMask;
+  }
+
+  template <>
+  inline FloatRegister::SetType
+  FloatRegister::LiveAsIndexableSet<RegTypeName::Float64>(SetType set) {
+    return set & FloatRegisters::AllDoubleMask;
+  }
+
+  template <>
+  inline FloatRegister::SetType
+  FloatRegister::LiveAsIndexableSet<RegTypeName::Any>(SetType set) {
+    return set;
+  }
 
 inline bool hasUnaliasedDouble() { MOZ_CRASH(); }
 inline bool hasMultiAlias() { MOZ_CRASH(); }

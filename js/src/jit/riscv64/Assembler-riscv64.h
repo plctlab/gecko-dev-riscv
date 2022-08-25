@@ -74,6 +74,12 @@ struct ScratchDoubleScope : public AutoFloatRegisterScope {
       : AutoFloatRegisterScope(masm, ScratchDoubleReg) {}
 };
 
+struct ScratchRegisterScope : public AutoRegisterScope {
+  explicit ScratchRegisterScope(MacroAssembler& masm)
+      : AutoRegisterScope(masm, ScratchRegister) {}
+};
+
+
 class MacroAssembler;
 
 inline Imm32 Imm64::secondHalf() const { return hi(); }
@@ -216,7 +222,7 @@ class Assembler : public AssemblerShared,
 
   Assembler()
       : scratch_register_list_((1 << t5.code()) | (1 << s9.code()) |
-                               (1 << s10.code()) | (1 << s11.code())),
+                               (1 << s10.code())),
 #ifdef JS_JITSPEW
         printer(nullptr),
 #endif
@@ -317,7 +323,11 @@ class Assembler : public AssemblerShared,
   bool is_near(Label* L, OffsetSize bits);
   bool is_near_branch(Label* L);
 
-  virtual void emit(Instr x) { MOZ_CRASH(); }
+  virtual void emit(Instr x) {
+    MOZ_ASSERT(hasCreator());
+    m_buffer.putInt(x);
+  }
+
   virtual void emit(ShortInstr x) { MOZ_CRASH(); }
   virtual void emit(uint64_t x) { MOZ_CRASH(); }
 
@@ -452,17 +462,6 @@ class ABIArgGenerator {
   ABIArg current_;
 };
 
-// Helper classes for ScratchRegister usage. Asserts that only one piece
-// of code thinks it has exclusive ownership of each scratch register.
-struct ScratchRegisterScope : public AutoRegisterScope {
-  explicit ScratchRegisterScope(MacroAssembler& masm)
-      : AutoRegisterScope(masm, ScratchRegister) {}
-};
-
-struct SecondScratchRegisterScope : public AutoRegisterScope {
-  explicit SecondScratchRegisterScope(MacroAssembler& masm)
-      : AutoRegisterScope(masm, SecondScratchReg) {}
-};
 
 static const uint32_t NumIntArgRegs = 8;
 static const uint32_t NumFloatArgRegs = 8;
