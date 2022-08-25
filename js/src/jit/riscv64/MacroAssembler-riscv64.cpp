@@ -90,7 +90,6 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd,
   }
 }
 
-
 void MacroAssemblerRiscv64Compat::movePtr(Register src, Register dest) {
   mv(dest, src);
 }
@@ -117,7 +116,6 @@ bool MacroAssemblerRiscv64Compat::buildOOLFakeExitFrame(void* fakeReturnAddr) {
   asMasm().Push(FramePointer);
   return true;
 }
-
 
 void MacroAssemblerRiscv64Compat::convertUInt32ToDouble(Register src,
                                                         FloatRegister dest) {
@@ -1555,71 +1553,361 @@ void MacroAssembler::subFromStackPtr(Imm32 imm32) {
   }
 }
 
-CodeOffset MacroAssembler::call(Label* label) {
+void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
   MOZ_CRASH();
 }
 
-void MacroAssembler::call(Address const&) {
+//{{{ check_macroassembler_style
+// ===============================================================
+// MacroAssembler high-level usage.
+bool MacroAssembler::convertUInt64ToDoubleNeedsTemp() {
   MOZ_CRASH();
 }
-
-void MacroAssembler::patchNearAddressMove(CodeLocationLabel,
-                                          CodeLocationLabel) {
-  MOZ_CRASH();
-}
-void MacroAssembler::branchTestValue(Assembler::Condition,
-                                     ValueOperand const&,
-                                     JS::Value const&,
-                                     Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::speculationBarrier() {
+CodeOffset MacroAssembler::call(Label*) {
   MOZ_CRASH();
 }
 CodeOffset MacroAssembler::call(Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchValueIsNurseryCell(Assembler::Condition,
-                                              Address const&,
-                                              Register,
-                                              Label*) {
+CodeOffset MacroAssembler::call(wasm::SymbolicAddress) {
   MOZ_CRASH();
 }
-void MacroAssembler::popReturnAddress() {
+CodeOffset MacroAssembler::callWithPatch() {
   MOZ_CRASH();
 }
-void MacroAssembler::shiftIndex32AndAdd(Register, int, Register) {
+CodeOffset MacroAssembler::farJumpWithPatch() {
+  MOZ_CRASH();
+}
+CodeOffset MacroAssembler::moveNearAddressWithPatch(Register) {
+  MOZ_CRASH();
+}
+CodeOffset MacroAssembler::nopPatchableToCall() {
+  MOZ_CRASH();
+}
+CodeOffset MacroAssembler::wasmTrapInstruction() {
+  MOZ_CRASH();
+}
+size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet) {
+  MOZ_CRASH();
+}
+template <typename T>
+void MacroAssembler::branchValueIsNurseryCellImpl(Condition,
+                                                  const T&,
+                                                  Register,
+                                                  Label*) {
   MOZ_CRASH();
 }
 
-void MacroAssembler::branchPtrInNurseryChunk(Assembler::Condition,
+template <typename T>
+void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
+                                       MIRType valueType, const T& dest,
+                                       MIRType slotType) {
+  if (valueType == MIRType::Double) {
+    boxDouble(value.reg().typedReg().fpu(), dest);
+    return;
+  }
+
+  // For known integers and booleans, we can just store the unboxed value if
+  // the slot has the same type.
+  if ((valueType == MIRType::Int32 || valueType == MIRType::Boolean) &&
+      slotType == valueType) {
+    if (value.constant()) {
+      Value val = value.value();
+      if (valueType == MIRType::Int32) {
+        store32(Imm32(val.toInt32()), dest);
+      } else {
+        store32(Imm32(val.toBoolean() ? 1 : 0), dest);
+      }
+    } else {
+      store32(value.reg().typedReg().gpr(), dest);
+    }
+    return;
+  }
+
+  if (value.constant()) {
+    storeValue(value.value(), dest);
+  } else {
+    storeValue(ValueTypeFromMIRType(valueType), value.reg().typedReg().gpr(),
+               dest);
+  }
+}
+
+template void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
+                                                MIRType valueType,
+                                                const Address& dest,
+                                                MIRType slotType);
+template void MacroAssembler::storeUnboxedValue(
+    const ConstantOrRegister& value, MIRType valueType,
+    const BaseObjectElementIndex& dest, MIRType slotType);
+
+uint32_t MacroAssembler::pushFakeReturnAddress(Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicEffectOp64(const Synchronization&,
+                                      AtomicOp,
+                                      Register64,
+                                      const Address&,
+                                      Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicEffectOp64(const Synchronization&,
+                                      AtomicOp,
+                                      Register64,
+                                      const BaseIndex&,
+                                      Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicEffectOpJS(Scalar::Type,
+                                      const Synchronization&,
+                                      AtomicOp,
+                                      Register,
+                                      const Address&,
+                                      Register,
+                                      Register,
+                                      Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicEffectOpJS(Scalar::Type,
+                                      const Synchronization&,
+                                      AtomicOp,
+                                      Register,
+                                      const BaseIndex&,
+                                      Register,
+                                      Register,
+                                      Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchange64(const Synchronization&,
+                                      const Address&,
+                                      Register64,
+                                      Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchange64(const Synchronization&,
+                                      const BaseIndex&,
+                                      Register64,
+                                      Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchangeJS(Scalar::Type,
+                                      const Synchronization&,
+                                      const Address&,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchangeJS(Scalar::Type,
+                                      const Synchronization&,
+                                      const BaseIndex&,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      Register,
+                                      AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchange(Scalar::Type,
+                                    const Synchronization&,
+                                    const Address&,
+                                    Register,
+                                    Register,
+                                    Register,
+                                    Register,
+                                    Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicExchange(Scalar::Type,
+                                    const Synchronization&,
+                                    const BaseIndex&,
+                                    Register,
+                                    Register,
+                                    Register,
+                                    Register,
+                                    Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOp64(const Synchronization&,
+                                     AtomicOp,
+                                     Register64,
+                                     const Address&,
+                                     Register64,
+                                     Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOp64(const Synchronization&,
+                                     AtomicOp,
+                                     Register64,
+                                     const BaseIndex&,
+                                     Register64,
+                                     Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOpJS(Scalar::Type,
+                                     const Synchronization&,
+                                     AtomicOp,
+                                     Register,
+                                     const Address&,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOpJS(Scalar::Type,
+                                     const Synchronization&,
+                                     AtomicOp,
+                                     Register,
+                                     const BaseIndex&,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOp(Scalar::Type,
+                                   const Synchronization&,
+                                   AtomicOp,
+                                   Register,
+                                   const Address&,
+                                   Register,
+                                   Register,
+                                   Register,
+                                   Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::atomicFetchOp(Scalar::Type,
+                                   const Synchronization&,
+                                   AtomicOp,
+                                   Register,
+                                   const BaseIndex&,
+                                   Register,
+                                   Register,
+                                   Register,
+                                   Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::branchPtrInNurseryChunk(Condition,
                                              Register,
                                              Register,
                                              Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchValueIsNurseryCell(Assembler::Condition,
+void MacroAssembler::branchTestValue(Condition,
+                                     const ValueOperand&,
+                                     const Value&,
+                                     Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::branchValueIsNurseryCell(Condition,
+                                              const Address&,
+                                              Register,
+                                              Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::branchValueIsNurseryCell(Condition,
                                               ValueOperand,
                                               Register,
                                               Label*) {
   MOZ_CRASH();
 }
+void MacroAssembler::call(const Address&) {
+  MOZ_CRASH();
+}
 void MacroAssembler::call(ImmPtr) {
+  MOZ_CRASH();
+}
+void MacroAssembler::call(ImmWord) {
   MOZ_CRASH();
 }
 void MacroAssembler::call(JitCode*) {
   MOZ_CRASH();
 }
-CodeOffset MacroAssembler::call(wasm::SymbolicAddress) {
+void MacroAssembler::callWithABINoProfiler(const Address&, MoveOp::Type) {
   MOZ_CRASH();
 }
-void MacroAssembler::callWithABIPost(unsigned int, MoveOp::Type, bool) {
+void MacroAssembler::callWithABINoProfiler(Register, MoveOp::Type) {
   MOZ_CRASH();
 }
-void MacroAssembler::callWithABIPre(unsigned int*, bool) {
+void MacroAssembler::callWithABIPost(uint32_t, MoveOp::Type, bool) {
   MOZ_CRASH();
 }
-CodeOffset MacroAssembler::callWithPatch() {
+void MacroAssembler::callWithABIPre(uint32_t*, bool) {
+  MOZ_CRASH();
+}
+void MacroAssembler::ceilDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::ceilFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::comment(const char*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchange64(const Synchronization&,
+                                       const Address&,
+                                       Register64,
+                                       Register64,
+                                       Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchange64(const Synchronization&,
+                                       const BaseIndex&,
+                                       Register64,
+                                       Register64,
+                                       Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchangeJS(Scalar::Type,
+                                       const Synchronization&,
+                                       const Address&,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchangeJS(Scalar::Type,
+                                       const Synchronization&,
+                                       const BaseIndex&,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchange(Scalar::Type,
+                                     const Synchronization&,
+                                     const Address&,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::compareExchange(Scalar::Type,
+                                     const Synchronization&,
+                                     const BaseIndex&,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register,
+                                     Register) {
   MOZ_CRASH();
 }
 void MacroAssembler::convertInt64ToDouble(Register64, FloatRegister) {
@@ -1636,25 +1924,60 @@ void MacroAssembler::convertUInt64ToDouble(Register64,
                                            Register) {
   MOZ_CRASH();
 }
-bool MacroAssembler::convertUInt64ToDoubleNeedsTemp() {
-  MOZ_CRASH();
-}
 void MacroAssembler::convertUInt64ToFloat32(Register64,
                                             FloatRegister,
                                             Register) {
   MOZ_CRASH();
 }
+void MacroAssembler::copySignDouble(FloatRegister,
+                                    FloatRegister,
+                                    FloatRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::enterFakeExitFrameForWasm(Register,
+                                               Register,
+                                               ExitFrameType) {
+  MOZ_CRASH();
+}
+void MacroAssembler::flexibleDivMod32(Register,
+                                      Register,
+                                      Register,
+                                      bool,
+                                      const LiveRegisterSet&) {
+  MOZ_CRASH();
+}
+void MacroAssembler::flexibleQuotient32(Register,
+                                        Register,
+                                        bool,
+                                        const LiveRegisterSet&) {
+  MOZ_CRASH();
+}
+void MacroAssembler::flexibleRemainder32(Register,
+                                         Register,
+                                         bool,
+                                         const LiveRegisterSet&) {
+  MOZ_CRASH();
+}
+void MacroAssembler::floorDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::floorFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
 void MacroAssembler::flush() {
   MOZ_CRASH();
 }
-void MacroAssembler::moveValue(TypedOrValueRegister const&,
-                               ValueOperand const&) {
+void MacroAssembler::loadStoreBuffer(Register, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::moveValue(ValueOperand const&, ValueOperand const&) {
+void MacroAssembler::moveValue(const TypedOrValueRegister&,
+                               const ValueOperand&) {
   MOZ_CRASH();
 }
-void MacroAssembler::moveValue(Value const&, ValueOperand const&) {
+void MacroAssembler::moveValue(const Value&, const ValueOperand&) {
+  MOZ_CRASH();
+}
+void MacroAssembler::moveValue(const ValueOperand&, const ValueOperand&) {
   MOZ_CRASH();
 }
 void MacroAssembler::nearbyIntDouble(RoundingMode,
@@ -1667,68 +1990,84 @@ void MacroAssembler::nearbyIntFloat32(RoundingMode,
                                       FloatRegister) {
   MOZ_CRASH();
 }
-CodeOffset MacroAssembler::nopPatchableToCall() {
-  MOZ_CRASH();
-}
 void MacroAssembler::oolWasmTruncateCheckF32ToI32(FloatRegister,
                                                   Register,
-                                                  unsigned int,
+                                                  TruncFlags,
                                                   wasm::BytecodeOffset,
                                                   Label*) {
   MOZ_CRASH();
 }
 void MacroAssembler::oolWasmTruncateCheckF32ToI64(FloatRegister,
                                                   Register64,
-                                                  unsigned int,
+                                                  TruncFlags,
                                                   wasm::BytecodeOffset,
                                                   Label*) {
   MOZ_CRASH();
 }
 void MacroAssembler::oolWasmTruncateCheckF64ToI32(FloatRegister,
                                                   Register,
-                                                  unsigned int,
+                                                  TruncFlags,
                                                   wasm::BytecodeOffset,
                                                   Label*) {
   MOZ_CRASH();
 }
 void MacroAssembler::oolWasmTruncateCheckF64ToI64(FloatRegister,
                                                   Register64,
-                                                  unsigned int,
+                                                  TruncFlags,
                                                   wasm::BytecodeOffset,
                                                   Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::patchCallToNop(unsigned char*) {
+void MacroAssembler::patchCallToNop(uint8_t*) {
   MOZ_CRASH();
 }
-void MacroAssembler::patchNopToCall(unsigned char*, unsigned char*) {
+void MacroAssembler::patchCall(uint32_t, uint32_t) {
+  MOZ_CRASH();
+}
+void MacroAssembler::patchFarJump(CodeOffset, uint32_t) {
+  MOZ_CRASH();
+}
+void MacroAssembler::patchNearAddressMove(CodeLocationLabel,
+                                          CodeLocationLabel) {
+  MOZ_CRASH();
+}
+void MacroAssembler::patchNopToCall(uint8_t*, uint8_t*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Pop(const ValueOperand&) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Pop(FloatRegister) {
   MOZ_CRASH();
 }
 void MacroAssembler::Pop(Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::Pop(ValueOperand const&) {
-  MOZ_CRASH();
-}
 void MacroAssembler::PopRegsInMaskIgnore(LiveRegisterSet, LiveRegisterSet) {
   MOZ_CRASH();
 }
-uint32_t MacroAssembler::pushFakeReturnAddress(Register) {
+void MacroAssembler::popReturnAddress() {
+  MOZ_CRASH();
+}
+void MacroAssembler::PopStackPtr() {
+  MOZ_CRASH();
+}
+void MacroAssembler::PushBoxed(FloatRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Push(const Imm32 imm) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Push(const ImmGCPtr imm) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Push(const ImmPtr ptr) {
+  MOZ_CRASH();
+}
+void MacroAssembler::Push(const ImmWord imm) {
   MOZ_CRASH();
 }
 void MacroAssembler::Push(FloatRegister) {
-  MOZ_CRASH();
-}
-void MacroAssembler::Push(Imm32) {
-  MOZ_CRASH();
-}
-void MacroAssembler::Push(ImmGCPtr) {
-  MOZ_CRASH();
-}
-void MacroAssembler::Push(ImmPtr) {
-  MOZ_CRASH();
-}
-void MacroAssembler::Push(ImmWord) {
   MOZ_CRASH();
 }
 void MacroAssembler::Push(Register) {
@@ -1737,60 +2076,198 @@ void MacroAssembler::Push(Register) {
 void MacroAssembler::PushRegsInMask(LiveRegisterSet) {
   MOZ_CRASH();
 }
-size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet) {
+void MacroAssembler::pushReturnAddress() {
   MOZ_CRASH();
 }
-void MacroAssembler::pushReturnAddress() {
+void MacroAssembler::roundDoubleToInt32(FloatRegister,
+                                        Register,
+                                        FloatRegister,
+                                        Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::roundFloat32ToInt32(FloatRegister,
+                                         Register,
+                                         FloatRegister,
+                                         Label*) {
   MOZ_CRASH();
 }
 void MacroAssembler::setupUnalignedABICall(Register) {
   MOZ_CRASH();
 }
-
-template <typename T>
-void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
-                                       MIRType valueType,
-                                       const T& dest,
-                                       MIRType slotType) {
+void MacroAssembler::shiftIndex32AndAdd(Register, int, Register) {
   MOZ_CRASH();
 }
-
-template void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
-                                                MIRType valueType,
-                                                const Address& dest,
-                                                MIRType slotType);
-
-template void MacroAssembler::storeUnboxedValue(
-    const ConstantOrRegister& value,
-    MIRType valueType,
-    const BaseObjectElementIndex& dest,
-    MIRType slotType);
-
-void MacroAssembler::wasmBoundsCheck32(Assembler::Condition,
+void MacroAssembler::speculationBarrier() {
+  MOZ_CRASH();
+}
+void MacroAssembler::storeRegsInMask(LiveRegisterSet, Address, Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::truncDoubleToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::truncFloat32ToInt32(FloatRegister, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc&,
+                                        AtomicOp,
+                                        Register,
+                                        const Address&,
+                                        Register,
+                                        Register,
+                                        Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc&,
+                                        AtomicOp,
+                                        Register,
+                                        const BaseIndex&,
+                                        Register,
+                                        Register,
+                                        Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc&,
+                                          const Address&,
+                                          Register64,
+                                          Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc&,
+                                          const BaseIndex&,
+                                          Register64,
+                                          Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc&,
+                                        const Address&,
+                                        Register,
+                                        Register,
+                                        Register,
+                                        Register,
+                                        Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc&,
+                                        const BaseIndex&,
+                                        Register,
+                                        Register,
+                                        Register,
+                                        Register,
+                                        Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicFetchOp64(const wasm::MemoryAccessDesc&,
+                                         AtomicOp,
+                                         Register64,
+                                         const Address&,
+                                         Register64,
+                                         Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicFetchOp64(const wasm::MemoryAccessDesc&,
+                                         AtomicOp,
+                                         Register64,
+                                         const BaseIndex&,
+                                         Register64,
+                                         Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc&,
+                                       AtomicOp,
                                        Register,
-                                       Address,
-                                       Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::wasmBoundsCheck32(Assembler::Condition,
+                                       const Address&,
                                        Register,
                                        Register,
+                                       Register,
+                                       Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc&,
+                                       AtomicOp,
+                                       Register,
+                                       const BaseIndex&,
+                                       Register,
+                                       Register,
+                                       Register,
+                                       Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmBoundsCheck32(Condition, Register, Address, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmBoundsCheck32(Condition, Register, Register, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmBoundsCheck64(Condition, Register64, Address, Label*) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmBoundsCheck64(Condition,
+                                       Register64,
+                                       Register64,
                                        Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmBoundsCheck64(Assembler::Condition,
-                                       Register64,
-                                       Address,
-                                       Label*) {
+void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc&,
+                                           const Address&,
+                                           Register64,
+                                           Register64,
+                                           Register64) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmBoundsCheck64(Assembler::Condition,
-                                       Register64,
-                                       Register64,
-                                       Label*) {
+void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc&,
+                                           const BaseIndex&,
+                                           Register64,
+                                           Register64,
+                                           Register64) {
   MOZ_CRASH();
 }
-CodeOffset MacroAssembler::wasmTrapInstruction() {
+void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc&,
+                                         const Address&,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc&,
+                                         const BaseIndex&,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register,
+                                         Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmLoad(const wasm::MemoryAccessDesc&,
+                              Register,
+                              Register,
+                              Register,
+                              AnyRegister) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmLoadI64(const wasm::MemoryAccessDesc&,
+                                 Register,
+                                 Register,
+                                 Register,
+                                 Register64) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmStore(const wasm::MemoryAccessDesc&,
+                               AnyRegister,
+                               Register,
+                               Register,
+                               Register) {
+  MOZ_CRASH();
+}
+void MacroAssembler::wasmStoreI64(const wasm::MemoryAccessDesc&,
+                                  Register64,
+                                  Register,
+                                  Register,
+                                  Register) {
   MOZ_CRASH();
 }
 void MacroAssembler::wasmTruncateDoubleToInt32(FloatRegister,
@@ -1849,56 +2326,11 @@ void MacroAssembler::wasmTruncateFloat32ToUInt64(FloatRegister,
                                                  FloatRegister) {
   MOZ_CRASH();
 }
-void MacroAssembler::widenInt32(Register r) {
+void MacroAssembler::widenInt32(Register) {
   MOZ_CRASH();
 }
 
-CodeOffset MacroAssembler::moveNearAddressWithPatch(Register dest) {
-  MOZ_CRASH();
-}
-
-void MacroAssembler::comment(char const*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::clampDoubleToUint8(FloatRegister, Register) {
-  MOZ_CRASH();
-}
-void MacroAssembler::floorDoubleToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::floorFloat32ToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::ceilDoubleToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::ceilFloat32ToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::roundDoubleToInt32(FloatRegister,
-                                        Register,
-                                        FloatRegister,
-                                        Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::roundFloat32ToInt32(FloatRegister,
-                                         Register,
-                                         FloatRegister,
-                                         Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::truncDoubleToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::truncFloat32ToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
-}
-
-void MacroAssembler::storeRegsInMask(LiveRegisterSet set,
-                                     Address dest,
-                                     Register) {
-  MOZ_CRASH();
-}
+//}}} check_macroassembler_style
 
 // This method generates lui, dsll and ori instruction block that can be
 // modified by UpdateLoad64Value, either during compilation (eg.
