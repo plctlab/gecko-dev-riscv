@@ -240,7 +240,7 @@ set_define("JS_SIMULATOR_ARM64", simulator.arm64)
 set_define("JS_SIMULATOR_MIPS32", simulator.mips32)
 set_define("JS_SIMULATOR_MIPS64", simulator.mips64)
 set_define("JS_SIMULATOR_LOONG64", simulator.loong64)
-
+set_define("JS_SIMULATOR_RISCV64", simulator.riscv64)
 
 @depends("--enable-jit", simulator, target)
 def jit_codegen(jit_enabled, simulator, target):

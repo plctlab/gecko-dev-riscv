@@ -321,9 +321,6 @@ def check_style():
     for diffline in difflines:
         ok = False
         print(diffline, end="")
-    # if not ok:
-        # print('No', difflines)
-
     return ok
 
 
