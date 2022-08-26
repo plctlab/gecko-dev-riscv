@@ -27,8 +27,8 @@ jobs:
 
       # Runs a set of commands using the runners shell
       - name:build simulator
-        run: MOZCONFIG=$PWD/mozconfigs/simulator-riscv64 ./mach build
+        run: MOZCONFIG=$PWD/riscv64config/simulator-riscv64 ./mach build
 
       # Runs a set of commands using the runners shell
       - name: cross build riscv64
-        run: MOZCONFIG=$PWD/mozconfigs/riscv64-debug CFLAGS="-I/home/lyh/zlib/include" CXXFLAGS="-I/home/lyh/zlib/include" LDFLAGS=-L/home/lyh/zlib/lib/ CC=/home/lyh/llvm-build/Release+Asserts/bin/clang++ CXX=/home/lyh/llvm-build/Release+Asserts/bin/clang++ ./mach build
+        run: MOZCONFIG=$PWD/riscv64config/riscv64-debug CFLAGS="-I/home/lyh/zlib/include" CXXFLAGS="-I/home/lyh/zlib/include" LDFLAGS=-L/home/lyh/zlib/lib/ CC=/home/lyh/llvm-build/Release+Asserts/bin/clang++ CXX=/home/lyh/llvm-build/Release+Asserts/bin/clang++ ./mach build
