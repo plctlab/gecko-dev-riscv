@@ -30,6 +30,39 @@ FloatRegisters::Code FloatRegisters::FromName(const char* name) {
   return Invalid;
 }
 
+FloatRegisterSet FloatRegister::ReduceSetForPush(const FloatRegisterSet& s) {
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
+
+  LiveFloatRegisterSet mod;
+  for (FloatRegisterIterator iter(s); iter.more(); ++iter) {
+    if ((*iter).isSingle()) {
+      // Even for single size registers save complete double register.
+      mod.addUnchecked((*iter).doubleOverlay());
+    } else {
+      mod.addUnchecked(*iter);
+    }
+  }
+  return mod.set();
+}
+
+FloatRegister FloatRegister::singleOverlay() const {
+  MOZ_ASSERT(!isInvalid());
+  if (kind_ == Codes::Double) {
+    return FloatRegister(encoding_, Codes::Single);
+  }
+  return *this;
+}
+
+FloatRegister FloatRegister::doubleOverlay() const {
+  MOZ_ASSERT(!isInvalid());
+  if (kind_ != Codes::Double) {
+    return FloatRegister(encoding_, Codes::Double);
+  }
+  return *this;
+}
+
 void FlushICache(void* code, size_t size) { MOZ_CRASH(); }
 
 bool CPUFlagsHaveBeenComputed() {

@@ -89,10 +89,8 @@ static constexpr FloatRegister ft11{FloatRegisters::f31};
 static constexpr Register StackPointer{Registers::sp};
 static constexpr Register FramePointer{Registers::fp};
 static constexpr Register ReturnReg{Registers::a0};
+static constexpr Register ScratchRegister{Registers::s11};
 static constexpr Register64 ReturnReg64(ReturnReg);
-
-static constexpr Register ScratchRegister{Registers::t5};
-static constexpr Register SecondScratchReg{Registers::t6};
 
 static constexpr FloatRegister ReturnFloat32Reg{FloatRegisters::fa0};
 static constexpr FloatRegister ReturnDoubleReg{FloatRegisters::fa0};

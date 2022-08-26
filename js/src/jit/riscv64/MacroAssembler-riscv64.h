@@ -142,6 +142,9 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_liPatchable(Register dest, ImmWord imm, LiFlags flags = Li48);
   void ma_li(Register dest, ImmGCPtr ptr);
   void ma_li(Register dest, Imm32 imm);
+  void ma_li(Register dest, intptr_t imm) {
+    RV_li(dest, imm);
+  }
   void ma_li(Register dest, CodeLabel* label);
   void ma_li(Register dest, ImmWord imm);
 
@@ -157,10 +160,72 @@ class MacroAssemblerRiscv64 : public Assembler {
             Condition c,
             JumpKind jumpKind = LongJump);
 
+#define DEFINE_INSTRUCTION(instr)                   \
+  void instr(Register rd, Register rj, Operand rt); \
+  void instr(Register rd, Register rj, Imm32 imm) { \
+    instr(rd, rj, Operand(imm.value));              \
+  }                                                 \
+  void instr(Register rd, Imm32 imm) {              \
+    instr(rd, rd, Operand(imm.value));              \
+  }                                                 \
+  void instr(Register rd, Register rs) {            \
+    instr(rd, rd, Operand(rs));                     \
+  }
+
+#define DEFINE_INSTRUCTION2(instr)            \
+  void instr(Register rs, const Operand& rt); \
+  void instr(Register rs, Register rt) {      \
+    instr(rs, Operand(rt));                   \
+  }                                           \
+  void instr(Register rs, Imm32 j) {          \
+    instr(rs, Operand(j.value));              \
+  }
+
+  DEFINE_INSTRUCTION(ma_and);
+  DEFINE_INSTRUCTION(ma_or);
+  DEFINE_INSTRUCTION(ma_xor);
+  DEFINE_INSTRUCTION(ma_nor);
+  DEFINE_INSTRUCTION(ma_sub32)
+  DEFINE_INSTRUCTION(ma_sub64)
+  DEFINE_INSTRUCTION(ma_add32)
+  DEFINE_INSTRUCTION(ma_add64)
+  DEFINE_INSTRUCTION(ma_div32)
+  DEFINE_INSTRUCTION(ma_divu32)
+  DEFINE_INSTRUCTION(ma_div64)
+  DEFINE_INSTRUCTION(ma_divu64)
+  DEFINE_INSTRUCTION(ma_mod32)
+  DEFINE_INSTRUCTION(ma_modu32)
+  DEFINE_INSTRUCTION(ma_mod64)
+  DEFINE_INSTRUCTION(ma_modu64)
+  DEFINE_INSTRUCTION(ma_mul32)
+  DEFINE_INSTRUCTION(ma_mulh32)
+  DEFINE_INSTRUCTION(ma_mulhu32)
+  DEFINE_INSTRUCTION(ma_mul64)
+  DEFINE_INSTRUCTION(ma_mulh64)
+  DEFINE_INSTRUCTION(ma_sll64)
+  DEFINE_INSTRUCTION(ma_sra64)
+  DEFINE_INSTRUCTION(ma_srl64)
+  DEFINE_INSTRUCTION(ma_sll32)
+  DEFINE_INSTRUCTION(ma_sra32)
+  DEFINE_INSTRUCTION(ma_srl32)
+  DEFINE_INSTRUCTION(ma_slt)
+  DEFINE_INSTRUCTION(ma_sltu)
+  DEFINE_INSTRUCTION(ma_sle)
+  DEFINE_INSTRUCTION(ma_sleu)
+  DEFINE_INSTRUCTION(ma_sgt)
+  DEFINE_INSTRUCTION(ma_sgtu)
+  DEFINE_INSTRUCTION(ma_sge)
+  DEFINE_INSTRUCTION(ma_sgeu)
+  DEFINE_INSTRUCTION(ma_seq)
+  DEFINE_INSTRUCTION(ma_sne)
+
+  DEFINE_INSTRUCTION2(ma_seqz)
+  DEFINE_INSTRUCTION2(ma_snez)
+  DEFINE_INSTRUCTION2(ma_neg);
+
+#undef DEFINE_INSTRUCTION2
+#undef DEFINE_INSTRUCTION
   // arithmetic based ops
-  // add
-  void ma_add64(Register rd, Register rj, Imm32 imm);
-  void ma_sub64(Register rd, Register rj, Imm32 imm);
   void ma_add32TestOverflow(Register rd,
                             Register rj,
                             Register rk,
@@ -198,7 +263,6 @@ class MacroAssemblerRiscv64 : public Assembler {
                           Label* overflow);
 
   // subtract
-  void ma_sub_d(Register rd, Register rj, Imm32 imm);
   void ma_sub32TestOverflow(Register rd,
                             Register rj,
                             Register rk,
@@ -213,22 +277,29 @@ class MacroAssemblerRiscv64 : public Assembler {
                              Label* overflow);
 
   // multiplies.  For now, there are only few that we care about.
-  void ma_mul_d(Register rd, Register rj, Imm32 imm);
-  void ma_mulh_d(Register rd, Register rj, Imm32 imm);
   void ma_mulPtrTestOverflow(Register rd,
                              Register rj,
                              Register rk,
                              Label* overflow);
 
-  // stack
-  void ma_pop(Register r);
-  void ma_push(Register r);
   // branches when done from within la-specific code
   void ma_b(Register lhs,
             ImmWord imm,
             Label* l,
             Condition c,
             JumpKind jumpKind = LongJump);
+  void ma_b(Register lhs,
+            ImmPtr imm,
+            Label* l,
+            Condition c,
+            JumpKind jumpKind = LongJump);
+  void ma_b(Register lhs, ImmGCPtr imm, Label* l, Condition c,
+            JumpKind jumpKind = LongJump) {
+    UseScratchRegisterScope temps(this);
+    Register ScratchRegister = temps.Acquire();
+    ma_li(ScratchRegister, imm);
+    ma_b(lhs, ScratchRegister, l, c, jumpKind);
+  }
   void ma_b(Register lhs,
             Address addr,
             Label* l,
@@ -269,6 +340,15 @@ class MacroAssemblerRiscv64 : public Assembler {
   // fp instructions
   void ma_lid(FloatRegister dest, double value);
 
+  // fp instructions
+  void ma_lis(FloatRegister dest, float value);
+
+  void ma_fst_d(FloatRegister src, BaseIndex address);
+  void ma_fst_s(FloatRegister src, BaseIndex address);
+
+  void ma_fld_d(FloatRegister dest, const BaseIndex& src);
+  void ma_fld_s(FloatRegister dest, const BaseIndex& src);
+
   void ma_mv(FloatRegister src, ValueOperand dest);
   void ma_mv(ValueOperand src, FloatRegister dest);
 
@@ -277,6 +357,9 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_fst_d(FloatRegister ft, Address address);
   void ma_fst_s(FloatRegister ft, Address address);
 
+  // stack
+  void ma_pop(Register r);
+  void ma_push(Register r);
   void ma_pop(FloatRegister f);
   void ma_push(FloatRegister f);
 
@@ -296,17 +379,9 @@ class MacroAssemblerRiscv64 : public Assembler {
                 FloatRegister fj,
                 Register rk);
 
-  void ma_and(Register rd, Register rj, Imm32 imm);
-  void ma_and(Register rd, Imm32 imm);
-  void ma_and(Register rd, Register rs);
 
-  void ma_or(Register rd, Register rj, Imm32 imm);
-
-  void ma_xor(Register rd, Register rj, Imm32 imm);
 
   // arithmetic based ops
-  // add
-  void ma_add_w(Register rd, Register rj, Imm32 imm);
   void ma_add32TestCarry(Condition cond,
                          Register rd,
                          Register rj,
@@ -319,15 +394,12 @@ class MacroAssemblerRiscv64 : public Assembler {
                          Label* overflow);
 
   // subtract
-  void ma_sub_w(Register rd, Register rj, Imm32 imm);
-  void ma_sub_w(Register rd, Register rj, Register rk);
   void ma_sub32TestOverflow(Register rd,
                             Register rj,
                             Imm32 imm,
                             Label* overflow);
 
   // multiplies.  For now, there are only few that we care about.
-  void ma_mul(Register rd, Register rj, Imm32 imm);
   void ma_mul32TestOverflow(Register rd,
                             Register rj,
                             Register rk,
@@ -356,15 +428,6 @@ class MacroAssemblerRiscv64 : public Assembler {
                    Register remain,
                    int32_t shift,
                    Label* negZero = nullptr);
-
-  // fp instructions
-  void ma_lis(FloatRegister dest, float value);
-
-  void ma_fst_d(FloatRegister src, BaseIndex address);
-  void ma_fst_s(FloatRegister src, BaseIndex address);
-
-  void ma_fld_d(FloatRegister dest, const BaseIndex& src);
-  void ma_fld_s(FloatRegister dest, const BaseIndex& src);
 
   // FP branches
   void ma_compareF32(Register rd, DoubleCondition cc, FloatRegister cmp1,
@@ -961,7 +1024,7 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
  public:
   // The following functions are exposed for use in platform-shared code.
 
-  inline void incrementInt32Value(const Address& addr);
+  void incrementInt32Value(const Address& addr);
 
   void move32(Imm32 imm, Register dest);
   void move32(Register src, Register dest);

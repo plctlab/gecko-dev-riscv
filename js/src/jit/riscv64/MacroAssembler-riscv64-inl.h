@@ -40,16 +40,34 @@ void MacroAssembler::branchPtr(Condition, const Address&, Register, L) {
   MOZ_CRASH();
 }
 template <class L>
-void MacroAssembler::branchPtr(Condition, Register, Register, L) {
-  MOZ_CRASH();
+void MacroAssembler::branchPtr(Condition cond, Register lhs, Register rhs, L label) {
+  ma_b(lhs, rhs, label, cond);
+}
+
+template <class L>
+void MacroAssembler::branchTest32(Condition cond, Register lhs, Imm32 rhs, L label) {
+  MOZ_ASSERT(cond == Zero || cond == NonZero || cond == Signed ||
+             cond == NotSigned);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  ma_and(scratch, lhs, rhs);
+  ma_b(scratch, scratch, label, cond);
 }
 template <class L>
-void MacroAssembler::branchTest32(Condition, Register, Imm32, L) {
-  MOZ_CRASH();
-}
-template <class L>
-void MacroAssembler::branchTest32(Condition, Register, Register, L) {
-  MOZ_CRASH();
+void MacroAssembler::branchTest32(Condition cond,
+                                  Register lhs,
+                                  Register rhs,
+                                  L label) {
+  MOZ_ASSERT(cond == Zero || cond == NonZero || cond == Signed ||
+             cond == NotSigned);
+  if (lhs == rhs) {
+    ma_b(lhs, rhs, label, cond);
+  } else {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    and_(scratch, lhs, rhs);
+    ma_b(scratch, scratch, label, cond);
+  }
 }
 template <class L>
 void MacroAssembler::branchTest64(Condition,
@@ -290,6 +308,27 @@ void MacroAssembler::branchPtr(Condition,
                                Label*) {
   MOZ_CRASH();
 }
+
+void MacroAssembler::branchPtr(Condition cond, Register lhs, Imm32 rhs,
+                               Label* label) {
+  ma_b(lhs, rhs, label, cond);
+}
+
+void MacroAssembler::branchPtr(Condition cond, Register lhs, ImmPtr rhs,
+                               Label* label) {
+  ma_b(lhs, rhs, label, cond);
+}
+
+void MacroAssembler::branchPtr(Condition cond, Register lhs, ImmGCPtr rhs,
+                               Label* label) {
+  ma_b(lhs, rhs, label, cond);
+}
+
+void MacroAssembler::branchPtr(Condition cond, Register lhs, ImmWord rhs,
+                               Label* label) {
+  ma_b(lhs, rhs, label, cond);
+}
+
 void MacroAssembler::branchPtr(Condition, const Address&, ImmGCPtr, Label*) {
   MOZ_CRASH();
 }
@@ -305,18 +344,7 @@ void MacroAssembler::branchPtr(Condition, const BaseIndex&, ImmWord, Label*) {
 void MacroAssembler::branchPtr(Condition, const BaseIndex&, Register, Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchPtr(Condition, Register, Imm32, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::branchPtr(Condition, Register, ImmGCPtr, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::branchPtr(Condition, Register, ImmPtr, Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::branchPtr(Condition, Register, ImmWord, Label*) {
-  MOZ_CRASH();
-}
+
 void MacroAssembler::branchPtr(Condition,
                                wasm::SymbolicAddress,
                                Register,
@@ -966,8 +994,8 @@ void MacroAssembler::subFloat32(FloatRegister, FloatRegister) {
 void MacroAssembler::subPtr(const Address&, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::subPtr(Imm32, Register) {
-  MOZ_CRASH();
+void MacroAssembler::subPtr(Imm32 imm, Register dest) {
+  ma_sub64(dest, dest, imm);
 }
 void MacroAssembler::subPtr(Register, const Address&) {
   MOZ_CRASH();
