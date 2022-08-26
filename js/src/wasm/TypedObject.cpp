@@ -38,7 +38,7 @@
 #include "vm/Shape-inl.h"
 
 using mozilla::AssertedCast;
-using mozilla::CheckedInt32;
+using mozilla::CheckedUint32;
 using mozilla::IsPowerOfTwo;
 using mozilla::PodCopy;
 using mozilla::PointerRangeSize;
@@ -55,7 +55,6 @@ static const JSClassOps RttValueClassOps = {
     nullptr,             // mayResolve
     RttValue::finalize,  // finalize
     nullptr,             // call
-    nullptr,             // hasInstance
     nullptr,             // construct
     RttValue::trace,     // trace
 };
@@ -97,8 +96,8 @@ RttValue* RttValue::rttCanon(JSContext* cx, TypeHandle handle) {
   return RttValue::create(cx, handle);
 }
 
-RttValue* RttValue::rttSub(JSContext* cx, HandleRttValue parent,
-                           HandleRttValue subCanon) {
+RttValue* RttValue::rttSub(JSContext* cx, Handle<RttValue*> parent,
+                           Handle<RttValue*> subCanon) {
   if (!parent->ensureChildren(cx)) {
     return nullptr;
   }
@@ -146,7 +145,7 @@ void RttValue::trace(JSTracer* trc, JSObject* obj) {
 }
 
 /* static */
-void RttValue::finalize(JSFreeOp* fop, JSObject* obj) {
+void RttValue::finalize(JS::GCContext* gcx, JSObject* obj) {
   auto* rttValue = &obj->as<RttValue>();
 
   // Nothing to free if we're not initialized yet
@@ -161,13 +160,70 @@ void RttValue::finalize(JSFreeOp* fop, JSObject* obj) {
 
   // Free the lazy-allocated children map, if any
   if (ObjectWeakMap* children = rttValue->maybeChildren()) {
-    fop->delete_(obj, children, MemoryUse::WasmRttValueChildren);
+    gcx->delete_(obj, children, MemoryUse::WasmRttValueChildren);
   }
 }
 
 /******************************************************************************
  * Typed objects
  */
+
+/*static*/
+TypedObject* TypedObject::createStruct(JSContext* cx, Handle<RttValue*> rtt,
+                                       gc::InitialHeap heap) {
+  Rooted<TypedObject*> typedObj(cx);
+  uint32_t totalSize = rtt->typeDef().structType().size_;
+
+  // If possible, create an object with inline data.
+  if (InlineTypedObject::canAccommodateSize(totalSize)) {
+    AutoSetNewObjectMetadata metadata(cx);
+    typedObj = InlineTypedObject::create(cx, rtt, heap);
+  } else {
+    typedObj = OutlineTypedObject::create(cx, rtt, totalSize, heap);
+  }
+
+  if (!typedObj) {
+    ReportOutOfMemory(cx);
+    return nullptr;
+  }
+
+  // Initialize the values to their defaults
+  typedObj->initDefault();
+
+  return typedObj;
+}
+
+/*static*/
+TypedObject* TypedObject::createArray(JSContext* cx, Handle<RttValue*> rtt,
+                                      uint32_t numElements,
+                                      gc::InitialHeap heap) {
+  // Calculate the byte length of the outline storage, being careful to check
+  // for overflow. We stick to uint32_t as an implicit implementation limit.
+  CheckedUint32 numBytes = rtt->typeDef().arrayType().elementType_.size();
+  numBytes *= numElements;
+  numBytes += OutlineTypedObject::offsetOfNumElements() +
+              sizeof(OutlineTypedObject::NumElements);
+  if (!numBytes.isValid()) {
+    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
+                             JSMSG_WASM_ARRAY_IMP_LIMIT);
+    return nullptr;
+  }
+
+  // Always create arrays outlined
+  Rooted<OutlineTypedObject*> typedObj(
+      cx, OutlineTypedObject::create(cx, rtt, numBytes.value(), heap));
+  if (!typedObj) {
+    ReportOutOfMemory(cx);
+    return nullptr;
+  }
+
+  // Initialize the values to their defaults
+  typedObj->setNumElements(numElements);
+  MOZ_ASSERT(typedObj->numElements() == numElements);
+  typedObj->initDefault();
+
+  return typedObj;
+}
 
 uint8_t* TypedObject::typedMem() const {
   if (is<InlineTypedObject>()) {
@@ -177,7 +233,7 @@ uint8_t* TypedObject::typedMem() const {
 }
 
 template <typename V>
-void TypedObject::visitReferences(JSContext* cx, V& visitor) {
+void TypedObject::visitReferences(V& visitor) {
   RttValue& rtt = rttValue();
   const auto& typeDef = rtt.typeDef();
   uint8_t* base = typedMem();
@@ -186,7 +242,7 @@ void TypedObject::visitReferences(JSContext* cx, V& visitor) {
     case TypeDefKind::Struct: {
       const auto& structType = typeDef.structType();
       for (const StructField& field : structType.fields_) {
-        if (field.type.isReference()) {
+        if (field.type.isRefRepr()) {
           visitor.visitReference(base, field.offset);
         }
       }
@@ -195,11 +251,11 @@ void TypedObject::visitReferences(JSContext* cx, V& visitor) {
     case TypeDefKind::Array: {
       const auto& arrayType = typeDef.arrayType();
       MOZ_ASSERT(is<OutlineTypedObject>());
-      if (arrayType.elementType_.isReference()) {
-        uint8_t* elemBase = base + OutlineTypedObject::offsetOfArrayLength() +
-                            sizeof(OutlineTypedObject::ArrayLength);
-        uint32_t length = as<OutlineTypedObject>().arrayLength();
-        for (uint32_t i = 0; i < length; i++) {
+      if (arrayType.elementType_.isRefRepr()) {
+        uint8_t* elemBase = base + OutlineTypedObject::offsetOfNumElements() +
+                            sizeof(OutlineTypedObject::NumElements);
+        uint32_t numElements = as<OutlineTypedObject>().numElements();
+        for (uint32_t i = 0; i < numElements; i++) {
           visitor.visitReference(elemBase, i * arrayType.elementType_.size());
         }
       }
@@ -227,38 +283,9 @@ class MemoryTracingVisitor {
 }  // namespace
 
 void MemoryTracingVisitor::visitReference(uint8_t* base, size_t offset) {
-  GCPtrObject* objectPtr = reinterpret_cast<js::GCPtrObject*>(base + offset);
+  GCPtr<JSObject*>* objectPtr =
+      reinterpret_cast<GCPtr<JSObject*>*>(base + offset);
   TraceNullableEdge(trace_, objectPtr, "reference-obj");
-}
-
-template <typename T>
-static T* NewTypedObject(JSContext* cx, gc::AllocKind allocKind,
-                         gc::InitialHeap heap) {
-  const JSClass* clasp = &T::class_;
-  MOZ_ASSERT(IsTypedObjectClass(clasp));
-
-  if (CanChangeToBackgroundAllocKind(allocKind, clasp)) {
-    allocKind = ForegroundToBackgroundAllocKind(allocKind);
-  }
-
-  RootedShape shape(
-      cx, SharedShape::getInitialShape(cx, clasp, cx->realm(), TaggedProto(),
-                                       /* nfixed = */ 0, ObjectFlags()));
-  if (!shape) {
-    return nullptr;
-  }
-
-  NewObjectKind newKind =
-      (heap == gc::TenuredHeap) ? TenuredObject : GenericObject;
-  heap = GetInitialHeap(newKind, clasp);
-
-  TypedObject* obj = TypedObject::create(cx, allocKind, heap, shape);
-  if (!obj) {
-    return nullptr;
-  }
-
-  probes::CreateObject(cx, obj);
-  return &obj->as<T>();
 }
 
 /******************************************************************************
@@ -267,91 +294,25 @@ static T* NewTypedObject(JSContext* cx, gc::AllocKind allocKind,
 
 /*static*/
 OutlineTypedObject* OutlineTypedObject::create(JSContext* cx,
-                                               HandleRttValue rtt,
-                                               size_t byteLength,
+                                               Handle<RttValue*> rtt,
+                                               size_t numBytes,
                                                gc::InitialHeap heap) {
+  STATIC_ASSERT_NUMELEMENTS_IS_U32;
+  MOZ_ASSERT(numBytes >= sizeof(NumElements));
   AutoSetNewObjectMetadata metadata(cx);
 
-  auto* obj = NewTypedObject<OutlineTypedObject>(cx, allocKind(), heap);
+  auto* obj = TypedObject::create<OutlineTypedObject>(cx, allocKind(), heap);
   if (!obj) {
     return nullptr;
   }
 
   obj->rttValue_.init(rtt);
-  uint8_t* data = (uint8_t*)js_malloc(byteLength);
-  if (!data) {
+  obj->data_ = (uint8_t*)js_malloc(numBytes);
+  if (!obj->data_) {
     return nullptr;
   }
-  obj->data_ = data;
 
   return obj;
-}
-
-/*static*/
-OutlineTypedObject* OutlineTypedObject::createStruct(JSContext* cx,
-                                                     HandleRttValue rtt,
-                                                     gc::InitialHeap heap) {
-  return OutlineTypedObject::create(cx, rtt, rtt->typeDef().structType().size_,
-                                    heap);
-}
-
-/*static*/
-OutlineTypedObject* OutlineTypedObject::createArray(JSContext* cx,
-                                                    HandleRttValue rtt,
-                                                    uint32_t length,
-                                                    gc::InitialHeap heap) {
-  size_t byteLength = offsetOfArrayLength() +
-                      sizeof(OutlineTypedObject::ArrayLength) +
-                      (rtt->typeDef().arrayType().elementType_.size() * length);
-  Rooted<OutlineTypedObject*> obj(
-      cx, OutlineTypedObject::create(cx, rtt, byteLength, heap));
-  if (!obj) {
-    return nullptr;
-  }
-
-  obj->setArrayLength(length);
-  MOZ_ASSERT(obj->arrayLength() == length);
-  return obj;
-}
-
-/*static*/
-TypedObject* TypedObject::createStruct(JSContext* cx, HandleRttValue rtt,
-                                       gc::InitialHeap heap) {
-  RootedTypedObject typedObj(cx);
-  uint32_t totalSize = rtt->typeDef().structType().size_;
-
-  // If possible, create an object with inline data.
-  if (InlineTypedObject::canAccommodateSize(totalSize)) {
-    AutoSetNewObjectMetadata metadata(cx);
-    typedObj = InlineTypedObject::createStruct(cx, rtt, heap);
-  } else {
-    typedObj = OutlineTypedObject::createStruct(cx, rtt, heap);
-  }
-
-  if (!typedObj) {
-    return nullptr;
-  }
-
-  // Initialize the values to their defaults
-  typedObj->initDefault();
-
-  return typedObj;
-}
-
-/*static*/
-TypedObject* TypedObject::createArray(JSContext* cx, HandleRttValue rtt,
-                                      uint32_t length, gc::InitialHeap heap) {
-  // Always create arrays outlined
-  RootedTypedObject typedObj(
-      cx, OutlineTypedObject::createArray(cx, rtt, length, heap));
-  if (!typedObj) {
-    return nullptr;
-  }
-
-  // Initialize the values to their defaults
-  typedObj->initDefault();
-
-  return typedObj;
 }
 
 /* static */
@@ -369,13 +330,12 @@ void OutlineTypedObject::obj_trace(JSTracer* trc, JSObject* object) {
     return;
   }
 
-  JSContext* cx = trc->runtime()->mainContextFromOwnThread();
   MemoryTracingVisitor visitor(trc);
-  typedObj.visitReferences(cx, visitor);
+  typedObj.visitReferences(visitor);
 }
 
 /* static */
-void OutlineTypedObject::obj_finalize(JSFreeOp* fop, JSObject* object) {
+void OutlineTypedObject::obj_finalize(JS::GCContext* gcx, JSObject* object) {
   OutlineTypedObject& typedObj = object->as<OutlineTypedObject>();
 
   if (typedObj.data_) {
@@ -384,8 +344,8 @@ void OutlineTypedObject::obj_finalize(JSFreeOp* fop, JSObject* object) {
   }
 }
 
-bool RttValue::lookupProperty(JSContext* cx, HandleTypedObject object, jsid id,
-                              uint32_t* offset, FieldType* type) {
+bool RttValue::lookupProperty(JSContext* cx, Handle<TypedObject*> object,
+                              jsid id, uint32_t* offset, FieldType* type) {
   const auto& typeDef = this->typeDef();
 
   switch (typeDef.kind()) {
@@ -410,9 +370,9 @@ bool RttValue::lookupProperty(JSContext* cx, HandleTypedObject object, jsid id,
       // beginning of the data buffer
       if (id.isString() &&
           id.toString() == cx->runtime()->commonNames->length) {
-        STATIC_ASSERT_ARRAYLENGTH_IS_U32;
+        STATIC_ASSERT_NUMELEMENTS_IS_U32;
         *type = FieldType::I32;
-        *offset = OutlineTypedObject::offsetOfArrayLength();
+        *offset = OutlineTypedObject::offsetOfNumElements();
         return true;
       }
 
@@ -421,13 +381,13 @@ bool RttValue::lookupProperty(JSContext* cx, HandleTypedObject object, jsid id,
       if (!IdIsIndex(id, &index)) {
         return false;
       }
-      OutlineTypedObject::ArrayLength arrayLength =
-          object->as<OutlineTypedObject>().arrayLength();
-      if (index >= arrayLength) {
+      OutlineTypedObject::NumElements numElements =
+          object->as<OutlineTypedObject>().numElements();
+      if (index >= numElements) {
         return false;
       }
-      *offset = OutlineTypedObject::offsetOfArrayLength() +
-                sizeof(OutlineTypedObject::ArrayLength) +
+      *offset = OutlineTypedObject::offsetOfNumElements() +
+                sizeof(OutlineTypedObject::NumElements) +
                 index * arrayType.elementType_.size();
       *type = arrayType.elementType_;
       return true;
@@ -442,7 +402,7 @@ bool RttValue::lookupProperty(JSContext* cx, HandleTypedObject object, jsid id,
 bool TypedObject::obj_lookupProperty(JSContext* cx, HandleObject obj,
                                      HandleId id, MutableHandleObject objp,
                                      PropertyResult* propp) {
-  RootedTypedObject typedObj(cx, &obj->as<TypedObject>());
+  Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
   if (typedObj->rttValue().hasProperty(cx, typedObj, id)) {
     propp->setTypedObjectProperty();
     objp.set(obj);
@@ -470,7 +430,7 @@ bool TypedObject::obj_defineProperty(JSContext* cx, HandleObject obj,
 
 bool TypedObject::obj_hasProperty(JSContext* cx, HandleObject obj, HandleId id,
                                   bool* foundp) {
-  RootedTypedObject typedObj(cx, &obj->as<TypedObject>());
+  Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
   if (typedObj->rttValue().hasProperty(cx, typedObj, id)) {
     *foundp = true;
     return true;
@@ -508,7 +468,7 @@ bool TypedObject::obj_getProperty(JSContext* cx, HandleObject obj,
 bool TypedObject::obj_setProperty(JSContext* cx, HandleObject obj, HandleId id,
                                   HandleValue v, HandleValue receiver,
                                   ObjectOpResult& result) {
-  RootedTypedObject typedObj(cx, &obj->as<TypedObject>());
+  Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
 
   if (typedObj->rttValue().hasProperty(cx, typedObj, id)) {
     if (!receiver.isObject() || obj != &receiver.toObject()) {
@@ -547,7 +507,7 @@ bool TypedObject::obj_getOwnPropertyDescriptor(
 
 bool TypedObject::obj_deleteProperty(JSContext* cx, HandleObject obj,
                                      HandleId id, ObjectOpResult& result) {
-  RootedTypedObject typedObj(cx, &obj->as<TypedObject>());
+  Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
   if (typedObj->rttValue().hasProperty(cx, typedObj, id)) {
     return Throw(cx, id, JSMSG_CANT_DELETE);
   }
@@ -577,7 +537,7 @@ bool TypedObject::obj_newEnumerate(JSContext* cx, HandleObject obj,
       break;
     }
     case wasm::TypeDefKind::Array: {
-      indexCount = typedObj->as<OutlineTypedObject>().arrayLength();
+      indexCount = typedObj->as<OutlineTypedObject>().numElements();
       otherCount = 1;
       break;
     }
@@ -590,13 +550,12 @@ bool TypedObject::obj_newEnumerate(JSContext* cx, HandleObject obj,
   }
   RootedId id(cx);
   for (size_t index = 0; index < indexCount; index++) {
-    id = INT_TO_JSID(index);
+    id = PropertyKey::Int(index);
     properties.infallibleAppend(id);
   }
 
   if (typeDef.kind() == wasm::TypeDefKind::Array) {
-    properties.infallibleAppend(
-        JS::PropertyKey::fromNonIntAtom(cx->runtime()->commonNames->length));
+    properties.infallibleAppend(NameToId(cx->runtime()->commonNames->length));
   }
 
   return true;
@@ -628,9 +587,9 @@ void TypedObject::initDefault() {
     }
     case TypeDefKind::Array: {
       MOZ_ASSERT(is<OutlineTypedObject>());
-      uint32_t length = as<OutlineTypedObject>().arrayLength();
+      uint32_t numElements = as<OutlineTypedObject>().numElements();
       memset(typedMem() + sizeof(uint32_t), 0,
-             rtt.typeDef().arrayType().elementType_.size() * length);
+             rtt.typeDef().arrayType().elementType_.size() * numElements);
       break;
     }
     default:
@@ -643,14 +602,14 @@ void TypedObject::initDefault() {
  */
 
 /* static */
-InlineTypedObject* InlineTypedObject::createStruct(JSContext* cx,
-                                                   HandleRttValue rtt,
-                                                   gc::InitialHeap heap) {
+InlineTypedObject* InlineTypedObject::create(JSContext* cx,
+                                             Handle<RttValue*> rtt,
+                                             gc::InitialHeap heap) {
   MOZ_ASSERT(rtt->kind() == wasm::TypeDefKind::Struct);
 
-  gc::AllocKind allocKind = allocKindForRttValue(rtt);
-
-  auto* obj = NewTypedObject<InlineTypedObject>(cx, allocKind, heap);
+  AutoSetNewObjectMetadata metadata(cx);
+  auto* obj = TypedObject::create<InlineTypedObject>(
+      cx, allocKindForRttValue(rtt), heap);
   if (!obj) {
     return nullptr;
   }
@@ -665,9 +624,8 @@ void InlineTypedObject::obj_trace(JSTracer* trc, JSObject* object) {
 
   TraceEdge(trc, &typedObj.rttValue_, "InlineTypedObject_rttvalue");
 
-  JSContext* cx = trc->runtime()->mainContextFromOwnThread();
   MemoryTracingVisitor visitor(trc);
-  typedObj.visitReferences(cx, visitor);
+  typedObj.visitReferences(visitor);
 }
 
 /* static */
@@ -699,7 +657,6 @@ const ObjectOps TypedObject::objectOps_ = {
       nullptr,  /* mayResolve  */                                     \
       Finalize, /* finalize    */                                     \
       nullptr,  /* call        */                                     \
-      nullptr,  /* hasInstance */                                     \
       nullptr,  /* construct   */                                     \
       Trace,                                                          \
   };                                                                  \
@@ -721,33 +678,49 @@ DEFINE_TYPEDOBJ_CLASS(InlineTypedObject, InlineTypedObject::obj_trace, nullptr,
                       InlineTypedObject::obj_moved, 0);
 
 /* static */
-TypedObject* TypedObject::create(JSContext* cx, js::gc::AllocKind kind,
-                                 js::gc::InitialHeap heap,
-                                 js::HandleShape shape) {
-  debugCheckNewObject(shape, kind, heap);
-
-  const JSClass* clasp = shape->getObjectClass();
+template <typename T>
+T* TypedObject::create(JSContext* cx, js::gc::AllocKind allocKind,
+                       js::gc::InitialHeap heap) {
+  const JSClass* clasp = &T::class_;
+  MOZ_ASSERT(IsTypedObjectClass(clasp));
   MOZ_ASSERT(!clasp->isNativeObject());
-  MOZ_ASSERT(::IsTypedObjectClass(clasp));
+
+  if (CanChangeToBackgroundAllocKind(allocKind, clasp)) {
+    allocKind = ForegroundToBackgroundAllocKind(allocKind);
+  }
+
+  Rooted<Shape*> shape(
+      cx, SharedShape::getInitialShape(cx, clasp, cx->realm(), TaggedProto(),
+                                       /* nfixed = */ 0, ObjectFlags()));
+  if (!shape) {
+    return nullptr;
+  }
+
+  NewObjectKind newKind =
+      (heap == gc::TenuredHeap) ? TenuredObject : GenericObject;
+  heap = GetInitialHeap(newKind, clasp);
+
+  debugCheckNewObject(shape, allocKind, heap);
 
   JSObject* obj =
-      js::AllocateObject(cx, kind, /* nDynamicSlots = */ 0, heap, clasp);
+      js::AllocateObject(cx, allocKind, /* nDynamicSlots = */ 0, heap, clasp);
   if (!obj) {
     return nullptr;
   }
 
-  TypedObject* tobj = static_cast<TypedObject*>(obj);
+  T* tobj = static_cast<T*>(obj);
   tobj->initShape(shape);
 
   MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
   cx->realm()->setObjectPendingMetadata(cx, tobj);
 
   js::gc::gcprobes::CreateObject(tobj);
+  probes::CreateObject(cx, tobj);
 
   return tobj;
 }
 
-bool TypedObject::isRuntimeSubtype(HandleRttValue rtt) const {
+bool TypedObject::isRuntimeSubtype(Handle<RttValue*> rtt) const {
   RttValue* current = &rttValue();
   while (current != nullptr) {
     if (current == rtt.get()) {

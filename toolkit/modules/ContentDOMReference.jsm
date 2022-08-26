@@ -16,12 +16,14 @@
 
 var EXPORTED_SYMBOLS = ["ContentDOMReference"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "finalizationService",
   "@mozilla.org/toolkit/finalizationwitness;1",
   "nsIFinalizationWitnessService"
@@ -55,9 +57,6 @@ var gRegistry = new WeakMap();
 
 var ContentDOMReference = {
   _init() {
-    const { Services } = ChromeUtils.import(
-      "resource://gre/modules/Services.jsm"
-    );
     Services.obs.addObserver(this, FINALIZATION_TOPIC);
   },
 
@@ -110,7 +109,10 @@ var ContentDOMReference = {
 
     finalizerRoots.set(
       element,
-      finalizationService.make(FINALIZATION_TOPIC, JSON.stringify(identifier))
+      lazy.finalizationService.make(
+        FINALIZATION_TOPIC,
+        JSON.stringify(identifier)
+      )
     );
 
     return identifier;

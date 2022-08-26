@@ -10,11 +10,11 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/EventStateManager.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/HTMLEditor.h"
 #include "mozilla/IMEContentObserver.h"
 #include "mozilla/IMEStateManager.h"
 #include "mozilla/MappedDeclarations.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Likely.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
@@ -79,7 +79,6 @@
 #include "HTMLFieldSetElement.h"
 #include "nsTextNode.h"
 #include "HTMLBRElement.h"
-#include "HTMLMenuElement.h"
 #include "nsDOMMutationObserver.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/FromParser.h"
@@ -421,17 +420,17 @@ void nsGenericHTMLElement::UpdateEditableState(bool aNotify) {
   nsStyledElement::UpdateEditableState(aNotify);
 }
 
-EventStates nsGenericHTMLElement::IntrinsicState() const {
-  EventStates state = nsGenericHTMLElementBase::IntrinsicState();
+ElementState nsGenericHTMLElement::IntrinsicState() const {
+  ElementState state = nsGenericHTMLElementBase::IntrinsicState();
 
   if (GetDirectionality() == eDir_RTL) {
-    state |= NS_EVENT_STATE_RTL;
-    state &= ~NS_EVENT_STATE_LTR;
+    state |= ElementState::RTL;
+    state &= ~ElementState::LTR;
   } else {  // at least for HTML, directionality is exclusively LTR or RTL
     NS_ASSERTION(GetDirectionality() == eDir_LTR,
                  "HTML element's directionality must be either RTL or LTR");
-    state |= NS_EVENT_STATE_LTR;
-    state &= ~NS_EVENT_STATE_RTL;
+    state |= ElementState::LTR;
+    state &= ~ElementState::RTL;
   }
 
   return state;
@@ -526,7 +525,7 @@ HTMLFormElement* nsGenericHTMLElement::FindAncestorForm(
         // anonymous.  Check for this the hard way.
         for (nsIContent* child = this; child != content;
              child = child->GetParent()) {
-          NS_ASSERTION(child->GetParent()->ComputeIndexOf(child) != -1,
+          NS_ASSERTION(child->ComputeIndexInParentContent().isSome(),
                        "Walked too far?");
         }
       }
@@ -660,38 +659,38 @@ nsresult nsGenericHTMLElement::AfterSetAttr(
       // We don't want to have to keep getting the "dir" attribute in
       // IntrinsicState, so we manually recompute our dir-related event states
       // here and send the relevant update notifications.
-      EventStates dirStates;
+      ElementState dirStates;
       if (aValue && aValue->Type() == nsAttrValue::eEnum) {
         SetHasValidDir();
-        dirStates |= NS_EVENT_STATE_HAS_DIR_ATTR;
+        dirStates |= ElementState::HAS_DIR_ATTR;
         Directionality dirValue = (Directionality)aValue->GetEnumValue();
         if (dirValue == eDir_Auto) {
-          dirStates |= NS_EVENT_STATE_DIR_ATTR_LIKE_AUTO;
+          dirStates |= ElementState::HAS_DIR_ATTR_LIKE_AUTO;
         } else {
           dir = dirValue;
           SetDirectionality(dir, aNotify);
           if (dirValue == eDir_LTR) {
-            dirStates |= NS_EVENT_STATE_DIR_ATTR_LTR;
+            dirStates |= ElementState::HAS_DIR_ATTR_LTR;
           } else {
             MOZ_ASSERT(dirValue == eDir_RTL);
-            dirStates |= NS_EVENT_STATE_DIR_ATTR_RTL;
+            dirStates |= ElementState::HAS_DIR_ATTR_RTL;
           }
         }
       } else {
         if (aValue) {
           // We have a value, just not a valid one.
-          dirStates |= NS_EVENT_STATE_HAS_DIR_ATTR;
+          dirStates |= ElementState::HAS_DIR_ATTR;
         }
         ClearHasValidDir();
         if (NodeInfo()->Equals(nsGkAtoms::bdi)) {
-          dirStates |= NS_EVENT_STATE_DIR_ATTR_LIKE_AUTO;
+          dirStates |= ElementState::HAS_DIR_ATTR_LIKE_AUTO;
         } else {
           recomputeDirectionality = true;
         }
       }
       // Now figure out what's changed about our dir states.
-      EventStates oldDirStates = State() & DIR_ATTR_STATES;
-      EventStates changedStates = dirStates ^ oldDirStates;
+      ElementState oldDirStates = State() & ElementState::DIR_ATTR_STATES;
+      ElementState changedStates = dirStates ^ oldDirStates;
       ToggleStates(changedStates, aNotify);
       if (recomputeDirectionality) {
         dir = RecomputeDirectionality(this, aNotify);
@@ -716,9 +715,9 @@ nsresult nsGenericHTMLElement::AfterSetAttr(
     } else if (aName == nsGkAtoms::inert &&
                StaticPrefs::html5_inert_enabled()) {
       if (aValue) {
-        AddStates(NS_EVENT_STATE_MOZINERT);
+        AddStates(ElementState::INERT);
       } else {
-        RemoveStates(NS_EVENT_STATE_MOZINERT);
+        RemoveStates(ElementState::INERT);
       }
     } else if (aName == nsGkAtoms::name) {
       if (aValue && !aValue->Equals(u""_ns, eIgnoreCase)) {
@@ -738,18 +737,23 @@ nsresult nsGenericHTMLElement::AfterSetAttr(
                 StaticPrefs::dom_forms_enterkeyhint())) {
       nsPIDOMWindowOuter* window = OwnerDoc()->GetWindow();
       if (window && window->GetFocusedElement() == this) {
-        IMEContentObserver* observer =
-            IMEStateManager::GetActiveContentObserver();
-        nsPresContext* presContext = GetPresContext(eForComposedDoc);
-        if (observer && observer->IsManaging(presContext, this)) {
-          if (RefPtr<EditorBase> editor =
-                  nsContentUtils::GetActiveEditor(window)) {
-            IMEState newState;
-            editor->GetPreferredIMEState(&newState);
-            IMEStateManager::UpdateIMEState(
-                newState, this, *editor,
-                {IMEStateManager::UpdateIMEStateOption::ForceUpdate,
-                 IMEStateManager::UpdateIMEStateOption::DontCommitComposition});
+        if (IMEContentObserver* observer =
+                IMEStateManager::GetActiveContentObserver()) {
+          if (const nsPresContext* presContext =
+                  GetPresContext(eForComposedDoc)) {
+            if (observer->IsManaging(*presContext, this)) {
+              if (RefPtr<EditorBase> editor =
+                      nsContentUtils::GetActiveEditor(window)) {
+                IMEState newState;
+                editor->GetPreferredIMEState(&newState);
+                OwningNonNull<nsGenericHTMLElement> kungFuDeathGrip(*this);
+                IMEStateManager::UpdateIMEState(
+                    newState, kungFuDeathGrip, *editor,
+                    {IMEStateManager::UpdateIMEStateOption::ForceUpdate,
+                     IMEStateManager::UpdateIMEStateOption::
+                         DontCommitComposition});
+              }
+            }
           }
         }
       }
@@ -1401,6 +1405,41 @@ void nsGenericHTMLElement::MapImageSizeAttributesInto(
   }
 }
 
+void nsGenericHTMLElement::MapPictureSourceSizeAttributesInto(
+    const nsMappedAttributes* aAttributes, MappedDeclarations& aDecls) {
+  const auto* width = aAttributes->GetAttr(nsGkAtoms::width);
+  const auto* height = aAttributes->GetAttr(nsGkAtoms::height);
+  if (!width && !height) {
+    return;
+  }
+
+  // We should set the missing property values with auto value to make sure it
+  // overrides the declaraion created by the presentation attributes of
+  // HTMLImageElement. This can make sure we compute the ratio-dependent axis
+  // size properly by the natural aspect-ratio of the image.
+  //
+  // Note: The spec doesn't specify this, so we follow the implementation in
+  // other browsers.
+  // Spec issue: https://github.com/whatwg/html/issues/8178.
+  if (width) {
+    MapDimensionAttributeInto(aDecls, eCSSProperty_width, *width);
+  } else {
+    aDecls.SetAutoValue(eCSSProperty_width);
+  }
+
+  if (height) {
+    MapDimensionAttributeInto(aDecls, eCSSProperty_height, *height);
+  } else {
+    aDecls.SetAutoValue(eCSSProperty_height);
+  }
+
+  if (width && height) {
+    DoMapAspectRatio(*width, *height, aDecls);
+  } else {
+    aDecls.SetAutoValue(eCSSProperty_aspect_ratio);
+  }
+}
+
 void nsGenericHTMLElement::MapAspectRatioInto(
     const nsMappedAttributes* aAttributes, MappedDeclarations& aDecls) {
   auto* width = aAttributes->GetAttr(nsGkAtoms::width);
@@ -1587,19 +1626,6 @@ bool nsGenericHTMLElement::GetURIAttr(nsAtom* aAttr, nsAtom* aBaseAttr,
   return true;
 }
 
-HTMLMenuElement* nsGenericHTMLElement::GetContextMenu() const {
-  nsAutoString value;
-  GetHTMLAttr(nsGkAtoms::contextmenu, value);
-  if (!value.IsEmpty()) {
-    // XXXsmaug How should this work in Shadow DOM?
-    Document* doc = GetUncomposedDoc();
-    if (doc) {
-      return HTMLMenuElement::FromNodeOrNull(doc->GetElementById(value));
-    }
-  }
-  return nullptr;
-}
-
 bool nsGenericHTMLElement::IsLabelable() const {
   return IsAnyOfHTMLElements(nsGkAtoms::progress, nsGkAtoms::meter);
 }
@@ -1652,7 +1678,7 @@ bool nsGenericHTMLElement::IsFormControlDefaultFocusable(
 nsGenericHTMLFormElement::nsGenericHTMLFormElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsGenericHTMLElement(std::move(aNodeInfo)) {
-  // We should add the NS_EVENT_STATE_ENABLED bit here as needed, but
+  // We should add the ElementState::ENABLED bit here as needed, but
   // that depends on our type, which is not initialized yet.  So we
   // have to do this in subclasses.
 }
@@ -1948,7 +1974,7 @@ bool nsGenericHTMLFormElement::IsElementDisabledForEvents(WidgetEvent* aEvent,
 
   // FIXME(emilio): This poking at the style of the frame is slightly bogus
   // unless we flush before every event, which we don't really want to do.
-  if (aFrame && aFrame->StyleUI()->mUserInput == StyleUserInput::None) {
+  if (aFrame && aFrame->StyleUI()->UserInput() == StyleUserInput::None) {
     return true;
   }
 
@@ -2081,11 +2107,11 @@ void nsGenericHTMLFormElement::UpdateDisabledState(bool aNotify) {
   const bool isDisabled =
       HasAttr(nsGkAtoms::disabled) || (fieldset && fieldset->IsDisabled());
 
-  const EventStates disabledStates =
-      isDisabled ? NS_EVENT_STATE_DISABLED : NS_EVENT_STATE_ENABLED;
+  const ElementState disabledStates =
+      isDisabled ? ElementState::DISABLED : ElementState::ENABLED;
 
-  EventStates oldDisabledStates = State() & DISABLED_STATES;
-  EventStates changedStates = disabledStates ^ oldDisabledStates;
+  ElementState oldDisabledStates = State() & ElementState::DISABLED_STATES;
+  ElementState changedStates = disabledStates ^ oldDisabledStates;
 
   if (!changedStates.IsEmpty()) {
     ToggleStates(changedStates, aNotify);
@@ -2138,7 +2164,7 @@ bool nsGenericHTMLElement::IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
   }
 
   Document* doc = GetComposedDoc();
-  if (!doc || doc->HasFlag(NODE_IS_EDITABLE)) {
+  if (!doc || IsInDesignMode()) {
     // In designMode documents we only allow focusing the document.
     if (aTabIndex) {
       *aTabIndex = -1;
@@ -2188,7 +2214,7 @@ bool nsGenericHTMLElement::IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
 
 Result<bool, nsresult> nsGenericHTMLElement::PerformAccesskey(
     bool aKeyCausesActivation, bool aIsTrustedEvent) {
-  nsPresContext* presContext = GetPresContext(eForComposedDoc);
+  RefPtr<nsPresContext> presContext = GetPresContext(eForComposedDoc);
   if (!presContext) {
     return Err(NS_ERROR_UNEXPECTED);
   }
@@ -2205,6 +2231,7 @@ Result<bool, nsresult> nsGenericHTMLElement::PerformAccesskey(
 
   if (aKeyCausesActivation) {
     // Click on it if the users prefs indicate to do so.
+    AutoHandlingUserInputStatePusher userInputStatePusher(aIsTrustedEvent);
     AutoPopupStatePusher popupStatePusher(
         aIsTrustedEvent ? PopupBlocker::openAllowed : PopupBlocker::openAbused);
     DispatchSimulatedClick(this, aIsTrustedEvent, presContext);
@@ -2263,8 +2290,8 @@ void nsGenericHTMLElement::HandleKeyboardActivation(
     return;
   }
 
-  DispatchSimulatedClick(this, aVisitor.mEvent->IsTrusted(),
-                         aVisitor.mPresContext);
+  RefPtr<nsPresContext> presContext = aVisitor.mPresContext;
+  DispatchSimulatedClick(this, aVisitor.mEvent->IsTrusted(), presContext);
   aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
 }
 
@@ -2275,7 +2302,9 @@ nsresult nsGenericHTMLElement::DispatchSimulatedClick(
                          WidgetMouseEvent::eReal);
   event.mInputSource = MouseEvent_Binding::MOZ_SOURCE_KEYBOARD;
   event.mFlags.mIsPositionless = true;
-  return EventDispatcher::Dispatch(ToSupports(aElement), aPresContext, &event);
+  // TODO: Bug 1506441
+  return EventDispatcher::Dispatch(MOZ_KnownLive(ToSupports(aElement)),
+                                   aPresContext, &event);
 }
 
 already_AddRefed<EditorBase> nsGenericHTMLElement::GetAssociatedEditor() {
@@ -2303,34 +2332,12 @@ void nsGenericHTMLElement::SyncEditorsOnSubtree(nsIContent* content) {
   }
 }
 
-void nsGenericHTMLElement::RecompileScriptEventListeners() {
-  int32_t i, count = mAttrs.AttrCount();
-  for (i = 0; i < count; ++i) {
-    const nsAttrName* name = mAttrs.AttrNameAt(i);
-
-    // Eventlistenener-attributes are always in the null namespace
-    if (!name->IsAtom()) {
-      continue;
-    }
-
-    nsAtom* attr = name->Atom();
-    if (!IsEventAttributeName(attr)) {
-      continue;
-    }
-
-    nsAutoString value;
-    GetAttr(kNameSpaceID_None, attr, value);
-    SetEventHandler(GetEventNameForAttr(attr), value, true);
-  }
-}
-
 bool nsGenericHTMLElement::IsEditableRoot() const {
-  Document* document = GetComposedDoc();
-  if (!document) {
+  if (!IsInComposedDoc()) {
     return false;
   }
 
-  if (document->HasFlag(NODE_IS_EDITABLE)) {
+  if (IsInDesignMode()) {
     return false;
   }
 
@@ -2343,11 +2350,10 @@ bool nsGenericHTMLElement::IsEditableRoot() const {
   return !parent || !parent->HasFlag(NODE_IS_EDITABLE);
 }
 
-static void MakeContentDescendantsEditable(nsIContent* aContent,
-                                           Document* aDocument) {
+static void MakeContentDescendantsEditable(nsIContent* aContent) {
   // If aContent is not an element, we just need to update its
   // internal editable state and don't need to notify anyone about
-  // that.  For elements, we need to send a ContentStateChanged
+  // that.  For elements, we need to send a ElementStateChanged
   // notification.
   if (!aContent->IsElement()) {
     aContent->UpdateEditableState(false);
@@ -2363,7 +2369,7 @@ static void MakeContentDescendantsEditable(nsIContent* aContent,
     if (!child->IsElement() ||
         !child->AsElement()->HasAttr(kNameSpaceID_None,
                                      nsGkAtoms::contenteditable)) {
-      MakeContentDescendantsEditable(child, aDocument);
+      MakeContentDescendantsEditable(child);
     }
   }
 }
@@ -2380,21 +2386,21 @@ void nsGenericHTMLElement::ChangeEditableState(int32_t aChange) {
     previousEditingState = document->GetEditingState();
   }
 
-  if (document->HasFlag(NODE_IS_EDITABLE)) {
-    document = nullptr;
-  }
-
-  // MakeContentDescendantsEditable is going to call ContentStateChanged for
+  // MakeContentDescendantsEditable is going to call ElementStateChanged for
   // this element and all descendants if editable state has changed.
   // We might as well wrap it all in one script blocker.
   nsAutoScriptBlocker scriptBlocker;
-  MakeContentDescendantsEditable(this, document);
+  MakeContentDescendantsEditable(this);
 
   // If the document already had contenteditable and JS adds new
   // contenteditable, that might cause changing editing host to current editing
   // host's ancestor.  In such case, HTMLEditor needs to know that
   // synchronously to update selection limitter.
-  if (document && aChange > 0 &&
+  // Additionally, elements in shadow DOM is not editable in the normal cases,
+  // but if its content has `contenteditable`, only in it can be ediable.
+  // So we don't need to notify HTMLEditor of this change only when we're not
+  // in shadow DOM and the composed document is in design mode.
+  if (IsInDesignMode() && !IsInShadowTree() && aChange > 0 &&
       previousEditingState == Document::EditingState::eContentEditable) {
     if (HTMLEditor* htmlEditor =
             nsContentUtils::GetHTMLEditor(document->GetPresContext())) {
@@ -2553,24 +2559,24 @@ void nsGenericHTMLFormControlElement::ClearForm(bool aRemoveFromForm,
   nsGenericHTMLFormElement::ClearForm(aRemoveFromForm, aUnbindOrDelete);
 }
 
-EventStates nsGenericHTMLFormControlElement::IntrinsicState() const {
+ElementState nsGenericHTMLFormControlElement::IntrinsicState() const {
   // If you add attribute-dependent states here, you need to add them them to
   // AfterSetAttr too.  And add them to AfterSetAttr for all subclasses that
   // implement IntrinsicState() and are affected by that attribute.
-  EventStates state = nsGenericHTMLFormElement::IntrinsicState();
+  ElementState state = nsGenericHTMLFormElement::IntrinsicState();
 
   if (mForm && mForm->IsDefaultSubmitElement(this)) {
     NS_ASSERTION(IsSubmitControl(),
                  "Default submit element that isn't a submit control.");
     // We are the default submit element (:default)
-    state |= NS_EVENT_STATE_DEFAULT;
+    state |= ElementState::DEFAULT;
   }
 
   // Make the text controls read-write
-  if (!state.HasState(NS_EVENT_STATE_READWRITE) && DoesReadOnlyApply()) {
+  if (!state.HasState(ElementState::READWRITE) && DoesReadOnlyApply()) {
     if (!GetBoolAttr(nsGkAtoms::readonly) && !IsDisabled()) {
-      state |= NS_EVENT_STATE_READWRITE;
-      state &= ~NS_EVENT_STATE_READONLY;
+      state |= ElementState::READWRITE;
+      state &= ~ElementState::READONLY;
     }
   }
 
@@ -2674,15 +2680,15 @@ void nsGenericHTMLFormControlElement::UpdateRequiredState(bool aIsRequired,
   }
 #endif
 
-  EventStates requiredStates;
+  ElementState requiredStates;
   if (aIsRequired) {
-    requiredStates |= NS_EVENT_STATE_REQUIRED;
+    requiredStates |= ElementState::REQUIRED;
   } else {
-    requiredStates |= NS_EVENT_STATE_OPTIONAL;
+    requiredStates |= ElementState::OPTIONAL_;
   }
 
-  EventStates oldRequiredStates = State() & REQUIRED_STATES;
-  EventStates changedStates = requiredStates ^ oldRequiredStates;
+  ElementState oldRequiredStates = State() & ElementState::REQUIRED_STATES;
+  ElementState changedStates = requiredStates ^ oldRequiredStates;
 
   if (!changedStates.IsEmpty()) {
     ToggleStates(changedStates, aNotify);
@@ -2936,27 +2942,12 @@ void nsGenericHTMLElement::GetInnerText(mozilla::dom::DOMString& aValue,
   }
 }
 
-void nsGenericHTMLElement::SetInnerText(const nsAString& aValue) {
-  // Batch possible DOMSubtreeModified events.
-  mozAutoSubtreeModified subtree(OwnerDoc(), nullptr);
-  FireNodeRemovedForChildren();
-
-  // Might as well stick a batch around this since we're performing several
-  // mutations.
-  mozAutoDocUpdate updateBatch(GetComposedDoc(), true);
-  nsAutoMutationBatch mb;
-
-  mb.Init(this, true, false);
-
-  while (HasChildren()) {
-    RemoveChildNode(nsINode::GetFirstChild(), true);
-  }
-
-  mb.RemovalDone();
-
+static already_AddRefed<nsINode> TextToNode(const nsAString& aString,
+                                            nsNodeInfoManager* aNim) {
   nsString str;
-  const char16_t* s = aValue.BeginReading();
-  const char16_t* end = aValue.EndReading();
+  const char16_t* s = aString.BeginReading();
+  const char16_t* end = aString.EndReading();
+  RefPtr<DocumentFragment> fragment;
   while (true) {
     if (s != end && *s == '\r' && s + 1 != end && s[1] == '\n') {
       // a \r\n pair should only generate one <br>, so just skip the \r
@@ -2964,28 +2955,93 @@ void nsGenericHTMLElement::SetInnerText(const nsAString& aValue) {
     }
     if (s == end || *s == '\r' || *s == '\n') {
       if (!str.IsEmpty()) {
-        RefPtr<nsTextNode> textContent = new (NodeInfo()->NodeInfoManager())
-            nsTextNode(NodeInfo()->NodeInfoManager());
+        RefPtr<nsTextNode> textContent = new (aNim) nsTextNode(aNim);
         textContent->SetText(str, true);
-        AppendChildTo(textContent, true, IgnoreErrors());
+        if (!fragment) {
+          if (s == end) {
+            return textContent.forget();
+          }
+          fragment = new (aNim) DocumentFragment(aNim);
+        }
+        fragment->AppendChildTo(textContent, true, IgnoreErrors());
       }
       if (s == end) {
         break;
       }
       str.Truncate();
-      RefPtr<mozilla::dom::NodeInfo> ni =
-          NodeInfo()->NodeInfoManager()->GetNodeInfo(
-              nsGkAtoms::br, nullptr, kNameSpaceID_XHTML, ELEMENT_NODE);
+      RefPtr<NodeInfo> ni = aNim->GetNodeInfo(
+          nsGkAtoms::br, nullptr, kNameSpaceID_XHTML, nsINode::ELEMENT_NODE);
       auto* nim = ni->NodeInfoManager();
       RefPtr<HTMLBRElement> br = new (nim) HTMLBRElement(ni.forget());
-      AppendChildTo(br, true, IgnoreErrors());
+      if (!fragment) {
+        if (s + 1 == end) {
+          return br.forget();
+        }
+        fragment = new (aNim) DocumentFragment(aNim);
+      }
+      fragment->AppendChildTo(br, true, IgnoreErrors());
     } else {
       str.Append(*s);
     }
     ++s;
   }
+  return fragment.forget();
+}
 
-  mb.NodesAdded();
+void nsGenericHTMLElement::SetInnerText(const nsAString& aValue) {
+  RefPtr<nsINode> node = TextToNode(aValue, NodeInfo()->NodeInfoManager());
+  ReplaceChildren(node, IgnoreErrors());
+}
+
+// https://html.spec.whatwg.org/#merge-with-the-next-text-node
+static void MergeWithNextTextNode(Text& aText, ErrorResult& aRv) {
+  RefPtr<Text> nextSibling = Text::FromNodeOrNull(aText.GetNextSibling());
+  if (!nextSibling) {
+    return;
+  }
+  nsAutoString data;
+  nextSibling->GetData(data);
+  aText.AppendData(data, aRv);
+  nextSibling->Remove();
+}
+
+// https://html.spec.whatwg.org/#dom-outertext
+void nsGenericHTMLElement::SetOuterText(const nsAString& aValue,
+                                        ErrorResult& aRv) {
+  nsCOMPtr<nsINode> parent = GetParentNode();
+  if (!parent) {
+    return aRv.ThrowNoModificationAllowedError("Element has no parent");
+  }
+
+  RefPtr<nsINode> next = GetNextSibling();
+  RefPtr<nsINode> previous = GetPreviousSibling();
+
+  // Batch possible DOMSubtreeModified events.
+  mozAutoSubtreeModified subtree(OwnerDoc(), nullptr);
+
+  nsNodeInfoManager* nim = NodeInfo()->NodeInfoManager();
+  RefPtr<nsINode> node = TextToNode(aValue, nim);
+  if (!node) {
+    // This doesn't match the spec, see
+    // https://github.com/whatwg/html/issues/7508
+    node = new (nim) nsTextNode(nim);
+  }
+  parent->ReplaceChild(*node, *this, aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  if (next) {
+    if (RefPtr<Text> text = Text::FromNodeOrNull(next->GetPreviousSibling())) {
+      MergeWithNextTextNode(*text, aRv);
+      if (aRv.Failed()) {
+        return;
+      }
+    }
+  }
+  if (auto* text = Text::FromNodeOrNull(previous)) {
+    MergeWithNextTextNode(*text, aRv);
+  }
 }
 
 already_AddRefed<ElementInternals> nsGenericHTMLElement::AttachInternals(
@@ -3000,6 +3056,20 @@ already_AddRefed<ElementInternals> nsGenericHTMLElement::AttachInternals(
       "'%s'",
       NS_ConvertUTF16toUTF8(NodeInfo()->NameAtom()->GetUTF16String()).get()));
   return nullptr;
+}
+
+ElementInternals* nsGenericHTMLElement::GetInternals() const {
+  if (CustomElementData* data = GetCustomElementData()) {
+    return data->GetElementInternals();
+  }
+  return nullptr;
+}
+
+bool nsGenericHTMLElement::IsFormAssociatedCustomElements() const {
+  if (CustomElementData* data = GetCustomElementData()) {
+    return data->IsFormAssociated();
+  }
+  return false;
 }
 
 void nsGenericHTMLElement::GetAutocapitalize(nsAString& aValue) const {

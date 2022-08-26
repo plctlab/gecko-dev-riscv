@@ -111,16 +111,6 @@ class JS_PUBLIC_API RealmCreationOptions {
     return *this;
   }
 
-  // Realms used for off-thread compilation have their contents merged into a
-  // target realm when the compilation is finished. This is only allowed if
-  // this flag is set. The invisibleToDebugger flag must also be set for such
-  // realms.
-  bool mergeable() const { return mergeable_; }
-  RealmCreationOptions& setMergeable(bool flag) {
-    mergeable_ = flag;
-    return *this;
-  }
-
   // Determines whether this realm should preserve JIT code on non-shrinking
   // GCs.
   bool preserveJitCode() const { return preserveJitCode_; }
@@ -184,31 +174,11 @@ class JS_PUBLIC_API RealmCreationOptions {
 
   bool getStreamsEnabled() const { return streams_; }
   RealmCreationOptions& setStreamsEnabled(bool flag) {
+#ifndef MOZ_DOM_STREAMS
     streams_ = flag;
-    return *this;
-  }
-
-  bool getReadableByteStreamsEnabled() const { return readableByteStreams_; }
-  RealmCreationOptions& setReadableByteStreamsEnabled(bool flag) {
-    readableByteStreams_ = flag;
-    return *this;
-  }
-
-  bool getBYOBStreamReadersEnabled() const { return byobStreamReaders_; }
-  RealmCreationOptions& setBYOBStreamReadersEnabled(bool enabled) {
-    byobStreamReaders_ = enabled;
-    return *this;
-  }
-
-  bool getWritableStreamsEnabled() const { return writableStreams_; }
-  RealmCreationOptions& setWritableStreamsEnabled(bool enabled) {
-    writableStreams_ = enabled;
-    return *this;
-  }
-
-  bool getReadableStreamPipeToEnabled() const { return readableStreamPipeTo_; }
-  RealmCreationOptions& setReadableStreamPipeToEnabled(bool enabled) {
-    readableStreamPipeTo_ = enabled;
+#else
+    MOZ_ASSERT(!streams_);
+#endif
     return *this;
   }
 
@@ -238,6 +208,36 @@ class JS_PUBLIC_API RealmCreationOptions {
     return *this;
   }
 
+  bool getShadowRealmsEnabled() const { return shadowRealms_; }
+  RealmCreationOptions& setShadowRealmsEnabled(bool flag) {
+    shadowRealms_ = flag;
+    return *this;
+  }
+
+#ifdef NIGHTLY_BUILD
+  bool getArrayGroupingEnabled() const { return arrayGrouping_; }
+  RealmCreationOptions& setArrayGroupingEnabled(bool flag) {
+    arrayGrouping_ = flag;
+    return *this;
+  }
+#endif
+
+#ifdef ENABLE_CHANGE_ARRAY_BY_COPY
+  bool getChangeArrayByCopyEnabled() const { return changeArrayByCopy_; }
+  RealmCreationOptions& setChangeArrayByCopyEnabled(bool flag) {
+    changeArrayByCopy_ = flag;
+    return *this;
+  }
+#endif
+
+#ifdef ENABLE_NEW_SET_METHODS
+  bool getNewSetMethodsEnabled() const { return newSetMethods_; }
+  RealmCreationOptions& setNewSetMethodsEnabled(bool flag) {
+    newSetMethods_ = flag;
+    return *this;
+  }
+#endif
+
   // This flag doesn't affect JS engine behavior.  It is used by Gecko to
   // mark whether content windows and workers are "Secure Context"s. See
   // https://w3c.github.io/webappsec-secure-contexts/
@@ -245,6 +245,15 @@ class JS_PUBLIC_API RealmCreationOptions {
   bool secureContext() const { return secureContext_; }
   RealmCreationOptions& setSecureContext(bool flag) {
     secureContext_ = flag;
+    return *this;
+  }
+
+  // Non-standard option to freeze certain builtin constructors and seal their
+  // prototypes. Also defines these constructors on the global as non-writable
+  // and non-configurable.
+  bool freezeBuiltins() const { return freezeBuiltins_; }
+  RealmCreationOptions& setFreezeBuiltins(bool flag) {
+    freezeBuiltins_ = flag;
     return *this;
   }
 
@@ -264,20 +273,26 @@ class JS_PUBLIC_API RealmCreationOptions {
   uint64_t profilerRealmID_ = 0;
   WeakRefSpecifier weakRefs_ = WeakRefSpecifier::Disabled;
   bool invisibleToDebugger_ = false;
-  bool mergeable_ = false;
   bool preserveJitCode_ = false;
   bool sharedMemoryAndAtomics_ = false;
   bool defineSharedArrayBufferConstructor_ = true;
   bool coopAndCoep_ = false;
   bool streams_ = false;
-  bool readableByteStreams_ = false;
-  bool byobStreamReaders_ = false;
-  bool writableStreams_ = false;
-  bool readableStreamPipeTo_ = false;
   bool toSource_ = false;
   bool propertyErrorMessageFix_ = false;
   bool iteratorHelpers_ = false;
+  bool shadowRealms_ = false;
+#ifdef NIGHTLY_BUILD
+  bool arrayGrouping_ = true;
+#endif
+#ifdef ENABLE_CHANGE_ARRAY_BY_COPY
+  bool changeArrayByCopy_ = false;
+#endif
+#ifdef ENABLE_NEW_SET_METHODS
+  bool newSetMethods_ = false;
+#endif
   bool secureContext_ = false;
+  bool freezeBuiltins_ = false;
 };
 
 /**

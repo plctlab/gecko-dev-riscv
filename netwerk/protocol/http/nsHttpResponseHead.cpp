@@ -182,7 +182,8 @@ nsresult nsHttpResponseHead::SetHeader_locked(const nsHttpAtom& atom,
   return NS_OK;
 }
 
-nsresult nsHttpResponseHead::GetHeader(const nsHttpAtom& h, nsACString& v) {
+nsresult nsHttpResponseHead::GetHeader(const nsHttpAtom& h,
+                                       nsACString& v) const {
   v.Truncate();
   RecursiveMutexAutoLock monitor(mRecursiveMutex);
   return mHeaders.GetHeader(h, v);
@@ -1044,7 +1045,8 @@ nsresult nsHttpResponseHead::GetLastModifiedValue(uint32_t* result) {
   return ParseDateHeader(nsHttp::Last_Modified, result);
 }
 
-bool nsHttpResponseHead::operator==(const nsHttpResponseHead& aOther) const {
+bool nsHttpResponseHead::operator==(const nsHttpResponseHead& aOther) const
+    MOZ_NO_THREAD_SAFETY_ANALYSIS {
   nsHttpResponseHead& curr = const_cast<nsHttpResponseHead&>(*this);
   nsHttpResponseHead& other = const_cast<nsHttpResponseHead&>(aOther);
   RecursiveMutexAutoLock monitorOther(other.mRecursiveMutex);
@@ -1239,7 +1241,8 @@ bool nsHttpResponseHead::HasContentCharset() {
   return !mContentCharset.IsEmpty();
 }
 
-bool nsHttpResponseHead::GetContentTypeOptionsHeader(nsACString& aOutput) {
+bool nsHttpResponseHead::GetContentTypeOptionsHeader(
+    nsACString& aOutput) const {
   aOutput.Truncate();
 
   nsAutoCString contentTypeOptionsHeader;

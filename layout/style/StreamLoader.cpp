@@ -43,10 +43,11 @@ StreamLoader::OnStartRequest(nsIRequest* aRequest) {
     int64_t length;
     nsresult rv = channel->GetContentLength(&length);
     if (NS_SUCCEEDED(rv) && length > 0) {
-      if (length > std::numeric_limits<nsACString::size_type>::max()) {
+      CheckedInt<nsACString::size_type> checkedLength(length);
+      if (!checkedLength.isValid()) {
         return (mStatus = NS_ERROR_OUT_OF_MEMORY);
       }
-      if (!mBytes.SetCapacity(length, fallible)) {
+      if (!mBytes.SetCapacity(checkedLength.value(), fallible)) {
         return (mStatus = NS_ERROR_OUT_OF_MEMORY);
       }
     }
@@ -150,9 +151,7 @@ void StreamLoader::HandleBOM() {
   MOZ_ASSERT(mEncodingFromBOM.isNothing());
   MOZ_ASSERT(mBytes.IsEmpty());
 
-  const Encoding* encoding;
-  size_t bomLength;
-  Tie(encoding, bomLength) = Encoding::ForBOM(mBOMBytes);
+  auto [encoding, bomLength] = Encoding::ForBOM(mBOMBytes);
   mEncodingFromBOM.emplace(encoding);  // Null means no BOM.
 
   // BOMs are three bytes at most, but may be fewer. Copy over anything
@@ -173,7 +172,7 @@ nsresult StreamLoader::WriteSegmentFun(nsIInputStream*, void* aClosure,
 
   // If we haven't done BOM detection yet, divert bytes into the special buffer.
   if (self->mEncodingFromBOM.isNothing()) {
-    size_t bytesToCopy = std::min(3 - self->mBOMBytes.Length(), aCount);
+    size_t bytesToCopy = std::min<size_t>(3 - self->mBOMBytes.Length(), aCount);
     self->mBOMBytes.Append(aSegment, bytesToCopy);
     aSegment += bytesToCopy;
     *aWriteCount += bytesToCopy;

@@ -13,7 +13,8 @@ import json
 
 import jinja2
 
-from util import generate_metric_ids, generate_ping_ids
+from js import ID_BITS, ID_SIGNAL_BITS
+from util import generate_metric_ids, generate_ping_ids, get_metrics
 from glean_parser import util
 from glean_parser.metrics import Rate
 
@@ -205,14 +206,14 @@ def output_rust(objs, output_fd, options={}):
     #   17 -> "test_only::an_event"
     events_by_id = {}
 
-    if len(objs) == 1 and "pings" in objs:
+    if "pings" in objs:
         template_filename = "rust_pings.jinja2"
+        objs = {"pings": objs["pings"]}
     else:
         template_filename = "rust.jinja2"
-
-        for category_name, metrics in objs.items():
-            for metric in metrics.values():
-
+        objs = get_metrics(objs)
+        for category_name, category_value in objs.items():
+            for metric in category_value.values():
                 # The constant is all uppercase and suffixed by `_MAP`
                 const_name = util.snake_case(metric.type).upper() + "_MAP"
                 typ = type_name(metric)
@@ -252,7 +253,7 @@ def output_rust(objs, output_fd, options={}):
             metric_by_type=objs_by_type,
             extra_args=util.extra_args,
             events_by_id=events_by_id,
-            min_submetric_id=2 ** 27 + 1,  # One more than 2**ID_BITS from js.py
+            submetric_bit=ID_BITS - ID_SIGNAL_BITS,
         )
     )
     output_fd.write("\n")

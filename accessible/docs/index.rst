@@ -10,3 +10,5 @@ The `Accessibility page on the Mozilla Wiki <https://wiki.mozilla.org/Accessibil
    :maxdepth: 1
 
    DocumentAccessibilityLifecycle
+   GeckoViewThreadTopography
+   ColorsAndHighContrastMode

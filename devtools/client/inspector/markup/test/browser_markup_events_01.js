@@ -18,7 +18,7 @@ const TEST_DATA = [
       {
         type: "load",
         filename: TEST_URL,
-        attributes: ["Bubbling", "DOM0"],
+        attributes: ["Bubbling"],
         handler: "function onload(event) {\n" + "  init();\n" + "}",
       },
     ],
@@ -29,7 +29,7 @@ const TEST_DATA = [
       {
         type: "mouseover",
         filename: TEST_URL + ":48:31",
-        attributes: ["Capturing", "DOM2"],
+        attributes: ["Capturing"],
         handler:
           "function mouseoverHandler(event) {\n" +
           '  if (event.target.id !== "container") {\n' +
@@ -46,7 +46,7 @@ const TEST_DATA = [
       {
         type: "click",
         filename: TEST_URL + ":55:27",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler:
           "function clickHandler(event) {\n" +
           '  const output = document.getElementById("output");\n' +
@@ -56,7 +56,7 @@ const TEST_DATA = [
       {
         type: "mouseup",
         filename: TEST_URL + ":60:29",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler:
           "function mouseupHandler(event) {\n" +
           '  const output = document.getElementById("output");\n' +
@@ -73,7 +73,7 @@ const TEST_DATA = [
   },
   {
     selector: "#noevents",
-    beforeTest: async function(inspector) {
+    async beforeTest(inspector) {
       const nodeMutated = inspector.once("markupmutation");
       await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () =>
         content.wrappedJSObject.addNoeventsClickHandler()
@@ -83,8 +83,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":75:35",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":76:35",
+        attributes: ["Bubbling"],
         handler:
           "function noeventsClickHandler(event) {\n" +
           '  alert("noevents has an event listener");\n' +
@@ -94,7 +94,7 @@ const TEST_DATA = [
   },
   {
     selector: "#noevents",
-    beforeTest: async function(inspector) {
+    async beforeTest(inspector) {
       const nodeMutated = inspector.once("markupmutation");
       await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () =>
         content.wrappedJSObject.removeNoeventsClickHandler()
@@ -109,7 +109,7 @@ const TEST_DATA = [
       {
         type: "click",
         filename: TEST_URL,
-        attributes: ["Bubbling", "DOM0"],
+        attributes: ["Bubbling"],
         handler: "function onclick(event) {\n" + "  alert('DOM0')\n" + "}",
       },
     ],
@@ -119,8 +119,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":70:29",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":71:29",
+        attributes: ["Bubbling"],
         handler: "function(blah) {\n" + '  alert("handleEvent");\n' + "}",
       },
     ],

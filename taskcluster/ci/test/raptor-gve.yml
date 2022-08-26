@@ -19,9 +19,10 @@ job-defaults:
         script: raptor_script.py
         config:
             - raptor/android_hw_config.py
+        extra-options:
+            - --webext
     optimization:
         skip-unless-backstop: null
-    python-3: true
 
 raptor-speedometer-geckoview-cpu-memory:
     description: Raptor Speedometer cpu/memory on GeckoView

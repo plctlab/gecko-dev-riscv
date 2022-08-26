@@ -211,11 +211,6 @@ static constexpr nsCursor kCustomCursor = eCursorCount;
 - (nsresult)setMacCursor:(nsMacCursor*)aMacCursor {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  // Some plugins mess with our cursors and set a cursor that even
-  // [NSCursor currentCursor] doesn't know about. In case that happens, just
-  // reset the state.
-  [[NSCursor currentCursor] set];
-
   nsCursor oldType = [mCurrentMacCursor type];
   nsCursor newType = [aMacCursor type];
   if (oldType != newType) {
@@ -245,7 +240,10 @@ static constexpr nsCursor kCustomCursor = eCursorCount;
 
   // As the user moves the mouse, this gets called repeatedly with the same aCursorImage
   if (sCurrentCursor == aCursor && sCurrentCursorScaleFactor == scaleFactor && mCurrentMacCursor) {
-    [self setMacCursor:mCurrentMacCursor];
+    // Native dragging can unset our cursor apparently (see bug 1739352).
+    if (MOZ_UNLIKELY(![mCurrentMacCursor isSet])) {
+      [mCurrentMacCursor set];
+    }
     return NS_OK;
   }
 
@@ -264,7 +262,7 @@ static constexpr nsCursor kCustomCursor = eCursorCount;
 
   NSImage* cursorImage;
   nsresult rv = nsCocoaUtils::CreateNSImageFromImageContainer(
-      aCursor.mContainer, imgIContainer::FRAME_FIRST, nullptr, &cursorImage, scaleFactor);
+      aCursor.mContainer, imgIContainer::FRAME_FIRST, nullptr, nullptr, &cursorImage, scaleFactor);
   if (NS_FAILED(rv) || !cursorImage) {
     return NS_ERROR_FAILURE;
   }

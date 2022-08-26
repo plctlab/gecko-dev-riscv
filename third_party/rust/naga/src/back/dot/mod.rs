@@ -1,8 +1,11 @@
-/*! GraphViz (DOT) backend
- *
- * This backend writes a graph in the DOT format, for the ease
- * of IR inspection and debugging.
-!*/
+/*!
+Backend for [DOT][dot] (Graphviz).
+
+This backend writes a graph in the DOT language, for the ease
+of IR inspection and debugging.
+
+[dot]: https://graphviz.org/doc/info/lang.html
+*/
 
 use crate::{
     arena::Handle,
@@ -63,25 +66,30 @@ impl StatementGraph {
                 S::Switch {
                     selector,
                     ref cases,
-                    ref default,
                 } => {
                     self.dependencies.push((id, selector, "selector"));
                     for case in cases {
                         let case_id = self.add(&case.body);
-                        self.flow.push((id, case_id, "case"));
+                        let label = match case.value {
+                            crate::SwitchValue::Integer(_) => "case",
+                            crate::SwitchValue::Default => "default",
+                        };
+                        self.flow.push((id, case_id, label));
                     }
-                    let default_id = self.add(default);
-                    self.flow.push((id, default_id, "default"));
                     "Switch"
                 }
                 S::Loop {
                     ref body,
                     ref continuing,
+                    break_if,
                 } => {
                     let body_id = self.add(body);
                     self.flow.push((id, body_id, "body"));
                     let continuing_id = self.add(continuing);
                     self.flow.push((body_id, continuing_id, "continuing"));
+                    if let Some(expr) = break_if {
+                        self.dependencies.push((id, expr, "break if"));
+                    }
                     "Loop"
                 }
                 S::Return { value } => {
@@ -230,6 +238,7 @@ fn write_fun(
             E::ImageSample {
                 image,
                 sampler,
+                gather,
                 coordinate,
                 array_index,
                 offset: _,
@@ -259,21 +268,29 @@ fn write_fun(
                 if let Some(expr) = depth_ref {
                     edges.insert("depth_ref", expr);
                 }
-                ("ImageSample".into(), 5)
+                let string = match gather {
+                    Some(component) => Cow::Owned(format!("ImageGather{:?}", component)),
+                    _ => Cow::Borrowed("ImageSample"),
+                };
+                (string, 5)
             }
             E::ImageLoad {
                 image,
                 coordinate,
                 array_index,
-                index,
+                sample,
+                level,
             } => {
                 edges.insert("image", image);
                 edges.insert("coordinate", coordinate);
                 if let Some(expr) = array_index {
                     edges.insert("array_index", expr);
                 }
-                if let Some(expr) = index {
-                    edges.insert("index", expr);
+                if let Some(sample) = sample {
+                    edges.insert("sample", sample);
+                }
+                if let Some(level) = level {
+                    edges.insert("level", level);
                 }
                 ("ImageLoad".into(), 5)
             }
@@ -322,6 +339,7 @@ fn write_fun(
                 arg,
                 arg1,
                 arg2,
+                arg3,
             } => {
                 edges.insert("arg", arg);
                 if let Some(expr) = arg1 {
@@ -329,6 +347,9 @@ fn write_fun(
                 }
                 if let Some(expr) = arg2 {
                     edges.insert("arg2", expr);
+                }
+                if let Some(expr) = arg3 {
+                    edges.insert("arg3", expr);
                 }
                 (format!("{:?}", fun).into(), 7)
             }
@@ -460,6 +481,7 @@ fn write_fun(
     Ok(())
 }
 
+/// Write shader module to a [`String`].
 pub fn write(module: &crate::Module, mod_info: Option<&ModuleInfo>) -> Result<String, FmtError> {
     use std::fmt::Write as _;
 
@@ -474,7 +496,7 @@ pub fn write(module: &crate::Module, mod_info: Option<&ModuleInfo>) -> Result<St
             "\t\tg{} [ shape=hexagon label=\"{:?} {:?}/'{}'\" ]",
             handle.index(),
             handle,
-            var.class,
+            var.space,
             name(&var.name),
         )?;
     }

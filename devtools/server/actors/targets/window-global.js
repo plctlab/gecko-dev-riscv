@@ -4,8 +4,6 @@
 
 "use strict";
 
-/* global XPCNativeWrapper */
-
 // protocol.js uses objects as exceptions in order to define
 // error packets.
 /* eslint-disable no-throw-literal */
@@ -37,6 +35,9 @@ const InspectorUtils = require("InspectorUtils");
 const Targets = require("devtools/server/actors/targets/index");
 const { TargetActorRegistry } = ChromeUtils.import(
   "resource://devtools/server/actors/targets/target-actor-registry.jsm"
+);
+const { PrivateBrowsingUtils } = ChromeUtils.import(
+  "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
 const EXTENSION_CONTENT_JSM = "resource://gre/modules/ExtensionContent.jsm";
@@ -141,13 +142,9 @@ const windowGlobalTargetPrototype = {
    *
    * ### Main requests:
    *
-   * `attach`/`detach` requests:
-   *  - start/stop document watching:
-   *    Starts watching for new documents and emits `tabNavigated` and
-   *    `frameUpdate` over RDP.
-   *  - retrieve the thread actor:
-   *    Instantiates a ThreadActor that can be later attached to in order to
-   *    debug JS sources in the document.
+   * `detach`:
+   *  Stop document watching and cleanup everything that the target and its children actors created.
+   *  It ultimately lead to destroy the target actor.
    * `switchToFrame`:
    *  Change the targeted document of the whole actor, and its child target-scoped actors
    *  to an iframe or back to its original document.
@@ -163,9 +160,6 @@ const windowGlobalTargetPrototype = {
    *    This event contains the following attributes:
    *     * url (string)
    *       The new URI being loaded.
-   *     * nativeConsoleAPI (boolean)
-   *       `false` if the console API of the page has been overridden (e.g. by Firebug)
-   *       `true`  if the Gecko implementation is used
    *     * state (string)
    *       `start` if we just start requesting the new URL
    *       `stop`  if the new URL is done loading
@@ -264,10 +258,19 @@ const windowGlobalTargetPrototype = {
    *        - ignoreSubFrames Boolean
    *          If true, the actor will only focus on the passed docShell and not on the whole
    *          docShell tree. This should be enabled when we have targets for all documents.
+   *        - sessionContext Object
+   *          The Session Context to help know what is debugged.
+   *          See devtools/server/actors/watcher/session-context.js
    */
-  initialize: function(
+  initialize(
     connection,
-    { docShell, followWindowGlobalLifeCycle, isTopLevelTarget, ignoreSubFrames }
+    {
+      docShell,
+      followWindowGlobalLifeCycle,
+      isTopLevelTarget,
+      ignoreSubFrames,
+      sessionContext,
+    }
   ) {
     Actor.prototype.initialize.call(this, connection);
 
@@ -278,9 +281,15 @@ const windowGlobalTargetPrototype = {
     }
     this.docShell = docShell;
 
+    // Save references to the original document we attached to
+    this._originalWindow = this.window;
+
+    this.isPrivate = PrivateBrowsingUtils.isContentWindowPrivate(this.window);
+
     this.followWindowGlobalLifeCycle = followWindowGlobalLifeCycle;
     this.isTopLevelTarget = !!isTopLevelTarget;
     this.ignoreSubFrames = ignoreSubFrames;
+    this.sessionContext = sessionContext;
 
     // A map of actor names to actor instances provided by extensions.
     this._extraActors = {};
@@ -304,9 +313,6 @@ const windowGlobalTargetPrototype = {
     // Used by the ParentProcessTargetActor to list all frames in the Browser Toolbox
     this.watchNewDocShells = false;
 
-    // Flag which should be updated by the toolbox startup.
-    this._isNewPerfPanelEnabled = false;
-
     this._workerDescriptorActorList = null;
     this._workerDescriptorActorPool = null;
     this._onWorkerDescriptorActorListChanged = this._onWorkerDescriptorActorListChanged.bind(
@@ -322,21 +328,29 @@ const windowGlobalTargetPrototype = {
     );
 
     TargetActorRegistry.registerTargetActor(this);
+
+    // Instantiate the Thread Actor immediately.
+    // This is the only one actor instantiated right away by the target actor.
+    // All the others are instantiated lazily on first request made the client,
+    // via LazyPool API.
+    this._createThreadActor();
+
+    // Start observing navigations as well as sub documents.
+    // (This is probably meant to disappear once EFT is the only supported codepath)
+    this._progressListener = new DebuggerProgressListener(this);
+
+    // Ensure notifying about the target actor first
+    // before notifying about new docshells.
+    // Otherwise we would miss these RDP event as the client hasn't
+    // yet received the target actor's form.
+    // (This is also probably meant to disappear once EFT is the only supported codepath)
+    this._docShellsObserved = false;
+    DevToolsUtils.executeSoon(() => this._watchDocshells());
   },
 
   // Optional console API listener options (e.g. used by the WebExtensionActor to
   // filter console messages by addonID), set to an empty (no options) object by default.
   consoleAPIListenerOptions: {},
-
-  // Optional SourcesManager filter function (e.g. used by the WebExtensionActor to filter
-  // sources by addonID), allow all sources by default.
-  _allowSource() {
-    return true;
-  },
-
-  get attached() {
-    return !!this._attached;
-  },
 
   /*
    * Return a Debugger instance or create one if there is none yet
@@ -425,6 +439,10 @@ const windowGlobalTargetPrototype = {
 
   get browserId() {
     return this.browsingContext?.browserId;
+  },
+
+  get openerBrowserId() {
+    return this.browsingContext?.opener?.browserId;
   },
 
   /**
@@ -522,10 +540,7 @@ const windowGlobalTargetPrototype = {
 
   get sourcesManager() {
     if (!this._sourcesManager) {
-      this._sourcesManager = new SourcesManager(
-        this.threadActor,
-        this._allowSource
-      );
+      this._sourcesManager = new SourcesManager(this.threadActor);
     }
     return this._sourcesManager;
   },
@@ -553,16 +568,46 @@ const windowGlobalTargetPrototype = {
     );
     assert(this.actorID, "Actor should have an actorID.");
 
-    const innerWindowId = this.window ? getInnerId(this.window) : null;
+    // Note that we don't want the iframe dropdown to change our BrowsingContext.id/innerWindowId
+    // We only want to refer to the topmost original window we attached to
+    // as that's the one top document this target actor really represent.
+    // The iframe dropdown is just a hack that temporarily focus the scope
+    // of the target actor to a children iframe document.
+    //
+    // Also, for WebExtension, we want the target to represent the <browser> element
+    // created by DevTools, which always exists and help better connect resources to the target
+    // in the frontend. Otherwise all other <browser> element of webext may be reloaded or go away
+    // and then we would have troubles matching targets for resources.
+    const originalBrowsingContext = this
+      .devtoolsSpawnedBrowsingContextForWebExtension
+      ? this.devtoolsSpawnedBrowsingContextForWebExtension
+      : this.originalDocShell.browsingContext;
+    const browsingContextID = originalBrowsingContext.id;
+    const innerWindowId =
+      originalBrowsingContext.currentWindowContext.innerWindowId;
+    const parentInnerWindowId =
+      originalBrowsingContext.parent?.currentWindowContext.innerWindowId;
+    // Doesn't only check `!!opener` as some iframe might have an opener
+    // if their location was loaded via `window.open(url, "iframe-name")`.
+    // So also ensure that the document is opened in a distinct tab.
+    const isPopup =
+      !!originalBrowsingContext.opener &&
+      originalBrowsingContext.browserId !=
+        originalBrowsingContext.opener.browserId;
 
     const response = {
       actor: this.actorID,
-      browsingContextID: this.browsingContextID,
+      browsingContextID,
+      processID: Services.appinfo.processID,
       // True for targets created by JSWindowActors, see constructor JSDoc.
       followWindowGlobalLifeCycle: this.followWindowGlobalLifeCycle,
       innerWindowId,
+      parentInnerWindowId,
       topInnerWindowId: this.browsingContext.topWindowContext.innerWindowId,
       isTopLevelTarget: this.isTopLevelTarget,
+      ignoreSubFrames: this.ignoreSubFrames,
+      isPopup,
+      isPrivate: this.isPrivate,
       traits: {
         // @backward-compat { version 64 } Exposes a new trait to help identify
         // BrowsingContextActor's inherited actors from the client side.
@@ -596,7 +641,7 @@ const windowGlobalTargetPrototype = {
     Object.assign(response, actors);
 
     // The thread actor is the only actor manually created by the target actor.
-    // It is not registered in targetScopedActorFactoriesand therefore needs
+    // It is not registered in targetScopedActorFactories and therefore needs
     // to be added here manually.
     if (this.threadActor) {
       Object.assign(response, {
@@ -613,15 +658,21 @@ const windowGlobalTargetPrototype = {
    * @params {Object} options
    * @params {Boolean} options.isTargetSwitching: Set to true when this is called during
    *         a target switch.
+   * @params {Boolean} options.isModeSwitching: Set to true true when this is called as the
+   *         result of a change to the devtools.browsertoolbox.scope pref.
    */
-  destroy({ isTargetSwitching = false } = {}) {
-    if (this.isDestroyed()) {
+  destroy({ isTargetSwitching = false, isModeSwitching = false } = {}) {
+    // Avoid reentrancy. We will destroy the Transport when emitting "destroyed",
+    // which will force destroying all actors.
+    if (this.destroying) {
       return;
     }
+    this.destroying = true;
+
     // Tell the thread actor that the window global is closed, so that it may terminate
     // instead of resuming the debuggee script.
-    if (this._attached) {
-      // TODO: Bug 997119: Remove this coupling with thread actor
+    // TODO: Bug 997119: Remove this coupling with thread actor
+    if (this.threadActor) {
       this.threadActor._parentClosed = true;
     }
 
@@ -630,7 +681,44 @@ const windowGlobalTargetPrototype = {
       this._touchSimulator = null;
     }
 
-    this._detach({ isTargetSwitching });
+    // Check for `docShell` availability, as it can be already gone during
+    // Firefox shutdown.
+    if (this.docShell) {
+      this._unwatchDocShell(this.docShell);
+
+      // If this target is being destroyed as part of a target switch or a mode switch,
+      // we don't need to restore the configuration (this might cause the content page to
+      // be focused again, causing issues in tests and disturbing the user when switching modes).
+      if (!isTargetSwitching && !isModeSwitching) {
+        this._restoreTargetConfiguration();
+      }
+    }
+    this._unwatchDocshells();
+
+    this._destroyThreadActor();
+
+    // Shut down actors that belong to this target's pool.
+    this._styleSheetActors.clear();
+    if (this._targetScopedActorPool) {
+      this._targetScopedActorPool.destroy();
+      this._targetScopedActorPool = null;
+    }
+
+    // Make sure that no more workerListChanged notifications are sent.
+    if (this._workerDescriptorActorList !== null) {
+      this._workerDescriptorActorList.destroy();
+      this._workerDescriptorActorList = null;
+    }
+
+    if (this._workerDescriptorActorPool !== null) {
+      this._workerDescriptorActorPool.destroy();
+      this._workerDescriptorActorPool = null;
+    }
+
+    if (this._dbg) {
+      this._dbg.disable();
+      this._dbg = null;
+    }
     this.docShell = null;
     this._extraActors = null;
 
@@ -639,9 +727,13 @@ const windowGlobalTargetPrototype = {
       "console-api-profiler"
     );
 
+    // Emit a last event before calling Actor.destroy
+    // which will destroy the EventEmitter API
+    this.emit("destroyed", { isTargetSwitching, isModeSwitching });
+
     Actor.prototype.destroy.call(this);
     TargetActorRegistry.unregisterTargetActor(this);
-    Resources.unwatchAllTargetResources(this);
+    Resources.unwatchAllResources(this);
   },
 
   /**
@@ -669,31 +761,6 @@ const windowGlobalTargetPrototype = {
     }
 
     return false;
-  },
-
-  /**
-   * Does the actual work of attaching to a window global.
-   */
-  _attach() {
-    if (this._attached) {
-      return;
-    }
-
-    // Create a pool for context-lifetime actors.
-    this._createThreadActor();
-
-    this._progressListener = new DebuggerProgressListener(this);
-
-    // Save references to the original document we attached to
-    this._originalWindow = this.window;
-
-    this._docShellsObserved = false;
-
-    // Ensure replying to attach() request first
-    // before notifying about new docshells.
-    DevToolsUtils.executeSoon(() => this._watchDocshells());
-
-    this._attached = true;
   },
 
   _watchDocshells() {
@@ -729,7 +796,7 @@ const windowGlobalTargetPrototype = {
     if (this._docShellsObserved) {
       Services.obs.removeObserver(this, "webnavigation-create");
       Services.obs.removeObserver(this, "webnavigation-destroy");
-      this._docShellsObserved = true;
+      this._docShellsObserved = false;
     }
   },
 
@@ -788,12 +855,6 @@ const windowGlobalTargetPrototype = {
   },
 
   listWorkers(request) {
-    if (!this.attached) {
-      throw {
-        error: "wrongState",
-      };
-    }
-
     return this.ensureWorkerDescriptorActorList()
       .getList()
       .then(actors => {
@@ -845,26 +906,22 @@ const windowGlobalTargetPrototype = {
     // in the same process as this target. We should filter irrelevant events,
     // but console-api-profiler currently doesn't emit any information to identify
     // the origin of the event. See Bug 1731033.
-    if (this._isNewPerfPanelEnabled) {
-      // When the _isNewPerfPanelEnabled flag was set, this browsing target is
-      // used by a toolbox using the new performance panel, which is not
-      // compatible with console.profile().
-      const warningFlag = 1;
-      this.logInPage({
-        text:
-          "console.profile is not compatible with the new Performance recorder. " +
-          "The new Performance recorder can be disabled in the advanced section of the Settings panel. " +
-          "See https://bugzilla.mozilla.org/show_bug.cgi?id=1730896",
-        category: "console.profile unavailable",
-        flags: warningFlag,
-      });
-    }
+
+    // The new performance panel is not compatible with console.profile().
+    const warningFlag = 1;
+    this.logInPage({
+      text:
+        "console.profile is not compatible with the new Performance recorder. " +
+        "See https://bugzilla.mozilla.org/show_bug.cgi?id=1730896",
+      category: "console.profile unavailable",
+      flags: warningFlag,
+    });
   },
 
   observe(subject, topic, data) {
     // Ignore any event that comes before/after the actor is attached.
     // That typically happens during Firefox shutdown.
-    if (!this.attached) {
+    if (this.isDestroyed()) {
       return;
     }
 
@@ -916,7 +973,11 @@ const windowGlobalTargetPrototype = {
       // If the original top level document we connected to is removed,
       // we try to switch to any other top level document
       const rootDocShells = this.docShells.filter(d => {
-        return d != this.docShell && this._isRootDocShell(d);
+        // Ignore docshells without a working DOM Window.
+        // When we close firefox we have a chrome://extensions/content/dummy.xhtml
+        // which is in process of being destroyed and we might try to fallback to it.
+        // Unfortunately docshell.isBeingDestroyed() doesn't return true...
+        return d != this.docShell && this._isRootDocShell(d) && d.DOMWindow;
       });
       if (rootDocShells.length > 0) {
         const newRoot = rootDocShells[0];
@@ -975,6 +1036,7 @@ const windowGlobalTargetPrototype = {
     return {
       id,
       parentID,
+      isTopLevel: window == this.originalWindow && this.isTopLevelTarget,
       url: window.location.href,
       title: window.document.title,
     };
@@ -1053,8 +1115,10 @@ const windowGlobalTargetPrototype = {
    * The content window is no longer being debugged after this call.
    */
   _destroyThreadActor() {
-    this.threadActor.destroy();
-    this.threadActor = null;
+    if (this.threadActor) {
+      this.threadActor.destroy();
+      this.threadActor = null;
+    }
 
     if (this._sourcesManager) {
       this._sourcesManager.destroy();
@@ -1062,92 +1126,14 @@ const windowGlobalTargetPrototype = {
     }
   },
 
-  /**
-   * Does the actual work of detaching from a window global.
-   *
-   * @params {Object} options
-   * @params {Boolean} options.isTargetSwitching: Set to true when this is called during
-   *         a target switch.
-   * @returns false if the actor wasn't attached or true of detaching succeeds.
-   */
-  _detach({ isTargetSwitching } = {}) {
-    if (!this.attached) {
-      return false;
-    }
-
-    // Check for `docShell` availability, as it can be already gone during
-    // Firefox shutdown.
-    if (this.docShell) {
-      this._unwatchDocShell(this.docShell);
-
-      // If this target is being destroyed as part of a target switch, we don't need to
-      // restore the configuration (this might cause the content page to be focused again
-      // and cause issues in tets).
-      if (!isTargetSwitching) {
-        this._restoreTargetConfiguration();
-      }
-    }
-    this._unwatchDocshells();
-
-    this._destroyThreadActor();
-
-    // Shut down actors that belong to this target's pool.
-    this._styleSheetActors.clear();
-    if (this._targetScopedActorPool) {
-      this._targetScopedActorPool.destroy();
-      this._targetScopedActorPool = null;
-    }
-
-    // Make sure that no more workerListChanged notifications are sent.
-    if (this._workerDescriptorActorList !== null) {
-      this._workerDescriptorActorList.destroy();
-      this._workerDescriptorActorList = null;
-    }
-
-    if (this._workerDescriptorActorPool !== null) {
-      this._workerDescriptorActorPool.destroy();
-      this._workerDescriptorActorPool = null;
-    }
-
-    if (this._dbg) {
-      this._dbg.disable();
-      this._dbg = null;
-    }
-
-    this._attached = false;
-
-    // When the target actor acts as a WindowGlobalTarget, the actor will be destroyed
-    // without having to send an RDP event. The parent process will receive a window-global-destroyed
-    // and report the target actor as destroyed via the Watcher actor.
-    if (this.followWindowGlobalLifeCycle) {
-      return true;
-    }
-
-    return true;
-  },
-
   // Protocol Request Handlers
 
-  attach(request) {
-    if (this.isDestroyed()) {
-      throw {
-        error: "destroyed",
-      };
-    }
-
-    this._attach();
-
-    return {
-      threadActor: this.threadActor.actorID,
-    };
-  },
-
   detach(request) {
-    if (!this._detach()) {
-      throw {
-        error: "wrongState",
-      };
-    }
+    // Destroy the actor in the next event loop in order
+    // to ensure responding to the `detach` request.
+    DevToolsUtils.executeSoon(() => {
+      this.destroy();
+    });
 
     return {};
   },
@@ -1244,7 +1230,7 @@ const windowGlobalTargetPrototype = {
   /**
    * Ensure that CSS error reporting is enabled.
    */
-  async ensureCSSErrorReportingEnabled(request) {
+  async ensureCSSErrorReportingEnabled() {
     const promises = [];
     for (const docShell of this.docShells) {
       if (docShell.cssErrorReportingEnabled) {
@@ -1329,20 +1315,14 @@ const windowGlobalTargetPrototype = {
       }
     }
 
-    if (typeof options.isNewPerfPanelEnabled == "boolean") {
-      this._isNewPerfPanelEnabled = options.isNewPerfPanelEnabled;
+    if (typeof options.customFormatters !== "undefined") {
+      this.customFormatters = options.customFormatters;
     }
 
     if (!this.isTopLevelTarget) {
       // Following DevTools target options should only apply to the top target and be
       // propagated through the window global tree via the platform.
       return;
-    }
-    if (
-      typeof options.paintFlashing !== "undefined" &&
-      options.PaintFlashing !== this._getPaintFlashing()
-    ) {
-      this._setPaintFlashingEnabled(options.paintFlashing);
     }
     if (typeof options.restoreFocus == "boolean") {
       this._restoreFocus = options.restoreFocus;
@@ -1375,31 +1355,9 @@ const windowGlobalTargetPrototype = {
    * state when closing the toolbox.
    */
   _restoreTargetConfiguration() {
-    this._setPaintFlashingEnabled(false);
-
     if (this._restoreFocus && this.browsingContext?.isActive) {
       this.window.focus();
     }
-  },
-
-  /**
-   * Disable or enable the paint flashing on the target.
-   */
-  _setPaintFlashingEnabled(enabled) {
-    const windowUtils = this.window.windowUtils;
-    windowUtils.paintFlashing = enabled;
-  },
-
-  /**
-   * Return paint flashing status.
-   */
-  _getPaintFlashing() {
-    if (!this.docShell) {
-      // The window global is already closed.
-      return null;
-    }
-
-    return this.window.windowUtils.paintFlashing;
   },
 
   _changeTopLevelDocument(window) {
@@ -1423,9 +1381,9 @@ const windowGlobalTargetPrototype = {
     this._setWindow(window);
 
     DevToolsUtils.executeSoon(() => {
-      // No need to do anything more if the actor is not attached anymore
+      // No need to do anything more if the actor is destroyed.
       // e.g. the client has been closed and the actors destroyed in the meantime.
-      if (!this.attached) {
+      if (this.isDestroyed()) {
         return;
       }
 
@@ -1454,11 +1412,10 @@ const windowGlobalTargetPrototype = {
    * DebuggerProgressListener.
    */
   _windowReady(window, { isFrameSwitching, isBFCache } = {}) {
-    const isTopLevel = window == this.window;
-
-    if (this.ignoreSubFrames && !this.isTopLevel) {
+    if (this.ignoreSubFrames) {
       return;
     }
+    const isTopLevel = window == this.window;
 
     // We just reset iframe list on WillNavigate, so we now list all existing
     // frames when we load a new document in the original window
@@ -1488,11 +1445,10 @@ const windowGlobalTargetPrototype = {
     window,
     { id = null, isFrozen = false, isFrameSwitching = false }
   ) {
-    const isTopLevel = window == this.window;
-
-    if (this.ignoreSubFrames && !this.isTopLevel) {
+    if (this.ignoreSubFrames) {
       return;
     }
+    const isTopLevel = window == this.window;
 
     // If this follows WindowGlobal lifecycle, this target will be destroyed, alongside its top level document.
     // Only notify about in-process iframes.
@@ -1522,11 +1478,10 @@ const windowGlobalTargetPrototype = {
     isFrameSwitching = false,
     navigationStart,
   }) {
-    let isTopLevel = window == this.window;
-
-    if (this.ignoreSubFrames && !this.isTopLevel) {
+    if (this.ignoreSubFrames) {
       return;
     }
+    let isTopLevel = window == this.window;
 
     let reset = false;
     if (window == this._originalWindow && !isFrameSwitching) {
@@ -1566,7 +1521,6 @@ const windowGlobalTargetPrototype = {
     if (!this.followWindowGlobalLifeCycle) {
       this.emit("tabNavigated", {
         url: newURI,
-        nativeConsoleAPI: true,
         state: "start",
         isFrameSwitching,
       });
@@ -1582,19 +1536,18 @@ const windowGlobalTargetPrototype = {
    * targeted window global.
    */
   _navigate(window, isFrameSwitching = false) {
-    const isTopLevel = window == this.window;
-
-    if (this.ignoreSubFrames && !this.isTopLevel) {
+    if (this.ignoreSubFrames) {
       return;
     }
+    const isTopLevel = window == this.window;
 
     // navigate event needs to be dispatched synchronously,
     // by calling the listeners in the order or registration.
     // This event is fired once the document is loaded,
     // after the load event, it's document ready-state is 'complete'.
     this.emit("navigate", {
-      window: window,
-      isTopLevel: isTopLevel,
+      window,
+      isTopLevel,
     });
 
     // We don't do anything for inner frames here.
@@ -1617,32 +1570,9 @@ const windowGlobalTargetPrototype = {
     this.emit("tabNavigated", {
       url: this.url,
       title: this.title,
-      nativeConsoleAPI: this.hasNativeConsoleAPI(this.window),
       state: "stop",
-      isFrameSwitching: isFrameSwitching,
+      isFrameSwitching,
     });
-  },
-
-  /**
-   * Tells if the window.console object is native or overwritten by script in
-   * the page.
-   *
-   * @param nsIDOMWindow window
-   *        The window object you want to check.
-   * @return boolean
-   *         True if the window.console object is native, or false otherwise.
-   */
-  hasNativeConsoleAPI(window) {
-    let isNative = false;
-    try {
-      // We are very explicitly examining the "console" property of
-      // the non-Xrayed object here.
-      const console = window.wrappedJSObject.console;
-      isNative = new XPCNativeWrapper(console).IS_NATIVE_CONSOLE;
-    } catch (ex) {
-      // ignore
-    }
-    return isNative;
   },
 
   /**
@@ -1768,6 +1698,14 @@ DebuggerProgressListener.prototype = {
     if (this._targetActor.typeName === "parentProcessTarget") {
       docShell.browsingContext.watchedByDevTools = true;
     }
+    // Immediately enable CSS error reports on new top level docshells, if this was already enabled.
+    // This is specific to MBT and WebExtension targets (so the isRootActor check).
+    if (
+      this._targetActor.isRootActor &&
+      this._targetActor.docShell.cssErrorReportingEnabled
+    ) {
+      docShell.cssErrorReportingEnabled = true;
+    }
   },
 
   unwatch(docShell) {
@@ -1817,7 +1755,7 @@ DebuggerProgressListener.prototype = {
   },
 
   onWindowCreated: DevToolsUtils.makeInfallible(function(evt) {
-    if (!this._targetActor.attached) {
+    if (this._targetActor.isDestroyed()) {
       return;
     }
 
@@ -1855,7 +1793,7 @@ DebuggerProgressListener.prototype = {
   }, "DebuggerProgressListener.prototype.onWindowCreated"),
 
   onWindowHidden: DevToolsUtils.makeInfallible(function(evt) {
-    if (!this._targetActor.attached) {
+    if (this._targetActor.isDestroyed()) {
       return;
     }
 
@@ -1885,7 +1823,7 @@ DebuggerProgressListener.prototype = {
   }, "DebuggerProgressListener.prototype.onWindowHidden"),
 
   observe: DevToolsUtils.makeInfallible(function(subject, topic) {
-    if (!this._targetActor.attached) {
+    if (this._targetActor.isDestroyed()) {
       return;
     }
 
@@ -1922,7 +1860,7 @@ DebuggerProgressListener.prototype = {
     flag,
     status
   ) {
-    if (!this._targetActor.attached) {
+    if (this._targetActor.isDestroyed()) {
       return;
     }
     progress.QueryInterface(Ci.nsIDocShell);

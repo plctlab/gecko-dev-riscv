@@ -16,8 +16,7 @@
 
 class nsIGlobalObject;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Promise;
 
@@ -29,6 +28,8 @@ class NavigationPreloadManager final : public nsISupports,
 
   static bool IsValidHeader(const nsACString& aHeader);
 
+  static bool IsEnabled(JSContext* aCx, JSObject* aGlobal);
+
   NavigationPreloadManager(nsCOMPtr<nsIGlobalObject>&& aGlobal,
                            RefPtr<ServiceWorkerRegistration::Inner>& aInner);
 
@@ -39,25 +40,25 @@ class NavigationPreloadManager final : public nsISupports,
                        JS::Handle<JSObject*> aGivenProto) override;
 
   // WebIdl implementation
-  already_AddRefed<Promise> Enable();
+  already_AddRefed<Promise> Enable(ErrorResult& aError);
 
-  already_AddRefed<Promise> Disable();
+  already_AddRefed<Promise> Disable(ErrorResult& aError);
 
-  already_AddRefed<Promise> SetHeaderValue(const nsACString& aHeader);
+  already_AddRefed<Promise> SetHeaderValue(const nsACString& aHeader,
+                                           ErrorResult& aError);
 
-  already_AddRefed<Promise> GetState();
+  already_AddRefed<Promise> GetState(ErrorResult& aError);
 
  private:
   ~NavigationPreloadManager() = default;
 
   // General method for Enable()/Disable()
-  already_AddRefed<Promise> SetEnabled(bool aEnabled);
+  already_AddRefed<Promise> SetEnabled(bool aEnabled, ErrorResult& aError);
 
   nsCOMPtr<nsIGlobalObject> mGlobal;
   RefPtr<ServiceWorkerRegistration::Inner> mInner;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_NavigationPreloadManager_h

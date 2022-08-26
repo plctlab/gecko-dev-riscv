@@ -46,8 +46,8 @@
 
 #include "nsIXULRuntime.h"
 #include "nsIAppStartup.h"
-#include "GeckoProfiler.h"
 #include "Components.h"
+#include "ProfilerControl.h"
 
 #ifdef ANDROID
 #  include <android/log.h>
@@ -645,7 +645,7 @@ static bool RegisterXPCTestComponents(JSContext* cx, unsigned argc, Value* vp) {
     JS_ReportErrorASCII(cx, "Wrong number of arguments");
     return false;
   }
-  nsresult rv = XRE_AddStaticComponent(&kXPCTestModule);
+  nsresult rv = xpcTestRegisterComponents();
   if (NS_FAILED(rv)) {
     XPCThrower::Throw(rv, cx);
     return false;
@@ -1078,6 +1078,8 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
   // with the IOInterposer will be properly tracked.
   mozilla::IOInterposerInit ioInterposerGuard;
 
+  XRE_InitCommandLine(argc, argv);
+
   char aLocal;
   profiler_init(&aLocal);
 
@@ -1316,7 +1318,7 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
     // Ensure that DLL Services are running
     RefPtr<DllServices> dllSvc(DllServices::Get());
-    dllSvc->StartUntrustedModulesProcessor();
+    dllSvc->StartUntrustedModulesProcessor(true);
     auto dllServicesDisable =
         MakeScopeExit([&dllSvc]() { dllSvc->DisableFull(); });
 
@@ -1378,7 +1380,7 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
           result = FuzzXPCRuntimeStart(&jsapi, &argc, &argv,
                                        aShellData->fuzzerDriver);
-#  elif __AFL_COMPILER
+#  elif AFLFUZZ
           MOZ_CRASH("AFL is unsupported for XPC runtime fuzzing integration");
 #  endif
         } else {
@@ -1444,6 +1446,8 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
   NS_LogTerm();
 
+  XRE_DeinitCommandLine();
+
   return result;
 }
 
@@ -1499,6 +1503,13 @@ XPCShellDirProvider::GetFile(const char* prop, bool* persistent,
     file.forget(result);
     return NS_OK;
   }
+#ifdef MOZ_SANDBOX
+  if (!strcmp(prop, NS_APP_CONTENT_PROCESS_TEMP_DIR)) {
+    // Forward to the OS Temp directory
+    *persistent = true;
+    return NS_GetSpecialDirectory(NS_OS_TEMP_DIR, result);
+  }
+#endif
 
   return NS_ERROR_FAILURE;
 }

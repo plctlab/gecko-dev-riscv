@@ -32,14 +32,7 @@ function addSecurityInfo({ host, topLevelBaseDomain, originAttributes = {} }) {
     "@mozilla.org/security/transportsecurityinfo;1"
   ].createInstance(Ci.nsITransportSecurityInfo);
 
-  gSSService.processHeader(
-    uri,
-    "max-age=1000;",
-    secInfo,
-    0,
-    Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST,
-    attrs
-  );
+  gSSService.processHeader(uri, "max-age=1000;", secInfo, attrs);
 
   cars.rememberDecisionScriptable(host, attrs, serverCert, clientCert);
 }
@@ -85,7 +78,7 @@ function testSecurityInfo({
   }
 
   let uri = Services.io.newURI(`https://${host}`);
-  let isSecure = gSSService.isSecureURI(uri, 0, attrs);
+  let isSecure = gSSService.isSecureURI(uri, attrs);
   Assert.equal(
     isSecure,
     expectedHSTS,
@@ -109,14 +102,16 @@ function testSecurityInfo({
 
 add_task(async function test_baseDomain() {
   gSSService.clearAll();
+
+  // ---- hsts cleaner ----
   addTestSecurityInfo();
 
-  // Clear security settings of example.net including partitions.
+  // Clear hsts data of example.net including partitions.
   await new Promise(aResolve => {
     Services.clearData.deleteDataFromBaseDomain(
       "example.net",
       false,
-      Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS,
+      Ci.nsIClearDataService.CLEAR_HSTS,
       aResolve
     );
   });
@@ -124,13 +119,13 @@ add_task(async function test_baseDomain() {
   testSecurityInfo({
     host: "example.net",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
-  // SecuritySettingsCleaner also removes subdomain settings.
+  // HSTSCleaner also removes subdomain settings.
   testSecurityInfo({
     host: "test.example.net",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
   testSecurityInfo({ host: "example.org" });
 
@@ -138,18 +133,63 @@ add_task(async function test_baseDomain() {
     host: "example.com",
     topLevelBaseDomain: "example.net",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
   testSecurityInfo({
     host: "example.net",
     topLevelBaseDomain: "example.org",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
   testSecurityInfo({
     host: "test.example.net",
     topLevelBaseDomain: "example.org",
     expectedHSTS: false,
+    expectedCARS: true,
+  });
+
+  // ---- client auth remember cleaner -----
+  addTestSecurityInfo();
+
+  // Clear security settings of example.net including partitions.
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromBaseDomain(
+      "example.net",
+      false,
+      Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE,
+      aResolve
+    );
+  });
+
+  testSecurityInfo({
+    host: "example.net",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  // ClientAuthRememberCleaner also removes subdomain settings.
+  testSecurityInfo({
+    host: "test.example.net",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  testSecurityInfo({ host: "example.org" });
+
+  testSecurityInfo({
+    host: "example.com",
+    topLevelBaseDomain: "example.net",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  testSecurityInfo({
+    host: "example.net",
+    topLevelBaseDomain: "example.org",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  testSecurityInfo({
+    host: "test.example.net",
+    topLevelBaseDomain: "example.org",
+    expectedHSTS: true,
     expectedCARS: false,
   });
 
@@ -159,6 +199,8 @@ add_task(async function test_baseDomain() {
 
 add_task(async function test_host() {
   gSSService.clearAll();
+
+  // ---- HSTS cleaer ----
   addTestSecurityInfo();
 
   // Clear security settings of example.net without partitions.
@@ -166,7 +208,7 @@ add_task(async function test_host() {
     Services.clearData.deleteDataFromHost(
       "example.net",
       false,
-      Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS,
+      Ci.nsIClearDataService.CLEAR_HSTS,
       aResolve
     );
   });
@@ -174,7 +216,7 @@ add_task(async function test_host() {
   testSecurityInfo({
     host: "example.net",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
   testSecurityInfo({
     host: "test.example.net",
@@ -188,12 +230,55 @@ add_task(async function test_host() {
     host: "example.net",
     topLevelBaseDomain: "example.org",
     expectedHSTS: false,
-    expectedCARS: false,
+    expectedCARS: true,
   });
   testSecurityInfo({
     host: "test.example.net",
     topLevelBaseDomain: "example.org",
     expectedHSTS: false,
+    expectedCARS: true,
+  });
+
+  // Cleanup
+  gSSService.clearAll();
+
+  // --- clientAuthRemember cleaner ---
+
+  addTestSecurityInfo();
+
+  // Clear security settings of example.net without partitions.
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromHost(
+      "example.net",
+      false,
+      Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE,
+      aResolve
+    );
+  });
+
+  testSecurityInfo({
+    host: "example.net",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  testSecurityInfo({
+    host: "test.example.net",
+    expectedHSTS: true,
+    expectedCARS: true,
+  });
+  testSecurityInfo({ host: "example.org" });
+
+  testSecurityInfo({ host: "example.com", topLevelBaseDomain: "example.net" });
+  testSecurityInfo({
+    host: "example.net",
+    topLevelBaseDomain: "example.org",
+    expectedHSTS: true,
+    expectedCARS: false,
+  });
+  testSecurityInfo({
+    host: "test.example.net",
+    topLevelBaseDomain: "example.org",
+    expectedHSTS: true,
     expectedCARS: true,
   });
 

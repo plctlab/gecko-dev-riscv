@@ -18,19 +18,19 @@ const TEST_DATA = [
       {
         type: "click",
         filename: TEST_URL + ":42:43",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler: "() => {\n" + '  alert("Fat arrow without params!");\n' + "}",
       },
       {
         type: "click",
         filename: TEST_URL + ":46:43",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler: "event => {\n" + '  alert("Fat arrow with 1 param!");\n' + "}",
       },
       {
         type: "click",
         filename: TEST_URL + ":50:43",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler:
           "(event, foo, bar) => {\n" +
           '  alert("Fat arrow with 3 params!");\n' +
@@ -39,7 +39,7 @@ const TEST_DATA = [
       {
         type: "click",
         filename: TEST_URL + ":54:43",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler: "b => b",
       },
     ],
@@ -50,7 +50,7 @@ const TEST_DATA = [
       {
         type: "click",
         filename: TEST_URL + ":65:32",
-        attributes: ["Bubbling", "DOM2"],
+        attributes: ["Bubbling"],
         handler: "function(event) {\n" + '  alert("Bound event");\n' + "}",
       },
     ],
@@ -60,8 +60,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":88:29",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":89:19",
+        attributes: ["Bubbling"],
         handler: "function() {\n" + '  alert("boundHandleEvent");\n' + "}",
       },
     ],
@@ -71,8 +71,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":94:47",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":95:47",
+        attributes: ["Bubbling"],
         handler:
           "function functionProceededByInlineComment() {\n" +
           '  alert("comment-inline");\n' +
@@ -85,8 +85,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":99:50",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":100:50",
+        attributes: ["Bubbling"],
         handler:
           "function functionProceededByStreamingComment() {\n" +
           '  alert("comment-streaming");\n' +
@@ -99,8 +99,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":74:34",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":75:34",
+        attributes: ["Bubbling"],
         handler: "function() {\n" + '  alert("obj.anonObjectMethod");\n' + "}",
       },
     ],
@@ -110,8 +110,8 @@ const TEST_DATA = [
     expected: [
       {
         type: "click",
-        filename: TEST_URL + ":78:34",
-        attributes: ["Bubbling", "DOM2"],
+        filename: TEST_URL + ":79:34",
+        attributes: ["Bubbling"],
         handler: "function kay() {\n" + '  alert("obj.objectMethod");\n' + "}",
       },
     ],

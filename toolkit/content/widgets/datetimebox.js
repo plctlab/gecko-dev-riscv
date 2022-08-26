@@ -51,7 +51,7 @@ this.DateTimeBoxWidget = class {
   }
 
   destructor() {
-    this.mResetButton.addEventListener("mousedown", this, {
+    this.mResetButton.removeEventListener("mousedown", this, {
       mozSystemGroup: true,
     });
 
@@ -346,7 +346,7 @@ this.DateTimeBoxWidget = class {
     field.textContent = aPlaceHolder;
     field.placeholder = aPlaceHolder;
     field.setAttribute("aria-valuetext", "");
-    field.tabIndex = this.mInputElement.tabIndex;
+    this.setFieldTabIndexAttribute(field);
 
     field.setAttribute("readonly", this.mInputElement.readOnly);
     field.setAttribute("disabled", this.mInputElement.disabled);
@@ -447,6 +447,14 @@ this.DateTimeBoxWidget = class {
     this.mIsPickerOpen = aIsOpen;
   }
 
+  setFieldTabIndexAttribute(field) {
+    if (this.mInputElement.disabled) {
+      field.removeAttribute("tabindex");
+    } else {
+      field.tabIndex = this.mInputElement.tabIndex;
+    }
+  }
+
   updateEditAttributes() {
     this.log("updateEditAttributes");
 
@@ -465,8 +473,7 @@ this.DateTimeBoxWidget = class {
       child.disabled = this.mInputElement.disabled;
       child.readOnly = this.mInputElement.readOnly;
 
-      // tabIndex works on all elements
-      child.tabIndex = this.mInputElement.tabIndex;
+      this.setFieldTabIndexAttribute(child);
     }
 
     this.mResetButton.disabled =

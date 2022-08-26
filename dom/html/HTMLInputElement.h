@@ -24,12 +24,12 @@
 #include "mozilla/dom/ButtonInputTypes.h"
 #include "mozilla/dom/DateTimeInputTypes.h"
 #include "mozilla/dom/ColorInputType.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "mozilla/dom/FileInputType.h"
 #include "mozilla/dom/HiddenInputType.h"
 #include "nsGenericHTMLElement.h"
 #include "nsImageLoadingContent.h"
 #include "nsCOMPtr.h"
-#include "nsIConstraintValidation.h"
 #include "nsIFilePicker.h"
 #include "nsIContentPrefService2.h"
 #include "nsContentUtils.h"
@@ -109,15 +109,15 @@ class UploadLastDir final : public nsIObserver, public nsSupportsWeakReference {
 
 class HTMLInputElement final : public TextControlElement,
                                public nsImageLoadingContent,
-                               public nsIConstraintValidation {
+                               public ConstraintValidation {
   friend class AfterSetFilesOrDirectoriesCallback;
   friend class DispatchChangeEventCallback;
   friend class InputType;
 
  public:
+  using ConstraintValidation::GetValidationMessage;
   using nsGenericHTMLFormControlElementWithState::GetForm;
   using nsGenericHTMLFormControlElementWithState::GetFormAction;
-  using nsIConstraintValidation::GetValidationMessage;
   using ValueSetterOption = TextControlState::ValueSetterOption;
   using ValueSetterOptions = TextControlState::ValueSetterOptions;
 
@@ -169,6 +169,13 @@ class HTMLInputElement final : public TextControlElement,
                       const nsAString& aValue,
                       nsIPrincipal* aMaybeScriptedPrincipal,
                       nsAttrValue& aResult) override;
+
+  bool LastValueChangeWasInteractive() const {
+    return mLastValueChangeWasInteractive;
+  }
+
+  void GetLastInteractiveValue(nsAString&);
+
   nsChangeHint GetAttributeChangeHint(const nsAtom* aAttribute,
                                       int32_t aModType) const override;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
@@ -179,6 +186,9 @@ class HTMLInputElement final : public TextControlElement,
   nsresult PreHandleEvent(EventChainVisitor& aVisitor) override;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
+  MOZ_CAN_RUN_SCRIPT
+  nsresult MaybeHandleRadioButtonNavigation(EventChainPostVisitor&,
+                                            uint32_t aKeyCode);
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   void PostHandleEventForRangeThumb(EventChainPostVisitor& aVisitor);
   MOZ_CAN_RUN_SCRIPT
@@ -198,7 +208,7 @@ class HTMLInputElement final : public TextControlElement,
 
   void DestroyContent() override;
 
-  EventStates IntrinsicState() const override;
+  ElementState IntrinsicState() const override;
 
   void SetLastValueChangeWasInteractive(bool);
 
@@ -233,6 +243,8 @@ class HTMLInputElement final : public TextControlElement,
   MOZ_CAN_RUN_SCRIPT nsresult
   SetValueFromSetRangeText(const nsAString& aValue) override;
   bool HasCachedSelection() override;
+  void SetRevealPassword(bool aValue);
+  bool RevealPassword() const;
 
   /**
    * TextEditorValueEquals() is designed for internal use so that aValue
@@ -300,7 +312,7 @@ class HTMLInputElement final : public TextControlElement,
   bool IsTooShort();
   bool IsValueMissing() const;
   bool HasTypeMismatch() const;
-  mozilla::Maybe<bool> HasPatternMismatch() const;
+  Maybe<bool> HasPatternMismatch() const;
   bool IsRangeOverflow() const;
   bool IsRangeUnderflow() const;
   bool HasStepMismatch(bool aUseZeroIfValueNaN = false) const;
@@ -694,13 +706,7 @@ class HTMLInputElement final : public TextControlElement,
                                        SelectionMode aSelectMode,
                                        ErrorResult& aRv);
 
-  bool Allowdirs() const {
-    return HasAttr(kNameSpaceID_None, nsGkAtoms::allowdirs);
-  }
-
-  void SetAllowdirs(bool aValue, ErrorResult& aRv) {
-    SetHTMLBoolAttr(nsGkAtoms::allowdirs, aValue, aRv);
-  }
+  void ShowPicker(ErrorResult& aRv);
 
   bool WebkitDirectoryAttr() const {
     return HasAttr(kNameSpaceID_None, nsGkAtoms::webkitdirectory);
@@ -712,13 +718,7 @@ class HTMLInputElement final : public TextControlElement,
 
   void GetWebkitEntries(nsTArray<RefPtr<FileSystemEntry>>& aSequence);
 
-  bool IsFilesAndDirectoriesSupported() const;
-
   already_AddRefed<Promise> GetFilesAndDirectories(ErrorResult& aRv);
-
-  already_AddRefed<Promise> GetFiles(bool aRecursiveFlag, ErrorResult& aRv);
-
-  void ChooseDirectory(ErrorResult& aRv);
 
   void GetAlign(nsAString& aValue) { GetHTMLAttr(nsGkAtoms::align, aValue); }
   void SetAlign(const nsAString& aValue, ErrorResult& aRv) {
@@ -842,7 +842,7 @@ class HTMLInputElement final : public TextControlElement,
    * that @required attribute applies and the attribute is set; in contrast,
    * Required() returns true whenever @required attribute is set.
    */
-  bool IsRequired() const { return State().HasState(NS_EVENT_STATE_REQUIRED); }
+  bool IsRequired() const { return State().HasState(ElementState::REQUIRED); }
 
   bool HasBeenTypePassword() const { return mHasBeenTypePassword; }
 
@@ -930,11 +930,6 @@ class HTMLInputElement final : public TextControlElement,
   // don't have to think about the caller type.
   void GetNonFileValueInternal(nsAString& aValue) const;
 
-  /**
-   * Returns whether the current placeholder value should be shown.
-   */
-  bool ShouldShowPlaceholder() const;
-
   void ClearFiles(bool aSetValueChanged);
 
   void SetIndeterminateInternal(bool aValue, bool aShouldInvalidate);
@@ -961,8 +956,9 @@ class HTMLInputElement final : public TextControlElement,
 
   /**
    * Dispatch a select event.
+   * XXX: This dispatches select event synchronously, see bug 1679474.
    */
-  void DispatchSelectEvent(nsPresContext* aPresContext);
+  MOZ_CAN_RUN_SCRIPT void DispatchSelectEvent(nsPresContext* aPresContext);
 
   void SelectAll(nsPresContext* aPresContext);
   bool IsImage() const {
@@ -1002,12 +998,7 @@ class HTMLInputElement final : public TextControlElement,
    * MaybeSubmitForm looks for a submit input or a single text control
    * and submits the form if either is present.
    */
-  MOZ_CAN_RUN_SCRIPT nsresult MaybeSubmitForm(nsPresContext* aPresContext);
-
-  /**
-   * Update mFileList with the currently selected file.
-   */
-  void UpdateFileList();
+  MOZ_CAN_RUN_SCRIPT void MaybeSubmitForm(nsPresContext* aPresContext);
 
   /**
    * Called after calling one of the SetFilesOrDirectories() functions.
@@ -1069,7 +1060,7 @@ class HTMLInputElement final : public TextControlElement,
   MOZ_CAN_RUN_SCRIPT void FreeData();
   TextControlState* GetEditorState() const;
 
-  MOZ_CAN_RUN_SCRIPT mozilla::TextEditor* GetTextEditorFromState();
+  MOZ_CAN_RUN_SCRIPT TextEditor* GetTextEditorFromState();
 
   /**
    * Manages the internal data storage across type changes.
@@ -1478,13 +1469,13 @@ class HTMLInputElement final : public TextControlElement,
   UniquePtr<InputType, InputType::DoNotDelete> mInputType;
 
   static constexpr size_t INPUT_TYPE_SIZE =
-      sizeof(mozilla::Variant<
-             TextInputType, SearchInputType, TelInputType, URLInputType,
-             EmailInputType, PasswordInputType, NumberInputType, RangeInputType,
-             RadioInputType, CheckboxInputType, ButtonInputType, ImageInputType,
-             ResetInputType, SubmitInputType, DateInputType, TimeInputType,
-             WeekInputType, MonthInputType, DateTimeLocalInputType,
-             FileInputType, ColorInputType, HiddenInputType>);
+      sizeof(Variant<TextInputType, SearchInputType, TelInputType, URLInputType,
+                     EmailInputType, PasswordInputType, NumberInputType,
+                     RangeInputType, RadioInputType, CheckboxInputType,
+                     ButtonInputType, ImageInputType, ResetInputType,
+                     SubmitInputType, DateInputType, TimeInputType,
+                     WeekInputType, MonthInputType, DateTimeLocalInputType,
+                     FileInputType, ColorInputType, HiddenInputType>);
 
   // Memory allocated for mInputType, reused when type changes.
   char mInputTypeMem[INPUT_TYPE_SIZE];
@@ -1578,8 +1569,7 @@ class HTMLInputElement final : public TextControlElement,
   static bool CreatesDateTimeWidget(FormControlType aType) {
     return aType == FormControlType::InputDate ||
            aType == FormControlType::InputTime ||
-           (aType == FormControlType::InputDatetimeLocal &&
-            StaticPrefs::dom_forms_datetime_local_widget());
+           aType == FormControlType::InputDatetimeLocal;
   }
 
   bool CreatesDateTimeWidget() const { return CreatesDateTimeWidget(mType); }

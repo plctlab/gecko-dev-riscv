@@ -6,12 +6,13 @@
 
 const EXPORTED_SYMBOLS = ["AppUiTestDelegate"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
   mobileWindowTracker: "resource://gre/modules/GeckoViewWebExtension.jsm",
   GeckoViewTabBridge: "resource://gre/modules/GeckoViewTab.jsm",
@@ -32,7 +33,7 @@ class Delegate {
       nativeApp: "test-runner-support",
     };
 
-    return EventDispatcher.instance.sendRequestForResult(message);
+    return lazy.EventDispatcher.instance.sendRequestForResult(message);
   }
 
   clickPageAction(window, extensionId) {
@@ -57,14 +58,14 @@ class Delegate {
 
   async removeTab(tab) {
     const window = tab.browser.ownerGlobal;
-    await GeckoViewTabBridge.closeTab({
+    await lazy.GeckoViewTabBridge.closeTab({
       window,
       extensionId: TEST_SUPPORT_EXTENSION_ID,
     });
   }
 
   async openNewForegroundTab(window, url, waitForLoad = true) {
-    const tab = await GeckoViewTabBridge.createNewTab({
+    const tab = await lazy.GeckoViewTabBridge.createNewTab({
       extensionId: TEST_SUPPORT_EXTENSION_ID,
       createProperties: {
         url,
@@ -84,7 +85,7 @@ class Delegate {
     });
 
     const newWindow = browser.ownerGlobal;
-    mobileWindowTracker.setTabActive(newWindow, true);
+    lazy.mobileWindowTracker.setTabActive(newWindow, true);
 
     if (!waitForLoad) {
       return tab;

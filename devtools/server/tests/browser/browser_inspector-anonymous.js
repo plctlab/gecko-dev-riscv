@@ -6,6 +6,10 @@
 // Test for Bug 777674
 
 add_task(async function() {
+  await SpecialPowers.pushPermissions([
+    { type: "allowXULXBL", allow: true, context: MAIN_DOMAIN },
+  ]);
+
   const { walker } = await initInspectorFront(
     MAIN_DOMAIN + "inspector-traversal-data.html"
   );
@@ -59,7 +63,7 @@ async function testNativeAnonymousStartingNode(walker) {
     [[walker.actorID]],
     async function(actorID) {
       const { require } = ChromeUtils.import(
-        "resource://devtools/shared/Loader.jsm"
+        "resource://devtools/shared/loader/Loader.jsm"
       );
       const { DevToolsServer } = require("devtools/server/devtools-server");
 

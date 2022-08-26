@@ -7,7 +7,6 @@
 var EXPORTED_SYMBOLS = ["TelemetryReportingPolicy", "Policy"];
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { clearTimeout, setTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
@@ -18,8 +17,10 @@ const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "TelemetrySend",
   "resource://gre/modules/TelemetrySend.jsm"
 );
@@ -56,8 +57,14 @@ var Policy = {
   now: () => new Date(),
   setShowInfobarTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearShowInfobarTimeout: id => clearTimeout(id),
+  fakeSessionRestoreNotification: () => {
+    TelemetryReportingPolicyImpl.observe(
+      null,
+      "sessionstore-windows-restored",
+      null
+    );
+  },
 };
-
 /**
  * Represents a request to display data policy.
  *
@@ -465,7 +472,7 @@ var TelemetryReportingPolicyImpl = {
   _userNotified() {
     this._log.trace("_userNotified");
     this._recordNotificationData();
-    TelemetrySend.notifyCanUpload();
+    lazy.TelemetrySend.notifyCanUpload();
   },
 
   /**

@@ -120,7 +120,8 @@ TestRunner.slowestTestTime = 0;
 TestRunner.slowestTestURL = "";
 TestRunner.interactiveDebugger = false;
 TestRunner.cleanupCrashes = false;
-TestRunner.timeoutAspass = false;
+TestRunner.timeoutAsPass = false;
+TestRunner.conditionedProfile = false;
 
 TestRunner._expectingProcessCrash = false;
 TestRunner._structuredFormatter = new StructuredFormatter();
@@ -468,6 +469,22 @@ TestRunner.getParameterInfo = function() {
 };
 
 /**
+ * Print information about which prefs are set.
+ * This is used to help validate that the tests are actually
+ * running in the expected context.
+ */
+TestRunner.dumpPrefContext = function() {
+  let prefs = ["fission.autostart"];
+
+  let message = ["Dumping test context:"];
+  prefs.forEach(function formatPref(pref) {
+    let val = SpecialPowers.getBoolPref(pref);
+    message.push(pref + "=" + val);
+  });
+  TestRunner.structuredLogger.info(message.join("\n  "));
+};
+
+/**
  * TestRunner entry point.
  *
  * The arguments are the URLs of the test to be ran.
@@ -475,16 +492,16 @@ TestRunner.getParameterInfo = function() {
  **/
 TestRunner.runTests = function(/*url...*/) {
   TestRunner.structuredLogger.info("SimpleTest START");
+  TestRunner.dumpPrefContext();
   TestRunner.originalTestURL = $("current-test").innerHTML;
 
   SpecialPowers.registerProcessCrashObservers();
 
   // Initialize code coverage
   if (TestRunner.jscovDirPrefix != "") {
-    var CoverageCollector = SpecialPowers.Cu.import(
-      "resource://testing-common/CoverageUtils.jsm",
-      {}
-    ).CoverageCollector;
+    var { CoverageCollector } = SpecialPowers.ChromeUtils.import(
+      "resource://testing-common/CoverageUtils.jsm"
+    );
     coverageCollector = new CoverageCollector(TestRunner.jscovDirPrefix);
   }
 
@@ -547,7 +564,7 @@ TestRunner.getNextUrl = function() {
  * Run the next test. If no test remains, calls onComplete().
  **/
 TestRunner._haltTests = false;
-TestRunner.runNextTest = function() {
+async function _runNextTest() {
   if (
     TestRunner._currentTest < TestRunner._urls.length &&
     !TestRunner._haltTests
@@ -565,6 +582,12 @@ TestRunner.runNextTest = function() {
 
     TestRunner.structuredLogger.testStart(url);
 
+    if (TestRunner._urls[TestRunner._currentTest].test.allow_xul_xbl) {
+      await SpecialPowers.pushPermissions([
+        { type: "allowXULXBL", allow: true, context: "http://mochi.test:8888" },
+        { type: "allowXULXBL", allow: true, context: "http://example.org" },
+      ]);
+    }
     TestRunner._makeIframe(url, 0);
   } else {
     $("current-test").innerHTML = "<b>Finished</b>";
@@ -642,7 +665,8 @@ TestRunner.runNextTest = function() {
       coverageCollector.finalize();
     }
   }
-};
+}
+TestRunner.runNextTest = _runNextTest;
 
 TestRunner.expectChildProcessCrash = function() {
   TestRunner._expectingProcessCrash = true;

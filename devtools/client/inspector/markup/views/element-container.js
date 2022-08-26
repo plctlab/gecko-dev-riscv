@@ -4,7 +4,6 @@
 
 "use strict";
 
-const promise = require("promise");
 const Services = require("Services");
 const MarkupContainer = require("devtools/client/inspector/markup/views/markup-container");
 const ElementEditor = require("devtools/client/inspector/markup/views/element-editor");
@@ -13,7 +12,7 @@ const { extend } = require("devtools/shared/extend");
 
 loader.lazyRequireGetter(
   this,
-  "setEventTooltip",
+  "EventTooltip",
   "devtools/client/shared/widgets/tooltip/EventTooltipHelper",
   true
 );
@@ -59,7 +58,7 @@ function MarkupElementContainer(markupView, node) {
 }
 
 MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
-  onContainerClick: function(event) {
+  onContainerClick(event) {
     if (!event.target.hasAttribute("data-event")) {
       return;
     }
@@ -75,10 +74,33 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
 
     const toolbox = this.markup.toolbox;
 
-    setEventTooltip(tooltip, listenerInfo, toolbox);
+    // Create the EventTooltip which will populate the tooltip content.
+    const eventTooltip = new EventTooltip(
+      tooltip,
+      listenerInfo,
+      toolbox,
+      this.node
+    );
+
+    // Add specific styling to the "event" badge when at least one event is disabled.
+    // The eventTooltip will take care of clearing the event listener when it's destroyed.
+    eventTooltip.on(
+      "event-tooltip-listener-toggled",
+      ({ hasDisabledEventListeners }) => {
+        const className = "has-disabled-events";
+        if (hasDisabledEventListeners) {
+          this.editor._eventBadge.classList.add(className);
+        } else {
+          this.editor._eventBadge.classList.remove(className);
+        }
+      }
+    );
+
     // Disable the image preview tooltip while we display the event details
     this.markup._disableImagePreviewTooltip();
     tooltip.once("hidden", () => {
+      eventTooltip.destroy();
+
       // Enable the image preview tooltip after closing the event details
       this.markup._enableImagePreviewTooltip();
 
@@ -111,9 +133,9 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
    * If this element is not previewable or the preview cannot be generated for
    * some reason, the Promise is rejected.
    */
-  _getPreview: function() {
+  _getPreview() {
     if (!this.isPreviewable()) {
-      return promise.reject("_getPreview called on a non-previewable element.");
+      return Promise.reject("_getPreview called on a non-previewable element.");
     }
 
     if (this.tooltipDataPromise) {
@@ -177,7 +199,7 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
     return true;
   },
 
-  copyImageDataUri: function() {
+  copyImageDataUri() {
     // We need to send again a request to gettooltipData even if one was sent
     // for the tooltip, because we want the full-size image
     this.node.getImageData().then(data => {
@@ -187,12 +209,12 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
     });
   },
 
-  setInlineTextChild: function(inlineTextChild) {
+  setInlineTextChild(inlineTextChild) {
     this.inlineTextChild = inlineTextChild;
     this.editor.updateTextEditor();
   },
 
-  clearInlineTextChild: function() {
+  clearInlineTextChild() {
     this.inlineTextChild = undefined;
     this.editor.updateTextEditor();
   },
@@ -200,14 +222,14 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
   /**
    * Trigger new attribute field for input.
    */
-  addAttribute: function() {
+  addAttribute() {
     this.editor.newAttr.editMode();
   },
 
   /**
    * Trigger attribute field for editing.
    */
-  editAttribute: function(attrName) {
+  editAttribute(attrName) {
     this.editor.attrElements.get(attrName).editMode();
   },
 
@@ -215,7 +237,7 @@ MarkupElementContainer.prototype = extend(MarkupContainer.prototype, {
    * Remove attribute from container.
    * This is an undoable action.
    */
-  removeAttribute: function(attrName) {
+  removeAttribute(attrName) {
     const doMods = this.editor._startModifyingAttributes();
     const undoMods = this.editor._startModifyingAttributes();
     this.editor._saveAttribute(attrName, undoMods);

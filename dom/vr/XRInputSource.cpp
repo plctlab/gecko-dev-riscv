@@ -14,8 +14,7 @@
 #include "mozilla/dom/Gamepad.h"
 #include "mozilla/dom/GamepadManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSource, mParent, mTargetRaySpace,
                                       mGripSpace, mGamepad)
@@ -78,6 +77,16 @@ nsTArray<nsString> GetInputSourceProfile(gfx::VRControllerType aType) {
       profile.AppendElement(id);
       break;
     case gfx::VRControllerType::OculusTouch2:
+      id.AssignLiteral("oculus-touch-v2");
+      profile.AppendElement(id);
+      id.AssignLiteral("oculus-touch");
+      profile.AppendElement(id);
+      id.AssignLiteral("generic-trigger-squeeze-thumbstick");
+      profile.AppendElement(id);
+      break;
+    case gfx::VRControllerType::OculusTouch3:
+      id.AssignLiteral("oculus-touch-v3");
+      profile.AppendElement(id);
       id.AssignLiteral("oculus-touch-v2");
       profile.AppendElement(id);
       id.AssignLiteral("oculus-touch");
@@ -390,5 +399,4 @@ void XRInputSource::CreateGripSpace(
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

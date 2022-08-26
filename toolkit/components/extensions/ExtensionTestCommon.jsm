@@ -14,49 +14,56 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionTestCommon", "MockExtension"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["TextEncoder"]);
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AddonManager",
   "resource://gre/modules/AddonManager.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
+  "Assert",
+  "resource://testing-common/Assert.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
   "Extension",
   "resource://gre/modules/Extension.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
+  "ExtensionData",
+  "resource://gre/modules/Extension.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
   "ExtensionParent",
   "resource://gre/modules/ExtensionParent.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ExtensionPermissions",
   "resource://gre/modules/ExtensionPermissions.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
+ChromeUtils.defineModuleGetter(lazy, "OS", "resource://gre/modules/osfile.jsm");
 
 XPCOMUtils.defineLazyGetter(
-  this,
+  lazy,
   "apiManager",
-  () => ExtensionParent.apiManager
+  () => lazy.ExtensionParent.apiManager
 );
 
 const { ExtensionCommon } = ChromeUtils.import(
@@ -69,10 +76,6 @@ const { ExtensionUtils } = ChromeUtils.import(
 const { flushJarCache } = ExtensionUtils;
 
 const { instanceOf } = ExtensionCommon;
-
-XPCOMUtils.defineLazyGetter(this, "console", () =>
-  ExtensionCommon.getConsole()
-);
 
 var ExtensionTestCommon;
 
@@ -104,12 +107,12 @@ class MockExtension {
           }
 
           if (extension.id == this.id) {
-            apiManager.off(eventName, onstartup);
+            lazy.apiManager.off(eventName, onstartup);
             this._extension = extension;
             resolve(extension);
           }
         };
-        apiManager.on(eventName, onstartup);
+        lazy.apiManager.on(eventName, onstartup);
       });
 
     this._extension = null;
@@ -176,16 +179,18 @@ class MockExtension {
     await this._setIncognitoOverride();
 
     if (this.installType == "temporary") {
-      return AddonManager.installTemporaryAddon(this.file).then(async addon => {
-        this.addon = addon;
-        this.id = addon.id;
-        return this._readyPromise;
-      });
+      return lazy.AddonManager.installTemporaryAddon(this.file).then(
+        async addon => {
+          this.addon = addon;
+          this.id = addon.id;
+          return this._readyPromise;
+        }
+      );
     } else if (this.installType == "permanent") {
       this.addonPromise = new Promise(resolve => {
         this.resolveAddon = resolve;
       });
-      let install = await AddonManager.getInstallForFile(this.file);
+      let install = await lazy.AddonManager.getInstallForFile(this.file);
       return new Promise((resolve, reject) => {
         let listener = {
           onInstallFailed: reject,
@@ -217,8 +222,20 @@ class MockExtension {
         });
       })
       .then(() => {
-        return OS.File.remove(this.file.path);
+        return lazy.OS.File.remove(this.file.path);
       });
+  }
+
+  terminateBackground() {
+    return this._extensionPromise.then(extension => {
+      return extension.terminateBackground();
+    });
+  }
+
+  wakeupBackground() {
+    return this._extensionPromise.then(extension => {
+      return extension.wakeupBackground();
+    });
   }
 }
 
@@ -235,7 +252,133 @@ function provide(obj, keys, value, override = false) {
   }
 }
 
+// Some test assertions to work in both mochitest and xpcshell.  This
+// will be revisited later.
+const ExtensionTestAssertions = {
+  getPersistentListeners(extWrapper, apiNs, apiEvent) {
+    let policy = WebExtensionPolicy.getByID(extWrapper.id);
+    const extension = policy?.extension || extWrapper.extension;
+
+    if (!extension || !(extension instanceof lazy.Extension)) {
+      throw new Error(
+        `Unable to retrieve the Extension class instance for ${extWrapper.id}`
+      );
+    }
+
+    const { persistentListeners } = extension;
+    if (
+      !persistentListeners?.size > 0 ||
+      !persistentListeners.get(apiNs)?.has(apiEvent)
+    ) {
+      return [];
+    }
+
+    return Array.from(
+      persistentListeners
+        .get(apiNs)
+        .get(apiEvent)
+        .values()
+    );
+  },
+
+  assertPersistentListeners(
+    extWrapper,
+    apiNs,
+    apiEvent,
+    { primed, persisted = true }
+  ) {
+    if (primed && !persisted) {
+      throw new Error(
+        "Inconsistent assertion, can't assert a primed listener if it is not persisted"
+      );
+    }
+
+    let listenersInfo = ExtensionTestAssertions.getPersistentListeners(
+      extWrapper,
+      apiNs,
+      apiEvent
+    );
+    lazy.Assert.equal(
+      persisted,
+      !!listenersInfo?.length,
+      `Got a persistent listener for ${apiNs}.${apiEvent}`
+    );
+    for (const info of listenersInfo) {
+      if (primed) {
+        lazy.Assert.ok(
+          info.primed,
+          `${apiNs}.${apiEvent} listener expected to be primed`
+        );
+      } else {
+        lazy.Assert.equal(
+          info.primed,
+          undefined,
+          `${apiNs}.${apiEvent} listener expected to not be primed`
+        );
+      }
+    }
+  },
+};
+
 ExtensionTestCommon = class ExtensionTestCommon {
+  static get testAssertions() {
+    return ExtensionTestAssertions;
+  }
+
+  // Called by AddonTestUtils.promiseShutdownManager to reset startup promises
+  static resetStartupPromises() {
+    lazy.ExtensionParent._resetStartupPromises();
+  }
+
+  // Called to notify "browser-delayed-startup-finished", which resolves
+  // ExtensionParent.browserPaintedPromise.  Thus must be resolved for
+  // primed listeners to be able to wake the extension.
+  static notifyEarlyStartup() {
+    Services.obs.notifyObservers(null, "browser-delayed-startup-finished");
+    return lazy.ExtensionParent.browserPaintedPromise;
+  }
+
+  // Called to notify "extensions-late-startup", which resolves
+  // ExtensionParent.browserStartupPromise.  Normally, in Firefox, the
+  // notification would be "sessionstore-windows-restored", however
+  // mobile listens for "extensions-late-startup" so that is more useful
+  // in testing.
+  static notifyLateStartup() {
+    Services.obs.notifyObservers(null, "extensions-late-startup");
+    return lazy.ExtensionParent.browserStartupPromise;
+  }
+
+  /**
+   * Shortcut to more easily access WebExtensionPolicy.backgroundServiceWorkerEnabled
+   * from mochitest-plain tests.
+   *
+   * @returns {boolean} true if the background service worker are enabled.
+   */
+  static getBackgroundServiceWorkerEnabled() {
+    return WebExtensionPolicy.backgroundServiceWorkerEnabled;
+  }
+
+  /**
+   * A test helper mainly used to skip test tasks if running in "backgroundServiceWorker" test mode
+   * (e.g. while running test files shared across multiple test modes: e.g. in-process-webextensions,
+   * remote-webextensions, sw-webextensions etc.).
+   *
+   * The underlying pref "extension.backgroundServiceWorker.forceInTestExtension":
+   * - is set to true in the xpcshell-serviceworker.ini and mochitest-serviceworker.ini manifests
+   *   (and so it is going to be set to true while running the test files listed in those manifests)
+   * - when set to true, all test extension using a background script without explicitly listing it
+   *   in the test extension manifest will be automatically executed as background service workers
+   *   (instead of background scripts loaded in a background page)
+   *
+   * @returns {boolean} true if the test is running in "background service worker mode"
+   */
+  static isInBackgroundServiceWorkerTests() {
+    return Services.prefs.getBoolPref(
+      "extensions.backgroundServiceWorker.forceInTestExtension",
+      false
+    );
+  }
+
   /**
    * This code is designed to make it easy to test a WebExtension
    * without creating a bunch of files. Everything is contained in a
@@ -284,10 +427,25 @@ ExtensionTestCommon = class ExtensionTestCommon {
       delete manifest.host_permissions;
     }
 
+    if (data.useServiceWorker === undefined) {
+      // If we're force-testing service workers we will turn the background
+      // script part of ExtensionTestUtils test extensions into a background
+      // service worker.
+      data.useServiceWorker = ExtensionTestCommon.isInBackgroundServiceWorkerTests();
+    }
+
     if (data.background) {
       let bgScript = Services.uuid.generateUUID().number + ".js";
 
-      provide(manifest, ["background", "scripts"], [bgScript], true);
+      // If persistent is set keep the flag.
+      let persistent = manifest.background?.persistent;
+      let scriptKey = data.useServiceWorker
+        ? ["background", "service_worker"]
+        : ["background", "scripts"];
+      let scriptVal = data.useServiceWorker ? bgScript : [bgScript];
+      provide(manifest, scriptKey, scriptVal, true);
+      provide(manifest, ["background", "persistent"], persistent);
+
       files[bgScript] = data.background;
     }
 
@@ -328,8 +486,8 @@ ExtensionTestCommon = class ExtensionTestCommon {
     );
     let zipW = new ZipWriter();
 
-    let file = FileUtils.getFile("TmpD", [baseName]);
-    file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
+    let file = lazy.FileUtils.getFile("TmpD", [baseName]);
+    file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, lazy.FileUtils.PERMS_FILE);
 
     const MODE_WRONLY = 0x02;
     const MODE_TRUNCATE = 0x20;
@@ -409,12 +567,12 @@ ExtensionTestCommon = class ExtensionTestCommon {
       return;
     }
     if (addonData.incognitoOverride == "not_allowed") {
-      return ExtensionPermissions.remove(id, {
+      return lazy.ExtensionPermissions.remove(id, {
         permissions: ["internal:privateBrowsingAllowed"],
         origins: [],
       });
     }
-    return ExtensionPermissions.add(id, {
+    return lazy.ExtensionPermissions.add(id, {
       permissions: ["internal:privateBrowsingAllowed"],
       origins: [],
     });
@@ -498,15 +656,21 @@ ExtensionTestCommon = class ExtensionTestCommon {
       id = Services.uuid.generateUUID().number;
     }
 
-    let signedState = AddonManager.SIGNEDSTATE_SIGNED;
+    let signedState = lazy.AddonManager.SIGNEDSTATE_SIGNED;
     if (data.isPrivileged) {
-      signedState = AddonManager.SIGNEDSTATE_PRIVILEGED;
+      signedState = lazy.AddonManager.SIGNEDSTATE_PRIVILEGED;
     }
     if (data.isSystem) {
-      signedState = AddonManager.SIGNEDSTATE_SYSTEM;
+      signedState = lazy.AddonManager.SIGNEDSTATE_SYSTEM;
     }
 
-    return new Extension(
+    let isPrivileged = lazy.ExtensionData.getIsPrivileged({
+      signedState,
+      builtIn: false,
+      temporarilyInstalled: !!data.temporarilyInstalled,
+    });
+
+    return new lazy.Extension(
       {
         id,
         resourceURI: jarURI,
@@ -514,7 +678,10 @@ ExtensionTestCommon = class ExtensionTestCommon {
         signedState,
         incognitoOverride: data.incognitoOverride,
         temporarilyInstalled: !!data.temporarilyInstalled,
+        isPrivileged,
         TEST_NO_ADDON_MANAGER: true,
+        // By default we set TEST_NO_DELAYED_STARTUP to true
+        TEST_NO_DELAYED_STARTUP: !data.delayedStartup,
       },
       data.startupReason
     );

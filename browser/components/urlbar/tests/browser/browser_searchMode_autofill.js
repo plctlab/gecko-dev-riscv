@@ -8,7 +8,7 @@
 
 "use strict";
 
-add_task(async function setup() {
+add_setup(async function() {
   for (let i = 0; i < 5; i++) {
     await PlacesTestUtils.addVisits([{ uri: "http://example.com/" }]);
   }
@@ -18,6 +18,10 @@ add_task(async function setup() {
   let defaultEngine = Services.search.getEngineByName("Example");
   await Services.search.setDefault(defaultEngine);
   await Services.search.moveEngine(defaultEngine, 0);
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.suggest.quickactions", false]],
+  });
 
   registerCleanupFunction(async () => {
     await PlacesUtils.history.clear();

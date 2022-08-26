@@ -2,10 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/frame-script */
+
 "use strict";
 
-/* global content, addEventListener, addMessageListener, removeMessageListener,
-  sendAsyncMessage */
+/* global addEventListener */
 
 /*
  * Frame script that listens for requests to start a `DevToolsServer` for a frame in a
@@ -26,16 +27,16 @@ try {
     let loader,
       customLoader = false;
     if (content.document.nodePrincipal.isSystemPrincipal) {
-      const { DevToolsLoader } = ChromeUtils.import(
-        "resource://devtools/shared/Loader.jsm"
+      const { useDistinctSystemPrincipalLoader } = ChromeUtils.import(
+        "resource://devtools/shared/loader/Loader.jsm"
       );
-      loader = new DevToolsLoader({
-        invisibleToDebugger: true,
-      });
+      loader = useDistinctSystemPrincipalLoader(chromeGlobal);
       customLoader = true;
     } else {
       // Otherwise, use the shared loader.
-      loader = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+      loader = ChromeUtils.import(
+        "resource://devtools/shared/loader/Loader.jsm"
+      );
     }
     const { require } = loader;
 
@@ -54,6 +55,7 @@ try {
       const mm = msg.target;
       const prefix = msg.data.prefix;
       const addonId = msg.data.addonId;
+      const addonBrowsingContextGroupId = msg.data.addonBrowsingContextGroupId;
 
       // If we try to create several frame targets simultaneously, the frame script will be loaded several times.
       // In this case a single "debug:connect" message might be received by all the already loaded frame scripts.
@@ -76,30 +78,61 @@ try {
         const {
           WebExtensionTargetActor,
         } = require("devtools/server/actors/targets/webextension");
+        const {
+          createWebExtensionSessionContext,
+        } = require("devtools/server/actors/watcher/session-context");
+        const { browsingContext } = docShell;
         actor = new WebExtensionTargetActor(conn, {
           addonId,
+          addonBrowsingContextGroupId,
           chromeGlobal,
           isTopLevelTarget: true,
           prefix,
+          sessionContext: createWebExtensionSessionContext(
+            {
+              addonId,
+              browsingContextID: browsingContext.id,
+              innerWindowId: browsingContext.currentWindowContext.innerWindowId,
+            },
+            {
+              isServerTargetSwitchingEnabled:
+                msg.data.isServerTargetSwitchingEnabled,
+            }
+          ),
         });
       } else {
         const {
           WindowGlobalTargetActor,
         } = require("devtools/server/actors/targets/window-global");
+        const {
+          createBrowserElementSessionContext,
+        } = require("devtools/server/actors/watcher/session-context");
+
         const { docShell } = chromeGlobal;
         // For a script loaded via loadFrameScript, the global is the content
         // message manager.
         // All WindowGlobalTarget actors created via the framescript are top-level
         // targets. Non top-level WindowGlobalTarget actors are all created by the
         // DevToolsFrameChild actor.
+        //
+        // createBrowserElementSessionContext only reads browserId attribute
+        const fakeBrowserElement = {
+          browserId: docShell.browsingContext.browserId,
+        };
         actor = new WindowGlobalTargetActor(conn, {
           docShell,
           isTopLevelTarget: true,
+          // This is only used when server target switching is off and we create
+          // the target from TabDescriptor. So all config attributes are false.
+          sessionContext: createBrowserElementSessionContext(
+            fakeBrowserElement,
+            {}
+          ),
         });
       }
       actor.manage(actor);
 
-      sendAsyncMessage("debug:actor", { actor: actor.form(), prefix: prefix });
+      sendAsyncMessage("debug:actor", { actor: actor.form(), prefix });
     });
 
     addMessageListener("debug:connect", onConnect);
@@ -135,21 +168,23 @@ try {
 
     // Destroy the server once its last connection closes. Note that multiple frame
     // scripts may be running in parallel and reuse the same server.
-    function destroyServer() {
+    function destroyLoader() {
       // Only destroy the server if there is no more connections to it. It may be used
       // to debug another tab running in the same process.
       if (DevToolsServer.hasConnection() || DevToolsServer.keepAlive) {
         return;
       }
-      DevToolsServer.off("connectionchange", destroyServer);
-      DevToolsServer.destroy();
+      DevToolsServer.off("connectionchange", destroyLoader);
 
       // When debugging chrome pages, we initialized a dedicated loader, also destroy it
       if (customLoader) {
-        loader.destroy();
+        const { releaseDistinctSystemPrincipalLoader } = ChromeUtils.import(
+          "resource://devtools/shared/loader/Loader.jsm"
+        );
+        releaseDistinctSystemPrincipalLoader(chromeGlobal);
       }
     }
-    DevToolsServer.on("connectionchange", destroyServer);
+    DevToolsServer.on("connectionchange", destroyLoader);
   })();
 } catch (e) {
   dump(`Exception in DevTools frame startup: ${e}\n`);

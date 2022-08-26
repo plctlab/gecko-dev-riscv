@@ -230,6 +230,14 @@ size_t VideoData::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   return size;
 }
 
+ColorDepth VideoData::GetColorDepth() const {
+  if (!mImage) {
+    return ColorDepth::COLOR_8;
+  }
+
+  return mImage->GetColorDepth();
+}
+
 void VideoData::UpdateDuration(const TimeUnit& aDuration) {
   MOZ_ASSERT(!aDuration.IsNegative());
   mDuration = aDuration;
@@ -262,22 +270,22 @@ PlanarYCbCrData ConstructPlanarYCbCrData(const VideoInfo& aInfo,
 
   PlanarYCbCrData data;
   data.mYChannel = Y.mData;
-  data.mYSize = IntSize(Y.mWidth, Y.mHeight);
   data.mYStride = Y.mStride;
   data.mYSkip = Y.mSkip;
   data.mCbChannel = Cb.mData;
   data.mCrChannel = Cr.mData;
-  data.mCbCrSize = IntSize(Cb.mWidth, Cb.mHeight);
   data.mCbCrStride = Cb.mStride;
   data.mCbSkip = Cb.mSkip;
   data.mCrSkip = Cr.mSkip;
-  data.mPicX = aPicture.x;
-  data.mPicY = aPicture.y;
-  data.mPicSize = aPicture.Size();
+  data.mPictureRect = aPicture;
   data.mStereoMode = aInfo.mStereoMode;
   data.mYUVColorSpace = aBuffer.mYUVColorSpace;
   data.mColorDepth = aBuffer.mColorDepth;
+  if (aInfo.mTransferFunction) {
+    data.mTransferFunction = *aInfo.mTransferFunction;
+  }
   data.mColorRange = aBuffer.mColorRange;
+  data.mChromaSubsampling = aBuffer.mChromaSubsampling;
   return data;
 }
 
@@ -292,7 +300,6 @@ bool VideoData::SetVideoDataToImage(PlanarYCbCrImage* aVideoImage,
 
   PlanarYCbCrData data = ConstructPlanarYCbCrData(aInfo, aBuffer, aPicture);
 
-  aVideoImage->SetDelayedConversion(true);
   if (aCopyData) {
     return aVideoImage->CopyData(data);
   } else {
@@ -346,8 +353,8 @@ already_AddRefed<VideoData> VideoData::CreateAndCopyData(
     }
   }
 #elif XP_MACOSX
-  if (aAllocator && aAllocator->GetCompositorBackendType() ==
-                        layers::LayersBackend::LAYERS_WR) {
+  if (aAllocator && aAllocator->GetWebRenderCompositorType() !=
+                        layers::WebRenderCompositor::SOFTWARE) {
     RefPtr<layers::MacIOSurfaceImage> ioImage =
         new layers::MacIOSurfaceImage(nullptr);
     PlanarYCbCrData data = ConstructPlanarYCbCrData(aInfo, aBuffer, aPicture);

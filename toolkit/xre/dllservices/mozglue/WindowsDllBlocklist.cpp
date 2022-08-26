@@ -215,25 +215,7 @@ class ReentrancySentinel {
 
 std::map<DWORD, const char*>* ReentrancySentinel::sThreadMap;
 
-class WritableBuffer {
- public:
-  WritableBuffer() : mBuffer{0}, mLen(0) {}
-
-  void Write(const char* aData, size_t aLen) {
-    size_t writable_len = std::min(aLen, Available());
-    memcpy(mBuffer + mLen, aData, writable_len);
-    mLen += writable_len;
-  }
-
-  size_t const Length() { return mLen; }
-  const char* Data() { return mBuffer; }
-
- private:
-  size_t const Available() { return sizeof(mBuffer) - mLen; }
-
-  char mBuffer[1024];
-  size_t mLen;
-};
+using WritableBuffer = mozilla::glue::detail::WritableBuffer<1024>;
 
 /**
  * This is a linked list of DLLs that have been blocked. It doesn't use
@@ -478,6 +460,11 @@ static NTSTATUS NTAPI patched_LdrLoadDll(PWCHAR filePath, PULONG flags,
         goto continue_loading;
       }
 
+      if ((info->mFlags & DllBlockInfo::UTILITY_PROCESSES_ONLY) &&
+          !(sInitFlags & eDllBlocklistInitFlagIsUtilityProcess)) {
+        goto continue_loading;
+      }
+
       if ((info->mFlags & DllBlockInfo::BROWSER_PROCESS_ONLY) &&
           (sInitFlags & eDllBlocklistInitFlagIsChildProcess)) {
         goto continue_loading;
@@ -558,7 +545,9 @@ static void* gStartAddressesToBlock[4];
 static bool ShouldBlockThread(void* aStartAddress) {
   // Allows crashfirefox.exe to continue to work. Also if your threadproc is
   // null, this crash is intentional.
-  if (aStartAddress == nullptr) return false;
+  if (aStartAddress == nullptr) {
+    return false;
+  }
 
 #if defined(NIGHTLY_BUILD)
   for (auto p : gStartAddressesToBlock) {
@@ -613,12 +602,44 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
 
 #ifdef _M_AMD64
   if (!IsWin8OrLater()) {
-    Kernel32Intercept.Init("kernel32.dll");
-
+    Kernel32Intercept.Init(L"kernel32.dll");
     // The crash that this hook works around is only seen on Win7.
     stub_RtlInstallFunctionTableCallback.Set(
         Kernel32Intercept, "RtlInstallFunctionTableCallback",
         &patched_RtlInstallFunctionTableCallback);
+  }
+#endif
+
+  // Bug 1361410: WRusr.dll will overwrite our hook and cause a crash.
+  // Workaround: If we detect WRusr.dll, don't hook.
+  if (!GetModuleHandleW(L"WRusr.dll")) {
+    Kernel32Intercept.Init(L"kernel32.dll");
+    if (!stub_BaseThreadInitThunk.SetDetour(Kernel32Intercept,
+                                            "BaseThreadInitThunk",
+                                            &patched_BaseThreadInitThunk)) {
+#ifdef DEBUG
+      printf_stderr("BaseThreadInitThunk hook failed\n");
+#endif
+    }
+  }
+
+#if defined(NIGHTLY_BUILD)
+  // Populate a list of thread start addresses to block.
+  HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
+  if (hKernel) {
+    void* pProc;
+
+    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryA");
+    gStartAddressesToBlock[0] = pProc;
+
+    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryW");
+    gStartAddressesToBlock[1] = pProc;
+
+    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryExA");
+    gStartAddressesToBlock[2] = pProc;
+
+    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryExW");
+    gStartAddressesToBlock[3] = pProc;
   }
 #endif
 
@@ -673,40 +694,6 @@ MFBT_API void DllBlocklist_Initialize(uint32_t aInitFlags) {
   if (!sUser32BeforeBlocklist && !IsWin32kLockedDown()) {
     ::LoadLibraryW(L"user32.dll");
   }
-
-  Kernel32Intercept.Init("kernel32.dll");
-
-  // Bug 1361410: WRusr.dll will overwrite our hook and cause a crash.
-  // Workaround: If we detect WRusr.dll, don't hook.
-  if (!GetModuleHandleW(L"WRusr.dll")) {
-    if (!stub_BaseThreadInitThunk.SetDetour(Kernel32Intercept,
-                                            "BaseThreadInitThunk",
-                                            &patched_BaseThreadInitThunk)) {
-#ifdef DEBUG
-      printf_stderr("BaseThreadInitThunk hook failed\n");
-#endif
-    }
-  }
-
-#if defined(NIGHTLY_BUILD)
-  // Populate a list of thread start addresses to block.
-  HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
-  if (hKernel) {
-    void* pProc;
-
-    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryA");
-    gStartAddressesToBlock[0] = pProc;
-
-    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryW");
-    gStartAddressesToBlock[1] = pProc;
-
-    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryExA");
-    gStartAddressesToBlock[2] = pProc;
-
-    pProc = (void*)GetProcAddress(hKernel, "LoadLibraryExW");
-    gStartAddressesToBlock[3] = pProc;
-  }
-#endif
 }
 
 #ifdef DEBUG

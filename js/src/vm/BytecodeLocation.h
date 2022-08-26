@@ -13,6 +13,7 @@
 #include "vm/BuiltinObjectKind.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/CheckIsObjectKind.h"   // CheckIsObjectKind
+#include "vm/CompletionKind.h"      // CompletionKind
 #include "vm/FunctionPrefixKind.h"  // FunctionPrefixKind
 #include "vm/GeneratorResumeKind.h"
 #include "vm/StringType.h"
@@ -206,8 +207,10 @@ class BytecodeLocation {
   bool isInvokeOp() const { return IsInvokeOp(getOp()); }
 
   bool isGetPropOp() const { return IsGetPropOp(getOp()); }
+  bool isGetElemOp() const { return IsGetElemOp(getOp()); }
 
   bool isSetPropOp() const { return IsSetPropOp(getOp()); }
+  bool isSetElemOp() const { return IsSetElemOp(getOp()); }
 
   AsyncFunctionResolveKind getAsyncFunctionResolveKind() {
     return AsyncFunctionResolveKind(GET_UINT8(rawBytecode_));
@@ -297,6 +300,11 @@ class BytecodeLocation {
     return BuiltinObjectKind(GET_UINT8(rawBytecode_));
   }
 
+  CompletionKind getCompletionKind() const {
+    MOZ_ASSERT(is(JSOp::CloseIter));
+    return CompletionKind(GET_UINT8(rawBytecode_));
+  }
+
   uint32_t getNewArrayLength() const {
     MOZ_ASSERT(is(JSOp::NewArray));
     return GET_UINT32(rawBytecode_);
@@ -319,8 +327,7 @@ class BytecodeLocation {
     return GET_INT32(rawBytecode_);
   }
   uint32_t getResumeIndex() const {
-    MOZ_ASSERT(is(JSOp::ResumeIndex) || is(JSOp::InitialYield) ||
-               is(JSOp::Yield) || is(JSOp::Await));
+    MOZ_ASSERT(is(JSOp::InitialYield) || is(JSOp::Yield) || is(JSOp::Await));
     return GET_RESUMEINDEX(rawBytecode_);
   }
   Value getInlineValue() const {

@@ -13,7 +13,7 @@ from mach.decorators import (
     SettingsProvider,
     SubCommand,
 )
-from mozboot.util import get_state_dir
+from mach.util import get_state_dir
 from mozbuild.base import BuildEnvironmentNotFoundException
 from mozbuild.util import memoize
 
@@ -507,5 +507,16 @@ def try_scriptworker(command_context, **kwargs):
 
     Requires VPN and shipit access.
     """
+    init(command_context)
+    return run(command_context, **kwargs)
+
+
+@SubCommand(
+    "try",
+    "compare",
+    description="Push two try jobs, one on your current commit and another on the one you specify",
+    parser=get_parser("compare"),
+)
+def try_compare(command_context, **kwargs):
     init(command_context)
     return run(command_context, **kwargs)

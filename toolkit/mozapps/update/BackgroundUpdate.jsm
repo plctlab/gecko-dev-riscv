@@ -7,22 +7,29 @@
 
 var EXPORTED_SYMBOLS = ["BackgroundUpdate"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+const { BackgroundTasksManager } = ChromeUtils.import(
+  "resource://gre/modules/BackgroundTasksManager.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+  ASRouterTargeting: "resource://activity-stream/lib/ASRouterTargeting.jsm",
   BackgroundTasksUtils: "resource://gre/modules/BackgroundTasksUtils.jsm",
-  BackgroundTasksManager: "resource://gre/modules/BackgroundTasksManager.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+  JSONFile: "resource://gre/modules/JSONFile.jsm",
   TaskScheduler: "resource://gre/modules/TaskScheduler.jsm",
   UpdateUtils: "resource://gre/modules/UpdateUtils.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   let consoleOptions = {
     // tip: set maxLogLevel to "debug" and use log.debug() to create detailed
@@ -34,7 +41,7 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   return new ConsoleAPI(consoleOptions);
 });
 
-XPCOMUtils.defineLazyGetter(this, "localization", () => {
+XPCOMUtils.defineLazyGetter(lazy, "localization", () => {
   return new Localization(
     ["branding/brand.ftl", "toolkit/updates/backgroundupdate.ftl"],
     true
@@ -42,20 +49,18 @@ XPCOMUtils.defineLazyGetter(this, "localization", () => {
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "UpdateService",
   "@mozilla.org/updates/update-service;1",
   "nsIApplicationUpdateService"
 );
-
-Cu.importGlobalProperties(["Glean"]);
 
 // We may want to change the definition of the task over time. When we do this,
 // we need to remove and re-register the task. We will make sure this happens
 // by storing the installed version number of the task to a pref and comparing
 // that version number to the current version. If they aren't equal, we know
 // that we have to re-register the task.
-const TASK_DEF_CURRENT_VERSION = 2;
+const TASK_DEF_CURRENT_VERSION = 3;
 const TASK_INSTALLED_VERSION_PREF =
   "app.update.background.lastInstalledTaskVersion";
 
@@ -81,10 +86,12 @@ var BackgroundUpdate = {
    * @returns {boolean} - true if this installation has an App and a GRE omnijar.
    */
   async _hasOmnijar() {
-    const appOmniJar = FileUtils.getFile("XCurProcD", [
+    const appOmniJar = lazy.FileUtils.getFile("XCurProcD", [
       AppConstants.OMNIJAR_NAME,
     ]);
-    const greOmniJar = FileUtils.getFile("GreD", [AppConstants.OMNIJAR_NAME]);
+    const greOmniJar = lazy.FileUtils.getFile("GreD", [
+      AppConstants.OMNIJAR_NAME,
+    ]);
 
     let bothExist =
       (await IOUtils.exists(appOmniJar.path)) &&
@@ -115,14 +122,14 @@ var BackgroundUpdate = {
     let SLUG = "_reasonsToNotUpdateInstallation";
     let reasons = [];
 
-    log.debug(`${SLUG}: checking app.update.auto`);
-    let updateAuto = await UpdateUtils.getAppUpdateAutoEnabled();
+    lazy.log.debug(`${SLUG}: checking app.update.auto`);
+    let updateAuto = await lazy.UpdateUtils.getAppUpdateAutoEnabled();
     if (!updateAuto) {
       reasons.push(this.REASON.NO_APP_UPDATE_AUTO);
     }
 
-    log.debug(`${SLUG}: checking app.update.background.enabled`);
-    let updateBackground = await UpdateUtils.readUpdateConfigSetting(
+    lazy.log.debug(`${SLUG}: checking app.update.background.enabled`);
+    let updateBackground = await lazy.UpdateUtils.readUpdateConfigSetting(
       "app.update.background.enabled"
     );
     if (!updateBackground) {
@@ -133,7 +140,7 @@ var BackgroundUpdate = {
       "@mozilla.org/backgroundtasks;1" in Cc &&
       Cc["@mozilla.org/backgroundtasks;1"].getService(Ci.nsIBackgroundTasks);
 
-    log.debug(`${SLUG}: checking for MOZ_BACKGROUNDTASKS`);
+    lazy.log.debug(`${SLUG}: checking for MOZ_BACKGROUNDTASKS`);
     if (!AppConstants.MOZ_BACKGROUNDTASKS || !bts) {
       reasons.push(this.REASON.NO_MOZ_BACKGROUNDTASKS);
     }
@@ -146,7 +153,7 @@ var BackgroundUpdate = {
       Ci.nsIApplicationUpdateService
     );
 
-    log.debug(
+    lazy.log.debug(
       `${SLUG}: checking that updates are not disabled by policy, testing ` +
         `configuration, or abnormal runtime environment`
     );
@@ -154,7 +161,7 @@ var BackgroundUpdate = {
       reasons.push(this.REASON.CANNOT_USUALLY_CHECK);
     }
 
-    log.debug(
+    lazy.log.debug(
       `${SLUG}: checking that we can make progress: updates can stage and/or apply`
     );
     if (
@@ -173,7 +180,7 @@ var BackgroundUpdate = {
       }
     }
 
-    log.debug(`${SLUG}: checking that this installation has an omnijar`);
+    lazy.log.debug(`${SLUG}: checking that this installation has an omnijar`);
     if (!(await this._hasOmnijar())) {
       reasons.push(this.REASON.NO_OMNIJAR);
     }
@@ -211,26 +218,26 @@ var BackgroundUpdate = {
 
     // No default profile happens under xpcshell but also when running local
     // builds.  It's unexpected in the wild so we track it separately.
-    if (!BackgroundTasksUtils.hasDefaultProfile()) {
+    if (!lazy.BackgroundTasksUtils.hasDefaultProfile()) {
       reasons.push(this.REASON.NO_DEFAULT_PROFILE_EXISTS);
     }
 
-    if (!BackgroundTasksUtils.currentProfileIsDefaultProfile()) {
+    if (!lazy.BackgroundTasksUtils.currentProfileIsDefaultProfile()) {
       reasons.push(this.REASON.NOT_DEFAULT_PROFILE);
     }
 
-    log.debug(`${SLUG}: checking app.update.langpack.enabled`);
+    lazy.log.debug(`${SLUG}: checking app.update.langpack.enabled`);
     let updateLangpack = Services.prefs.getBoolPref(
       "app.update.langpack.enabled",
       true
     );
     if (updateLangpack) {
-      log.debug(
+      lazy.log.debug(
         `${SLUG}: app.update.langpack.enabled=true, checking that no langpacks are installed`
       );
 
-      let langpacks = await AddonManager.getAddonsByTypes(["locale"]);
-      log.debug(`${langpacks.length} langpacks installed`);
+      let langpacks = await lazy.AddonManager.getAddonsByTypes(["locale"]);
+      lazy.log.debug(`${langpacks.length} langpacks installed`);
       if (langpacks.length) {
         reasons.push(this.REASON.LANGPACK_INSTALLED);
       }
@@ -242,7 +249,7 @@ var BackgroundUpdate = {
         .createInstance(Ci.nsIUpdateProcessor)
         .getServiceRegKeyExists();
     } catch (ex) {
-      log.error(
+      lazy.log.error(
         `${SLUG}: Failed to check for Maintenance Service Registry Key: ${ex}`
       );
       serviceRegKeyExists = false;
@@ -271,14 +278,14 @@ var BackgroundUpdate = {
       // The full path might hit command line length limits, but also makes it
       // much easier to find the relevant log file when starting from the
       // Windows Task Scheduler UI.
-      FileUtils.getFile("UpdRootD", ["backgroundupdate.moz_log"]).path,
+      lazy.FileUtils.getFile("UpdRootD", ["backgroundupdate.moz_log"]).path,
       "--backgroundtask",
       "backgroundupdate",
     ];
 
-    let workingDirectory = FileUtils.getDir("UpdRootD", [], true).path;
+    let workingDirectory = lazy.FileUtils.getDir("UpdRootD", [], true).path;
 
-    let description = await localization.formatValue(
+    let description = await lazy.localization.formatValue(
       "backgroundupdate-task-description"
     );
 
@@ -286,7 +293,7 @@ var BackgroundUpdate = {
     // stops it.
     let executionTimeoutSec = 20 * 60;
 
-    let result = await TaskScheduler.registerTask(
+    let result = await lazy.TaskScheduler.registerTask(
       taskId,
       binary.path,
       // Keep this default in sync with the preference in firefox.js.
@@ -307,32 +314,39 @@ var BackgroundUpdate = {
     return result;
   },
 
-  async _mirrorToPerInstallationPref() {
-    try {
-      let scheduling = Services.prefs.getBoolPref(
-        "app.update.background.scheduling.enabled",
-        true
-      );
-      await UpdateUtils.writeUpdateConfigSetting(
-        "app.update.background.enabled",
-        scheduling,
-        { setDefaultOnly: true }
-      );
-      log.debug(
-        `mirrored per-profile pref "app.update.background.scheduling.enabled" default ` +
-          `to per-installation pref default "app.update.background.enabled": ${scheduling}`
-      );
-    } catch (e) {
-      if (e instanceof Ci.nsIException && e.result == Cr.NS_ERROR_UNEXPECTED) {
-        // The preference doesn't exist.
-        return;
-      }
-      console.warn(
-        `ignoring failure to mirror per-profile pref "app.update.background.scheduling.enabled" default ` +
-          `to per-installation pref default "app.update.background.enabled"`,
-        e
-      );
+  /**
+   * Background Update is controlled by the per-installation pref
+   * "app.update.background.enabled". When Background Update was still in the
+   * experimental phase, the default value of this pref may have been changed.
+   * Now that the feature has been rolled out, we need to make sure that the
+   * desired default value is restored.
+   */
+  async ensureExperimentToRolloutTransitionPerformed() {
+    if (!lazy.UpdateUtils.PER_INSTALLATION_PREFS_SUPPORTED) {
+      return;
     }
+    const transitionPerformedPref = "app.update.background.rolledout";
+    if (Services.prefs.getBoolPref(transitionPerformedPref, false)) {
+      // writeUpdateConfigSetting serializes access to the config file. Because
+      // of this, we can safely return here without worrying about another call
+      // to this function that might still be in progress.
+      return;
+    }
+    Services.prefs.setBoolPref(transitionPerformedPref, true);
+
+    const defaultValue =
+      lazy.UpdateUtils.PER_INSTALLATION_PREFS["app.update.background.enabled"]
+        .defaultValue;
+    await lazy.UpdateUtils.writeUpdateConfigSetting(
+      "app.update.background.enabled",
+      defaultValue,
+      { setDefaultOnly: true }
+    );
+
+    // To be thorough, remove any traces of the pref that used to control the
+    // default value that we just set. We don't want any users to have the
+    // impression that that pref is still useful.
+    Services.prefs.clearUserPref("app.update.background.scheduling.enabled");
   },
 
   async observe(subject, topic, data) {
@@ -351,7 +365,7 @@ var BackgroundUpdate = {
         break;
     }
 
-    log.debug(
+    lazy.log.debug(
       `observe: ${whatChanged} may have changed; invoking maybeScheduleBackgroundUpdateTask`
     );
     return this.maybeScheduleBackgroundUpdateTask();
@@ -365,21 +379,16 @@ var BackgroundUpdate = {
   async maybeScheduleBackgroundUpdateTask() {
     let SLUG = "maybeScheduleBackgroundUpdateTask";
 
-    if (
-      this._force() ||
-      BackgroundTasksUtils.currentProfileIsDefaultProfile()
-    ) {
-      await this._mirrorToPerInstallationPref();
-    }
+    await this.ensureExperimentToRolloutTransitionPerformed();
 
-    log.info(
+    lazy.log.info(
       `${SLUG}: checking eligibility before scheduling background update task`
     );
 
     let previousEnabled;
     let successfullyReadPrevious;
     try {
-      previousEnabled = await TaskScheduler.taskExists(this.taskId);
+      previousEnabled = await lazy.TaskScheduler.taskExists(this.taskId);
       successfullyReadPrevious = true;
     } catch (ex) {
       successfullyReadPrevious = false;
@@ -398,15 +407,6 @@ var BackgroundUpdate = {
       Services.prefs.addObserver("app.update.background.force", this);
       Services.prefs.addObserver("app.update.background.interval", this);
 
-      // To accommodate forcing with "app.update.background.force"
-      // dynamically, we always observe
-      // "app.update.background.scheduling.enabled", even though we act on it
-      // (usually) only when we're the default profile.
-      Services.prefs.addObserver(
-        "app.update.background.scheduling.enabled",
-        this
-      );
-
       // Witness when the langpack updating feature is changed.
       Services.prefs.addObserver("app.update.langpack.enabled", this);
 
@@ -415,7 +415,7 @@ var BackgroundUpdate = {
         if (addon.type != "locale") {
           return;
         }
-        log.debug(
+        lazy.log.debug(
           `${SLUG}: langpacks may have changed; invoking maybeScheduleBackgroundUpdateTask`
         );
         // No need to await this promise.
@@ -427,15 +427,17 @@ var BackgroundUpdate = {
         onInstalled: onAddonEvent,
         onUninstalled: onAddonEvent,
       };
-      AddonManager.addAddonListener(addonsListener);
+      lazy.AddonManager.addAddonListener(addonsListener);
 
       this._initialized = true;
     }
 
-    log.debug(`${SLUG}: checking for reasons to not update this installation`);
+    lazy.log.debug(
+      `${SLUG}: checking for reasons to not update this installation`
+    );
     let reasons = await this._reasonsToNotUpdateInstallation();
 
-    log.debug(
+    lazy.log.debug(
       `${SLUG}: checking for reasons to not schedule background updates with this profile`
     );
     let moreReasons = await this._reasonsToNotScheduleUpdates();
@@ -445,7 +447,7 @@ var BackgroundUpdate = {
 
     if (this._force()) {
       // We want to allow developers and testers to monkey with the system.
-      log.debug(
+      lazy.log.debug(
         `${SLUG}: app.update.background.force=true, ignoring reasons: ${JSON.stringify(
           reasons
         )}`
@@ -468,15 +470,15 @@ var BackgroundUpdate = {
     try {
       // Interacting with `TaskScheduler.jsm` can throw, so we'll catch.
       if (!enabled) {
-        log.info(
+        lazy.log.info(
           `${SLUG}: not scheduling background update: '${JSON.stringify(
             reasons
           )}'`
         );
 
         if (!successfullyReadPrevious || previousEnabled) {
-          await TaskScheduler.deleteTask(this.taskId);
-          log.debug(
+          await lazy.TaskScheduler.deleteTask(this.taskId);
+          lazy.log.debug(
             `${SLUG}: witnessed falling (enabled -> disabled) edge; deleted task ${this.taskId}.`
           );
         }
@@ -492,30 +494,65 @@ var BackgroundUpdate = {
           1
         );
         if (taskInstalledVersion == TASK_DEF_CURRENT_VERSION) {
-          log.info(
+          lazy.log.info(
             `${SLUG}: background update was previously enabled; not registering task.`
           );
 
           return true;
         }
-        log.info(
+        lazy.log.info(
           `${SLUG}: Detected task version change from ` +
             `${taskInstalledVersion} to ${TASK_DEF_CURRENT_VERSION}. ` +
             `Removing task so the new version can be registered`
         );
         try {
-          await TaskScheduler.deleteTask(this.taskId);
+          await lazy.TaskScheduler.deleteTask(this.taskId);
         } catch (e) {
-          log.error(`${SLUG}: Error removing old task: ${e}`);
+          lazy.log.error(`${SLUG}: Error removing old task: ${e}`);
+        }
+        try {
+          // When the update directory was moved, we migrated the old contents
+          // to the new location. This can potentially happen in a background
+          // task. However, we also need to re-register the background task
+          // with the task scheduler in order to update the MOZ_LOG_FILE value
+          // to point to the new location. If the task runs before Firefox has
+          // a chance to re-register the task, the log file may be recreated in
+          // the old location. In practice, this would be unusual, because
+          // MOZ_LOG_FILE will not create the parent directories necessary to
+          // put a log file in the specified location. But just to be safe,
+          // we'll do some cleanup when we re-register the task to make sure
+          // that no log file is hanging around in the old location.
+          let oldUpdateDir = lazy.FileUtils.getDir("OldUpdRootD", [], false);
+          let oldLog = oldUpdateDir.clone();
+          oldLog.append("backgroundupdate.moz_log");
+
+          if (oldLog.exists()) {
+            oldLog.remove(false);
+            // We may have created some directories in order to put this log
+            // file in this location. Clean them up if they are empty.
+            // (If we pass false for the recurse parameter, directories with
+            // contents will not be removed)
+            //
+            // Potentially removes "C:\ProgramData\Mozilla\updates\<hash>"
+            oldUpdateDir.remove(false);
+            // Potentially removes "C:\ProgramData\Mozilla\updates"
+            oldUpdateDir.parent.remove(false);
+            // Potentially removes "C:\ProgramData\Mozilla"
+            oldUpdateDir.parent.parent.remove(false);
+          }
+        } catch (ex) {
+          lazy.log.warn(
+            `${SLUG}: Ignoring error encountered attempting to remove stale log file: ${ex}`
+          );
         }
       }
 
-      log.info(
+      lazy.log.info(
         `${SLUG}: background update was previously disabled for reasons: '${previousReasons}'`
       );
 
       await this._registerBackgroundUpdateTask(this.taskId);
-      log.info(
+      lazy.log.info(
         `${SLUG}: witnessed rising (disabled -> enabled) edge; registered task ${this.taskId}`
       );
 
@@ -523,7 +560,7 @@ var BackgroundUpdate = {
 
       return true;
     } catch (e) {
-      log.error(
+      lazy.log.error(
         `${SLUG}: exiting after uncaught exception in maybeScheduleBackgroundUpdateTask!`,
         e
       );
@@ -553,26 +590,91 @@ var BackgroundUpdate = {
 
     // In the background update task, this should always be enabled, but let's
     // find out if there's an error in the system.
-    Glean.update.autoDownload.set(await UpdateUtils.getAppUpdateAutoEnabled());
+    Glean.update.autoDownload.set(
+      await lazy.UpdateUtils.getAppUpdateAutoEnabled()
+    );
     Glean.update.backgroundUpdate.set(
-      await UpdateUtils.readUpdateConfigSetting("app.update.background.enabled")
+      await lazy.UpdateUtils.readUpdateConfigSetting(
+        "app.update.background.enabled"
+      )
     );
 
-    Glean.update.channel.set(UpdateUtils.UpdateChannel);
+    Glean.update.channel.set(lazy.UpdateUtils.UpdateChannel);
     Glean.update.enabled.set(
       !Services.policies || Services.policies.isAllowed("appUpdate")
     );
 
     Glean.update.canUsuallyApplyUpdates.set(
-      UpdateService.canUsuallyApplyUpdates
+      lazy.UpdateService.canUsuallyApplyUpdates
     );
     Glean.update.canUsuallyCheckForUpdates.set(
-      UpdateService.canUsuallyCheckForUpdates
+      lazy.UpdateService.canUsuallyCheckForUpdates
     );
     Glean.update.canUsuallyStageUpdates.set(
-      UpdateService.canUsuallyStageUpdates
+      lazy.UpdateService.canUsuallyStageUpdates
     );
-    Glean.update.canUsuallyUseBits.set(UpdateService.canUsuallyUseBits);
+    Glean.update.canUsuallyUseBits.set(lazy.UpdateService.canUsuallyUseBits);
+  },
+
+  /**
+   * Schedule periodic snapshotting of the Firefox Messaging System
+   * targeting configuration.
+   *
+   * The background update task will target messages based on the
+   * latest snapshot of the default profile's targeting configuration.
+   */
+  async scheduleFirefoxMessagingSystemTargetingSnapshotting() {
+    let SLUG = "scheduleFirefoxMessagingSystemTargetingSnapshotting";
+    let path = PathUtils.join(PathUtils.profileDir, "targeting.snapshot.json");
+
+    let snapshot = new lazy.JSONFile({
+      beforeSave: async () => {
+        if (Services.startup.shuttingDown) {
+          // Collecting targeting information can be slow and cause shutdown
+          // crashes.  Just write what we have in that case.  During shutdown,
+          // the regular log apparatus is not available, so use `dump`.
+          if (lazy.log.shouldLog("debug")) {
+            dump(
+              `${SLUG}: shutting down, so not updating Firefox Messaging System targeting information\n`
+            );
+          }
+          return;
+        }
+
+        lazy.log.debug(
+          `${SLUG}: preparing to write Firefox Messaging System targeting information to ${path}`
+        );
+        snapshot.data = await lazy.ASRouterTargeting.getEnvironmentSnapshot();
+      },
+      path,
+    });
+
+    // We don't `load`, since we don't care about reading existing (now stale)
+    // data.
+    snapshot.data = lazy.ASRouterTargeting.getEnvironmentSnapshot();
+
+    // Persist.
+    snapshot.saveSoon();
+
+    // Continue persisting periodically.  `JSONFile.jsm` will also persist one
+    // last time before shutdown.
+    this._targetingSnapshottingTimer = Cc[
+      "@mozilla.org/timer;1"
+    ].createInstance(Ci.nsITimer);
+
+    // Hold a reference to prevent GC.
+    this._targetingSnapshottingTimer.initWithCallback(
+      () => {
+        snapshot.saveSoon();
+      },
+      // By default, snapshot Firefox Messaging System targeting for use by the
+      // background update task every 30 minutes.
+      Services.prefs.getIntPref(
+        "app.update.background.messaging.targeting.snapshot.intervalSec",
+        1800
+      ) * 1000,
+      Ci.nsITimer.TYPE_REPEATING_SLACK_LOW_PRIORITY
+    );
   },
 };
 

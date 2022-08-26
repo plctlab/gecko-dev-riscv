@@ -31,6 +31,7 @@
 #include "nsComponentManagerUtils.h"
 #include "nsDocShell.h"
 #include "nsServiceManagerUtils.h"
+#include "WindowRenderer.h"
 
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/BrowsingContext.h"
@@ -84,7 +85,7 @@ nsIWidget* nsWebBrowser::EnsureWidget() {
   }
 
   nsWidgetInitData widgetInit;
-  widgetInit.clipChildren = true;
+  widgetInit.mClipChildren = true;
   widgetInit.mWindowType = eWindowType_child;
   LayoutDeviceIntRect bounds(0, 0, 0, 0);
 
@@ -130,9 +131,9 @@ already_AddRefed<nsWebBrowser> nsWebBrowser::Create(
   // get the system default window background colour
   //
   // TODO(emilio): Can we get the color-scheme from somewhere here?
-  browser->mBackgroundColor = LookAndFeel::Color(
-      LookAndFeel::ColorID::WindowBackground, LookAndFeel::ColorScheme::Light,
-      LookAndFeel::UseStandins::No);
+  browser->mBackgroundColor =
+      LookAndFeel::Color(LookAndFeel::ColorID::Window, ColorScheme::Light,
+                         LookAndFeel::UseStandins::No);
 
   // HACK ALERT - this registration registers the nsDocShellTreeOwner as a
   // nsIWebBrowserListener so it can setup its MouseListener in one of the
@@ -809,6 +810,8 @@ nsWebBrowser::SaveDocument(nsISupports* aDocumentish, nsISupports* aFile,
   nsresult rv;
   mPersist = do_CreateInstance(NS_WEBBROWSERPERSIST_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
+  RefPtr<nsIWebBrowserPersist> localPersist(mPersist);
+  Unused << localPersist;
   mPersist->SetProgressListener(this);
   mPersist->SetPersistFlags(mPersistFlags);
   mPersist->GetCurrentState(&mPersistCurrentState);
@@ -857,10 +860,8 @@ nsWebBrowser::Destroy() {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsWebBrowser::GetUnscaledDevicePixelsPerCSSPixel(double* aScale) {
-  *aScale = mParentWidget ? mParentWidget->GetDefaultScale().scale : 1.0;
-  return NS_OK;
+double nsWebBrowser::GetWidgetCSSToDeviceScale() {
+  return mParentWidget ? mParentWidget->GetDefaultScale().scale : 1.0;
 }
 
 NS_IMETHODIMP
@@ -1175,18 +1176,18 @@ bool nsWebBrowser::PaintWindow(nsIWidget* aWidget,
 }
 
 void nsWebBrowser::FocusActivate(uint64_t aActionId) {
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow();
-  if (fm && window) {
-    fm->WindowRaised(window, aActionId);
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    if (nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow()) {
+      fm->WindowRaised(window, aActionId);
+    }
   }
 }
 
 void nsWebBrowser::FocusDeactivate(uint64_t aActionId) {
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow();
-  if (fm && window) {
-    fm->WindowLowered(window, aActionId);
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    if (nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow()) {
+      fm->WindowLowered(window, aActionId);
+    }
   }
 }
 

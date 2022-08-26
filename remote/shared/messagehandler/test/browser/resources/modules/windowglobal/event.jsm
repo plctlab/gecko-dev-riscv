@@ -10,19 +10,30 @@ const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class Event extends Module {
+class EventModule extends Module {
   destroy() {}
 
   /**
    * Commands
    */
 
-  testEmitEvent() {
+  testEmitInternalEvent() {
     // Emit a payload including the contextId to check which context emitted
     // a specific event.
-    const text = `event from ${this.messageHandler.contextId}`;
-    this.messageHandler.emitMessageHandlerEvent("event.testEvent", { text });
+    const text = `internal event from ${this.messageHandler.contextId}`;
+    this.emitEvent("internal-event-from-window-global", { text });
+  }
+
+  testEmitProtocolEvent() {
+    // Emit a payload including the contextId to check which context emitted
+    // a specific protocol event.
+    const text = `protocol event from ${this.messageHandler.contextId}`;
+    this.emitProtocolEvent("event.testEvent", { text });
+  }
+
+  testEmitProtocolEventWithInterception() {
+    this.emitProtocolEvent("event.testEventWithInterception", {});
   }
 }
 
-const event = Event;
+const event = EventModule;

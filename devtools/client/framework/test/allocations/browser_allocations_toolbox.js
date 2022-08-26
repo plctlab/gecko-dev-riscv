@@ -8,7 +8,9 @@
 const TEST_URL =
   "data:text/html;charset=UTF-8,<div>Target allocations test</div>";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const { gDevTools } = require("devtools/client/framework/devtools");
 
 async function testScript(tab) {
@@ -20,6 +22,10 @@ async function testScript(tab) {
   await new Promise(resolve => setTimeout(resolve, 1000));
 
   await toolbox.destroy();
+
+  // Spin the event loop to ensure toolbox destroy is fully completed
+  // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+  await new Promise(resolve => setTimeout(resolve, 0));
 }
 
 add_task(async function() {

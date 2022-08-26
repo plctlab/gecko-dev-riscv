@@ -11,6 +11,7 @@ EXPORTS.mozilla += [
     "Hal.h",
     "HalBatteryInformation.h",
     "HalImpl.h",
+    "HalIPCUtils.h",
     "HalNetworkInformation.h",
     "HalSandbox.h",
     "HalScreenConfiguration.h",
@@ -18,10 +19,6 @@ EXPORTS.mozilla += [
     "HalTypes.h",
     "HalWakeLock.h",
     "HalWakeLockInformation.h",
-]
-
-EXPORTS.mozilla.fallback += [
-    "fallback/FallbackScreenConfiguration.h",
 ]
 
 UNIFIED_SOURCES += [
@@ -48,11 +45,12 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
         "android/AndroidHal.cpp",
     ]
 elif CONFIG["OS_TARGET"] == "Linux":
+
     UNIFIED_SOURCES += [
-        "fallback/FallbackProcessPriority.cpp",
         "fallback/FallbackScreenConfiguration.cpp",
         "fallback/FallbackSensor.cpp",
         "fallback/FallbackVibration.cpp",
+        "linux/LinuxProcessPriority.cpp",
     ]
     if CONFIG["MOZ_ENABLE_DBUS"]:
         UNIFIED_SOURCES += [
@@ -130,6 +128,8 @@ LOCAL_INCLUDES += [
 ]
 
 CFLAGS += CONFIG["GLIB_CFLAGS"]
+CFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
 CFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]
 CXXFLAGS += CONFIG["GLIB_CFLAGS"]
+CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
 CXXFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]

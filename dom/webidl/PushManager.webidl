@@ -23,10 +23,10 @@ interface PushManagerImpl {
 
   Promise<PushSubscription>    subscribe(optional PushSubscriptionOptionsInit options = {});
   Promise<PushSubscription?>   getSubscription();
-  Promise<PushPermissionState> permissionState(optional PushSubscriptionOptionsInit options = {});
+  Promise<PermissionState> permissionState(optional PushSubscriptionOptionsInit options = {});
 };
 
-[Exposed=(Window,Worker), Pref="dom.push.enabled"]
+[Exposed=(Window,Worker), Func="PushManager::IsEnabled"]
 interface PushManager {
   [Throws, ChromeOnly]
   constructor(DOMString scope);
@@ -36,12 +36,5 @@ interface PushManager {
   [Throws]
   Promise<PushSubscription?>   getSubscription();
   [Throws]
-  Promise<PushPermissionState> permissionState(optional PushSubscriptionOptionsInit options = {});
-};
-
-enum PushPermissionState
-{
-    "granted",
-    "denied",
-    "prompt"
+  Promise<PermissionState> permissionState(optional PushSubscriptionOptionsInit options = {});
 };

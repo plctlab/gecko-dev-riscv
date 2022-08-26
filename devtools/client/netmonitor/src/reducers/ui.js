@@ -43,6 +43,7 @@ const cols = {
   setCookies: false,
   transferred: true,
   contentSize: true,
+  priority: false,
   startTime: false,
   endTime: false,
   responseTime: false,
@@ -207,7 +208,7 @@ function setColumnsWidth(state, action) {
 
   return {
     ...state,
-    columnsData: columnsData,
+    columnsData,
   };
 }
 

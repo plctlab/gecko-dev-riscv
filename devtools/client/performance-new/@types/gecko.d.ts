@@ -21,16 +21,14 @@ declare namespace MockedExports {
    * This interface teaches ChromeUtils.import how to find modules.
    */
   interface KnownModules {
-    "resource://gre/modules/Services.jsm": typeof import("resource://gre/modules/Services.jsm");
     Services: typeof import("Services");
     chrome: typeof import("chrome");
-    "resource://gre/modules/osfile.jsm": typeof import("resource://gre/modules/osfile.jsm");
     "resource://gre/modules/AppConstants.jsm": typeof import("resource://gre/modules/AppConstants.jsm");
     "resource:///modules/CustomizableUI.jsm": typeof import("resource:///modules/CustomizableUI.jsm");
     "resource:///modules/CustomizableWidgets.jsm": typeof import("resource:///modules/CustomizableWidgets.jsm");
-    "resource://devtools/shared/Loader.jsm": typeof import("resource://devtools/shared/Loader.jsm");
+    "resource://devtools/shared/loader/Loader.jsm": typeof import("resource://devtools/shared/loader/Loader.jsm");
     "resource://devtools/client/performance-new/popup/background.jsm.js": typeof import("resource://devtools/client/performance-new/popup/background.jsm.js");
-    "resource://devtools/client/shared/browser-loader.js": any;
+    "resource://devtools/shared/loader/browser-loader.js": any;
     "resource://devtools/client/performance-new/popup/menu-button.jsm.js": typeof import("devtools/client/performance-new/popup/menu-button.jsm.js");
     "resource://devtools/client/performance-new/typescript-lazy-load.jsm.js": typeof import("devtools/client/performance-new/typescript-lazy-load.jsm.js");
     "resource://devtools/client/performance-new/popup/panel.jsm.js": typeof import("devtools/client/performance-new/popup/panel.jsm.js");
@@ -73,7 +71,19 @@ declare namespace MockedExports {
 
   interface ChromeWindow {
     gBrowser: Browser;
-    focus: () => void;
+    focus(): void;
+    openWebLinkIn(
+      url: string,
+      where: "current" | "tab" | "window",
+      options: Partial<{
+        // Not all possible options are present, please add more if/when needed.
+        userContextId: number;
+        forceNonPrivate: boolean;
+        resolveOnContentBrowserCreated: (
+          contentBrowser: ChromeBrowser
+        ) => unknown;
+      }>
+    ): void;
   }
 
   interface ChromeBrowser {
@@ -138,7 +148,6 @@ declare namespace MockedExports {
   type Services = {
     prefs: nsIPrefBranch;
     profiler: {
-      CanProfile: () => boolean;
       StartProfiler: (
         entryCount: number,
         interval: number,
@@ -170,6 +179,7 @@ declare namespace MockedExports {
     };
     wm: {
       getMostRecentWindow: (name: string) => ChromeWindow;
+      getMostRecentNonPBWindow: (name: string) => ChromeWindow;
     };
     focus: {
       activeWindow: ChromeWindow;
@@ -185,10 +195,6 @@ declare namespace MockedExports {
     };
   };
 
-  const ServicesJSM: {
-    Services: Services;
-  };
-
   const EventEmitter: {
     decorate: (target: object) => void;
   };
@@ -196,25 +202,6 @@ declare namespace MockedExports {
   const AppConstantsJSM: {
     AppConstants: {
       platform: string;
-    };
-  };
-
-  const osfileJSM: {
-    OS: {
-      Path: {
-        split: (
-          path: string
-        ) => {
-          absolute: boolean;
-          components: string[];
-          winDrive?: string;
-        };
-        join: (...pathParts: string[]) => string;
-      };
-      File: {
-        stat: (path: string) => Promise<{ isDir: boolean }>;
-        Error: any;
-      };
     };
   };
 
@@ -291,7 +278,6 @@ declare namespace MockedExports {
      * Then add the file path to the KnownModules above.
      */
     import: <S extends keyof KnownModules>(module: S) => KnownModules[S];
-    createObjectIn: (content: ContentWindow) => object;
     exportFunction: (fn: Function, scope: object, options?: object) => void;
     cloneInto: (value: any, scope: object, options?: object) => void;
     isInAutomation: boolean;
@@ -301,7 +287,25 @@ declare namespace MockedExports {
     Cc: Cc;
     Ci: Ci;
     Cu: Cu;
+    Services: Services;
   };
+
+  interface FluentLocalization {
+    /**
+     * This function sets the attributes data-l10n-id and possibly data-l10n-args
+     * on the element.
+     */
+    setAttributes(
+      target: Element,
+      id?: string,
+      args?: Record<string, string>
+    ): void;
+  }
+}
+
+interface PathUtilsInterface {
+  split: (path: string) => string[];
+  isAbsolute: (path: string) => boolean;
 }
 
 declare module "devtools/client/shared/vendor/react" {
@@ -328,10 +332,6 @@ declare module "devtools/shared/event-emitter2" {
   export = MockedExports.EventEmitter;
 }
 
-declare module "resource://gre/modules/Services.jsm" {
-  export = MockedExports.ServicesJSM;
-}
-
 declare module "Services" {
   export = MockedExports.Services;
 }
@@ -342,10 +342,6 @@ declare module "chrome" {
 
 declare module "ChromeUtils" {
   export = ChromeUtils;
-}
-
-declare module "resource://gre/modules/osfile.jsm" {
-  export = MockedExports.osfileJSM;
 }
 
 declare module "resource://gre/modules/AppConstants.jsm" {
@@ -378,17 +374,20 @@ declare module "resource:///modules/PanelMultiView.jsm" {
   export = MockedExports.PanelMultiViewJSM;
 }
 
-declare module "resource://devtools/shared/Loader.jsm" {
+declare module "resource://devtools/shared/loader/Loader.jsm" {
   export = MockedExports.LoaderJSM;
 }
 
 declare var ChromeUtils: MockedExports.ChromeUtils;
+
+declare var PathUtils: PathUtilsInterface;
 
 // These global objects can be used directly in JSM files only.
 // In a CommonJS context you need to import them with `require("chrome")`.
 declare var Cu: MockedExports.Cu;
 declare var Cc: MockedExports.Cc;
 declare var Ci: MockedExports.Ci;
+declare var Services: MockedExports.Services;
 
 /**
  * This is a variant on the normal Document, as it contains chrome-specific properties.
@@ -400,6 +399,11 @@ declare interface ChromeDocument extends Document {
    */
   createXULElement: ((type: "iframe") => XULIframeElement) &
     ((type: string) => XULElement);
+
+  /**
+   * This is a fluent instance connected to this document.
+   */
+  l10n: MockedExports.FluentLocalization;
 }
 
 /**
@@ -458,3 +462,11 @@ declare interface XULElementWithCommandHandler {
 }
 
 declare type nsIPrefBranch = MockedExports.nsIPrefBranch;
+
+// chrome context-only DOM isInstance method
+// XXX: This hackishly extends Function because there is no way to extend DOM constructors.
+// Callers should manually narrow the type when needed.
+// See also https://github.com/microsoft/TypeScript-DOM-lib-generator/issues/222
+interface Function {
+  isInstance(obj: any): boolean;
+}

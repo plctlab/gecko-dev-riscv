@@ -6,10 +6,7 @@
 const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
 
 // Turn off the authentication dialog blocking for this test.
-var prefs = Cc["@mozilla.org/preferences-service;1"].getService(
-  Ci.nsIPrefBranch
-);
-prefs.setIntPref("network.auth.subresource-http-auth-allow", 2);
+Services.prefs.setIntPref("network.auth.subresource-http-auth-allow", 2);
 
 XPCOMUtils.defineLazyGetter(this, "URL", function() {
   return "http://localhost:" + httpserv.identity.primaryPort;
@@ -148,6 +145,7 @@ AuthPrompt2.prototype = {
     const kAllKnownFlags = 127; // Don't fail test for newly added flags
     Assert.equal(expectedFlags, authInfo.flags & kAllKnownFlags);
 
+    // eslint-disable-next-line no-nested-ternary
     var expectedScheme = isNTLM ? "ntlm" : isDigest ? "digest" : "basic";
     Assert.equal(expectedScheme, authInfo.authenticationScheme);
 
@@ -283,11 +281,10 @@ var listener = {
 };
 
 function makeChan(url, loadingUrl) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-  var ssm = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-    Ci.nsIScriptSecurityManager
+  var principal = Services.scriptSecurityManager.createContentPrincipal(
+    Services.io.newURI(loadingUrl),
+    {}
   );
-  var principal = ssm.createContentPrincipal(ios.newURI(loadingUrl), {});
   return NetUtil.newChannel({
     uri: url,
     loadingPrincipal: principal,

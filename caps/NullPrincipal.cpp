@@ -22,11 +22,11 @@
 #include "nsIClassInfoImpl.h"
 #include "nsNetCID.h"
 #include "nsError.h"
+#include "nsEscape.h"
 #include "ContentPrincipal.h"
 #include "nsScriptSecurityManager.h"
 #include "pratom.h"
 #include "nsIObjectInputStream.h"
-#include "mozilla/GkRustUtils.h"
 
 #include "json/json.h"
 
@@ -76,6 +76,24 @@ already_AddRefed<NullPrincipal> NullPrincipal::CreateWithoutOriginAttributes() {
   return NullPrincipal::Create(OriginAttributes(), nullptr);
 }
 
+void NullPrincipal::EscapePrecursorQuery(nsACString& aPrecursorQuery) {
+  // origins should not contain existing escape sequences, so set `esc_Forced`
+  // to force any `%` in the input to be escaped in addition to non-ascii,
+  // control characters and DEL.
+  nsCString modified;
+  if (NS_EscapeURLSpan(aPrecursorQuery, esc_Query | esc_Forced, modified)) {
+    aPrecursorQuery.Assign(std::move(modified));
+  }
+}
+
+void NullPrincipal::UnescapePrecursorQuery(nsACString& aPrecursorQuery) {
+  nsCString modified;
+  if (NS_UnescapeURL(aPrecursorQuery.BeginReading(), aPrecursorQuery.Length(),
+                     /* aFlags */ 0, modified)) {
+    aPrecursorQuery.Assign(std::move(modified));
+  }
+}
+
 already_AddRefed<nsIURI> NullPrincipal::CreateURI(
     nsIPrincipal* aPrecursor, const nsID* aNullPrincipalID) {
   nsCOMPtr<nsIURIMutator> iMutator;
@@ -85,31 +103,37 @@ already_AddRefed<nsIURI> NullPrincipal::CreateURI(
     iMutator = new mozilla::net::nsSimpleURI::Mutator();
   }
 
-  nsAutoCStringN<NSID_LENGTH> uuid;
-  if (aNullPrincipalID) {
-    // FIXME: When D119267 lands, clean this up on top of those changes.
-    aNullPrincipalID->ToProvidedString(*reinterpret_cast<char(*)[NSID_LENGTH]>(
-        uuid.GetMutableData(NSID_LENGTH - 1).data()));
-  } else {
-    GkRustUtils::GenerateUUID(uuid);
-  }
+  nsID uuid = aNullPrincipalID ? *aNullPrincipalID : nsID::GenerateUUID();
 
   NS_MutateURI mutator(iMutator);
-  mutator.SetSpec(NS_NULLPRINCIPAL_SCHEME ":"_ns + uuid);
+  mutator.SetSpec(NS_NULLPRINCIPAL_SCHEME ":"_ns +
+                  nsDependentCString(nsIDToCString(uuid).get()));
 
   // If there's a precursor URI, encode it in the null principal URI's query.
   if (aPrecursor) {
     nsAutoCString precursorOrigin;
     switch (BasePrincipal::Cast(aPrecursor)->Kind()) {
-      case eNullPrincipal:
+      case eNullPrincipal: {
         // If the precursor null principal has a precursor, inherit it.
         if (nsCOMPtr<nsIURI> nullPrecursorURI = aPrecursor->GetURI()) {
           MOZ_ALWAYS_SUCCEEDS(nullPrecursorURI->GetQuery(precursorOrigin));
         }
         break;
-      case eContentPrincipal:
+      }
+      case eContentPrincipal: {
         MOZ_ALWAYS_SUCCEEDS(aPrecursor->GetOriginNoSuffix(precursorOrigin));
+#ifdef DEBUG
+        nsAutoCString original(precursorOrigin);
+#endif
+        EscapePrecursorQuery(precursorOrigin);
+#ifdef DEBUG
+        nsAutoCString unescaped(precursorOrigin);
+        UnescapePrecursorQuery(unescaped);
+        MOZ_ASSERT(unescaped == original,
+                   "cannot recover original precursor origin after escape");
+#endif
         break;
+      }
 
       // For now, we won't track expanded or system principal precursors. We may
       // want to track expanded principal precursors in the future, but it's
@@ -310,6 +334,7 @@ NullPrincipal::GetPrecursorPrincipal(nsIPrincipal** aPrincipal) {
   if (NS_FAILED(mURI->GetQuery(query)) || query.IsEmpty()) {
     return NS_OK;
   }
+  UnescapePrecursorQuery(query);
 
   nsCOMPtr<nsIURI> precursorURI;
   if (NS_FAILED(NS_NewURI(getter_AddRefs(precursorURI), query))) {

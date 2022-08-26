@@ -8,7 +8,9 @@
 const TEST_URL =
   "http://example.com/browser/devtools/client/framework/test/allocations/reloaded-page.html";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const {
   BrowserConsoleManager,
 } = require("devtools/client/webconsole/browser-console-manager");
@@ -33,6 +35,11 @@ async function testScript() {
 
   // Close
   await BrowserConsoleManager.toggleBrowserConsole();
+
+  // Browser console still cleanup stuff after the resolution of toggleBrowserConsole.
+  // So wait for a little while to ensure it completes all cleanups.
+  // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+  await new Promise(resolve => setTimeout(resolve, 500));
 }
 
 add_task(async function() {
@@ -40,6 +47,9 @@ add_task(async function() {
   // even on beta and release.
   await SpecialPowers.pushPrefEnv({
     set: [["devtools.browsertoolbox.fission", true]],
+  });
+  await SpecialPowers.pushPrefEnv({
+    set: [["devtools.browsertoolbox.scope", "everything"]],
   });
 
   const tab = await addTab(TEST_URL);

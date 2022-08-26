@@ -10,24 +10,56 @@ var EXPORTED_SYMBOLS = ["WebSocketHandshake"];
 
 const CC = Components.Constructor;
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   executeSoon: "chrome://remote/content/shared/Sync.jsm",
+  Log: "chrome://remote/content/shared/Log.jsm",
+  RemoteAgent: "chrome://remote/content/components/RemoteAgent.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "CryptoHash", () => {
+XPCOMUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
+
+XPCOMUtils.defineLazyGetter(lazy, "CryptoHash", () => {
   return CC("@mozilla.org/security/hash;1", "nsICryptoHash", "initWithString");
 });
 
-XPCOMUtils.defineLazyGetter(this, "threadManager", () => {
+XPCOMUtils.defineLazyGetter(lazy, "threadManager", () => {
   return Cc["@mozilla.org/thread-manager;1"].getService();
 });
 
-// TODO(ato): Merge this with httpd.js so that we can respond to both HTTP/1.1
-// as well as WebSocket requests on the same server.
+/**
+ * Allowed origins are exposed through 2 separate getters because while most
+ * of the values should be valid URIs, `null` is also a valid origin and cannot
+ * be converted to a URI. Call sites interested in checking for null should use
+ * `allowedOrigins`, those interested in URIs should use `allowedOriginURIs`.
+ */
+XPCOMUtils.defineLazyGetter(lazy, "allowedOrigins", () =>
+  lazy.RemoteAgent.allowOrigins !== null ? lazy.RemoteAgent.allowOrigins : []
+);
+
+XPCOMUtils.defineLazyGetter(lazy, "allowedOriginURIs", () => {
+  return lazy.allowedOrigins
+    .map(origin => {
+      try {
+        const originURI = Services.io.newURI(origin);
+        // Make sure to read host/port/scheme as those getters could throw for
+        // invalid URIs.
+        return {
+          host: originURI.host,
+          port: originURI.port,
+          scheme: originURI.scheme,
+        };
+      } catch (e) {
+        return null;
+      }
+    })
+    .filter(uri => uri !== null);
+});
 
 /**
  * Write a string of bytes to async output stream
@@ -55,7 +87,7 @@ function writeString(output, data) {
         },
         0,
         0,
-        threadManager.currentThread
+        lazy.threadManager.currentThread
       );
     };
 
@@ -75,10 +107,86 @@ function writeHttpResponse(output, headers, body = "") {
 }
 
 /**
+ * Check if the provided URI's host is an IP address.
+ *
+ * @param {nsIURI} uri
+ *     The URI to check.
+ * @return {boolean}
+ */
+function isIPAddress(uri) {
+  try {
+    // getBaseDomain throws an explicit error if the uri host is an IP address.
+    Services.eTLD.getBaseDomain(uri);
+  } catch (e) {
+    return e.result == Cr.NS_ERROR_HOST_IS_IP_ADDRESS;
+  }
+  return false;
+}
+
+function isHostValid(hostHeader) {
+  try {
+    // Might throw both when calling newURI or when accessing the host/port.
+    const hostUri = Services.io.newURI(`https://${hostHeader}`);
+    const { host, port } = hostUri;
+    const isHostnameValid =
+      isIPAddress(hostUri) || lazy.RemoteAgent.allowHosts.includes(host);
+    // For nsIURI a port value of -1 corresponds to the protocol's default port.
+    const isPortValid = [-1, lazy.RemoteAgent.port].includes(port);
+    return isHostnameValid && isPortValid;
+  } catch (e) {
+    return false;
+  }
+}
+
+function isOriginValid(originHeader) {
+  if (originHeader === undefined) {
+    // Always accept no origin header.
+    return true;
+  }
+
+  // Special case "null" origins, used for privacy sensitive or opaque origins.
+  if (originHeader === "null") {
+    return lazy.allowedOrigins.includes("null");
+  }
+
+  try {
+    // Extract the host, port and scheme from the provided origin header.
+    const { host, port, scheme } = Services.io.newURI(originHeader);
+    // Check if any allowed origin matches the provided host, port and scheme.
+    return lazy.allowedOriginURIs.some(
+      uri => uri.host === host && uri.port === port && uri.scheme === scheme
+    );
+  } catch (e) {
+    // Reject invalid origin headers
+    return false;
+  }
+}
+
+/**
  * Process the WebSocket handshake headers and return the key to be sent in
  * Sec-WebSocket-Accept response header.
  */
 function processRequest({ requestLine, headers }) {
+  if (!isOriginValid(headers.get("origin"))) {
+    lazy.logger.debug(
+      `Incorrect Origin header, allowed origins: [${lazy.allowedOrigins}]`
+    );
+    throw new Error(
+      `The handshake request has incorrect Origin header ${headers.get(
+        "origin"
+      )}`
+    );
+  }
+
+  if (!isHostValid(headers.get("host"))) {
+    lazy.logger.debug(
+      `Incorrect Host header, allowed hosts: [${lazy.RemoteAgent.allowHosts}]`
+    );
+    throw new Error(
+      `The handshake request has incorrect Host header ${headers.get("host")}`
+    );
+  }
+
   const method = requestLine.split(" ")[0];
   if (method !== "GET") {
     throw new Error("The handshake request must use GET method");
@@ -123,7 +231,7 @@ function processRequest({ requestLine, headers }) {
 function computeKey(key) {
   const str = `${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`;
   const data = Array.from(str, ch => ch.charCodeAt(0));
-  const hash = new CryptoHash("sha1");
+  const hash = new lazy.CryptoHash("sha1");
   hash.update(data, data.length);
   return hash.finish(true);
 }
@@ -165,7 +273,7 @@ async function createWebSocket(transport, input, output) {
   const transportProvider = {
     setListener(upgradeListener) {
       // onTransportAvailable callback shouldn't be called synchronously
-      executeSoon(() => {
+      lazy.executeSoon(() => {
         upgradeListener.onTransportAvailable(transport, input, output);
       });
     },
@@ -194,6 +302,10 @@ async function upgrade(request, response) {
   response._powerSeized = true;
 
   const { transport, input, output } = response._connection;
+
+  lazy.logger.info(
+    `Perform WebSocket upgrade for incoming connection from ${transport.host}:${transport.port}`
+  );
 
   const headers = new Map();
   for (let [key, values] of Object.entries(request._headers._headers)) {

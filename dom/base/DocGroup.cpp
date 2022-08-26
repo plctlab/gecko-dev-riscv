@@ -88,6 +88,16 @@ LabellingEventTarget::DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t) {
 }
 
 NS_IMETHODIMP
+LabellingEventTarget::RegisterShutdownTask(nsITargetShutdownTask*) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+LabellingEventTarget::UnregisterShutdownTask(nsITargetShutdownTask*) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 LabellingEventTarget::IsOnCurrentThread(bool* aIsOnCurrentThread) {
   *aIsOnCurrentThread = NS_IsMainThread();
   return NS_OK;
@@ -183,9 +193,14 @@ void DocGroup::AddDocument(Document* aDocument) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mDocuments.Contains(aDocument));
   MOZ_ASSERT(mBrowsingContextGroup);
+  // If the document is loaded as data it may not have a container, in which
+  // case it can be difficult to determine the BrowsingContextGroup it's
+  // associated with. XSLT can also add the document to the DocGroup before it
+  // gets a container in some cases, in which case this will be asserted
+  // elsewhere.
   MOZ_ASSERT_IF(
-      FissionAutostart() && !mDocuments.IsEmpty(),
-      mDocuments[0]->CrossOriginIsolated() == aDocument->CrossOriginIsolated());
+      aDocument->GetBrowsingContext(),
+      aDocument->GetBrowsingContext()->Group() == mBrowsingContextGroup);
   mDocuments.AppendElement(aDocument);
 }
 
@@ -203,7 +218,7 @@ DocGroup::DocGroup(BrowsingContextGroup* aBrowsingContextGroup,
                    const nsACString& aKey)
     : mKey(aKey),
       mBrowsingContextGroup(aBrowsingContextGroup),
-      mAgentClusterId(nsContentUtils::GenerateUUID()) {
+      mAgentClusterId(nsID::GenerateUUID()) {
   // This method does not add itself to
   // mBrowsingContextGroup->mDocGroups as the caller does it for us.
   MOZ_ASSERT(NS_IsMainThread());

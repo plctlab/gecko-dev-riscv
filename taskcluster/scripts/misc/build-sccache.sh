@@ -11,7 +11,7 @@ case "$(uname -s)" in
 Linux)
     PATH="$MOZ_FETCHES_DIR/binutils/bin:$PATH"
     ;;
-MINGW*)
+MINGW*|MSYS*)
     UPLOAD_DIR=$PWD/public/build
 
     . $GECKO_PATH/taskcluster/scripts/misc/vs-setup.sh
@@ -19,10 +19,6 @@ MINGW*)
 esac
 
 cd $GECKO_PATH
-
-if [ -n "$TOOLTOOL_MANIFEST" ]; then
-  . taskcluster/scripts/misc/tooltool-download.sh
-fi
 
 PATH="$(cd $MOZ_FETCHES_DIR && pwd)/rustc/bin:$PATH"
 
@@ -39,9 +35,11 @@ Linux)
         export PATH="$MOZ_FETCHES_DIR/cctools/bin:$PATH"
         export RUSTFLAGS="-C linker=$GECKO_PATH/taskcluster/scripts/misc/osx-cross-linker"
         if test "$TARGET" = "aarch64-apple-darwin"; then
-            export SDK_VER=11.0
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+        else
+            export MACOSX_DEPLOYMENT_TARGET=10.12
         fi
-        export TARGET_CC="$MOZ_FETCHES_DIR/clang/bin/clang -isysroot $MOZ_FETCHES_DIR/MacOSX${SDK_VER:-10.12}.sdk"
+        export TARGET_CC="$MOZ_FETCHES_DIR/clang/bin/clang -isysroot $MOZ_FETCHES_DIR/MacOSX11.0.sdk"
         cargo build --features "all $COMMON_FEATURES" --verbose --release --target $TARGET
         ;;
     *)
@@ -52,7 +50,7 @@ Linux)
     esac
 
     ;;
-MINGW*)
+MINGW*|MSYS*)
     cargo build --verbose --release --features="dist-client s3 gcs $COMMON_FEATURES"
     ;;
 esac

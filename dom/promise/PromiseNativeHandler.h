@@ -10,11 +10,11 @@
 #include <functional>
 #include "js/TypeDecls.h"
 #include "js/Value.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
 #include "nsISupports.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /*
  * PromiseNativeHandler allows C++ to react to a Promise being
@@ -27,12 +27,12 @@ class PromiseNativeHandler : public nsISupports {
 
  public:
   MOZ_CAN_RUN_SCRIPT
-  virtual void ResolvedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) = 0;
+  virtual void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) = 0;
 
   MOZ_CAN_RUN_SCRIPT
-  virtual void RejectedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) = 0;
+  virtual void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) = 0;
 };
 
 // This class is used to set C++ callbacks once a dom Promise a resolved or
@@ -50,8 +50,10 @@ class DomPromiseListener final : public PromiseNativeHandler {
 
   void Clear();
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
  private:
   ~DomPromiseListener();
@@ -59,7 +61,6 @@ class DomPromiseListener final : public PromiseNativeHandler {
   CallbackTypeRejected mReject;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PromiseNativeHandler_h

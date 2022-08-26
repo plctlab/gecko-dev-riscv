@@ -6,18 +6,19 @@
 
 const EXPORTED_SYMBOLS = ["permissions"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   error: "chrome://remote/content/shared/webdriver/Errors.jsm",
   MarionettePrefs: "chrome://remote/content/marionette/prefs.js",
 });
 
 /** @namespace */
-this.permissions = {};
+const permissions = {};
 
 /**
  * Set a permission's state.
@@ -35,21 +36,21 @@ this.permissions = {};
  *     an unsupported permission is used.
  */
 permissions.set = function(descriptor, state, oneRealm) {
-  if (!MarionettePrefs.setPermissionEnabled) {
-    throw new error.UnsupportedOperationError(
+  if (!lazy.MarionettePrefs.setPermissionEnabled) {
+    throw new lazy.error.UnsupportedOperationError(
       "'Set Permission' is not available"
     );
   }
 
   const { name } = descriptor;
   if (!["clipboard-write", "clipboard-read"].includes(name)) {
-    throw new error.UnsupportedOperationError(
+    throw new lazy.error.UnsupportedOperationError(
       `'Set Permission' doesn't support '${name}'`
     );
   }
 
   if (state === "prompt") {
-    throw new error.UnsupportedOperationError(
+    throw new lazy.error.UnsupportedOperationError(
       "'Set Permission' doesn't support prompt"
     );
   }
@@ -60,7 +61,7 @@ permissions.set = function(descriptor, state, oneRealm) {
   // We enable dom.events.testing.asyncClipboard for the whole test suite anyway,
   // so no extra permission is necessary.
   if (!Services.prefs.getBoolPref("dom.events.testing.asyncClipboard", false)) {
-    throw new error.UnsupportedOperationError(
+    throw new lazy.error.UnsupportedOperationError(
       "'Set Permission' expected dom.events.testing.asyncClipboard to be set"
     );
   }

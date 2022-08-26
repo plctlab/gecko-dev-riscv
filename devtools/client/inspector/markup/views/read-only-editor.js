@@ -37,7 +37,7 @@ function ReadOnlyEditor(container, node) {
 }
 
 ReadOnlyEditor.prototype = {
-  buildMarkup: function() {
+  buildMarkup() {
     const doc = this.markup.doc;
 
     this.elt = doc.createElement("span");
@@ -48,7 +48,7 @@ ReadOnlyEditor.prototype = {
     this.elt.appendChild(this.tag);
   },
 
-  destroy: function() {
+  destroy() {
     // We might be already destroyed.
     if (!this.elt) {
       return;
@@ -60,9 +60,21 @@ ReadOnlyEditor.prototype = {
   },
 
   /**
+   * Show overflow highlight if showOverflowHighlight is true, otherwise hide it.
+   *
+   * @param {Boolean} showOverflowHighlight
+   */
+  setOverflowHighlight(showOverflowHighlight) {
+    this.container.tagState.classList.toggle(
+      "overflow-causing-highlighted",
+      showOverflowHighlight
+    );
+  },
+
+  /**
    * Stub method for consistency with ElementEditor.
    */
-  getInfoAtNode: function() {
+  getInfoAtNode() {
     return null;
   },
 };

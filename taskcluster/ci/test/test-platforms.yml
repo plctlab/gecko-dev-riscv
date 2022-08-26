@@ -48,12 +48,9 @@ linux1804-64-qr/opt:
         - awsy
         - desktop-screenshot-capture
         - linux1804-tests
-        - marionette-headless
-        - mochitest-headless
         - mochitest-webgpu
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
         - linux-talos-flex
         - talos
         - browsertime
@@ -64,12 +61,9 @@ linux1804-64-shippable-qr/opt:
         - awsy
         - desktop-screenshot-capture
         - linux1804-tests
-        - marionette-headless
-        - mochitest-headless
         - mochitest-webgpu
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
         - linux-talos-flex
         - talos
         - talos-profiling
@@ -89,7 +83,6 @@ linux1804-64-asan-qr/opt:
         - linux1804-tests
         - mochitest-webgpu
         - web-platform-tests
-        - web-platform-tests-wdspec-headless
 
 linux1804-64-ccov-qr/opt:
     build-platform: linux64-ccov/opt
@@ -145,7 +138,6 @@ windows10-32-2004-shippable-qr/opt:
         - awsy
         - desktop-screenshot-capture
         - web-platform-tests
-        - web-platform-tests-wdspec-headless
         - windows32-2004-tests
 
 
@@ -155,7 +147,6 @@ windows10-32-2004-qr/opt:
         - awsy
         - desktop-screenshot-capture
         - web-platform-tests
-        - web-platform-tests-wdspec-headless
         - windows32-2004-tests
 
 windows10-32-2004-qr/debug:
@@ -164,7 +155,6 @@ windows10-32-2004-qr/debug:
         - web-platform-tests
         - windows-7-tests
         - windows32-2004-tests
-        - windows10-32-2004-failure-tests
 
 windows10-32-2004-mingwclang-qr/debug:
     build-platform: win32-mingwclang/debug
@@ -203,13 +193,15 @@ windows10-64-shippable-qr/opt:
 windows10-64-2004-ccov-qr/opt:
     build-platform: win64-ccov/opt
     test-sets:
+        - desktop-screenshot-capture
+        - ccov-code-coverage-tests
         - windows10-64-2004-ccov-tests
+        - windows10-2004-tests
 
 windows10-64-2004-qr/debug:
     build-platform: win64/debug
     test-sets:
         - web-platform-tests
-        - web-platform-tests-wdspec-headless
         - windows10-2004-tests
 
 windows10-64-2004-qr/opt:
@@ -219,9 +211,7 @@ windows10-64-2004-qr/opt:
         - desktop-screenshot-capture
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
         - windows10-2004-tests
-        - windows10-64-2004-failure-tests
         - talos-xperf
 
 windows10-64-2004-shippable-qr/opt:
@@ -231,9 +221,7 @@ windows10-64-2004-shippable-qr/opt:
         - desktop-screenshot-capture
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
         - windows10-2004-tests
-        - windows10-64-2004-failure-tests
         - talos-xperf
 
 windows10-64-2004-devedition-qr/opt:
@@ -288,7 +276,6 @@ macosx1015-64-shippable-qr/opt:
         - talos-profiling
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
 
 macosx1015-64-devedition-qr/opt:
     build-platform: macosx64-devedition/opt
@@ -303,7 +290,6 @@ macosx1015-64-qr/opt:
         - macosx1015-64-qr-tests
         - web-platform-tests
         - web-platform-tests-backlog
-        - web-platform-tests-wdspec-headless
 
 macosx1015-64-qr/debug:
     build-platform: macosx64/debug
@@ -315,12 +301,6 @@ macosx1015-64-ccov-qr/opt:
     build-platform: macosx64-ccov/opt
     test-sets:
         - macosx1015-64-qr-tests
-
-macosx1014-64-shippable-qr/opt:
-    build-platform: macosx64-shippable/opt
-    test-sets:
-        - browsertime
-        - macosx64-talos
 
 ##
 # Android platforms (matching /android-em.*/)
@@ -356,11 +336,6 @@ android-em-7.0-x86_64-qr/debug:
     test-sets:
         - android-x86_64-tests
 
-android-em-7.0-x86_64-lite-qr/debug:
-    build-platform: android-x86_64-lite/debug
-    test-sets:
-        - android-x86_64-tests
-
 android-em-7.0-x86_64-qr/debug-isolated-process:
     build-platform: android-x86_64/debug-isolated-process
     test-sets:
@@ -373,7 +348,6 @@ android-em-7.0-x86_64-qr/debug-isolated-process:
 android-hw-g5-7-0-arm7-qr/opt:
     build-platform: android-arm/opt
     test-sets:
-        - android-hw-browsertime
         - android-hw-browsertime-power
         - android-hw-arm7-raptor-cpu-memory
         - android-hw-arm7-raptor-cpu-memory-power
@@ -381,10 +355,27 @@ android-hw-g5-7-0-arm7-qr/opt:
 android-hw-g5-7-0-arm7-shippable-qr/opt:
     build-platform: android-arm-shippable/opt
     test-sets:
-        - android-hw-browsertime
         - android-hw-browsertime-power
         - android-hw-arm7-raptor-cpu-memory
         - android-hw-arm7-raptor-cpu-memory-power
+
+# android-hw-a51-11-0 Samsung Galaxy A51 Android 11.0
+
+android-hw-a51-11-0-aarch64-qr/opt:
+    build-platform: android-aarch64/opt
+    test-sets:
+        - android-hw-browsertime
+#        - android-hw-browsertime-power
+#        - android-hw-arm7-raptor-cpu-memory
+#        - android-hw-arm7-raptor-cpu-memory-power
+
+android-hw-a51-11-0-aarch64-shippable-qr/opt:
+    build-platform: android-aarch64-shippable/opt
+    test-sets:
+        - android-hw-browsertime
+#        - android-hw-browsertime-power
+#        - android-hw-arm7-raptor-cpu-memory
+#        - android-hw-arm7-raptor-cpu-memory-power
 
 # android-hw-p2-8-0 Google Pixel 2 Android 8.0
 
@@ -437,25 +428,3 @@ android-hw-p2-8-0-android-aarch64-qr/debug:
     test-sets:
         - android-hw-aarch64
         - android-hw-aarch64-debug-unittests
-
-# android-hw-s7-8-0 Samsung Galaxy S7 Android 8.0
-
-android-hw-s7-8-0-arm7-api-16-qr/opt:
-    build-platform: android-api-16/opt
-    test-sets:
-        - android-hw-browsertime
-
-android-hw-s7-8-0-arm7-api-16-shippable-qr/opt:
-    build-platform: android-api-16-shippable/opt
-    test-sets:
-        - android-hw-browsertime
-
-android-hw-s7-8-0-android-aarch64-qr/opt:
-    build-platform: android-aarch64/opt
-    test-sets:
-        - android-hw-browsertime
-
-android-hw-s7-8-0-android-aarch64-shippable-qr/opt:
-    build-platform: android-aarch64-shippable/opt
-    test-sets:
-        - android-hw-browsertime

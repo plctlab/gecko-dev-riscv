@@ -63,7 +63,6 @@ class ChromeMessageSender;
 class ContentParent;
 class Document;
 class Element;
-class TabListener;
 class InProcessBrowserChildMessageManager;
 class MessageSender;
 class ProcessMessageManager;
@@ -73,7 +72,8 @@ class BrowserBridgeChild;
 class RemoteBrowser;
 struct RemotenessOptions;
 struct NavigationIsolationOptions;
-class SessionStoreChangeListener;
+class SessionStoreChild;
+class SessionStoreParent;
 
 namespace ipc {
 class StructuredCloneData;
@@ -147,6 +147,8 @@ class nsFrameLoader final : public nsStubMutationObserver,
   void PropagateIsUnderHiddenEmbedderElement(
       bool aIsUnderHiddenEmbedderElement);
 
+  void UpdateRemoteStyle(mozilla::StyleImageRendering aImageRendering);
+
   // When creating a nsFrameLoaderOwner which is a static clone, a
   // `nsFrameLoader` is not immediately attached to it. Instead, it is added to
   // the static clone document's `PendingFrameStaticClones` list.
@@ -211,10 +213,6 @@ class nsFrameLoader final : public nsStubMutationObserver,
    */
   void Destroy(bool aForProcessSwitch = false);
 
-  void ActivateRemoteFrame(mozilla::ErrorResult& aRv);
-
-  void DeactivateRemoteFrame(mozilla::ErrorResult& aRv);
-
   void ActivateFrameEvent(const nsAString& aType, bool aCapture,
                           mozilla::ErrorResult& aRv);
 
@@ -226,9 +224,9 @@ class nsFrameLoader final : public nsStubMutationObserver,
 
   void RequestSHistoryUpdate();
 
-  already_AddRefed<Promise> PrintPreview(nsIPrintSettings* aPrintSettings,
-                                         BrowsingContext* aSourceBC,
-                                         mozilla::ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT already_AddRefed<Promise> PrintPreview(
+      nsIPrintSettings* aPrintSettings, BrowsingContext* aSourceBC,
+      mozilla::ErrorResult& aRv);
 
   void ExitPrintPreview();
 
@@ -407,11 +405,19 @@ class nsFrameLoader final : public nsStubMutationObserver,
   void ConfigRemoteProcess(const nsACString& aRemoteType,
                            mozilla::dom::ContentParent* aContentParent);
 
-  void MaybeNotifyCrashed(mozilla::dom::BrowsingContext* aBrowsingContext,
-                          mozilla::dom::ContentParentId aChildID,
-                          mozilla::ipc::MessageChannel* aChannel);
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void MaybeNotifyCrashed(
+      mozilla::dom::BrowsingContext* aBrowsingContext,
+      mozilla::dom::ContentParentId aChildID,
+      mozilla::ipc::MessageChannel* aChannel);
 
   void FireErrorEvent();
+
+  mozilla::dom::SessionStoreChild* GetSessionStoreChild() {
+    return mSessionStoreChild;
+  }
+
+  mozilla::dom::SessionStoreParent* GetSessionStoreParent();
 
  private:
   nsFrameLoader(mozilla::dom::Element* aOwner,
@@ -522,9 +528,10 @@ class nsFrameLoader final : public nsStubMutationObserver,
   // Holds the last known size of the frame.
   mozilla::ScreenIntSize mLazySize;
 
-  RefPtr<mozilla::dom::TabListener> mSessionStoreListener;
-
-  RefPtr<mozilla::dom::SessionStoreChangeListener> mSessionStoreChangeListener;
+  // Actor for collecting session store data from content children. This will be
+  // cleared and set to null eagerly when taking down the frameloader to break
+  // refcounted cycles early.
+  RefPtr<mozilla::dom::SessionStoreChild> mSessionStoreChild;
 
   nsCString mRemoteType;
 

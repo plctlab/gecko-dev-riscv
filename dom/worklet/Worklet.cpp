@@ -24,13 +24,11 @@
 #include "nsIInputStreamPump.h"
 #include "nsIStreamLoader.h"
 #include "nsIThreadRetargetableRequest.h"
-#include "nsIInputStreamPump.h"
 #include "nsNetUtil.h"
 #include "xpcprivate.h"
 #include "mozilla/ScopeExit.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ExecutionRunnable final : public Runnable {
  public:
@@ -164,8 +162,8 @@ class WorkletFetchHandler final : public PromiseNativeHandler,
     return promise.forget();
   }
 
-  virtual void ResolvedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override {
+  virtual void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override {
     MOZ_ASSERT(NS_IsMainThread());
 
     if (!aValue.isObject()) {
@@ -256,8 +254,8 @@ class WorkletFetchHandler final : public PromiseNativeHandler,
     return NS_OK;
   }
 
-  virtual void RejectedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override {
+  virtual void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override {
     MOZ_ASSERT(NS_IsMainThread());
     RejectPromises(NS_ERROR_DOM_NETWORK_ERR);
   }
@@ -383,10 +381,8 @@ bool ExecutionRunnable::ParseAndLinkModule(
   if (!module) {
     return false;
   }
-  // Link() was previously named Instantiate().
-  // https://github.com/tc39/ecma262/pull/1312
   // Any imports will fail here - bug 1572644.
-  if (!JS::ModuleInstantiate(aCx, module)) {
+  if (!JS::ModuleLink(aCx, module)) {
     return false;
   }
   aModule.set(module);
@@ -513,5 +509,4 @@ void Worklet::AddImportFetchHandler(const nsACString& aURI,
   mImportHandlers.InsertOrUpdate(aURI, RefPtr{aHandler});
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

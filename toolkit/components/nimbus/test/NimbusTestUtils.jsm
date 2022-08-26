@@ -3,25 +3,31 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
-Cu.importGlobalProperties(["fetch"]);
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const { ExperimentStore } = ChromeUtils.import(
+  "resource://nimbus/lib/ExperimentStore.jsm"
+);
+
+const { FileTestUtils } = ChromeUtils.import(
+  "resource://testing-common/FileTestUtils.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   _ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
   ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
-  ExperimentStore: "resource://nimbus/lib/ExperimentStore.jsm",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
   NormandyUtils: "resource://normandy/lib/NormandyUtils.jsm",
-  FileTestUtils: "resource://testing-common/FileTestUtils.jsm",
   _RemoteSettingsExperimentLoader:
     "resource://nimbus/lib/RemoteSettingsExperimentLoader.jsm",
-  Ajv: "resource://testing-common/ajv-4.1.1.js",
   sinon: "resource://testing-common/Sinon.jsm",
   FeatureManifest: "resource://nimbus/FeatureManifest.js",
+  JsonSchema: "resource://gre/modules/JsonSchema.jsm",
 });
 
 const { SYNC_DATA_PREF_BRANCH, SYNC_DEFAULTS_PREF_BRANCH } = ExperimentStore;
@@ -34,19 +40,19 @@ async function fetchSchema(url) {
   if (!schema) {
     throw new Error(`Failed to load ${url}`);
   }
-  return schema.definitions;
+  return schema;
 }
 
 const EXPORTED_SYMBOLS = ["ExperimentTestUtils", "ExperimentFakes"];
 
 const ExperimentTestUtils = {
-  _validator(schema, value, errorMsg) {
-    const ajv = new Ajv({ async: "co*", allErrors: true });
-    const validator = ajv.compile(schema);
-    validator(value);
-    if (validator.errors?.length) {
+  _validateSchema(schema, value, errorMsg) {
+    const result = lazy.JsonSchema.validate(value, schema, {
+      shortCircuit: false,
+    });
+    if (result.errors.length) {
       throw new Error(
-        `${errorMsg}: ${JSON.stringify(validator.errors, undefined, 2)}`
+        `${errorMsg}: ${JSON.stringify(result.errors, undefined, 2)}`
       );
     }
     return value;
@@ -56,10 +62,10 @@ const ExperimentTestUtils = {
     let { features } = branch;
     for (let feature of features) {
       // If we're not using a real feature skip this check
-      if (!FeatureManifest[feature.featureId]) {
+      if (!lazy.FeatureManifest[feature.featureId]) {
         return true;
       }
-      let { variables } = FeatureManifest[feature.featureId];
+      let { variables } = lazy.FeatureManifest[feature.featureId];
       for (let varName of Object.keys(variables)) {
         let varValue = feature.value[varName];
         if (
@@ -82,24 +88,32 @@ const ExperimentTestUtils = {
    * Checks if an experiment is valid acording to existing schema
    */
   async validateExperiment(experiment) {
-    const schema = (
-      await fetchSchema(
-        "resource://testing-common/NimbusExperiment.schema.json"
-      )
-    ).NimbusExperiment;
+    const schema = await fetchSchema(
+      "resource://nimbus/schemas/NimbusExperiment.schema.json"
+    );
 
-    return this._validator(
+    // Ensure that the `featureIds` field is properly set
+    const { branches } = experiment;
+    branches.forEach(branch => {
+      branch.features.map(({ featureId }) => {
+        if (!experiment.featureIds.includes(featureId)) {
+          throw new Error(
+            `Branch(${branch.slug}) contains feature(${featureId}) but that's not declared in recipe(${experiment.slug}).featureIds`
+          );
+        }
+      });
+    });
+
+    return this._validateSchema(
       schema,
       experiment,
       `Experiment ${experiment.slug} not valid`
     );
   },
   async validateEnrollment(enrollment) {
-    const schema = (
-      await fetchSchema(
-        "resource://testing-common/NimbusEnrollment.schema.json"
-      )
-    ).NimbusExperiment;
+    const schema = await fetchSchema(
+      "resource://nimbus/schemas/NimbusEnrollment.schema.json"
+    );
 
     // We still have single feature experiment recipes for backwards
     // compatibility testing but we don't do schema validation
@@ -109,7 +123,7 @@ const ExperimentTestUtils = {
 
     return (
       this._validateFeatureValueEnum(enrollment) &&
-      this._validator(
+      this._validateSchema(
         schema,
         enrollment,
         `Enrollment ${enrollment.slug} is not valid`
@@ -117,28 +131,51 @@ const ExperimentTestUtils = {
     );
   },
   async validateRollouts(rollout) {
-    const schema = (
-      await fetchSchema(
-        "resource://testing-common/ExperimentFeatureRemote.schema.json"
-      )
-    ).RemoteFeatureConfiguration;
+    const schema = await fetchSchema(
+      "resource://nimbus/schemas/NimbusEnrollment.schema.json"
+    );
 
-    return this._validator(
+    return this._validateSchema(
       schema,
       rollout,
       `Rollout configuration ${rollout.slug} is not valid`
     );
   },
+  /**
+   * Add features for tests.
+   *
+   * These features will only be visible to the JS Nimbus client. The native
+   * Nimbus client will have no access.
+   *
+   * @params features A list of |_NimbusFeature|s.
+   *
+   * @returns A cleanup function to remove the features once the test has completed.
+   */
+  addTestFeatures(...features) {
+    for (const feature of features) {
+      if (Object.hasOwn(lazy.NimbusFeatures, feature.featureId)) {
+        throw new Error(
+          `Cannot add feature ${feature.featureId} -- a feature with this ID already exists!`
+        );
+      }
+      lazy.NimbusFeatures[feature.featureId] = feature;
+    }
+    return () => {
+      for (const { featureId } of features) {
+        delete lazy.NimbusFeatures[featureId];
+      }
+    };
+  },
 };
 
 const ExperimentFakes = {
   manager(store) {
-    let sandbox = sinon.createSandbox();
-    let manager = new _ExperimentManager({ store: store || this.store() });
-    // We want calls to `store.addExperiment` to implicitly validate the
+    let sandbox = lazy.sinon.createSandbox();
+    let manager = new lazy._ExperimentManager({ store: store || this.store() });
+    // We want calls to `store.addEnrollment` to implicitly validate the
     // enrollment before saving to store
-    let origAddExperiment = manager.store.addExperiment.bind(manager.store);
-    sandbox.stub(manager.store, "addExperiment").callsFake(async enrollment => {
+    let origAddExperiment = manager.store.addEnrollment.bind(manager.store);
+    sandbox.stub(manager.store, "addEnrollment").callsFake(async enrollment => {
       await ExperimentTestUtils.validateEnrollment(enrollment);
       return origAddExperiment(enrollment);
     });
@@ -146,7 +183,10 @@ const ExperimentFakes = {
     return manager;
   },
   store() {
-    return new ExperimentStore("FakeStore", { path: PATH, isParent: true });
+    return new ExperimentStore("FakeStore", {
+      path: PATH,
+      isParent: true,
+    });
   },
   waitForExperimentUpdate(ExperimentAPI, options) {
     if (!options) {
@@ -155,47 +195,71 @@ const ExperimentFakes = {
 
     return new Promise(resolve => ExperimentAPI.on("update", options, resolve));
   },
-  async remoteDefaultsHelper({
-    feature,
-    store = ExperimentManager.store,
-    configuration,
-  }) {
-    if (!store._isReady) {
-      throw new Error("Store not ready, need to `await ExperimentAPI.ready()`");
+  async enrollWithRollout(
+    featureConfig,
+    { manager = lazy.ExperimentManager, source } = {}
+  ) {
+    await manager.store.init();
+    const rollout = this.rollout(`${featureConfig.featureId}-rollout`, {
+      branch: {
+        slug: `${featureConfig.featureId}-rollout-branch`,
+        features: [featureConfig],
+      },
+    });
+    if (source) {
+      rollout.source = source;
     }
-
-    await ExperimentTestUtils.validateRollouts(configuration);
+    await ExperimentTestUtils.validateRollouts(rollout);
     // After storing the remote configuration to store and updating the feature
     // we want to flush so that NimbusFeature usage in content process also
     // receives the update
-    store.updateRemoteConfigs(feature.featureId, configuration);
-    await feature.ready();
-    store._syncToChildren({ flush: true });
+    await manager.store.addEnrollment(rollout);
+    manager.store._syncToChildren({ flush: true });
+
+    let unenrollCompleted = slug =>
+      new Promise(resolve =>
+        manager.store.on(`update:${slug}`, (event, enrollment) => {
+          if (enrollment.slug === rollout.slug && !enrollment.active) {
+            manager.store._deleteForTests(rollout.slug);
+            resolve();
+          }
+        })
+      );
+
+    return () => {
+      let promise = unenrollCompleted(rollout.slug);
+      manager.unenroll(rollout.slug, "cleanup");
+      return promise;
+    };
   },
   async enrollWithFeatureConfig(
     featureConfig,
-    { manager = ExperimentManager } = {}
+    { manager = lazy.ExperimentManager } = {}
   ) {
     await manager.store.ready();
-    let recipe = this.recipe(
-      `${featureConfig.featureId}-experiment-${Math.random()}`,
-      {
-        bucketConfig: {
-          namespace: "mstest-utils",
-          randomizationUnit: "normandy_id",
-          start: 0,
-          count: 1000,
-          total: 1000,
+    // Use id passed in featureConfig value to compute experimentId
+    // This help filter telemetry events (such as expose) in race conditions when telemetry
+    // from multiple experiments with same featureId co-exist in snapshot
+    let experimentId = `${featureConfig.featureId}${
+      featureConfig?.value?.id ? "-" + featureConfig?.value?.id : ""
+    }-experiment-${Math.random()}`;
+
+    let recipe = this.recipe(experimentId, {
+      bucketConfig: {
+        namespace: "mstest-utils",
+        randomizationUnit: "normandy_id",
+        start: 0,
+        count: 1000,
+        total: 1000,
+      },
+      branches: [
+        {
+          slug: "control",
+          ratio: 1,
+          features: [featureConfig],
         },
-        branches: [
-          {
-            slug: "control",
-            ratio: 1,
-            features: [featureConfig],
-          },
-        ],
-      }
-    );
+      ],
+    });
     let {
       enrollmentPromise,
       doExperimentCleanup,
@@ -205,7 +269,7 @@ const ExperimentFakes = {
 
     return doExperimentCleanup;
   },
-  enrollmentHelper(recipe = {}, { manager = ExperimentManager } = {}) {
+  enrollmentHelper(recipe = {}, { manager = lazy.ExperimentManager } = {}) {
     let enrollmentPromise = new Promise(resolve =>
       manager.store.on(`update:${recipe.slug}`, (event, experiment) => {
         if (experiment.active) {
@@ -258,7 +322,7 @@ const ExperimentFakes = {
     return new ExperimentStore("FakeStore", { isParent: false });
   },
   rsLoader() {
-    const loader = new _RemoteSettingsExperimentLoader();
+    const loader = new lazy._RemoteSettingsExperimentLoader();
     // Replace RS client with a fake
     Object.defineProperty(loader, "remoteSettingsClient", {
       value: { get: () => Promise.resolve([]) },
@@ -272,13 +336,13 @@ const ExperimentFakes = {
     return {
       slug,
       active: true,
-      enrollmentId: NormandyUtils.generateUuid(),
+      enrollmentId: lazy.NormandyUtils.generateUuid(),
       branch: {
         slug: "treatment",
         features: [
           {
-            featureId: "test-feature",
-            value: { title: "hello", enabled: true },
+            featureId: "testFeature",
+            value: { testInt: 123, enabled: true },
           },
         ],
         ...props,
@@ -288,16 +352,49 @@ const ExperimentFakes = {
       experimentType: "NimbusTestUtils",
       userFacingName: "NimbusTestUtils",
       userFacingDescription: "NimbusTestUtils",
+      lastSeen: new Date().toJSON(),
       featureIds: props?.branch?.features?.map(f => f.featureId) || [
-        "test-feature",
+        "testFeature",
       ],
       ...props,
     };
   },
-  recipe(slug = NormandyUtils.generateUuid(), props = {}) {
+  rollout(slug, props = {}) {
+    return {
+      slug,
+      active: true,
+      enrollmentId: lazy.NormandyUtils.generateUuid(),
+      isRollout: true,
+      branch: {
+        slug: "treatment",
+        features: [
+          {
+            featureId: "testFeature",
+            value: { testInt: 123, enabled: true },
+          },
+        ],
+        ...props,
+      },
+      source: "NimbusTestUtils",
+      isEnrollmentPaused: true,
+      experimentType: "rollout",
+      userFacingName: "NimbusTestUtils",
+      userFacingDescription: "NimbusTestUtils",
+      lastSeen: new Date().toJSON(),
+      featureIds: (props?.branch?.features || props?.features)?.map(
+        f => f.featureId
+      ) || ["testFeature"],
+      ...props,
+    };
+  },
+  recipe(slug = lazy.NormandyUtils.generateUuid(), props = {}) {
     return {
       // This field is required for populating remote settings
-      id: NormandyUtils.generateUuid(),
+      id: lazy.NormandyUtils.generateUuid(),
+      schemaVersion: "1.7.0",
+      appName: "firefox_desktop",
+      appId: "firefox-desktop",
+      channel: "nightly",
       slug,
       isEnrollmentPaused: false,
       probeSets: [],
@@ -310,15 +407,20 @@ const ExperimentFakes = {
         {
           slug: "control",
           ratio: 1,
-          features: [{ featureId: "test-feature", value: { enabled: true } }],
+          features: [
+            {
+              featureId: "testFeature",
+              value: { testInt: 123, enabled: true },
+            },
+          ],
         },
         {
           slug: "treatment",
           ratio: 1,
           features: [
             {
-              featureId: "test-feature",
-              value: { title: "hello", enabled: true },
+              featureId: "testFeature",
+              value: { testInt: 123, enabled: true },
             },
           ],
         },
@@ -333,7 +435,7 @@ const ExperimentFakes = {
       userFacingName: "Nimbus recipe",
       userFacingDescription: "NimbusTestUtils recipe",
       featureIds: props?.branches?.[0].features?.map(f => f.featureId) || [
-        "test-feature",
+        "testFeature",
       ],
       ...props,
     };

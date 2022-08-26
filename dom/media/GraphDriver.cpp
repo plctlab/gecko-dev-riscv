@@ -83,7 +83,7 @@ class MediaTrackGraphShutdownThreadRunnable : public Runnable {
     MOZ_ASSERT(NS_IsMainThread());
     MOZ_ASSERT(mThread);
 
-    mThread->Shutdown();
+    mThread->AsyncShutdown();
     mThread = nullptr;
     return NS_OK;
   }
@@ -154,7 +154,7 @@ void ThreadedDriver::Shutdown() {
   if (mThread) {
     LOG(LogLevel::Debug,
         ("%p: Stopping ThreadedDriver's %p thread", Graph(), this));
-    mThread->Shutdown();
+    mThread->AsyncShutdown();
     mThread = nullptr;
   }
 }
@@ -502,13 +502,16 @@ AudioCallbackDriver::AudioCallbackDriver(
       mInputDeviceID(aInputDeviceID),
       mIterationDurationMS(MEDIA_GRAPH_TARGET_PERIOD_MS),
       mStarted(false),
-      mInitShutdownThread(SharedThreadPool::Get("CubebOperation"_ns, 1)),
+      mInitShutdownThread(CUBEB_TASK_THREAD),
       mAudioThreadId(ProfilerThreadId{}),
       mAudioThreadIdInCb(std::thread::id()),
       mAudioStreamState(AudioStreamState::None),
       mFallback("AudioCallbackDriver::mFallback"),
       mSandboxed(CubebUtils::SandboxEnabled()) {
-  LOG(LogLevel::Debug, ("%p: AudioCallbackDriver ctor", Graph()));
+  LOG(LogLevel::Debug, ("%p: AudioCallbackDriver %p ctor - input: device %p, "
+                        "channel %d, output: device %p, channel %d",
+                        Graph(), this, mInputDeviceID, mInputChannelCount,
+                        mOutputDeviceID, mOutputChannelCount));
 
   NS_WARNING_ASSERTION(mOutputChannelCount != 0,
                        "Invalid output channel count");
@@ -543,7 +546,6 @@ bool IsMacbookOrMacbookAir() {
     UniquePtr<char[]> model(new char[len]);
     // This string can be
     // MacBook%d,%d for a normal MacBook
-    // MacBookPro%d,%d for a MacBook Pro
     // MacBookAir%d,%d for a Macbook Air
     sysctlbyname("hw.model", model.get(), &len, NULL, 0);
     char* substring = strstr(model.get(), "MacBook");
@@ -669,13 +671,11 @@ void AudioCallbackDriver::Init() {
   CubebUtils::AudioDeviceID outputId = mOutputDeviceID;
   CubebUtils::AudioDeviceID inputId = mInputDeviceID;
 
-  // XXX Only pass input input if we have an input listener.  Always
-  // set up output because it's easier, and it will just get silence.
-  if (cubeb_stream_init(cubebContext, &stream, "AudioCallbackDriver", inputId,
-                        inputWanted ? &input : nullptr,
-                        forcedOutputDeviceId ? forcedOutputDeviceId : outputId,
-                        &output, latencyFrames, DataCallback_s, StateCallback_s,
-                        this) == CUBEB_OK) {
+  if (CubebUtils::CubebStreamInit(
+          cubebContext, &stream, "AudioCallbackDriver", inputId,
+          inputWanted ? &input : nullptr,
+          forcedOutputDeviceId ? forcedOutputDeviceId : outputId, &output,
+          latencyFrames, DataCallback_s, StateCallback_s, this) == CUBEB_OK) {
     mAudioStream.own(stream);
     DebugOnly<int> rv =
         cubeb_stream_set_volume(mAudioStream, CubebUtils::GetVolumeScale());
@@ -945,22 +945,10 @@ long AudioCallbackDriver::DataCallback(const AudioDataValue* aInputBuffer,
                              mSampleRate, mInputChannelCount, alreadyBuffered);
   }
 
-  bool iterate = mBuffer.Available();
   IterationResult result =
-      iterate
-          ? Graph()->OneIteration(nextStateComputedTime, mIterationEnd, &mMixer)
-          : IterationResult::CreateStillProcessing();
-  if (iterate) {
-    // We totally filled the buffer (and mScratchBuffer isn't empty).
-    // We don't need to run an iteration and if we do so we may overflow.
-    mStateComputedTime = nextStateComputedTime;
-  } else {
-    LOG(LogLevel::Verbose,
-        ("%p: DataCallback buffer filled entirely from scratch "
-         "buffer, skipping iteration.",
-         Graph()));
-    result = IterationResult::CreateStillProcessing();
-  }
+      Graph()->OneIteration(nextStateComputedTime, mIterationEnd, &mMixer);
+
+  mStateComputedTime = nextStateComputedTime;
 
   MOZ_ASSERT(mBuffer.Available() == 0,
              "The graph should have filled the buffer");
@@ -1099,7 +1087,7 @@ void AudioCallbackDriver::MixerCallback(AudioDataValue* aMixedBuffer,
   MOZ_ASSERT(InIteration());
   uint32_t toWrite = mBuffer.Available();
 
-  if (!mBuffer.Available()) {
+  if (!mBuffer.Available() && aFrames > 0) {
     NS_WARNING("DataCallback buffer full, expect frame drops.");
   }
 

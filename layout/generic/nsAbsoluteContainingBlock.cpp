@@ -275,7 +275,10 @@ void nsAbsoluteContainingBlock::Reflow(nsContainerFrame* aDelegatingFrame,
 
   // Abspos frames can't cause their parent to be incomplete,
   // only overflow incomplete.
-  if (reflowStatus.IsIncomplete()) reflowStatus.SetOverflowIncomplete();
+  if (reflowStatus.IsIncomplete()) {
+    reflowStatus.SetOverflowIncomplete();
+    reflowStatus.SetNextInFlowNeedsReflow();
+  }
 
   aReflowStatus.MergeCompletionStatusFrom(reflowStatus);
 }
@@ -513,12 +516,12 @@ static nscoord OffsetToAlignedStaticPos(const ReflowInput& aKidReflowInput,
       // absolute containing block.
       alignAreaSize = aAbsPosCBSize.ConvertTo(pcWM, aAbsPosCBWM);
     } else {
-      // The alignment container is a the grid container's padding box (which
-      // we can get by subtracting away its border from frame's size):
+      // The alignment container is a the grid container's content box (which
+      // we can get by subtracting away its border & padding from frame's size):
       alignAreaSize = aPlaceholderContainer->GetLogicalSize(pcWM);
-      LogicalMargin pcBorder =
-          aPlaceholderContainer->GetLogicalUsedBorder(pcWM);
-      alignAreaSize -= pcBorder.Size(pcWM);
+      LogicalMargin pcBorderPadding =
+          aPlaceholderContainer->GetLogicalUsedBorderAndPadding(pcWM);
+      alignAreaSize -= pcBorderPadding.Size(pcWM);
     }
   } else {
     NS_ERROR("Unsupported container for abpsos CSS Box Alignment");
@@ -797,15 +800,16 @@ void nsAbsoluteContainingBlock::ReflowAbsoluteFrame(
                              LogicalSize(wm, availISize, availBSize),
                              Some(logicalCBSize), initFlags);
 
-  if (kidReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE) {
+  if (nscoord kidAvailBSize = kidReflowInput.AvailableBSize();
+      kidAvailBSize != NS_UNCONSTRAINEDSIZE) {
     // Shrink available block-size if it's constrained.
-    kidReflowInput.AvailableBSize() -=
-        kidReflowInput.ComputedLogicalMargin(wm).BStart(wm);
+    kidAvailBSize -= kidReflowInput.ComputedLogicalMargin(wm).BStart(wm);
     const nscoord kidOffsetBStart =
         kidReflowInput.ComputedLogicalOffsets(wm).BStart(wm);
     if (NS_AUTOOFFSET != kidOffsetBStart) {
-      kidReflowInput.AvailableBSize() -= kidOffsetBStart;
+      kidAvailBSize -= kidOffsetBStart;
     }
+    kidReflowInput.SetAvailableBSize(kidAvailBSize);
   }
 
   // Do the reflow

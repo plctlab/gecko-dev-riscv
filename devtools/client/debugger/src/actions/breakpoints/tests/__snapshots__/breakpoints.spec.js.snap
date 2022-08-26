@@ -5,16 +5,6 @@ Array [
   Object {
     "breakpoints": Array [
       Object {
-        "astLocation": Object {
-          "index": 0,
-          "name": undefined,
-          "offset": Object {
-            "column": 1,
-            "line": 2,
-            "sourceId": "a",
-            "sourceUrl": "http://localhost:8000/examples/a",
-          },
-        },
         "disabled": false,
         "generatedLocation": Object {
           "column": 1,
@@ -32,39 +22,36 @@ Array [
         "options": Object {},
         "originalText": "return a",
         "text": "return a",
+        "thread": "FakeThread",
       },
     ],
+    "filename": "a",
     "source": Object {
+      "displayURL": Object {
+        "fileExtension": "",
+        "filename": "a",
+        "group": "localhost:8000",
+        "path": "/examples/a",
+        "search": "",
+      },
       "extensionName": null,
       "id": "a",
-      "isBlackBoxed": false,
       "isExtension": false,
+      "isHTML": false,
       "isOriginal": false,
       "isPrettyPrinted": false,
       "isWasm": false,
-      "relativeUrl": "/examples/a",
+      "thread": "FakeThread",
       "url": "http://localhost:8000/examples/a",
     },
   },
 ]
 `;
 
-exports[`breakpoints should not re-add a breakpoint 1`] = `Array []`;
-
 exports[`breakpoints should not show a breakpoint that does not have text 1`] = `Array []`;
-
-exports[`breakpoints should not show a breakpoint that does not have text 2`] = `Array []`;
 
 exports[`breakpoints should remap breakpoints on pretty print 1`] = `
 Object {
-  "astLocation": Object {
-    "index": 0,
-    "name": "a",
-    "offset": Object {
-      "column": undefined,
-      "line": 0,
-    },
-  },
   "disabled": false,
   "generatedLocation": Object {
     "column": 0,
@@ -82,6 +69,7 @@ Object {
   "options": Object {},
   "originalText": "function a() {",
   "text": "function a() {",
+  "thread": "FakeThread",
 }
 `;
 
@@ -90,16 +78,6 @@ Array [
   Object {
     "breakpoints": Array [
       Object {
-        "astLocation": Object {
-          "index": 0,
-          "name": undefined,
-          "offset": Object {
-            "column": 1,
-            "line": 5,
-            "sourceId": "a",
-            "sourceUrl": "http://localhost:8000/examples/a",
-          },
-        },
         "disabled": true,
         "generatedLocation": Object {
           "column": 1,
@@ -117,17 +95,26 @@ Array [
         "options": Object {},
         "originalText": "",
         "text": "",
+        "thread": "FakeThread",
       },
     ],
+    "filename": "a",
     "source": Object {
+      "displayURL": Object {
+        "fileExtension": "",
+        "filename": "a",
+        "group": "localhost:8000",
+        "path": "/examples/a",
+        "search": "",
+      },
       "extensionName": null,
       "id": "a",
-      "isBlackBoxed": false,
       "isExtension": false,
+      "isHTML": false,
       "isOriginal": false,
       "isPrettyPrinted": false,
       "isWasm": false,
-      "relativeUrl": "/examples/a",
+      "thread": "FakeThread",
       "url": "http://localhost:8000/examples/a",
     },
   },

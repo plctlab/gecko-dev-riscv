@@ -80,7 +80,7 @@ LocalAccessible* ApplicationAccessible::LocalChildAtPoint(
   return nullptr;
 }
 
-LocalAccessible* ApplicationAccessible::FocusedChild() {
+Accessible* ApplicationAccessible::FocusedChild() {
   LocalAccessible* focus = FocusMgr()->FocusedAccessible();
   if (focus && focus->LocalParent() == this) {
     return focus;
@@ -94,7 +94,9 @@ Relation ApplicationAccessible::RelationByType(
   return Relation();
 }
 
-nsIntRect ApplicationAccessible::Bounds() const { return nsIntRect(); }
+mozilla::LayoutDeviceIntRect ApplicationAccessible::Bounds() const {
+  return mozilla::LayoutDeviceIntRect();
+}
 
 nsRect ApplicationAccessible::BoundsInAppUnits() const { return nsRect(); }
 

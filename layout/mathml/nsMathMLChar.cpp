@@ -11,6 +11,7 @@
 #include "gfxUtils.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/intl/UnicodeScriptCodes.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/UniquePtr.h"
@@ -42,7 +43,6 @@
 #include <algorithm>
 
 #include "gfxMathTable.h"
-#include "nsUnicodeScriptCodes.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -58,7 +58,6 @@ static const float kLargeOpFactor = float(M_SQRT2);
 static const float kIntegralFactor = 2.0;
 
 static void NormalizeDefaultFont(nsFont& aFont, float aFontSizeInflation) {
-  Servo_FontFamilyList_Normalize(&aFont.family.families);
   aFont.size.ScaleBy(aFontSizeInflation);
 }
 
@@ -500,16 +499,15 @@ already_AddRefed<gfxTextRun> nsOpenTypeTable::MakeTextRun(
   RefPtr<gfxTextRun> textRun =
       gfxTextRun::Create(&params, 1, aFontGroup, gfx::ShapedTextFlags(),
                          nsTextFrameUtils::Flags());
-  textRun->AddGlyphRun(aFontGroup->GetFirstValidFont(),
-                       FontMatchType::Kind::kFontGroup, 0, false,
+  RefPtr<gfxFont> font = aFontGroup->GetFirstValidFont();
+  textRun->AddGlyphRun(font, FontMatchType::Kind::kFontGroup, 0, false,
                        gfx::ShapedTextFlags::TEXT_ORIENT_HORIZONTAL, false);
   // We don't care about CSS writing mode here;
   // math runs are assumed to be horizontal.
   gfxTextRun::DetailedGlyph detailedGlyph;
   detailedGlyph.mGlyphID = aGlyph.glyphID;
   detailedGlyph.mAdvance = NSToCoordRound(
-      aAppUnitsPerDevPixel *
-      aFontGroup->GetFirstValidFont()->GetGlyphAdvance(aGlyph.glyphID));
+      aAppUnitsPerDevPixel * font->GetGlyphAdvance(aGlyph.glyphID));
   textRun->SetDetailedGlyphs(0, 1, &detailedGlyph);
 
   return textRun.forget();
@@ -876,7 +874,7 @@ bool nsMathMLChar::SetFontFamily(nsPresContext* aPresContext,
 
       const auto& firstFontInList = familyList.list.AsSpan()[0];
 
-      gfxFont* firstFont = fm->GetThebesFontGroup()->GetFirstValidFont();
+      RefPtr<gfxFont> firstFont = fm->GetThebesFontGroup()->GetFirstValidFont();
       RefPtr<nsAtom> firstFontName =
           NS_Atomize(firstFont->GetFontEntry()->FamilyName());
 
@@ -988,7 +986,7 @@ bool nsMathMLChar::StretchEnumContext::TryVariants(
     ch = aGlyphTable->BigOf(mDrawTarget, oneDevPixel, *aFontGroup, uchar,
                             isVertical, 0);
     if (ch.IsGlyphID()) {
-      gfxFont* mathFont = aFontGroup->get()->GetFirstMathFont();
+      RefPtr<gfxFont> mathFont = aFontGroup->get()->GetFirstMathFont();
       // For OpenType MATH fonts, we will rely on the DisplayOperatorMinHeight
       // to select the right size variant. Note that the value is sometimes too
       // small so we use kLargeOpFactor/kIntegralFactor as a minimum value.
@@ -1028,7 +1026,7 @@ bool nsMathMLChar::StretchEnumContext::TryVariants(
         aGlyphTable->MakeTextRun(mDrawTarget, oneDevPixel, *aFontGroup, ch);
     nsBoundingMetrics bm = MeasureTextRun(mDrawTarget, textRun.get());
     if (ch.IsGlyphID()) {
-      gfxFont* mathFont = aFontGroup->get()->GetFirstMathFont();
+      RefPtr<gfxFont> mathFont = aFontGroup->get()->GetFirstMathFont();
       if (mathFont) {
         // MeasureTextRun should have set the advance width to the right
         // bearing for OpenType MATH fonts. We now subtract the italic
@@ -1295,7 +1293,8 @@ bool nsMathMLChar::StretchEnumContext::EnumCallback(
     glyphTable = &gGlyphTableList->mUnicodeTable;
   } else {
     // If the font contains an Open Type MATH table, use it.
-    openTypeTable = nsOpenTypeTable::Create(fontGroup->GetFirstValidFont());
+    RefPtr<gfxFont> font = fontGroup->GetFirstValidFont();
+    openTypeTable = nsOpenTypeTable::Create(font);
     if (openTypeTable) {
       glyphTable = openTypeTable.get();
     } else if (StaticPrefs::mathml_stixgeneral_operator_stretching_disabled()) {
@@ -1492,9 +1491,16 @@ nsresult nsMathMLChar::StretchInternal(
     // really shouldn't be doing things this way but for now
     // insert fallbacks into the list
     AutoTArray<nsCString, 16> mathFallbacks;
-    gfxFontUtils::GetPrefsFontList("font.name.serif.x-math", mathFallbacks);
-    gfxFontUtils::AppendPrefsFontList("font.name-list.serif.x-math",
-                                      mathFallbacks);
+    nsAutoCString value;
+    gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();
+    pfl->Lock();
+    if (pfl->GetFontPrefs()->LookupName("serif.x-math"_ns, value)) {
+      gfxFontUtils::ParseFontList(value, mathFallbacks);
+    }
+    if (pfl->GetFontPrefs()->LookupNameList("serif.x-math"_ns, value)) {
+      gfxFontUtils::ParseFontList(value, mathFallbacks);
+    }
+    pfl->Unlock();
     InsertMathFallbacks(font.family.families, mathFallbacks);
 
 #ifdef NOISY_SEARCH
@@ -1541,8 +1547,9 @@ nsresult nsMathMLChar::StretchInternal(
   // operator. Verify whether a font with an OpenType MATH table is available
   // and record missing math script otherwise.
   gfxMissingFontRecorder* MFR = presContext->MissingFontRecorder();
-  if (MFR && !fm->GetThebesFontGroup()->GetFirstMathFont()) {
-    MFR->RecordScript(unicode::Script::MATHEMATICAL_NOTATION);
+  RefPtr<gfxFont> firstMathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
+  if (MFR && !firstMathFont) {
+    MFR->RecordScript(intl::Script::MATHEMATICAL_NOTATION);
   }
 
   // If the scale_stretchy_operators option is disabled, we are done.

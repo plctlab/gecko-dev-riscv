@@ -24,21 +24,13 @@ import { scrollList } from "../../utils/result-list";
 import classnames from "classnames";
 
 import SearchInput from "../shared/SearchInput";
-import { debounce } from "lodash";
 import "./SearchBar.css";
 
 const { PluralForm } = require("devtools/shared/plural-form");
+const { debounce } = require("devtools/shared/debounce");
 
-function getShortcuts() {
-  const searchAgainKey = L10N.getStr("sourceSearch.search.again.key3");
-  const searchAgainPrevKey = L10N.getStr("sourceSearch.search.againPrev.key3");
-  const searchKey = L10N.getStr("sourceSearch.search.key2");
-
-  return {
-    shiftSearchAgainShortcut: searchAgainPrevKey,
-    searchAgainShortcut: searchAgainKey,
-    searchShortcut: searchKey,
-  };
+function getSearchShortcut() {
+  return L10N.getStr("sourceSearch.search.key2");
 }
 
 class SearchBar extends Component {
@@ -53,18 +45,32 @@ class SearchBar extends Component {
     };
   }
 
+  static get propTypes() {
+    return {
+      closeFileSearch: PropTypes.func.isRequired,
+      cx: PropTypes.object.isRequired,
+      doSearch: PropTypes.func.isRequired,
+      editor: PropTypes.object,
+      modifiers: PropTypes.object.isRequired,
+      query: PropTypes.string.isRequired,
+      searchOn: PropTypes.bool.isRequired,
+      searchResults: PropTypes.object.isRequired,
+      selectedContentLoaded: PropTypes.bool.isRequired,
+      selectedSource: PropTypes.object.isRequired,
+      setActiveSearch: PropTypes.func.isRequired,
+      showClose: PropTypes.bool,
+      toggleFileSearchModifier: PropTypes.func.isRequired,
+      traverseResults: PropTypes.func.isRequired,
+    };
+  }
+
   componentWillUnmount() {
     const { shortcuts } = this.context;
-    const {
-      searchShortcut,
-      searchAgainShortcut,
-      shiftSearchAgainShortcut,
-    } = getShortcuts();
 
-    shortcuts.off(searchShortcut);
-    shortcuts.off("Escape");
-    shortcuts.off(searchAgainShortcut);
-    shortcuts.off(shiftSearchAgainShortcut);
+    shortcuts.off(getSearchShortcut(), this.toggleSearch);
+    shortcuts.off("Escape", this.onEscape);
+
+    this.doSearch.cancel();
   }
 
   componentDidMount() {
@@ -72,18 +78,9 @@ class SearchBar extends Component {
     // reduce frequency of queries
     this.doSearch = debounce(this.doSearch, 100);
     const { shortcuts } = this.context;
-    const {
-      searchShortcut,
-      searchAgainShortcut,
-      shiftSearchAgainShortcut,
-    } = getShortcuts();
 
-    shortcuts.on(searchShortcut, this.toggleSearch);
+    shortcuts.on(getSearchShortcut(), this.toggleSearch);
     shortcuts.on("Escape", this.onEscape);
-
-    shortcuts.on(shiftSearchAgainShortcut, e => this.traverseResults(e, true));
-
-    shortcuts.on(searchAgainShortcut, e => this.traverseResults(e, false));
   }
 
   componentDidUpdate(prevProps, prevState) {
@@ -285,7 +282,6 @@ class SearchBar extends Component {
       searchResults: { count },
       searchOn,
       showClose = true,
-      size = "big",
     } = this.props;
 
     if (!searchOn) {
@@ -316,7 +312,7 @@ class SearchBar extends Component {
           {showClose && (
             <React.Fragment>
               <span className="pipe-divider" />
-              <CloseButton handleClick={this.closeSearch} buttonClass={size} />
+              <CloseButton handleClick={this.closeSearch} buttonClass={"big"} />
             </React.Fragment>
           )}
         </div>

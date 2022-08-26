@@ -54,20 +54,6 @@ interface FrameLoader {
   readonly attribute boolean isRemoteFrame;
 
   /**
-   * Activate remote frame.
-   * Throws an exception with non-remote frames.
-   */
-  [Throws]
-  void activateRemoteFrame();
-
-  /**
-   * Deactivate remote frame.
-   * Throws an exception with non-remote frames.
-   */
-  [Throws]
-  void deactivateRemoteFrame();
-
-  /**
    * Activate event forwarding from client (remote frame) to parent.
    */
   [Throws]
@@ -87,7 +73,7 @@ interface FrameLoader {
    * Returns a promise that resolves when all session store data has been
    * flushed.
    */
-  [Throws]
+  [NewObject]
   Promise<void> requestTabStateFlush();
 
   /**
@@ -116,14 +102,13 @@ interface FrameLoader {
    *   preview document with a new print settings object.
    * @return A Promise that resolves with a PrintPreviewSuccessInfo on success.
    */
-  [ChromeOnly, Throws]
+  [NewObject]
   Promise<unsigned long> printPreview(nsIPrintSettings aPrintSettings,
                                       BrowsingContext? aSourceBrowsingContext);
 
   /**
    * Inform the print preview document that we're done with it.
    */
-  [ChromeOnly]
   void exitPrintPreview();
 
   /**

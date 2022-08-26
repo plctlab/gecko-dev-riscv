@@ -8,7 +8,9 @@
 #define mozilla_dom_AnimationEffect_h
 
 #include "mozilla/ComputedTiming.h"
+#include "mozilla/dom/Animation.h"
 #include "mozilla/dom/Nullable.h"
+#include "mozilla/dom/ScrollTimeline.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/TimingParams.h"
 #include "nsCycleCollectionParticipant.h"
@@ -19,7 +21,6 @@ class ErrorResult;
 
 namespace dom {
 
-class Animation;
 class KeyframeEffect;
 struct ComputedEffectTiming;
 struct EffectTiming;
@@ -40,7 +41,7 @@ class AnimationEffect : public nsISupports, public nsWrapperCache {
   bool IsCurrent() const;
   bool IsInEffect() const;
   bool HasFiniteActiveDuration() const {
-    return SpecifiedTiming().ActiveDuration() != TimeDuration::Forever();
+    return NormalizedTiming().ActiveDuration() != TimeDuration::Forever();
   }
 
   // AnimationEffect interface
@@ -51,6 +52,20 @@ class AnimationEffect : public nsISupports, public nsWrapperCache {
 
   const TimingParams& SpecifiedTiming() const { return mTiming; }
   void SetSpecifiedTiming(TimingParams&& aTiming);
+
+  const TimingParams& NormalizedTiming() const {
+    MOZ_ASSERT((mAnimation && mAnimation->UsingScrollTimeline() &&
+                mNormalizedTiming) ||
+                   !mNormalizedTiming,
+               "We do normalization only for progress-based timeline");
+    return mNormalizedTiming ? *mNormalizedTiming : mTiming;
+  }
+
+  // There are 3 conditions where we have to update the normalized timing:
+  // 1. mAnimation is changed, or
+  // 2. the timeline of mAnimation is changed, or
+  // 3. mTiming is changed.
+  void UpdateNormalizedTiming();
 
   // This function takes as input the timing parameters of an animation and
   // returns the computed timing at the specified local time.
@@ -64,7 +79,8 @@ class AnimationEffect : public nsISupports, public nsWrapperCache {
   // (because it is not currently active and is not filling at this time).
   static ComputedTiming GetComputedTimingAt(
       const Nullable<TimeDuration>& aLocalTime, const TimingParams& aTiming,
-      double aPlaybackRate);
+      double aPlaybackRate,
+      Animation::ProgressTimelinePosition aProgressTimelinePosition);
   // Shortcut that gets the computed timing using the current local time as
   // calculated from the timeline time.
   ComputedTiming GetComputedTiming(const TimingParams* aTiming = nullptr) const;
@@ -89,6 +105,7 @@ class AnimationEffect : public nsISupports, public nsWrapperCache {
   RefPtr<Document> mDocument;
   RefPtr<Animation> mAnimation;
   TimingParams mTiming;
+  Maybe<TimingParams> mNormalizedTiming;
 };
 
 }  // namespace dom

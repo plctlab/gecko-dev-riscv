@@ -16,7 +16,7 @@ button {
   color: ButtonText;
   background-color: ButtonFace;
   text-shadow: none;
-  border: 1px solid ThreeDDarkShadow;
+  border: 1px solid ThreeDLightShadow;
   padding: 2px 3px;
   /* TODO: In Windows 11 perhaps we want some border-radius */
 }
@@ -29,12 +29,6 @@ button:where(:hover:active) {
   background-color: -moz-ButtonActiveFace;
 }
 
-@media (prefers-color-scheme: dark) {
-  button {
-    appearance: none;
-  }
-}
-
 .button-text {
   margin: 0;
   text-align: center;
@@ -43,8 +37,15 @@ button:where(:hover:active) {
 /* .......... focused state .......... */
 
 button:focus-visible {
-  outline: 1px dotted;
-  outline-offset: -3px;
+  outline: var(--default-focusring);
+  outline-offset: calc(-1 * var(--default-focusring-width) - 2px);
+}
+
+@media (prefers-color-scheme: dark) {
+  button:focus-visible {
+    outline: 1px auto;
+    outline-offset: initial;
+  }
 }
 
 /* .......... default/hover/focused state .......... */
@@ -65,6 +66,7 @@ button:focus-visible {
 
 button:where([disabled="true"]) {
   color: GrayText;
+  background-color: ButtonFace;
 }
 
 @media (-moz-windows-classic) {

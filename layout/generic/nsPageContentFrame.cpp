@@ -7,6 +7,7 @@
 
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/dom/Document.h"
 
 #include "nsContentUtils.h"
 #include "nsPageFrame.h"
@@ -80,7 +81,7 @@ void nsPageContentFrame::Reflow(nsPresContext* aPresContext,
 
     // XXXbz this screws up percentage padding (sets padding to zero
     // in the percentage padding case)
-    kidReflowInput.mStylePadding->GetPadding(padding);
+    frame->StylePadding()->GetPadding(padding);
 
     // This is for shrink-to-fit, and therefore we want to use the
     // scrollable overflow, since the purpose of shrink to fit is to
@@ -165,8 +166,6 @@ void nsPageContentFrame::Reflow(nsPresContext* aPresContext,
 
     mRemainingOverflow = std::max(remainingOverflow, 0);
   }
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aReflowOutput);
 }
 
 using PageAndOffset = std::pair<nsPageContentFrame*, nscoord>;
@@ -267,10 +266,7 @@ static void BuildPreviousPageOverflow(nsDisplayListBuilder* aBuilder,
 static void PruneDisplayListForExtraPage(nsDisplayListBuilder* aBuilder,
                                          nsPageFrame* aPage,
                                          nsDisplayList* aList) {
-  nsDisplayList newList;
-
-  while (true) {
-    nsDisplayItem* i = aList->RemoveBottom();
+  for (nsDisplayItem* i : aList->TakeItems()) {
     if (!i) break;
     nsDisplayList* subList = i->GetSameCoordinateSystemChildren();
     if (subList) {
@@ -285,9 +281,8 @@ static void PruneDisplayListForExtraPage(nsDisplayListBuilder* aBuilder,
         continue;
       }
     }
-    newList.AppendToTop(i);
+    aList->AppendToTop(i);
   }
-  aList->AppendToTop(&newList);
 }
 
 static void BuildDisplayListForExtraPage(nsDisplayListBuilder* aBuilder,
@@ -301,7 +296,7 @@ static void BuildDisplayListForExtraPage(nsDisplayListBuilder* aBuilder,
   if (!aExtraPage->HasAnyStateBits(NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO)) {
     return;
   }
-  nsDisplayList list;
+  nsDisplayList list(aBuilder);
   aExtraPage->BuildDisplayListForStackingContext(aBuilder, &list);
   PruneDisplayListForExtraPage(aBuilder, aPage, &list);
   aList->AppendToTop(&list);
@@ -332,7 +327,7 @@ void nsPageContentFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 
   nsDisplayListCollection set(aBuilder);
 
-  nsDisplayList content;
+  nsDisplayList content(aBuilder);
   {
     const nsRect clipRect(aBuilder->ToReferenceFrame(this), GetSize());
     DisplayListClipState::AutoSaveRestore clipState(aBuilder);
@@ -347,12 +342,6 @@ void nsPageContentFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
       nsDisplayListBuilder::AutoPageNumberSetter p(aBuilder, pageNum);
       BuildPreviousPageOverflow(aBuilder, pageFrame, this, set);
     }
-
-    nsRect visible = aBuilder->GetVisibleRect();
-    visible.ScaleInverseRoundOut(PresContext()->GetPageScale());
-
-    nsDisplayListBuilder::AutoBuildingDisplayList buildingForChild(
-        aBuilder, this, visible, visible);
     mozilla::ViewportFrame::BuildDisplayList(aBuilder, set);
 
     set.SerializeWithCorrectZOrder(&content, GetContent());

@@ -20,10 +20,6 @@
  */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 const displayModes = new Set([
   "fullscreen",
   "standalone",
@@ -42,7 +38,6 @@ const orientationTypes = new Set([
 ]);
 const textDirections = new Set(["ltr", "rtl", "auto"]);
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 // ValueExtractor is used by the various processors to get values
 // from the manifest and to report errors.
 const { ValueExtractor } = ChromeUtils.import(
@@ -124,6 +119,7 @@ var ManifestProcessor = {
       background_color: processBackgroundColorMember(),
     };
     processedManifest.scope = processScopeMember();
+    processedManifest.id = processIdMember();
     if (checkConformance) {
       processedManifest.moz_validation = errors;
       processedManifest.moz_manifest_url = manifestURL.href;
@@ -258,10 +254,10 @@ var ManifestProcessor = {
         expectedType: "string",
         trim: false,
       };
-      let result = new URL(docURL).href;
+      const defaultStartURL = new URL(docURL).href;
       const value = extractor.extractValue(spec);
       if (value === undefined || value === "") {
-        return result;
+        return defaultStartURL;
       }
       let potentialResult;
       try {
@@ -269,17 +265,16 @@ var ManifestProcessor = {
       } catch (e) {
         const warn = domBundle.GetStringFromName("ManifestStartURLInvalid");
         errors.push({ warn });
-        return result;
+        return defaultStartURL;
       }
       if (potentialResult.origin !== docURL.origin) {
         const warn = domBundle.GetStringFromName(
           "ManifestStartURLShouldBeSameOrigin"
         );
         errors.push({ warn });
-      } else {
-        result = potentialResult.href;
+        return defaultStartURL;
       }
-      return result;
+      return potentialResult.href;
     }
 
     function processThemeColorMember() {
@@ -313,6 +308,42 @@ var ManifestProcessor = {
         trim: true,
       };
       return extractor.extractLanguageValue(spec);
+    }
+
+    function processIdMember() {
+      // the start_url serves as the fallback, in case the id is not specified
+      // or in error. A start_url is assured.
+      const startURL = new URL(processedManifest.start_url);
+
+      const spec = {
+        objectName: "manifest",
+        object: rawManifest,
+        property: "id",
+        expectedType: "string",
+        trim: false,
+      };
+      const extractedValue = extractor.extractValue(spec);
+
+      if (typeof extractedValue !== "string" || extractedValue === "") {
+        return startURL.href;
+      }
+
+      let appId;
+      try {
+        appId = new URL(extractedValue, startURL.origin);
+      } catch {
+        const warn = domBundle.GetStringFromName("ManifestIdIsInvalid");
+        errors.push({ warn });
+        return startURL.href;
+      }
+
+      if (appId.origin !== startURL.origin) {
+        const warn = domBundle.GetStringFromName("ManifestIdNotSameOrigin");
+        errors.push({ warn });
+        return startURL.href;
+      }
+
+      return appId.href;
     }
   },
 };

@@ -44,7 +44,7 @@ def main(args=sys.argv[1:]):
         "--strict",
         help="Errors out immediatly on a scenario failure",
         action="store_true",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--geckodriver",
@@ -62,19 +62,22 @@ def main(args=sys.argv[1:]):
 
     from condprof.runner import run  # NOQA
 
-    run(
-        args.archive,
-        args.firefox,
-        args.scenario,
-        args.profile,
-        args.customization,
-        args.visible,
-        args.archives_dir,
-        args.force_new,
-        args.strict,
-        args.geckodriver,
-        args.device_name,
-    )
+    try:
+        run(
+            args.archive,
+            args.firefox,
+            args.scenario,
+            args.profile,
+            args.customization,
+            args.visible,
+            args.archives_dir,
+            args.force_new,
+            args.strict,
+            args.geckodriver,
+            args.device_name,
+        )
+    except Exception:
+        sys.exit(4)  # TBPL_RETRY
 
 
 if __name__ == "__main__":

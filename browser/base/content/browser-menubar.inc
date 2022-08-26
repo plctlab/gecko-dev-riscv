@@ -28,14 +28,6 @@
                 <menuitem id="menu_newPrivateWindow"
                           command="Tools:PrivateBrowsing"
                           key="key_privatebrowsing" data-l10n-id="menu-file-new-private-window"/>
-#ifdef NIGHTLY_BUILD
-                <menuitem id="menu_newFissionWindow"
-                          command="Tools:FissionWindow"
-                          accesskey="s" label="New Fission Window"/>
-                <menuitem id="menu_newNonFissionWindow"
-                          command="Tools:NonFissionWindow"
-                          accesskey="s" label="New Non-Fission Window"/>
-#endif
                 <menuitem id="menu_openLocation"
                           hidden="true"
                           command="Browser:OpenLocation"
@@ -46,7 +38,7 @@
                 <menuitem id="menu_close"
                           class="show-only-for-keyboard"
                           key="key_close"
-                          command="cmd_close" data-l10n-id="menu-file-close"/>
+                          command="cmd_close" data-l10n-id="menu-file-close-tab" data-l10n-args='{"tabCount": 1}'/>
                 <menuitem id="menu_closeWindow"
                           class="show-only-for-keyboard"
                           hidden="true"
@@ -64,10 +56,6 @@
 #if !defined(MOZ_WIDGET_GTK)
                 <menuitem id="menu_printSetup"
                           command="cmd_pageSetup" data-l10n-id="menu-file-print-setup" hidden="true"/>
-#endif
-#ifndef XP_MACOSX
-                <menuitem id="menu_printPreview"
-                          command="cmd_printPreview" data-l10n-id="menu-file-print-preview" hidden="true"/>
 #endif
                 <menuitem id="menu_print"
                           key="printKb"
@@ -168,8 +156,7 @@
                   </menupopup>
                 </menu>
                 <menuseparator/>
-                <menu id="viewFullZoomMenu"
-                      onpopupshowing="FullZoom.updateMenu();" data-l10n-id="menu-view-full-zoom">
+                <menu id="viewFullZoomMenu" data-l10n-id="menu-view-full-zoom">
                   <menupopup>
                     <menuitem id="menu_zoomEnlarge"
                               key="key_fullZoomEnlarge"
@@ -237,7 +224,7 @@
             </menu>
 
             <menu id="history-menu" data-l10n-id="menu-history">
-              <menupopup id="goPopup"
+              <menupopup id="historyMenuPopup"
 #ifndef XP_MACOSX
                          placespopup="true"
                          is="places-popup"
@@ -323,7 +310,7 @@
       <menuitem id="menu_bookmarkThisPage"
                 command="Browser:AddBookmarkAs"
                 key="addBookmarkAsKb"
-                data-l10n-id="menu-bookmark-current-tab"/>
+                data-l10n-id="menu-bookmark-tab"/>
       <menuitem id="menu_bookmarkAllTabs"
                 class="show-only-for-keyboard"
                 command="Browser:BookmarkAllTabs"
@@ -405,11 +392,16 @@
                         class="sync-ui-item"
                         hidden="true"
                         oncommand="gSync.openSignInAgainPage('menubar');" data-l10n-id="menu-tools-fxa-re-auth"/>
+
+#ifdef NIGHTLY_BUILD
+              <menuitem id="menu_openFirefoxView"
+                        oncommand="FirefoxViewHandler.openTab();" data-l10n-id="menu-tools-firefox-view"/>
+#endif
               <menuseparator id="devToolsSeparator"/>
-              <menu id="webDeveloperMenu" data-l10n-id="menu-tools-browser-tools">
+              <menu id="browserToolsMenu" data-l10n-id="menu-tools-browser-tools">
                 <menupopup id="menuWebDeveloperPopup">
                   <menuitem id="menu_taskManager"
-                            oncommand="switchToTabHavingURI('about:performance', true)"
+                            oncommand="switchToTabHavingURI('about:processes', true)"
                             data-l10n-id="menu-tools-task-manager"/>
                   <menuitem id="menu_pageSource"
                             key="key_viewSource"
@@ -474,8 +466,8 @@
 #endif
                 <menuitem id="feedbackPage"
                           oncommand="openFeedbackPage()"
-                          data-l10n-id="menu-help-feedback-page"
-                          appmenu-data-l10n-id="appmenu-help-feedback-page"/>
+                          data-l10n-id="menu-help-share-ideas"
+                          appmenu-data-l10n-id="appmenu-help-share-ideas"/>
                 <menuitem id="helpSafeMode"
                           oncommand="safeModeRestart();"
                           data-l10n-id="menu-help-enter-troubleshoot-mode2"

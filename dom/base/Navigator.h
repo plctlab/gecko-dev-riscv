@@ -96,8 +96,6 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   void Invalidate();
   nsPIDOMWindowInner* GetWindow() const { return mWindow; }
 
-  void RefreshMIMEArray();
-
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
   /**
@@ -127,27 +125,29 @@ class Navigator final : public nsISupports, public nsWrapperCache {
                                ErrorResult& aRv);
   nsMimeTypeArray* GetMimeTypes(ErrorResult& aRv);
   nsPluginArray* GetPlugins(ErrorResult& aRv);
+  bool PdfViewerEnabled();
   Permissions* GetPermissions(ErrorResult& aRv);
   void GetDoNotTrack(nsAString& aResult);
+  bool GlobalPrivacyControl();
   Geolocation* GetGeolocation(ErrorResult& aRv);
   Promise* GetBattery(ErrorResult& aRv);
 
-  Promise* Share(const ShareData& aData, ErrorResult& aRv);
+  bool CanShare(const ShareData& aData);
+  already_AddRefed<Promise> Share(const ShareData& aData, ErrorResult& aRv);
 
-  static void AppName(nsAString& aAppName, nsIPrincipal* aCallerPrincipal,
+  static void AppName(nsAString& aAppName, Document* aCallerDoc,
                       bool aUsePrefOverriddenValue);
 
-  static nsresult GetPlatform(nsAString& aPlatform,
-                              nsIPrincipal* aCallerPrincipal,
+  static nsresult GetPlatform(nsAString& aPlatform, Document* aCallerDoc,
                               bool aUsePrefOverriddenValue);
 
-  static nsresult GetAppVersion(nsAString& aAppVersion,
-                                nsIPrincipal* aCallerPrincipal,
+  static nsresult GetAppVersion(nsAString& aAppVersion, Document* aCallerDoc,
                                 bool aUsePrefOverriddenValue);
 
   static nsresult GetUserAgent(nsPIDOMWindowInner* aWindow,
-                               nsIPrincipal* aCallerPrincipal,
-                               bool aIsCallerChrome, nsAString& aUserAgent);
+                               Document* aCallerDoc,
+                               Maybe<bool> aShouldResistFingerprinting,
+                               nsAString& aUserAgent);
 
   // Clears the platform cache by calling:
   // Navigator_Binding::ClearCachedPlatformValue(this);
@@ -177,6 +177,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   already_AddRefed<LegacyMozTCPSocket> MozTCPSocket();
   network::Connection* GetConnection(ErrorResult& aRv);
   MediaDevices* GetMediaDevices(ErrorResult& aRv);
+  MediaDevices* GetExtantMediaDevices() const { return mMediaDevices; };
 
   void GetGamepads(nsTArray<RefPtr<Gamepad>>& aGamepads, ErrorResult& aRv);
   GamepadServiceTest* RequestGamepadServiceTest();
@@ -243,11 +244,14 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   bool HasCreatedMediaSession() const;
 
  private:
+  void ValidateShareData(const ShareData& aData, ErrorResult& aRv);
   RefPtr<MediaKeySystemAccessManager> mMediaKeySystemAccessManager;
 
  public:
   void NotifyVRDisplaysUpdated();
   void NotifyActiveVRDisplaysChanged();
+
+  bool TestTrialGatedAttribute() const { return true; }
 
  private:
   virtual ~Navigator();
@@ -263,7 +267,6 @@ class Navigator final : public nsISupports, public nsWrapperCache {
     return mWindow ? mWindow->GetDocShell() : nullptr;
   }
 
-  RefPtr<nsMimeTypeArray> mMimeTypes;
   RefPtr<nsPluginArray> mPlugins;
   RefPtr<Permissions> mPermissions;
   RefPtr<Geolocation> mGeolocation;
@@ -289,6 +292,6 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   RefPtr<dom::LockManager> mLocks;
 };
 
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_Navigator_h

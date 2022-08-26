@@ -10,19 +10,34 @@ const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class Event extends Module {
+class EventModule extends Module {
   destroy() {}
+
+  interceptEvent(name, payload) {
+    if (name === "event.testEventWithInterception") {
+      return {
+        ...payload,
+        additionalInformation: "information added through interception",
+      };
+    }
+    return payload;
+  }
 
   /**
    * Commands
    */
 
-  testEmitWindowGlobalInRootEvent(params, destination) {
-    this.messageHandler.emitMessageHandlerEvent(
-      "event.testWindowGlobalInRootEvent",
-      { text: `windowglobal-in-root event for ${destination.id}` }
-    );
+  testEmitInternalWindowGlobalInRootEvent(params, destination) {
+    this.emitEvent("internal-event-from-window-global-in-root", {
+      text: `internal windowglobal-in-root event for ${destination.id}`,
+    });
+  }
+
+  testEmitProtocolWindowGlobalInRootEvent(params, destination) {
+    this.emitProtocolEvent("event.testWindowGlobalInRootEvent", {
+      text: `protocol windowglobal-in-root event for ${destination.id}`,
+    });
   }
 }
 
-const event = Event;
+const event = EventModule;

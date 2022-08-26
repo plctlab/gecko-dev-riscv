@@ -275,6 +275,12 @@ add_task(async function() {
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.pbmode.enabled", false],
       ["privacy.trackingprotection.annotate_channels", true],
+      // Bug 1617611: Fix all the tests broken by "cookies SameSite=lax by default"
+      ["network.cookie.sameSite.laxByDefault", false],
+      [
+        "privacy.partition.always_partition_third_party_non_cookie_storage",
+        false,
+      ],
     ],
   });
 
@@ -289,6 +295,7 @@ add_task(async function() {
   }
 
   SpecialPowers.clearUserPref("privacy.dynamic_firstparty.limitForeign");
+  SpecialPowers.clearUserPref("network.cookie.sameSite.laxByDefault");
 });
 
 add_task(async function() {

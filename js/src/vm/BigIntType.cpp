@@ -108,8 +108,9 @@
 #include "util/CheckedArithmetic.h"
 #include "vm/JSContext.h"
 #include "vm/SelfHosting.h"
+#include "vm/StaticStrings.h"
 
-#include "gc/FreeOp-inl.h"
+#include "gc/GCContext-inl.h"
 #include "gc/Nursery-inl.h"
 #include "vm/JSContext-inl.h"
 
@@ -143,8 +144,7 @@ static bool HasLeadingZeroes(BigInt* bi) {
 BigInt* BigInt::createUninitialized(JSContext* cx, size_t digitLength,
                                     bool isNegative, gc::InitialHeap heap) {
   if (digitLength > MaxDigitLength) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_BIGINT_TOO_LARGE);
+    ReportOversizedAllocation(cx, JSMSG_BIGINT_TOO_LARGE);
     return nullptr;
   }
 
@@ -178,11 +178,11 @@ void BigInt::initializeDigitsToZero() {
   std::uninitialized_fill_n(digs.begin(), digs.Length(), 0);
 }
 
-void BigInt::finalize(JSFreeOp* fop) {
+void BigInt::finalize(JS::GCContext* gcx) {
   MOZ_ASSERT(isTenured());
   if (hasHeapDigits()) {
     size_t size = digitLength() * sizeof(Digit);
-    fop->free_(this, heapDigits_, size, js::MemoryUse::BigIntDigits);
+    gcx->free_(this, heapDigits_, size, js::MemoryUse::BigIntDigits);
   }
 }
 
@@ -1219,12 +1219,17 @@ JSLinearString* BigInt::toStringBasePowerOfTwo(JSContext* cx, HandleBigInt x,
   const size_t charsRequired = CeilDiv(bitLength, bitsPerChar) + sign;
 
   if (charsRequired > JSString::MAX_LENGTH) {
-    ReportOutOfMemory(cx);
+    if constexpr (allowGC) {
+      ReportAllocationOverflow(cx);
+    }
     return nullptr;
   }
 
   auto resultChars = cx->make_pod_array<char>(charsRequired);
   if (!resultChars) {
+    if constexpr (!allowGC) {
+      cx->recoverFromOutOfMemory();
+    }
     return nullptr;
   }
 
@@ -1363,7 +1368,7 @@ JSLinearString* BigInt::toStringGeneric(JSContext* cx, HandleBigInt x,
   size_t maximumCharactersRequired =
       calculateMaximumCharactersRequired(x, radix);
   if (maximumCharactersRequired > JSString::MAX_LENGTH) {
-    ReportOutOfMemory(cx);
+    ReportAllocationOverflow(cx);
     return nullptr;
   }
 
@@ -1452,9 +1457,9 @@ JSLinearString* BigInt::toStringGeneric(JSContext* cx, HandleBigInt x,
 
 static void FreeDigits(JSContext* cx, BigInt* bi, BigInt::Digit* digits,
                        size_t nbytes) {
-  if (cx->isHelperThreadContext()) {
-    js_free(digits);
-  } else if (bi->isTenured()) {
+  MOZ_ASSERT(cx->isMainThreadContext());
+
+  if (bi->isTenured()) {
     MOZ_ASSERT(!cx->nursery().isInside(digits));
     js_free(digits);
   } else {
@@ -1545,7 +1550,7 @@ bool BigInt::calculateMaximumDigitsRequired(JSContext* cx, uint8_t radix,
   uint64_t n = CeilDiv(static_cast<uint64_t>(charcount) * bitsPerChar,
                        DigitBits * bitsPerCharTableMultiplier);
   if (n > MaxDigitLength) {
-    ReportOutOfMemory(cx);
+    ReportOversizedAllocation(cx, JSMSG_BIGINT_TOO_LARGE);
     return false;
   }
 
@@ -1805,8 +1810,9 @@ BigInt* js::NumberToBigInt(JSContext* cx, double d) {
   // Step 1 is an assertion checked by the caller.
   // Step 2.
   if (!IsInteger(d)) {
-    char str[JS::MaximumNumberToStringLength];
-    JS::NumberToString(d, str);
+    ToCStringBuf cbuf;
+    const char* str = NumberToCString(&cbuf, d);
+    MOZ_ASSERT(str);
 
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_NONINTEGER_NUMBER_TO_BIGINT, str);
@@ -2045,8 +2051,7 @@ BigInt* BigInt::pow(JSContext* cx, HandleBigInt x, HandleBigInt y) {
   static_assert(MaxBitLength < std::numeric_limits<Digit>::max(),
                 "unexpectedly large MaxBitLength");
   if (y->digitLength() > 1) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_BIGINT_TOO_LARGE);
+    ReportOversizedAllocation(cx, JSMSG_BIGINT_TOO_LARGE);
     return nullptr;
   }
   Digit exponent = y->digit(0);
@@ -2054,8 +2059,7 @@ BigInt* BigInt::pow(JSContext* cx, HandleBigInt x, HandleBigInt y) {
     return x;
   }
   if (exponent >= MaxBitLength) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_BIGINT_TOO_LARGE);
+    ReportOversizedAllocation(cx, JSMSG_BIGINT_TOO_LARGE);
     return nullptr;
   }
 
@@ -2451,9 +2455,9 @@ BigInt* BigInt::bitNot(JSContext* cx, HandleBigInt x) {
   }
 }
 
-int64_t BigInt::toInt64(BigInt* x) { return WrapToSigned(toUint64(x)); }
+int64_t BigInt::toInt64(const BigInt* x) { return WrapToSigned(toUint64(x)); }
 
-uint64_t BigInt::toUint64(BigInt* x) {
+uint64_t BigInt::toUint64(const BigInt* x) {
   if (x->isZero()) {
     return 0;
   }
@@ -2547,8 +2551,7 @@ BigInt* BigInt::truncateAndSubFromPowerOfTwo(JSContext* cx, HandleBigInt x,
   MOZ_ASSERT(!x->isZero());
 
   if (bits > MaxBitLength) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_BIGINT_TOO_LARGE);
+    ReportOversizedAllocation(cx, JSMSG_BIGINT_TOO_LARGE);
     return nullptr;
   }
 
@@ -3612,8 +3615,7 @@ static inline BigInt* ParseStringBigIntLiteral(JSContext* cx,
 }
 
 // Called from BigInt constructor.
-JS::Result<BigInt*, JS::OOM> js::StringToBigInt(JSContext* cx,
-                                                HandleString str) {
+JS::Result<BigInt*> js::StringToBigInt(JSContext* cx, HandleString str) {
   JSLinearString* linear = str->ensureLinear(cx);
   if (!linear) {
     return cx->alreadyReportedOOM();
@@ -3632,9 +3634,9 @@ JS::Result<BigInt*, JS::OOM> js::StringToBigInt(JSContext* cx,
     res = ParseStringBigIntLiteral(cx, chars.twoByteRange(), &parseError);
   }
 
-  // A nullptr result can indicate either a parse error or out-of-memory.
+  // A nullptr result can indicate either a parse error or generic error.
   if (!res && !parseError) {
-    return cx->alreadyReportedOOM();
+    return cx->alreadyReportedError();
   }
 
   return res;
@@ -3670,7 +3672,17 @@ JSAtom* js::BigIntToAtom(JSContext* cx, HandleBigInt bi) {
   if (!str) {
     return nullptr;
   }
-  return AtomizeString(cx, str);
+  JSAtom* atom = AtomizeString(cx, str);
+  if (!atom) {
+    if constexpr (!allowGC) {
+      // NOTE: AtomizeString can call ReportAllocationOverflow other than
+      //       ReportOutOfMemory, but ReportAllocationOverflow cannot happen
+      //       because the length is guarded by BigInt::toString.
+      cx->recoverFromOutOfMemory();
+    }
+    return nullptr;
+  }
+  return atom;
 }
 
 template JSAtom* js::BigIntToAtom<js::CanGC>(JSContext* cx, HandleBigInt bi);

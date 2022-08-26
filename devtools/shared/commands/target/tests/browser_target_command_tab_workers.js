@@ -11,7 +11,7 @@ const REMOTE_IFRAME_URL = URL_ROOT_ORG_SSL + IFRAME_FILE;
 const IFRAME_URL = URL_ROOT_SSL + IFRAME_FILE;
 const WORKER_FILE = "test_worker.js";
 const WORKER_URL = URL_ROOT_SSL + WORKER_FILE;
-const IFRAME_WORKER_URL = WORKER_FILE;
+const REMOTE_IFRAME_WORKER_URL = URL_ROOT_ORG_SSL + WORKER_FILE;
 
 add_task(async function() {
   // Disable the preloaded process as it creates processes intermittently
@@ -51,9 +51,9 @@ add_task(async function() {
   const mainPageWorker = workers.find(
     worker => worker.url == `${WORKER_URL}#simple-worker`
   );
-  const iframeWorker = workers.find(
-    worker => worker.url == `${IFRAME_WORKER_URL}#simple-worker-in-iframe`
-  );
+  const iframeWorker = workers.find(worker => {
+    return worker.url == `${REMOTE_IFRAME_WORKER_URL}#simple-worker-in-iframe`;
+  });
   ok(mainPageWorker, "…the dedicated worker on the main page");
   ok(iframeWorker, "…and the dedicated worker on the iframe");
 
@@ -73,7 +73,7 @@ add_task(async function() {
     targets.push(targetFront);
     info(`Handled ${targets.length} targets\n`);
   };
-  const onDestroy = async ({ targetFront }) => {
+  const onDestroyed = async ({ targetFront }) => {
     is(
       targetFront.targetType,
       TYPES.WORKER,
@@ -83,11 +83,11 @@ add_task(async function() {
     destroyedTargets.push(targetFront);
   };
 
-  await targetCommand.watchTargets(
-    [TYPES.WORKER, TYPES.SHARED_WORKER],
+  await targetCommand.watchTargets({
+    types: [TYPES.WORKER, TYPES.SHARED_WORKER],
     onAvailable,
-    onDestroy
-  );
+    onDestroyed,
+  });
 
   // XXX: This should be modified in Bug 1607778, where we plan to add support for shared workers.
   info("Check that watched targets return the same fronts as getAllTargets");
@@ -122,11 +122,12 @@ add_task(async function() {
     "Wait for the target list to notify us about the spawned worker"
   );
   const mainPageSpawnedWorkerTarget = targets.find(
-    innerTarget => innerTarget.url === `${WORKER_FILE}#spawned-worker`
+    innerTarget => innerTarget.url == `${WORKER_URL}#spawned-worker`
   );
   ok(mainPageSpawnedWorkerTarget, "Retrieved spawned worker");
   const iframeSpawnedWorkerTarget = targets.find(
-    innerTarget => innerTarget.url === `${WORKER_FILE}#spawned-worker-in-iframe`
+    innerTarget =>
+      innerTarget.url == `${REMOTE_IFRAME_WORKER_URL}#spawned-worker-in-iframe`
   );
   ok(iframeSpawnedWorkerTarget, "Retrieved spawned worker in iframe");
 
@@ -184,7 +185,7 @@ add_task(async function() {
   const iframeWorkerTargetAfterReload = targets.find(
     t =>
       t !== iframeWorkerTarget &&
-      t.url == `${IFRAME_WORKER_URL}#simple-worker-in-iframe`
+      t.url == `${REMOTE_IFRAME_WORKER_URL}#simple-worker-in-iframe`
   );
 
   ok(
@@ -241,18 +242,20 @@ add_task(async function() {
     "Wait for the target list to notify us about the workers in the new iframes"
   );
   const firstSpawnedIframeWorkerTarget = targets.find(
-    worker => worker.url == `${WORKER_FILE}#simple-worker-in-created-iframe-1`
+    worker => worker.url == `${WORKER_URL}#simple-worker-in-created-iframe-1`
   );
   const secondSpawnedIframeWorkerTarget = targets.find(
-    worker => worker.url == `${WORKER_FILE}#simple-worker-in-created-iframe-2`
+    worker => worker.url == `${WORKER_URL}#simple-worker-in-created-iframe-2`
   );
   const firstSpawnedRemoteIframeWorkerTarget = targets.find(
     worker =>
-      worker.url == `${WORKER_FILE}#simple-worker-in-created-remote-iframe-1`
+      worker.url ==
+      `${REMOTE_IFRAME_WORKER_URL}#simple-worker-in-created-remote-iframe-1`
   );
   const secondSpawnedRemoteIframeWorkerTarget = targets.find(
     worker =>
-      worker.url == `${WORKER_FILE}#simple-worker-in-created-remote-iframe-2`
+      worker.url ==
+      `${REMOTE_IFRAME_WORKER_URL}#simple-worker-in-created-remote-iframe-2`
   );
 
   ok(
@@ -304,11 +307,11 @@ add_task(async function() {
     "second spawned remote iframe worker target was destroyed"
   );
 
-  targetCommand.unwatchTargets(
-    [TYPES.WORKER, TYPES.SHARED_WORKER],
+  targetCommand.unwatchTargets({
+    types: [TYPES.WORKER, TYPES.SHARED_WORKER],
     onAvailable,
-    onDestroy
-  );
+    onDestroyed,
+  });
   targetCommand.destroy();
 
   info("Unregister service workers so they don't appear in other tests.");

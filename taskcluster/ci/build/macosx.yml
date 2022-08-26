@@ -5,7 +5,7 @@
 job-defaults:
     index:
         product: firefox
-    worker-type: b-linux
+    worker-type: b-linux-gcp
     worker:
         docker-image: {in-tree: debian11-amd64-build}
     run:
@@ -51,9 +51,9 @@ macosx64/debug:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-hybrid/plain:
@@ -80,9 +80,9 @@ macosx64-hybrid/plain:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64/opt:
@@ -109,21 +109,25 @@ macosx64/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-asan-fuzzing/opt:
     description: "MacOS X x64 Cross-compile Fuzzing ASAN"
     index:
         job-name: macosx64-fuzzing-asan-opt
+    attributes:
+        # The gtest libxul contains libFuzzer targets
+        skip-verify-test-packaging: true
     treeherder:
         platform: osx-cross/asan
         symbol: Bof
     worker:
         max-run-time: 5400
         env:
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
             PERFHERDER_EXTRA_OPTIONS: asan-fuzzing
     run:
         config:
@@ -135,10 +139,10 @@ macosx64-asan-fuzzing/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
             - macosx64-llvm-symbolizer
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
     optimization:
         skip-unless-expanded: null
@@ -149,12 +153,15 @@ macosx64-fuzzing/debug:
         job-name: macosx64-fuzzing-debug
     attributes:
         enable-full-crashsymbols: true
+        # The gtest libxul contains libFuzzer targets
+        skip-verify-test-packaging: true
     treeherder:
         platform: osx-cross/debug
         symbol: Bf
     worker:
         max-run-time: 5400
         env:
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
             PERFHERDER_EXTRA_OPTIONS: fuzzing
     run:
         config:
@@ -166,19 +173,21 @@ macosx64-fuzzing/debug:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
     optimization:
         skip-unless-expanded: null
 
 macosx64-x64-devedition/opt:
     description: "MacOS X Dev Edition x64 (shippable)"
+    worker-type: b-linux
     use-pgo: macosx64-shippable/opt
     attributes:
         enable-full-crashsymbols: true
         skip-verify-test-packaging: true
+        upload-generated-sources: true
     shipping-phase: build
     shipping-product: devedition
     index:
@@ -205,16 +214,18 @@ macosx64-x64-devedition/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
-            - macosx64-sdk-10.12
+            - linux64-clang
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-aarch64-devedition/opt:
     description: "MacOS X Dev Edition Aarch64 (shippable)"
+    worker-type: b-linux
     use-pgo: macosx64-shippable/opt
     attributes:
         enable-full-crashsymbols: true
         skip-verify-test-packaging: true
+        upload-generated-sources: true
     shipping-phase: build
     shipping-product: devedition
     index:
@@ -243,12 +254,13 @@ macosx64-aarch64-devedition/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-devedition/opt:
     description: "MacOS X Dev Edition Universal"
+    worker-type: b-linux
     attributes:
         shippable: true
         enable-build-signing: true
@@ -408,9 +420,40 @@ macosx64-noopt/debug:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
+            - sysroot-wasm32-wasi
+
+macosx64-aarch64-noopt/debug:
+    description: "MacOS X aarch64 No-optimize Debug"
+    index:
+        job-name: macosx64-aarch64-noopt-debug
+    treeherder:
+        platform: osx-cross-noopt/debug
+        symbol: Baarch64
+        tier: 2
+    worker:
+        max-run-time: 3600
+        env:
+            PERFHERDER_EXTRA_OPTIONS: aarch64
+    run:
+        config:
+            - builds/releng_base_firefox.py
+            - builds/releng_base_mac_64_cross_builds.py
+        custom-build-variant-cfg: cross-noopt-debug
+        mozconfig-variant: cross-noopt-debug
+        keep-artifacts: false
+        extra-config:
+            mozconfig_platform: macosx64-aarch64
+    run-on-projects: ['mozilla-central']
+    use-sccache: true
+    fetches:
+        toolchain:
+            - linux64-cctools-port
+            - linux64-clang
+            - linux64-sccache
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-add-on-devel/opt:
@@ -434,17 +477,19 @@ macosx64-add-on-devel/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-x64-shippable/opt:
     description: "MacOS X x64 Cross-compile"
+    worker-type: b-linux
     use-pgo: macosx64-shippable/opt
     attributes:
         enable-full-crashsymbols: true
         skip-verify-test-packaging: true
+        upload-generated-sources: true
     shipping-phase: build
     shipping-product: firefox
     index:
@@ -467,16 +512,18 @@ macosx64-x64-shippable/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
-            - macosx64-sdk-10.12
+            - linux64-clang
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-aarch64-shippable/opt:
     description: "MacOS X aarch64 Cross-compile"
+    worker-type: b-linux
     use-pgo: macosx64-shippable/opt
     attributes:
         enable-full-crashsymbols: true
         skip-verify-test-packaging: true
+        upload-generated-sources: true
     shipping-phase: build
     shipping-product: firefox
     index:
@@ -502,12 +549,13 @@ macosx64-aarch64-shippable/opt:
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - macosx64-sdk-11.0
             - sysroot-wasm32-wasi
 
 macosx64-shippable/opt:
     description: "MacOS X Universal"
+    worker-type: b-linux
     attributes:
         shippable: true
         enable-build-signing: true
@@ -664,72 +712,11 @@ macosx64-ccov/opt:
         custom-build-variant-cfg: code-coverage-opt
         mozconfig-variant: code-coverage
     run-on-projects: ['mozilla-central']
-    use-sccache: true
+    use-sccache: false
     fetches:
         toolchain:
             - linux64-cctools-port
-            - linux64-clang-macosx-cross
+            - linux64-clang
             - linux64-sccache
-            - macosx64-sdk-10.12
-            - sysroot-wasm32-wasi
-
-macosx64-gcp/debug:
-    description: "MacOS X x64 Cross-compile - built on GCP"
-    index:
-        job-name: macosx64-gcp-debug
-    attributes:
-        enable-full-crashsymbols: true
-    treeherder:
-        platform: osx-cross/debug
-        symbol: B-gcp
-        tier: 2
-    worker-type: b-linux-gcp
-    worker:
-        max-run-time: 3600
-        env:
-            PERFHERDER_EXTRA_OPTIONS: gcp
-    run:
-        config:
-            - builds/releng_base_firefox.py
-            - builds/releng_base_mac_64_cross_builds.py
-        custom-build-variant-cfg: cross-debug
-        mozconfig-variant: debug
-    use-sccache: true
-    fetches:
-        toolchain:
-            - linux64-cctools-port
-            - linux64-clang-macosx-cross
-            - linux64-sccache
-            - macosx64-sdk-10.12
-            - sysroot-wasm32-wasi
-    optimization:
-        skip-unless-backstop: null
-
-macosx64-gcp/opt:
-    description: "MacOS X x64 Cross-compile - built on GCP"
-    index:
-        job-name: macosx64-gcp-opt
-    attributes:
-        enable-full-crashsymbols: true
-    treeherder:
-        platform: osx-cross/opt
-        symbol: B-gcp
-        tier: 2
-    worker-type: b-linux-gcp
-    worker:
-        max-run-time: 7200
-        env:
-            PERFHERDER_EXTRA_OPTIONS: gcp
-    run:
-        config:
-            - builds/releng_base_firefox.py
-            - builds/releng_base_mac_64_cross_builds.py
-    run-on-projects: ['mozilla-central']
-    use-sccache: true
-    fetches:
-        toolchain:
-            - linux64-cctools-port
-            - linux64-clang-macosx-cross
-            - linux64-sccache
-            - macosx64-sdk-10.12
+            - macosx64-sdk-11.0
             - sysroot-wasm32-wasi

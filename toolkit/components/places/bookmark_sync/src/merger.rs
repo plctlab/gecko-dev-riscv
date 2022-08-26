@@ -23,10 +23,8 @@ use crate::driver::{AbortController, Driver, Logger};
 use crate::error;
 use crate::store;
 
-#[derive(xpcom)]
-#[xpimplements(mozISyncedBookmarksMerger)]
-#[refcnt = "nonatomic"]
-pub struct InitSyncedBookmarksMerger {
+#[xpcom(implement(mozISyncedBookmarksMerger), nonatomic)]
+pub struct SyncedBookmarksMerger {
     db: RefCell<Option<Conn>>,
     logger: RefCell<Option<RefPtr<mozIServicesLogSink>>>,
 }
@@ -143,7 +141,7 @@ impl MergeTask {
                 unsafe { logger.GetMaxLevel(&mut level) }.to_result().ok()?;
                 Some(level)
             })
-            .map(|level| match level as i64 {
+            .map(|level| match level {
                 mozIServicesLogSink::LEVEL_ERROR => LevelFilter::Error,
                 mozIServicesLogSink::LEVEL_WARN => LevelFilter::Warn,
                 mozIServicesLogSink::LEVEL_DEBUG => LevelFilter::Debug,
@@ -221,10 +219,8 @@ impl Task for MergeTask {
     }
 }
 
-#[derive(xpcom)]
-#[xpimplements(mozIPlacesPendingOperation)]
-#[refcnt = "atomic"]
-pub struct InitMergeOp {
+#[xpcom(implement(mozIPlacesPendingOperation), atomic)]
+pub struct MergeOp {
     controller: Arc<AbortController>,
 }
 

@@ -125,8 +125,7 @@ struct StaticModule {
 
   already_AddRefed<nsIFactory> GetFactory() const;
 
-  nsresult CreateInstance(nsISupports* aOuter, const nsIID& aIID,
-                          void** aResult) const;
+  nsresult CreateInstance(const nsIID& aIID, void** aResult) const;
 
   GetServiceHelper GetService() const;
   GetServiceHelper GetService(nsresult*) const;
@@ -244,6 +243,7 @@ class StaticComponents final {
                                    bool aInvalid = true);
 
   static already_AddRefed<nsIUTF8StringEnumerator> GetComponentJSMs();
+  static already_AddRefed<nsIUTF8StringEnumerator> GetComponentESModules();
 
   static Span<const JSServiceEntry> GetJSServices();
 

@@ -18,8 +18,7 @@
 
 class nsIGlobalObject;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ServiceWorkerCloneData;
 struct StructuredSerializeOptions;
@@ -31,7 +30,9 @@ struct StructuredSerializeOptions;
     }                                                \
   }
 
-bool ServiceWorkerVisible(JSContext* aCx, JSObject* aObj);
+bool ServiceWorkersEnabled(JSContext* aCx, JSObject* aGlobal);
+
+bool ServiceWorkerVisible(JSContext* aCx, JSObject* aGlobal);
 
 class ServiceWorker final : public DOMEventTargetHelper {
  public:
@@ -118,7 +119,6 @@ class ServiceWorker final : public DOMEventTargetHelper {
 
 NS_DEFINE_STATIC_IID_ACCESSOR(ServiceWorker, NS_DOM_SERVICEWORKER_IID)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworker_h__

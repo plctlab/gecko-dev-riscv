@@ -11,8 +11,8 @@ var EXPORTED_SYMBOLS = [
   "Changeset",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { JSONFile } = ChromeUtils.import("resource://gre/modules/JSONFile.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
@@ -36,15 +36,16 @@ const { SerializableSet, Svc, Utils } = ChromeUtils.import(
   "resource://services-sync/util.js"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  fxAccounts: "resource://gre/modules/FxAccounts.jsm",
-  OS: "resource://gre/modules/osfile.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
 function ensureDirectory(path) {
-  let basename = OS.Path.dirname(path);
-  return OS.File.makeDir(basename, { from: OS.Constants.Path.profileDir });
+  return IOUtils.makeDirectory(PathUtils.parent(path), {
+    createAncestors: true,
+  });
 }
 
 /**
@@ -207,7 +208,7 @@ function LegacyTracker(name, engine) {
   this._ignored = [];
   this.file = this.name;
   this._storage = new JSONFile({
-    path: Utils.jsonFilePath("changes/" + this.file),
+    path: Utils.jsonFilePath("changes", this.file),
     dataPostProcessor: json => this._dataPostProcessor(json),
     beforeSave: () => this._beforeSave(),
   });
@@ -767,13 +768,13 @@ function SyncEngine(name, service) {
   this._log.debug("Engine constructed");
 
   this._toFetchStorage = new JSONFile({
-    path: Utils.jsonFilePath("toFetch/" + this.name),
+    path: Utils.jsonFilePath("toFetch", this.name),
     dataPostProcessor: json => this._metadataPostProcessor(json),
     beforeSave: () => this._beforeSaveMetadata(),
   });
 
   this._previousFailedStorage = new JSONFile({
-    path: Utils.jsonFilePath("failed/" + this.name),
+    path: Utils.jsonFilePath("failed", this.name),
     dataPostProcessor: json => this._metadataPostProcessor(json),
     beforeSave: () => this._beforeSaveMetadata(),
   });
@@ -1341,7 +1342,7 @@ SyncEngine.prototype = {
     // `getBatched` includes the list of IDs as a query parameter, so we need to fetch
     // records in chunks to avoid exceeding URI length limits.
     if (this.guidFetchBatchSize) {
-      for (let ids of PlacesUtils.chunkArray(
+      for (let ids of lazy.PlacesUtils.chunkArray(
         idsToBackfill,
         this.guidFetchBatchSize
       )) {

@@ -10,7 +10,7 @@
 #include "nsILoadGroup.h"
 #include "nsIDocumentLoader.h"
 #include "nsIStreamListener.h"
-#include "nsIURI.h"
+#include "nsIURL.h"
 #include "nsIChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -42,6 +42,7 @@
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Unused.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPrefs_general.h"
 #include "nsContentUtils.h"
@@ -151,7 +152,7 @@ NS_IMETHODIMP nsDocumentOpenInfo::OnStartRequest(nsIRequest* request) {
     return NS_OK;
   }
 
-  rv = DispatchContent(request, nullptr);
+  rv = DispatchContent(request);
 
   LOG(("  After dispatch, m_targetStreamListener: 0x%p, rv: 0x%08" PRIX32,
        m_targetStreamListener.get(), static_cast<uint32_t>(rv)));
@@ -223,8 +224,7 @@ NS_IMETHODIMP nsDocumentOpenInfo::OnStopRequest(nsIRequest* request,
   return NS_OK;
 }
 
-nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
-                                             nsISupports* aCtxt) {
+nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request) {
   LOG(("[0x%p] nsDocumentOpenInfo::DispatchContent for type '%s'", this,
        mContentType.get()));
 
@@ -267,6 +267,56 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
   }
 
   LOG(("  forceExternalHandling: %s", forceExternalHandling ? "yes" : "no"));
+
+  if (forceExternalHandling &&
+      StaticPrefs::browser_download_open_pdf_attachments_inline()) {
+    // Check if this is a PDF which should be opened internally. We also handle
+    // octet-streams that look like they might be PDFs based on their extension.
+    bool isPDF = mContentType.LowerCaseEqualsASCII(APPLICATION_PDF);
+    if (!isPDF && mContentType.LowerCaseEqualsASCII(APPLICATION_OCTET_STREAM)) {
+      nsAutoString flname;
+      aChannel->GetContentDispositionFilename(flname);
+      isPDF = StringEndsWith(flname, u".pdf"_ns);
+      if (!isPDF) {
+        nsCOMPtr<nsIURI> uri;
+        aChannel->GetURI(getter_AddRefs(uri));
+        nsCOMPtr<nsIURL> url(do_QueryInterface(uri));
+        if (url) {
+          nsAutoCString ext;
+          url->GetFileExtension(ext);
+          isPDF = ext.EqualsLiteral("pdf");
+        }
+      }
+    }
+
+    // For a PDF, check if the preference is set that forces attachments to be
+    // opened inline. If so, treat it as a non-attachment by clearing
+    // 'forceExternalHandling' again. This allows it open a PDF directly
+    // instead of downloading it first. It may still end up being handled by
+    // a helper app depending anyway on the later checks.
+    if (isPDF) {
+      nsCOMPtr<nsILoadInfo> loadInfo;
+      aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
+
+      nsCOMPtr<nsIMIMEInfo> mimeInfo;
+
+      nsCOMPtr<nsIMIMEService> mimeSvc(
+          do_GetService(NS_MIMESERVICE_CONTRACTID));
+      NS_ENSURE_TRUE(mimeSvc, NS_ERROR_FAILURE);
+      mimeSvc->GetFromTypeAndExtension(nsLiteralCString(APPLICATION_PDF), ""_ns,
+                                       getter_AddRefs(mimeInfo));
+
+      if (mimeInfo) {
+        int32_t action = nsIMIMEInfo::saveToDisk;
+        mimeInfo->GetPreferredAction(&action);
+
+        bool alwaysAsk = true;
+        mimeInfo->GetAlwaysAskBeforeHandling(&alwaysAsk);
+        forceExternalHandling =
+            alwaysAsk || action != nsIMIMEInfo::handleInternally;
+      }
+    }
+  }
 
   if (!forceExternalHandling) {
     //
@@ -518,7 +568,15 @@ nsresult nsDocumentOpenInfo::ConvertData(nsIRequest* request,
 
 nsresult nsDocumentOpenInfo::TryStreamConversion(nsIChannel* aChannel) {
   constexpr auto anyType = "*/*"_ns;
-  nsresult rv = ConvertData(aChannel, m_contentListener, mContentType, anyType);
+
+  // A empty content type should be treated like the unknown content type.
+  nsCString srcContentType(mContentType);
+  if (srcContentType.IsEmpty()) {
+    srcContentType.AssignLiteral(UNKNOWN_CONTENT_TYPE);
+  }
+
+  nsresult rv =
+      ConvertData(aChannel, m_contentListener, srcContentType, anyType);
   if (NS_FAILED(rv)) {
     m_targetStreamListener = nullptr;
   } else if (m_targetStreamListener) {

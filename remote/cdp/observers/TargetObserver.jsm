@@ -6,13 +6,14 @@
 
 var EXPORTED_SYMBOLS = ["TabObserver"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   EventEmitter: "resource://gre/modules/EventEmitter.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 
   EventPromise: "chrome://remote/content/shared/Sync.jsm",
 });
@@ -38,7 +39,7 @@ class TabObserver {
    *     at the time when the observer is started.
    */
   constructor({ registerExisting = false } = {}) {
-    EventEmitter.decorate(this);
+    lazy.EventEmitter.decorate(this);
 
     this.registerExisting = registerExisting;
 
@@ -114,7 +115,7 @@ class TabObserver {
   async onOpenWindow(xulWindow) {
     const win = xulWindow.docShell.domWindow;
 
-    await new EventPromise(win, "load");
+    await new lazy.EventPromise(win, "load");
 
     // Return early if it's not a browser window
     if (

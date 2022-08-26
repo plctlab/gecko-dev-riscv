@@ -20,8 +20,7 @@
 // XXX Avoid including this here by moving function bodies to the cpp file
 #include "nsINode.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Element;
 class L10nMutations;
@@ -35,7 +34,8 @@ class DOMLocalization : public intl::Localization {
 
   static already_AddRefed<DOMLocalization> Constructor(
       const dom::GlobalObject& aGlobal,
-      const dom::Sequence<nsCString>& aResourceIds, bool aIsSync,
+      const dom::Sequence<dom::OwningUTF8StringOrResourceId>& aResourceIds,
+      bool aIsSync,
       const dom::Optional<dom::NonNull<intl::L10nRegistry>>& aRegistry,
       const dom::Optional<dom::Sequence<nsCString>>& aLocales,
       ErrorResult& aRv);
@@ -63,9 +63,9 @@ class DOMLocalization : public intl::Localization {
   already_AddRefed<Promise> TranslateFragment(nsINode& aNode, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateElements(
-      const Sequence<OwningNonNull<Element>>& aElements, ErrorResult& aRv);
+      const nsTArray<OwningNonNull<Element>>& aElements, ErrorResult& aRv);
   already_AddRefed<Promise> TranslateElements(
-      const Sequence<OwningNonNull<Element>>& aElements,
+      const nsTArray<OwningNonNull<Element>>& aElements,
       nsXULPrototypeDocument* aProto, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateRoots(ErrorResult& aRv);
@@ -128,7 +128,6 @@ class DOMLocalization : public intl::Localization {
   nsTHashSet<RefPtr<nsINode>> mRoots;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

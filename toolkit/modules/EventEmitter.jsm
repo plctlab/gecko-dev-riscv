@@ -4,17 +4,17 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "console",
   "resource://gre/modules/Console.jsm"
 );
 
 var EXPORTED_SYMBOLS = ["EventEmitter"];
 
-let EventEmitter = (this.EventEmitter = function() {});
+function EventEmitter() {}
 
 let loggingEnabled = Services.prefs.getBoolPref("toolkit.dump.emit");
 Services.prefs.addObserver("toolkit.dump.emit", {
@@ -161,7 +161,7 @@ EventEmitter.prototype = {
         } catch (ex) {
           // Prevent a bad listener from interfering with the others.
           let msg = ex + ": " + ex.stack;
-          console.error(msg);
+          lazy.console.error(msg);
           if (loggingEnabled) {
             dump(msg + "\n");
           }

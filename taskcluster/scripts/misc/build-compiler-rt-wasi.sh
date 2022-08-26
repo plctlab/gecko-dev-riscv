@@ -7,26 +7,23 @@ dir=${artifact%.tar.*}
 cd $MOZ_FETCHES_DIR/wasi-sdk
 LLVM_PROJ_DIR=$MOZ_FETCHES_DIR/llvm-project
 
-# https://github.com/WebAssembly/wasi-sdk/pull/189
-patch -p1 <<'EOF'
-diff --git a/Makefile b/Makefile
-index bde9936..b1f24fe 100644
---- a/Makefile
-+++ b/Makefile
-@@ -91,7 +91,7 @@ build/wasi-libc.BUILT: build/llvm.BUILT
- 		SYSROOT=$(BUILD_PREFIX)/share/wasi-sysroot
- 	touch build/wasi-libc.BUILT
- 
--build/compiler-rt.BUILT: build/llvm.BUILT
-+build/compiler-rt.BUILT: build/llvm.BUILT build/wasi-libc.BUILT
- 	# Do the build, and install it.
- 	mkdir -p build/compiler-rt
- 	cd build/compiler-rt && cmake -G Ninja \
-EOF
+mkdir -p build/install/wasi
+# The wasi-sdk build system wants to build clang itself. We trick it into
+# thinking it did, and put our own clang where it would have built its own.
+ln -s $MOZ_FETCHES_DIR/clang build/llvm
+touch build/llvm.BUILT
+
+# The wasi-sdk build system wants a clang and an ar binary in
+# build/install/$PREFIX/bin
+ln -s $MOZ_FETCHES_DIR/clang/bin build/install/wasi/bin
+ln -s llvm-ar build/install/wasi/bin/ar
 
 # Build compiler-rt
+# `BULK_MEMORY_SOURCES=` force-disables building things with -mbulk-memory,
+# which wasm2c doesn't support yet.
 make \
   LLVM_PROJ_DIR=$LLVM_PROJ_DIR \
+  BULK_MEMORY_SOURCES= \
   PREFIX=/wasi \
   build/compiler-rt.BUILT \
   -j$(nproc)

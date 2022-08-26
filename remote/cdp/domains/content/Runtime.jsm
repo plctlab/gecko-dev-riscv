@@ -6,25 +6,34 @@
 
 var EXPORTED_SYMBOLS = ["Runtime"];
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  addDebuggerToGlobal: "resource://gre/modules/jsdebugger.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+const { addDebuggerToGlobal } = ChromeUtils.import(
+  "resource://gre/modules/jsdebugger.jsm"
+);
+const { ContentProcessDomain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/ContentProcessDomain.jsm"
+);
 
-  ContentProcessDomain:
-    "chrome://remote/content/cdp/domains/ContentProcessDomain.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   executeSoon: "chrome://remote/content/shared/Sync.jsm",
   ExecutionContext:
     "chrome://remote/content/cdp/domains/content/runtime/ExecutionContext.jsm",
 });
 
-// Import the `Debugger` constructor in the current scope
-addDebuggerToGlobal(Cu.getGlobalForObject(this));
+XPCOMUtils.defineLazyGetter(lazy, "ConsoleAPIStorage", () => {
+  return Cc["@mozilla.org/consoleAPI-storage;1"].getService(
+    Ci.nsIConsoleAPIStorage
+  );
+});
 
-const OBSERVER_CONSOLE_API = "console-api-log-event";
+// Import the `Debugger` constructor in the current scope
+// eslint-disable-next-line mozilla/reject-globalThis-modification
+addDebuggerToGlobal(globalThis);
 
 const CONSOLE_API_LEVEL_MAP = {
   warn: "warning",
@@ -97,11 +106,15 @@ class Runtime extends ContentProcessDomain {
       this.enabled = true;
 
       Services.console.registerListener(this);
-      Services.obs.addObserver(this, OBSERVER_CONSOLE_API);
+      this.onConsoleLogEvent = this.onConsoleLogEvent.bind(this);
+      lazy.ConsoleAPIStorage.addLogEventListener(
+        this.onConsoleLogEvent,
+        Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+      );
 
       // Spin the event loop in order to send the `executionContextCreated` event right
       // after we replied to `enable` request.
-      executeSoon(() => {
+      lazy.executeSoon(() => {
         this._onContextCreated("context-created", {
           windowId: this.content.windowGlobalChild.innerWindowId,
           window: this.content,
@@ -116,7 +129,7 @@ class Runtime extends ContentProcessDomain {
       this.enabled = false;
 
       Services.console.unregisterListener(this);
-      Services.obs.removeObserver(this, OBSERVER_CONSOLE_API);
+      lazy.ConsoleAPIStorage.removeLogEventListener(this.onConsoleLogEvent);
     }
   }
 
@@ -486,7 +499,7 @@ class Runtime extends ContentProcessDomain {
       }
     }
 
-    const context = new ExecutionContext(
+    const context = new lazy.ExecutionContext(
       this._debugger,
       window,
       this.innerWindowIdToContexts.count,
@@ -570,6 +583,11 @@ class Runtime extends ContentProcessDomain {
     }
   }
 
+  onConsoleLogEvent(message) {
+    let entry = fromConsoleAPI(message);
+    this._emitConsoleAPICalled(entry);
+  }
+
   // nsIObserver
 
   /**
@@ -581,14 +599,8 @@ class Runtime extends ContentProcessDomain {
    *     Console message.
    */
   observe(subject, topic, data) {
-    let entry;
-
-    if (topic == OBSERVER_CONSOLE_API) {
-      const message = subject.wrappedJSObject;
-      entry = fromConsoleAPI(message);
-      this._emitConsoleAPICalled(entry);
-    } else if (subject instanceof Ci.nsIScriptError && subject.hasException) {
-      entry = fromScriptError(subject);
+    if (subject instanceof Ci.nsIScriptError && subject.hasException) {
+      let entry = fromScriptError(subject);
       this._emitExceptionThrown(entry);
     }
   }

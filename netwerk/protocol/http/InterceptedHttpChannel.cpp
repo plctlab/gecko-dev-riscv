@@ -16,15 +16,16 @@
 #include "nsIRedirectResultListener.h"
 #include "nsStringStream.h"
 #include "nsStreamUtils.h"
+#include "nsQueryObject.h"
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 NS_IMPL_ISUPPORTS_INHERITED(InterceptedHttpChannel, HttpBaseChannel,
                             nsIInterceptedChannel, nsICacheInfoChannel,
                             nsIAsyncVerifyRedirectCallback, nsIRequestObserver,
                             nsIStreamListener, nsIThreadRetargetableRequest,
-                            nsIThreadRetargetableStreamListener)
+                            nsIThreadRetargetableStreamListener,
+                            nsIClassOfService)
 
 InterceptedHttpChannel::InterceptedHttpChannel(
     PRTime aCreationTime, const TimeStamp& aCreationTimestamp,
@@ -91,14 +92,15 @@ void InterceptedHttpChannel::AsyncOpenInternal() {
   // We save this timestamp from outside of the if block in case we enable the
   // profiler after AsyncOpen().
   mLastStatusReported = TimeStamp::Now();
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers()) {
     nsAutoCString requestMethod;
     GetRequestMethod(requestMethod);
 
     profiler_add_network_marker(
         mURI, requestMethod, mPriority, mChannelId, NetworkLoadType::LOAD_START,
         mChannelCreationTimestamp, mLastStatusReported, 0, kCacheUnknown,
-        mLoadInfo->GetInnerWindowID());
+        mLoadInfo->GetInnerWindowID(),
+        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0);
   }
 
   // If an error occurs in this file we must ensure mListener callbacks are
@@ -278,11 +280,10 @@ nsresult InterceptedHttpChannel::RedirectForResponseURL(
   ExtContentPolicyType contentPolicyType =
       redirectLoadInfo->GetExternalContentPolicyType();
 
-  rv = newChannel->Init(
-      aResponseURI, mCaps, static_cast<nsProxyInfo*>(mProxyInfo.get()),
-      mProxyResolveFlags, mProxyURI, mChannelId, contentPolicyType);
-
-  newChannel->SetLoadInfo(redirectLoadInfo);
+  rv = newChannel->Init(aResponseURI, mCaps,
+                        static_cast<nsProxyInfo*>(mProxyInfo.get()),
+                        mProxyResolveFlags, mProxyURI, mChannelId,
+                        contentPolicyType, redirectLoadInfo);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Normally we don't propagate the LoadInfo's service worker tainting
@@ -504,7 +505,7 @@ InterceptedHttpChannel::Cancel(nsresult aStatus) {
 
   mCanceled = true;
 
-  if (mLastStatusReported && profiler_can_accept_markers()) {
+  if (mLastStatusReported && profiler_thread_is_being_profiled_for_markers()) {
     // These do allocations/frees/etc; avoid if not active
     // mLastStatusReported can be null if Cancel is called before we added the
     // start marker.
@@ -517,11 +518,12 @@ InterceptedHttpChannel::Cancel(nsresult aStatus) {
     uint64_t size = 0;
     GetEncodedBodySize(&size);
 
-    profiler_add_network_marker(mURI, requestMethod, priority, mChannelId,
-                                NetworkLoadType::LOAD_CANCEL,
-                                mLastStatusReported, TimeStamp::Now(), size,
-                                kCacheUnknown, mLoadInfo->GetInnerWindowID(),
-                                &mTransactionTimings, std::move(mSource));
+    profiler_add_network_marker(
+        mURI, requestMethod, priority, mChannelId, NetworkLoadType::LOAD_CANCEL,
+        mLastStatusReported, TimeStamp::Now(), size, kCacheUnknown,
+        mLoadInfo->GetInnerWindowID(),
+        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
+        &mTransactionTimings, std::move(mSource));
   }
 
   MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(aStatus));
@@ -612,19 +614,31 @@ InterceptedHttpChannel::SetPriority(int32_t aPriority) {
 
 NS_IMETHODIMP
 InterceptedHttpChannel::SetClassFlags(uint32_t aClassFlags) {
-  mClassOfService = aClassFlags;
+  mClassOfService.SetFlags(aClassFlags);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 InterceptedHttpChannel::ClearClassFlags(uint32_t aClassFlags) {
-  mClassOfService &= ~aClassFlags;
+  mClassOfService.SetFlags(~aClassFlags & mClassOfService.Flags());
   return NS_OK;
 }
 
 NS_IMETHODIMP
 InterceptedHttpChannel::AddClassFlags(uint32_t aClassFlags) {
-  mClassOfService |= aClassFlags;
+  mClassOfService.SetFlags(aClassFlags | mClassOfService.Flags());
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::SetClassOfService(ClassOfService cos) {
+  mClassOfService = cos;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+InterceptedHttpChannel::SetIncremental(bool incremental) {
+  mClassOfService.SetIncremental(incremental);
   return NS_OK;
 }
 
@@ -674,7 +688,7 @@ InterceptedHttpChannel::ResetInterception(bool aBypass) {
                             mLoadFlags);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers()) {
     nsAutoCString requestMethod;
     GetRequestMethod(requestMethod);
 
@@ -692,13 +706,14 @@ InterceptedHttpChannel::ResetInterception(bool aBypass) {
     RefPtr<HttpBaseChannel> newBaseChannel = do_QueryObject(newChannel);
     MOZ_ASSERT(newBaseChannel,
                "The redirect channel should be a base channel.");
-    profiler_add_network_marker(mURI, requestMethod, priority, mChannelId,
-                                NetworkLoadType::LOAD_REDIRECT,
-                                mLastStatusReported, TimeStamp::Now(), size,
-                                kCacheUnknown, mLoadInfo->GetInnerWindowID(),
-                                &mTransactionTimings, std::move(mSource),
-                                Some(nsDependentCString(contentType.get())),
-                                mURI, flags, newBaseChannel->ChannelId());
+    profiler_add_network_marker(
+        mURI, requestMethod, priority, mChannelId,
+        NetworkLoadType::LOAD_REDIRECT, mLastStatusReported, TimeStamp::Now(),
+        size, kCacheUnknown, mLoadInfo->GetInnerWindowID(),
+        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
+        &mTransactionTimings, std::move(mSource),
+        Some(nsDependentCString(contentType.get())), mURI, flags,
+        newBaseChannel->ChannelId());
   }
 
   rv = SetupReplacementChannel(mURI, newChannel, true, flags);
@@ -1042,7 +1057,7 @@ InterceptedHttpChannel::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
   // Register entry to the PerformanceStorage resource timing
   MaybeReportTimingData();
 
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers()) {
     // These do allocations/frees/etc; avoid if not active
     nsAutoCString requestMethod;
     GetRequestMethod(requestMethod);
@@ -1060,7 +1075,9 @@ InterceptedHttpChannel::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     profiler_add_network_marker(
         mURI, requestMethod, priority, mChannelId, NetworkLoadType::LOAD_STOP,
         mLastStatusReported, TimeStamp::Now(), size, kCacheUnknown,
-        mLoadInfo->GetInnerWindowID(), &mTransactionTimings, std::move(mSource),
+        mLoadInfo->GetInnerWindowID(),
+        mLoadInfo->GetOriginAttributes().mPrivateBrowsingId > 0,
+        &mTransactionTimings, std::move(mSource),
         Some(nsDependentCString(contentType.get())));
   }
 
@@ -1173,7 +1190,7 @@ InterceptedHttpChannel::GetCacheEntryId(uint64_t* aCacheEntryId) {
 }
 
 NS_IMETHODIMP
-InterceptedHttpChannel::GetCacheTokenFetchCount(int32_t* _retval) {
+InterceptedHttpChannel::GetCacheTokenFetchCount(uint32_t* _retval) {
   NS_ENSURE_ARG_POINTER(_retval);
 
   if (mSynthesizedCacheInfo) {
@@ -1213,6 +1230,38 @@ InterceptedHttpChannel::GetAllowStaleCacheContent(
 }
 
 NS_IMETHODIMP
+InterceptedHttpChannel::SetForceValidateCacheContent(
+    bool aForceValidateCacheContent) {
+  // We store aForceValidateCacheContent locally because
+  // mSynthesizedCacheInfo isn't present until a response
+  // is actually synthesized, which is too late for the value
+  // to be forwarded during the redirect to the intercepted
+  // channel.
+  StoreForceValidateCacheContent(aForceValidateCacheContent);
+
+  if (mSynthesizedCacheInfo) {
+    return mSynthesizedCacheInfo->SetForceValidateCacheContent(
+        aForceValidateCacheContent);
+  }
+  return NS_OK;
+}
+NS_IMETHODIMP
+InterceptedHttpChannel::GetForceValidateCacheContent(
+    bool* aForceValidateCacheContent) {
+  *aForceValidateCacheContent = LoadForceValidateCacheContent();
+#ifdef DEBUG
+  if (mSynthesizedCacheInfo) {
+    bool synthesizedForceValidateCacheContent;
+    mSynthesizedCacheInfo->GetForceValidateCacheContent(
+        &synthesizedForceValidateCacheContent);
+    MOZ_ASSERT(*aForceValidateCacheContent ==
+               synthesizedForceValidateCacheContent);
+  }
+#endif
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 InterceptedHttpChannel::GetPreferCacheLoadOverBypass(
     bool* aPreferCacheLoadOverBypass) {
   if (mSynthesizedCacheInfo) {
@@ -1235,7 +1284,7 @@ InterceptedHttpChannel::SetPreferCacheLoadOverBypass(
 NS_IMETHODIMP
 InterceptedHttpChannel::PreferAlternativeDataType(
     const nsACString& aType, const nsACString& aContentType,
-    bool aDeliverAltData) {
+    PreferredAlternativeDataDeliveryType aDeliverAltData) {
   ENSURE_CALLED_BEFORE_ASYNC_OPEN();
   mPreferredCachedAltDataTypes.AppendElement(PreferredAlternativeDataTypeParams(
       nsCString(aType), nsCString(aContentType), aDeliverAltData));
@@ -1276,10 +1325,10 @@ InterceptedHttpChannel::GetOriginalInputStream(
 }
 
 NS_IMETHODIMP
-InterceptedHttpChannel::GetAltDataInputStream(
-    const nsACString& aType, nsIInputStreamReceiver* aReceiver) {
+InterceptedHttpChannel::GetAlternativeDataInputStream(
+    nsIInputStream** aInputStream) {
   if (mSynthesizedCacheInfo) {
-    return mSynthesizedCacheInfo->GetAltDataInputStream(aType, aReceiver);
+    return mSynthesizedCacheInfo->GetAlternativeDataInputStream(aInputStream);
   }
   return NS_ERROR_NOT_AVAILABLE;
 }
@@ -1338,23 +1387,26 @@ void InterceptedHttpChannel::InterceptionTimeStamps::RecordTime(
   // That means it is canceled after other operation is done, ex. synthesized.
   MOZ_ASSERT(mStatus == Initialized || aStatus == Canceled);
 
-  if (mStatus == Initialized) {
-    mStatus = aStatus;
-  } else {
-    switch (mStatus) {
-      case Synthesized:
-        mStatus = CanceledAfterSynthesized;
-        break;
-      case Reset:
-        mStatus = CanceledAfterReset;
-        break;
-      case Redirected:
-        mStatus = CanceledAfterRedirected;
-        break;
-      default:
-        MOZ_ASSERT(false);
-        break;
-    }
+  switch (mStatus) {
+    case Initialized:
+      mStatus = aStatus;
+      break;
+    case Synthesized:
+      mStatus = CanceledAfterSynthesized;
+      break;
+    case Reset:
+      mStatus = CanceledAfterReset;
+      break;
+    case Redirected:
+      mStatus = CanceledAfterRedirected;
+      break;
+    // Channel is cancelled before calling AsyncOpenInternal(), no need to
+    // record the cancel time stamp.
+    case Created:
+      return;
+    default:
+      MOZ_ASSERT(false);
+      break;
   }
 
   RecordTimeInternal(std::move(aTimeStamp));
@@ -1497,5 +1549,4 @@ void InterceptedHttpChannel::InterceptionTimeStamps::SaveTimeStamps() {
   }
 }
 
-}  // namespace net
-}  // namespace mozilla
+}  // namespace mozilla::net

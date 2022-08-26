@@ -5,15 +5,14 @@
 use crate::frame_builder::FrameBuildingContext;
 use crate::internal_types::FastHashMap;
 use crate::prim_store::PictureIndex;
-use crate::picture::{PicturePrimitive, SurfaceIndex, ROOT_SURFACE_INDEX, SurfaceInfo};
+use crate::picture::{PicturePrimitive, SurfaceIndex, SurfaceInfo};
 use crate::picture::{TileCacheInstance, SliceId};
-use crate::render_backend::DataStores;
 use smallvec::SmallVec;
 
 #[derive(Debug)]
 pub struct PictureInfo {
     pub update_pass: Option<usize>,
-    pub surface_index: SurfaceIndex,
+    pub surface_index: Option<SurfaceIndex>,
     pub parent: Option<PictureIndex>,
 }
 
@@ -55,7 +54,7 @@ impl PictureGraph {
             self.pic_info.push(PictureInfo {
                 update_pass: None,
                 parent: None,
-                surface_index: ROOT_SURFACE_INDEX,
+                surface_index: None,
             })
         };
 
@@ -98,18 +97,27 @@ impl PictureGraph {
             for pic_index in pass {
                 let parent = self.pic_info[pic_index.0].parent;
 
-                let parent_surface_index = parent.map_or(ROOT_SURFACE_INDEX, |parent| {
-                    self.pic_info[parent.0].surface_index
+                let parent_surface_index = parent.map(|parent| {
+                    // Can unwrap here as by the time we have a parent that parent's
+                    // surface must have been assigned.
+                    self.pic_info[parent.0].surface_index.unwrap()
                 });
 
                 let info = &mut self.pic_info[pic_index.0];
 
-                info.surface_index = pictures[pic_index.0].assign_surface(
+                match pictures[pic_index.0].assign_surface(
                     frame_context,
-                    tile_caches,
                     parent_surface_index,
+                    tile_caches,
                     surfaces,
-                );
+                ) {
+                    Some(surface_index) => {
+                        info.surface_index = Some(surface_index);
+                    }
+                    None => {
+                        info.surface_index = Some(parent_surface_index.unwrap());
+                    }
+                }
             }
         }
     }
@@ -120,16 +128,19 @@ impl PictureGraph {
         pictures: &mut [PicturePrimitive],
         surfaces: &mut [SurfaceInfo],
         frame_context: &FrameBuildingContext,
-        data_stores: &mut DataStores,
     ) {
         for pass in self.update_passes.iter().rev() {
             for pic_index in pass {
                 let parent = self.pic_info[pic_index.0].parent;
 
-                let surface_index = self.pic_info[pic_index.0].surface_index;
+                let surface_index = self.pic_info[pic_index.0]
+                    .surface_index
+                    .expect("bug: no surface assigned during propagate_bounding_rects");
 
-                let parent_surface_index = parent.map_or(ROOT_SURFACE_INDEX, |parent| {
-                    self.pic_info[parent.0].surface_index
+                let parent_surface_index = parent.map(|parent| {
+                    // Can unwrap here as by the time we have a parent that parent's
+                    // surface must have been assigned.
+                    self.pic_info[parent.0].surface_index.unwrap()
                 });
 
                 pictures[pic_index.0].propagate_bounding_rect(
@@ -137,7 +148,6 @@ impl PictureGraph {
                     parent_surface_index,
                     surfaces,
                     frame_context,
-                    data_stores,
                 );
             }
         }
@@ -160,6 +170,9 @@ fn assign_update_pass(
 
     info.parent = parent_pic_index;
 
+    // Run pre-update to resolve animation properties etc
+    pic.pre_update(frame_context);
+
     let can_be_drawn = match info.update_pass {
         Some(update_pass) => {
             // No point in recursing into paths in the graph if this picture already
@@ -172,7 +185,7 @@ fn assign_update_pass(
         }
         None => {
             // Check if this picture can be dropped from the graph we're building this frame
-            pic.pre_update_visibility_check(frame_context)
+            pic.is_visible(frame_context.spatial_tree)
         }
     };
 

@@ -72,7 +72,7 @@ using namespace dom;
 using LeafNodeType = HTMLEditUtils::LeafNodeType;
 using LeafNodeTypes = HTMLEditUtils::LeafNodeTypes;
 
-TextEditor::TextEditor() {
+TextEditor::TextEditor() : EditorBase(EditorBase::EditorType::Text) {
   // printf("Size of TextEditor: %zu\n", sizeof(TextEditor));
   static_assert(
       sizeof(TextEditor) <= 512,
@@ -282,8 +282,8 @@ NS_IMETHODIMP TextEditor::InsertLineBreak() {
     return NS_ERROR_FAILURE;
   }
 
-  AutoPlaceholderBatch treatAsOneTransaction(*this,
-                                             ScrollSelectionIntoView::Yes);
+  AutoPlaceholderBatch treatAsOneTransaction(
+      *this, ScrollSelectionIntoView::Yes, __FUNCTION__);
   rv = InsertLineBreakAsSubAction();
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "TextEditor::InsertLineBreakAsSubAction() failed");
@@ -307,7 +307,8 @@ nsresult TextEditor::InsertLineBreakAsAction(nsIPrincipal* aPrincipal) {
   // XXX This may be called by execCommand() with "insertParagraph".
   //     In such case, naming the transaction "TypingTxnName" is odd.
   AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::TypingTxnName,
-                                             ScrollSelectionIntoView::Yes);
+                                             ScrollSelectionIntoView::Yes,
+                                             __FUNCTION__);
   rv = InsertLineBreakAsSubAction();
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "EditorBase::InsertLineBreakAsSubAction() failed");
@@ -332,8 +333,8 @@ nsresult TextEditor::SetTextAsAction(
     return EditorBase::ToGenericNSResult(rv);
   }
 
-  AutoPlaceholderBatch treatAsOneTransaction(*this,
-                                             ScrollSelectionIntoView::Yes);
+  AutoPlaceholderBatch treatAsOneTransaction(
+      *this, ScrollSelectionIntoView::Yes, __FUNCTION__);
   rv = SetTextAsSubAction(aString);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "TextEditor::SetTextAsSubAction() failed");
@@ -372,7 +373,7 @@ nsresult TextEditor::SetTextAsSubAction(const nsAString& aString) {
     // Note that do not notify selectionchange caused by selecting all text
     // because it's preparation of our delete implementation so web apps
     // shouldn't receive such selectionchange before the first mutation.
-    AutoUpdateViewBatch preventSelectionChangeEvent(*this);
+    AutoUpdateViewBatch preventSelectionChangeEvent(*this, __FUNCTION__);
 
     // XXX We should make ReplaceSelectionAsSubAction() take range.  Then,
     //     we can saving the expensive cost of modifying `Selection` here.
@@ -389,7 +390,7 @@ nsresult TextEditor::SetTextAsSubAction(const nsAString& aString) {
 }
 
 already_AddRefed<Element> TextEditor::GetInputEventTargetElement() const {
-  nsCOMPtr<Element> target = do_QueryInterface(mEventTarget);
+  RefPtr<Element> target = Element::FromEventTargetOrNull(mEventTarget);
   return target.forget();
 }
 
@@ -561,8 +562,8 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
     return EditorBase::ToGenericNSResult(rv);
   }
 
-  AutoPlaceholderBatch treatAsOneTransaction(*this,
-                                             ScrollSelectionIntoView::Yes);
+  AutoPlaceholderBatch treatAsOneTransaction(
+      *this, ScrollSelectionIntoView::Yes, __FUNCTION__);
   rv = InsertWithQuotationsAsSubAction(stuffToPaste);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "TextEditor::InsertWithQuotationsAsSubAction() failed");
@@ -579,11 +580,7 @@ nsresult TextEditor::InsertWithQuotationsAsSubAction(
 
   // Let the citer quote it for us:
   nsString quotedStuff;
-  nsresult rv = InternetCiter::GetCiteString(aQuotedText, quotedStuff);
-  if (NS_FAILED(rv)) {
-    NS_WARNING("InternetCiter::GetCiteString() failed");
-    return rv;
-  }
+  InternetCiter::GetCiteString(aQuotedText, quotedStuff);
 
   // It's best to put a blank line after the quoted text so that mails
   // written without thinking won't be so ugly.
@@ -605,7 +602,7 @@ nsresult TextEditor::InsertWithQuotationsAsSubAction(
   //     also in single line editor)?
   MaybeDoAutoPasswordMasking();
 
-  rv = InsertTextAsSubAction(quotedStuff, SelectionHandling::Delete);
+  nsresult rv = InsertTextAsSubAction(quotedStuff, SelectionHandling::Delete);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "EditorBase::InsertTextAsSubAction() failed");
   return rv;
@@ -635,6 +632,66 @@ nsresult TextEditor::SelectEntireDocument() {
 }
 
 EventTarget* TextEditor::GetDOMEventTarget() const { return mEventTarget; }
+
+void TextEditor::ReinitializeSelection(Element& aElement) {
+  if (NS_WARN_IF(Destroyed())) {
+    return;
+  }
+
+  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
+  if (NS_WARN_IF(!editActionData.CanHandle())) {
+    return;
+  }
+
+  // We don't need to flush pending notifications here and we don't need to
+  // handle spellcheck at first focus.  Therefore, we don't need to call
+  // `TextEditor::OnFocus` here.
+  EditorBase::OnFocus(aElement);
+
+  // If previous focused editor turn on spellcheck and this editor doesn't
+  // turn on it, spellcheck state is mismatched.  So we need to re-sync it.
+  SyncRealTimeSpell();
+}
+
+nsresult TextEditor::OnFocus(const nsINode& aOriginalEventTargetNode) {
+  RefPtr<PresShell> presShell = GetPresShell();
+  if (NS_WARN_IF(!presShell)) {
+    return NS_ERROR_FAILURE;
+  }
+  // Let's update the layout information right now because there are some
+  // pending notifications and flushing them may cause destroying the editor.
+  presShell->FlushPendingNotifications(FlushType::Layout);
+  if (MOZ_UNLIKELY(!CanKeepHandlingFocusEvent(aOriginalEventTargetNode))) {
+    return NS_OK;
+  }
+
+  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
+  if (NS_WARN_IF(!editActionData.CanHandle())) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Spell check a textarea the first time that it is focused.
+  nsresult rv = FlushPendingSpellCheck();
+  if (MOZ_UNLIKELY(rv == NS_ERROR_EDITOR_DESTROYED)) {
+    NS_WARNING("EditorBase::FlushPendingSpellCheck() failed");
+    return NS_ERROR_EDITOR_DESTROYED;
+  }
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rv),
+      "EditorBase::FlushPendingSpellCheck() failed, but ignored");
+  if (MOZ_UNLIKELY(!CanKeepHandlingFocusEvent(aOriginalEventTargetNode))) {
+    return NS_OK;
+  }
+
+  return EditorBase::OnFocus(aOriginalEventTargetNode);
+}
+
+nsresult TextEditor::OnBlur(const EventTarget* aEventTarget) {
+  nsresult rv = FinalizeSelection();
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::FinalizeSelection() failed");
+  return rv;
+}
 
 nsresult TextEditor::SetAttributeOrEquivalent(Element* aElement,
                                               nsAtom* aAttribute,

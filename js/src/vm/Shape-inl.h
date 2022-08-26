@@ -14,7 +14,7 @@
 #include "vm/JSObject.h"
 #include "vm/TypedArrayObject.h"
 
-#include "gc/FreeOp-inl.h"
+#include "gc/GCContext-inl.h"
 #include "gc/Marking-inl.h"
 #include "vm/JSAtom-inl.h"
 #include "vm/JSContext-inl.h"
@@ -36,10 +36,10 @@ template <class ObjectSubclass>
 
   // Ensure the initial shape isn't collected under assignInitialShape, to
   // simplify insertInitialShape.
-  RootedShape emptyShape(cx, obj->shape());
+  Rooted<Shape*> emptyShape(cx, obj->shape());
 
   // If no initial shape was assigned, do so.
-  RootedShape shape(cx, ObjectSubclass::assignInitialShape(cx, obj));
+  Rooted<Shape*> shape(cx, ObjectSubclass::assignInitialShape(cx, obj));
   if (!shape) {
     return false;
   }
@@ -62,16 +62,16 @@ MOZ_ALWAYS_INLINE PropMap* Shape::lookupPure(PropertyKey key, uint32_t* index) {
   return len > 0 ? propMap_->lookupPure(len, key, index) : nullptr;
 }
 
-inline void Shape::purgeCache(JSFreeOp* fop) {
+inline void Shape::purgeCache(JS::GCContext* gcx) {
   if (cache_.isShapeSetForAdd()) {
-    fop->delete_(this, cache_.toShapeSetForAdd(), MemoryUse::ShapeSetForAdd);
+    gcx->delete_(this, cache_.toShapeSetForAdd(), MemoryUse::ShapeSetForAdd);
   }
   cache_.setNone();
 }
 
-inline void Shape::finalize(JSFreeOp* fop) {
+inline void Shape::finalize(JS::GCContext* gcx) {
   if (!cache_.isNone()) {
-    purgeCache(fop);
+    purgeCache(gcx);
   }
 }
 

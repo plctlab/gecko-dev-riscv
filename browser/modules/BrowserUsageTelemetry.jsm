@@ -12,18 +12,26 @@ var EXPORTED_SYMBOLS = [
   "MINIMUM_TAB_COUNT_INTERVAL_MS",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ClientID: "resource://gre/modules/ClientID.jsm",
   CustomizableUI: "resource:///modules/CustomizableUI.jsm",
   PageActions: "resource:///modules/PageActions.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
-  SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+  WindowsInstallsInfo:
+    "resource://gre/modules/components-utils/WindowsInstallsInfo.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
   setInterval: "resource://gre/modules/Timer.jsm",
   clearTimeout: "resource://gre/modules/Timer.jsm",
@@ -32,7 +40,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 
 // This pref is in seconds!
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gRecentVisitedOriginsExpiry",
   "browser.engagement.recent_visited_origins.expiry"
 );
@@ -116,6 +124,7 @@ const PREFERENCES_PANES = [
   "paneSync",
   "paneContainers",
   "paneExperimental",
+  "paneMoreFromMozilla",
 ];
 
 const IGNORABLE_EVENTS = new WeakMap();
@@ -178,7 +187,7 @@ function telemetryId(widgetId, obscureAddons = true) {
     }
 
     if (actionId) {
-      let action = PageActions.actionForID(actionId);
+      let action = lazy.PageActions.actionForID(actionId);
       widgetId = action?._isMozillaAction ? actionId : addonId(actionId);
     }
   } else if (widgetId.startsWith("ext-keyset-id-")) {
@@ -256,7 +265,7 @@ let URICountListener = {
       webProgress.isTopLevel
     ) {
       // By default, assume we no longer need to track this tab.
-      SearchSERPTelemetry.stopTrackingBrowser(browser);
+      lazy.SearchSERPTelemetry.stopTrackingBrowser(browser);
     }
 
     // Don't count this URI if it's an error page.
@@ -283,7 +292,7 @@ let URICountListener = {
 
     // Don't include URI and domain counts when in private mode.
     let shouldCountURI =
-      !PrivateBrowsingUtils.isWindowPrivate(browser.ownerGlobal) ||
+      !lazy.PrivateBrowsingUtils.isWindowPrivate(browser.ownerGlobal) ||
       Services.prefs.getBoolPref(
         "browser.engagement.total_uri_count.pbm",
         false
@@ -328,7 +337,7 @@ let URICountListener = {
     }
 
     if (!(flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT)) {
-      SearchSERPTelemetry.updateTrackingStatus(
+      lazy.SearchSERPTelemetry.updateTrackingStatus(
         browser,
         uriSpec,
         webProgress.loadType
@@ -340,6 +349,7 @@ let URICountListener = {
       TOTAL_URI_COUNT_NORMAL_AND_PRIVATE_MODE_SCALAR_NAME,
       1
     );
+    Glean.browserEngagement.uriCount.add(1);
 
     if (!shouldCountURI) {
       return;
@@ -373,11 +383,11 @@ let URICountListener = {
     }
 
     this._domain24hrSet.add(baseDomain);
-    if (gRecentVisitedOriginsExpiry) {
-      let timeoutId = setTimeout(() => {
+    if (lazy.gRecentVisitedOriginsExpiry) {
+      let timeoutId = lazy.setTimeout(() => {
         this._domain24hrSet.delete(baseDomain);
         this._timeouts.delete(timeoutId);
-      }, gRecentVisitedOriginsExpiry * 1000);
+      }, lazy.gRecentVisitedOriginsExpiry * 1000);
       this._timeouts.add(timeoutId);
     }
   },
@@ -401,7 +411,7 @@ let URICountListener = {
    * Resets the number of unique domains visited in this session.
    */
   resetUniqueDomainsVisitedInPast24Hours() {
-    this._timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+    this._timeouts.forEach(timeoutId => lazy.clearTimeout(timeoutId));
     this._timeouts.clear();
     this._domain24hrSet.clear();
   },
@@ -417,7 +427,7 @@ let BrowserUsageTelemetry = {
    * This is a policy object used to override behavior for testing.
    */
   Policy: {
-    getTelemetryClientId: async () => ClientID.getClientID(),
+    getTelemetryClientId: async () => lazy.ClientID.getClientID(),
     getUpdateDirectory: () => Services.dirsvc.get("UpdRootD", Ci.nsIFile),
     readProfileCountFile: async path => IOUtils.readUTF8(path),
     writeProfileCountFile: async (path, data) => IOUtils.writeUTF8(path, data),
@@ -431,11 +441,11 @@ let BrowserUsageTelemetry = {
     this._setupAfterRestore();
     this._inited = true;
 
-    Services.prefs.addObserver("browser.tabs.drawInTitlebar", this);
+    Services.prefs.addObserver("browser.tabs.inTitlebar", this);
 
     this._recordUITelemetry();
 
-    this._recordContentProcessCountInterval = setInterval(
+    this._recordContentProcessCountInterval = lazy.setInterval(
       () => this._recordContentProcessCount(),
       CONTENT_PROCESS_COUNT_INTERVAL_MS
     );
@@ -481,7 +491,7 @@ let BrowserUsageTelemetry = {
     Services.obs.removeObserver(this, DOMWINDOW_OPENED_TOPIC);
     Services.obs.removeObserver(this, TELEMETRY_SUBSESSIONSPLIT_TOPIC);
 
-    clearInterval(this._recordContentProcessCountInterval);
+    lazy.clearInterval(this._recordContentProcessCountInterval);
   },
 
   observe(subject, topic, data) {
@@ -494,12 +504,10 @@ let BrowserUsageTelemetry = {
         break;
       case "nsPref:changed":
         switch (data) {
-          case "browser.tabs.drawInTitlebar":
+          case "browser.tabs.inTitlebar":
             this._recordWidgetChange(
               "titlebar",
-              Services.prefs.getBoolPref("browser.tabs.drawInTitlebar")
-                ? "off"
-                : "on",
+              Services.appinfo.drawInTitlebar ? "off" : "on",
               "pref"
             );
             break;
@@ -601,14 +609,9 @@ let BrowserUsageTelemetry = {
     widgetMap.set("menu-toolbar", menuBarHidden ? "off" : "on");
 
     // Drawing in the titlebar means not showing the titlebar, hence the negation.
-    widgetMap.set(
-      "titlebar",
-      Services.prefs.getBoolPref("browser.tabs.drawInTitlebar", true)
-        ? "off"
-        : "on"
-    );
+    widgetMap.set("titlebar", Services.appinfo.drawInTitlebar ? "off" : "on");
 
-    for (let area of CustomizableUI.areas) {
+    for (let area of lazy.CustomizableUI.areas) {
       if (!(area in BROWSER_UI_CONTAINER_IDS)) {
         continue;
       }
@@ -618,7 +621,7 @@ let BrowserUsageTelemetry = {
         position = `${BROWSER_UI_CONTAINER_IDS[area]}-start`;
       }
 
-      let widgets = CustomizableUI.getWidgetsInArea(area);
+      let widgets = lazy.CustomizableUI.getWidgetsInArea(area);
 
       for (let widget of widgets) {
         if (!widget) {
@@ -638,7 +641,7 @@ let BrowserUsageTelemetry = {
       }
     }
 
-    let actions = PageActions.actions;
+    let actions = lazy.PageActions.actions;
     for (let action of actions) {
       if (action.pinnedToUrlbar) {
         widgetMap.set(action.id, "pageaction-urlbar");
@@ -657,9 +660,9 @@ let BrowserUsageTelemetry = {
     // See if this is a customizable widget.
     if (node.ownerDocument.URL == AppConstants.BROWSER_CHROME_URL) {
       // First find if it is inside one of the customizable areas.
-      for (let area of CustomizableUI.areas) {
+      for (let area of lazy.CustomizableUI.areas) {
         if (node.closest(`#${CSS.escape(area)}`)) {
-          for (let widget of CustomizableUI.getWidgetIdsInArea(area)) {
+          for (let widget of lazy.CustomizableUI.getWidgetIdsInArea(area)) {
             if (
               // We care about the buttons on the tabs themselves.
               widget == "tabbrowser-tabs" ||
@@ -817,10 +820,22 @@ let BrowserUsageTelemetry = {
 
     // Find the actual element we're interested in.
     let node = sourceEvent.target;
-    while (!UI_TARGET_ELEMENTS.includes(node.localName)) {
+    const isAboutPreferences = node.ownerDocument.URL.startsWith(
+      "about:preferences"
+    );
+    while (
+      !UI_TARGET_ELEMENTS.includes(node.localName) &&
+      !node.classList?.contains("wants-telemetry") &&
+      // We are interested in links on about:preferences as well.
+      !(
+        isAboutPreferences &&
+        (node.getAttribute("is") === "text-link" || node.localName === "a")
+      )
+    ) {
       node = node.parentNode;
-      if (!node) {
-        // A click on a space or label or something we're not interested in.
+      if (!node?.parentNode) {
+        // A click on a space or label or top-level document or something we're
+        // not interested in.
         return;
       }
     }
@@ -829,7 +844,7 @@ let BrowserUsageTelemetry = {
     let source = this._getWidgetContainer(node);
 
     if (item && source) {
-      let scalar = `browser.ui.interaction.${source.replace("-", "_")}`;
+      let scalar = `browser.ui.interaction.${source.replace(/-/g, "_")}`;
       Services.telemetry.keyedScalarAdd(scalar, telemetryId(item), 1);
       if (SET_USAGECOUNT_PREF_BUTTONS.includes(item)) {
         let pref = `browser.engagement.${item}.used-count`;
@@ -863,10 +878,10 @@ let BrowserUsageTelemetry = {
       }
 
       if (newPos == "nav-bar") {
-        let { position } = CustomizableUI.getPlacementOfWidget(widgetId);
-        let { position: urlPosition } = CustomizableUI.getPlacementOfWidget(
-          "urlbar-container"
-        );
+        let { position } = lazy.CustomizableUI.getPlacementOfWidget(widgetId);
+        let {
+          position: urlPosition,
+        } = lazy.CustomizableUI.getPlacementOfWidget("urlbar-container");
         newPos = newPos + (urlPosition > position ? "-start" : "-end");
       }
 
@@ -899,7 +914,7 @@ let BrowserUsageTelemetry = {
       // and before nav-bar-end. But moving it means the widgets around it have
       // effectively moved so update those.
       let position = "nav-bar-start";
-      let widgets = CustomizableUI.getWidgetsInArea("nav-bar");
+      let widgets = lazy.CustomizableUI.getWidgetsInArea("nav-bar");
 
       for (let widget of widgets) {
         if (!widget) {
@@ -1198,72 +1213,148 @@ let BrowserUsageTelemetry = {
    * if so then send installation telemetry.
    *
    * @param {nsIFile} [dataPathOverride] Optional, full data file path, for tests.
+   * @param {Array<string>} [msixPackagePrefixes] Optional, list of prefixes to
+            consider "existing" installs when looking at installed MSIX packages.
+            Defaults to prefixes for builds produced in Firefox automation.
    * @return {Promise}
    * @resolves When the event has been recorded, or if the data file was not found.
    * @rejects JavaScript exception on any failure.
    */
-  async reportInstallationTelemetry(dataPathOverride) {
+  async reportInstallationTelemetry(
+    dataPathOverride,
+    msixPackagePrefixes = ["Mozilla.Firefox", "Mozilla.MozillaFirefox"]
+  ) {
     if (AppConstants.platform != "win") {
       // This is a windows-only feature.
       return;
     }
 
-    let dataPath = dataPathOverride;
-    if (!dataPath) {
-      dataPath = Services.dirsvc.get("GreD", Ci.nsIFile);
-      dataPath.append("installation_telemetry.json");
-    }
-
-    let dataBytes;
-    try {
-      dataBytes = await IOUtils.read(dataPath.path);
-    } catch (ex) {
-      if (ex.name == "NotFoundError") {
-        // Many systems will not have the data file, return silently if not found as
-        // there is nothing to record.
-        return;
-      }
-      throw ex;
-    }
-    const dataString = new TextDecoder("utf-16").decode(dataBytes);
-    const data = JSON.parse(dataString);
-
     const TIMESTAMP_PREF = "app.installation.timestamp";
     const lastInstallTime = Services.prefs.getStringPref(TIMESTAMP_PREF, null);
+    const wpm = Cc["@mozilla.org/windows-package-manager;1"].createInstance(
+      Ci.nsIWindowsPackageManager
+    );
+    let installer_type = "";
+    let pfn;
+    try {
+      pfn = Services.sysinfo.getProperty("winPackageFamilyName");
+    } catch (e) {}
 
-    if (lastInstallTime && data.install_timestamp == lastInstallTime) {
-      // We've already seen this install
-      return;
+    function getInstallData() {
+      // We only care about where _any_ other install existed - no
+      // need to count more than 1.
+      const installPaths = lazy.WindowsInstallsInfo.getInstallPaths(
+        1,
+        new Set([Services.dirsvc.get("GreBinD", Ci.nsIFile).path])
+      );
+      const msixInstalls = new Set();
+      // We're just going to eat all errors here -- we don't want the event
+      // to go unsent if we were unable to look for MSIX installs.
+      try {
+        wpm
+          .findUserInstalledPackages(msixPackagePrefixes)
+          .forEach(i => msixInstalls.add(i));
+        if (pfn) {
+          msixInstalls.delete(pfn);
+        }
+      } catch (ex) {}
+      return {
+        installPaths,
+        msixInstalls,
+      };
     }
 
-    // First time seeing this install, record the timestamp.
-    Services.prefs.setStringPref(TIMESTAMP_PREF, data.install_timestamp);
+    let extra = {};
 
-    // Installation timestamp is not intended to be sent with telemetry,
-    // remove it to emphasize this point.
-    delete data.install_timestamp;
+    if (pfn) {
+      if (lastInstallTime != null) {
+        // We've already seen this install
+        return;
+      }
 
-    // Build the extra event data
-    let extra = {
-      version: data.version,
-      build_id: data.build_id,
-      admin_user: data.admin_user.toString(),
-      install_existed: data.install_existed.toString(),
-      profdir_existed: data.profdir_existed.toString(),
-    };
+      // First time seeing this install, record the timestamp.
+      Services.prefs.setStringPref(TIMESTAMP_PREF, wpm.getInstalledDate());
+      let install_data = getInstallData();
 
-    if (data.installer_type == "full") {
-      extra.silent = data.silent.toString();
-      extra.from_msi = data.from_msi.toString();
-      extra.default_path = data.default_path.toString();
+      installer_type = "msix";
+
+      // Build the extra event data
+      extra.version = AppConstants.MOZ_APP_VERSION;
+      extra.build_id = AppConstants.MOZ_BUILDID;
+      // The next few keys are static for the reasons described
+      // No way to detect whether or not we were installed by an admin
+      extra.admin_user = "false";
+      // Always false at the moment, because we create a new profile
+      // on first launch
+      extra.profdir_existed = "false";
+      // Obviously false for MSIX installs
+      extra.from_msi = "false";
+      // We have no way of knowing whether we were installed via the GUI,
+      // through the command line, or some Enterprise management tool.
+      extra.silent = "false";
+      // There's no way to change the install path for an MSIX package
+      extra.default_path = "true";
+      extra.install_existed = install_data.msixInstalls.has(pfn).toString();
+      install_data.msixInstalls.delete(pfn);
+      extra.other_inst = (!!install_data.installPaths.size).toString();
+      extra.other_msix_inst = (!!install_data.msixInstalls.size).toString();
+    } else {
+      let dataPath = dataPathOverride;
+      if (!dataPath) {
+        dataPath = Services.dirsvc.get("GreD", Ci.nsIFile);
+        dataPath.append("installation_telemetry.json");
+      }
+
+      let dataBytes;
+      try {
+        dataBytes = await IOUtils.read(dataPath.path);
+      } catch (ex) {
+        if (ex.name == "NotFoundError") {
+          // Many systems will not have the data file, return silently if not found as
+          // there is nothing to record.
+          return;
+        }
+        throw ex;
+      }
+      const dataString = new TextDecoder("utf-16").decode(dataBytes);
+      const data = JSON.parse(dataString);
+
+      if (lastInstallTime && data.install_timestamp == lastInstallTime) {
+        // We've already seen this install
+        return;
+      }
+
+      // First time seeing this install, record the timestamp.
+      Services.prefs.setStringPref(TIMESTAMP_PREF, data.install_timestamp);
+      let install_data = getInstallData();
+
+      installer_type = data.installer_type;
+
+      // Installation timestamp is not intended to be sent with telemetry,
+      // remove it to emphasize this point.
+      delete data.install_timestamp;
+
+      // Build the extra event data
+      extra.version = data.version;
+      extra.build_id = data.build_id;
+      extra.admin_user = data.admin_user.toString();
+      extra.install_existed = data.install_existed.toString();
+      extra.profdir_existed = data.profdir_existed.toString();
+      extra.other_inst = (!!install_data.installPaths.size).toString();
+      extra.other_msix_inst = (!!install_data.msixInstalls.size).toString();
+
+      if (data.installer_type == "full") {
+        extra.silent = data.silent.toString();
+        extra.from_msi = data.from_msi.toString();
+        extra.default_path = data.default_path.toString();
+      }
     }
-
     // Record the event
     Services.telemetry.setEventRecordingEnabled("installation", true);
     Services.telemetry.recordEvent(
       "installation",
       "first_seen",
-      data.installer_type,
+      installer_type,
       null,
       extra
     );

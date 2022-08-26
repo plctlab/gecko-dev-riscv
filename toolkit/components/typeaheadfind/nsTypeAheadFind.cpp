@@ -5,12 +5,9 @@
 
 #include "nsCOMPtr.h"
 #include "nsDocShell.h"
-#include "nsMemory.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/ModuleUtils.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/Services.h"
-#include "nsCURILoader.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsNetUtil.h"
 #include "nsIURL.h"
@@ -24,22 +21,15 @@
 #include "nsGenericHTMLElement.h"
 
 #include "nsIFrame.h"
-#include "nsContainerFrame.h"
-#include "nsFrameTraversal.h"
 #include "mozilla/dom/Document.h"
 #include "nsIContent.h"
 #include "nsTextFragment.h"
 #include "nsIEditor.h"
 
 #include "nsIDocShellTreeItem.h"
-#include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsContentCID.h"
-#include "nsLayoutCID.h"
-#include "nsWidgetsCID.h"
-#include "nsIFormControl.h"
-#include "nsNameSpaceManager.h"
 #include "nsIObserverService.h"
+#include "nsISound.h"
 #include "nsFocusManager.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLInputElement.h"
@@ -67,8 +57,8 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(nsTypeAheadFind)
 
 NS_IMPL_CYCLE_COLLECTION_WEAK(nsTypeAheadFind, mFoundLink, mFoundEditable,
                               mCurrentWindow, mStartFindRange, mSearchRange,
-                              mStartPointRange, mEndPointRange, mSoundInterface,
-                              mFind, mFoundRange)
+                              mStartPointRange, mEndPointRange, mFind,
+                              mFoundRange)
 
 #define NS_FIND_CONTRACTID "@mozilla.org/embedcomp/rangefind;1"
 
@@ -77,7 +67,6 @@ nsTypeAheadFind::nsTypeAheadFind()
       mCaretBrowsingOn(false),
       mDidAddObservers(false),
       mLastFindLength(0),
-      mIsSoundInitialized(false),
       mCaseSensitive(false),
       mEntireWord(false),
       mMatchDiacritics(false) {}
@@ -120,18 +109,6 @@ nsresult nsTypeAheadFind::Init(nsIDocShell* aDocShell) {
     }
   }
 
-  if (!mIsSoundInitialized && !mNotFoundSoundURL.IsEmpty()) {
-    // This makes sure system sound library is loaded so that
-    // there's no lag before the first sound is played
-    // by waiting for the first keystroke, we still get the startup time
-    // benefits.
-    mIsSoundInitialized = true;
-    mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
-    if (mSoundInterface && !mNotFoundSoundURL.EqualsLiteral("beep")) {
-      mSoundInterface->Init();
-    }
-  }
-
   return NS_OK;
 }
 
@@ -150,19 +127,6 @@ nsresult nsTypeAheadFind::PrefsReset() {
     prefBranch->GetCharPref("accessibility.typeaheadfind.soundURL", soundStr);
 
   mNotFoundSoundURL = soundStr;
-
-  if (!mNotFoundSoundURL.IsEmpty() &&
-      !mNotFoundSoundURL.EqualsLiteral("beep")) {
-    if (!mSoundInterface) {
-      mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
-    }
-
-    // Init to load the system sound library if the lib is not ready
-    if (mSoundInterface) {
-      mIsSoundInitialized = true;
-      mSoundInterface->Init();
-    }
-  }
 
   prefBranch->GetBoolPref("accessibility.browsewithcaret", &mCaretBrowsingOn);
 
@@ -308,14 +272,11 @@ void nsTypeAheadFind::PlayNotFoundSound() {
   if (mNotFoundSoundURL.IsEmpty())  // no sound
     return;
 
-  if (!mSoundInterface)
-    mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
+  nsCOMPtr<nsISound> soundInterface = do_GetService("@mozilla.org/sound;1");
 
-  if (mSoundInterface) {
-    mIsSoundInitialized = true;
-
+  if (soundInterface) {
     if (mNotFoundSoundURL.EqualsLiteral("beep")) {
-      mSoundInterface->Beep();
+      soundInterface->Beep();
       return;
     }
 
@@ -327,7 +288,7 @@ void nsTypeAheadFind::PlayNotFoundSound() {
       NS_NewURI(getter_AddRefs(soundURI), mNotFoundSoundURL);
 
     nsCOMPtr<nsIURL> soundURL(do_QueryInterface(soundURI));
-    if (soundURL) mSoundInterface->Play(soundURL);
+    if (soundURL) soundInterface->Play(soundURL);
   }
 }
 
@@ -840,10 +801,8 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
       // look for non whitespace character before start offset
       for (uint32_t index = 0; index < startOffset; index++) {
         // FIXME: take content language into account when deciding whitespace.
-        if (!mozilla::dom::IsSpaceCharacter(
-                textFrag->CharAt(static_cast<int32_t>(index)))) {
+        if (!mozilla::dom::IsSpaceCharacter(textFrag->CharAt(index))) {
           *aIsStartingLink = false;  // not at start of a node
-
           break;
         }
       }
@@ -1013,9 +972,8 @@ nsresult nsTypeAheadFind::FindInternal(uint32_t aMode,
       nsCOMPtr<Document> document = presShell->GetDocument();
       if (!document) return NS_ERROR_UNEXPECTED;
 
-      nsFocusManager* fm = nsFocusManager::GetFocusManager();
-      if (fm) {
-        nsPIDOMWindowOuter* window = document->GetWindow();
+      if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+        nsCOMPtr<nsPIDOMWindowOuter> window = document->GetWindow();
         RefPtr<Element> focusedElement;
         nsCOMPtr<mozIDOMWindowProxy> focusedWindow;
         fm->GetFocusedElementForWindow(window, false,

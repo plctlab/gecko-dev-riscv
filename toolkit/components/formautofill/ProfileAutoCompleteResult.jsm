@@ -5,32 +5,15 @@
 "use strict";
 
 var EXPORTED_SYMBOLS = ["AddressResult", "CreditCardResult"];
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const lazy = {};
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { FormAutofill } = ChromeUtils.import(
-  "resource://autofill/FormAutofill.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormAutofillUtils",
-  "resource://autofill/FormAutofillUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "CreditCard",
-  "resource://gre/modules/CreditCard.jsm"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "insecureWarningEnabled",
-  "security.insecure_field_warning.contextual.enabled"
-);
-
-this.log = null;
-FormAutofill.defineLazyLogGetter(this, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  CreditCard: "resource://gre/modules/CreditCard.jsm",
+  FormAutofillUtils: "resource://autofill/FormAutofillUtils.jsm",
+});
 
 class ProfileAutoCompleteResult {
   constructor(
@@ -40,8 +23,6 @@ class ProfileAutoCompleteResult {
     matchingProfiles,
     { resultCode = null, isSecure = true, isInputAutofilled = false }
   ) {
-    log.debug("Constructing new ProfileAutoCompleteResult:", [...arguments]);
-
     // nsISupports
     this.QueryInterface = ChromeUtils.generateQI(["nsIAutoCompleteResult"]);
 
@@ -194,6 +175,15 @@ class ProfileAutoCompleteResult {
   }
 
   /**
+   * Returns true if the value at the given index is removable
+   * @param   {number}  index The index of the result to remove
+   * @returns {boolean} True if the value is removable
+   */
+  isRemovableAt(index) {
+    return true;
+  }
+
+  /**
    * Removes a result from the resultset
    * @param {number} index The index of the result to remove
    */
@@ -312,10 +302,10 @@ class AddressResult extends ProfileAutoCompleteResult {
     labels.push({
       primary: "",
       secondary: "",
-      categories: FormAutofillUtils.getCategoriesFromFieldNames(
+      categories: lazy.FormAutofillUtils.getCategoriesFromFieldNames(
         this._allFieldNames
       ),
-      focusedCategory: FormAutofillUtils.getCategoryFromFieldName(
+      focusedCategory: lazy.FormAutofillUtils.getCategoryFromFieldName(
         this._focusedFieldName
       ),
     });
@@ -371,7 +361,7 @@ class CreditCardResult extends ProfileAutoCompleteResult {
 
       if (matching) {
         if (currentFieldName == "cc-number") {
-          let { affix, label } = CreditCard.formatMaskedNumber(
+          let { affix, label } = lazy.CreditCard.formatMaskedNumber(
             profile[currentFieldName]
           );
           return affix + label;
@@ -385,15 +375,12 @@ class CreditCardResult extends ProfileAutoCompleteResult {
 
   _generateLabels(focusedFieldName, allFieldNames, profiles) {
     if (!this._isSecure) {
-      if (!insecureWarningEnabled) {
-        return [];
-      }
-      let brandName = FormAutofillUtils.brandBundle.GetStringFromName(
+      let brandName = lazy.FormAutofillUtils.brandBundle.GetStringFromName(
         "brandShortName"
       );
 
       return [
-        FormAutofillUtils.stringBundle.formatStringFromName(
+        lazy.FormAutofillUtils.stringBundle.formatStringFromName(
           "insecureFieldWarningDescription",
           [brandName]
         ),
@@ -417,7 +404,7 @@ class CreditCardResult extends ProfileAutoCompleteResult {
         let primary = profile[focusedFieldName];
 
         if (focusedFieldName == "cc-number") {
-          let { affix, label } = CreditCard.formatMaskedNumber(primary);
+          let { affix, label } = lazy.CreditCard.formatMaskedNumber(primary);
           primaryAffix = affix;
           primary = label;
         }
@@ -431,7 +418,7 @@ class CreditCardResult extends ProfileAutoCompleteResult {
         // aria-label overrides the text content, so we must include that also.
         let ccTypeName;
         try {
-          ccTypeName = FormAutofillUtils.stringBundle.GetStringFromName(
+          ccTypeName = lazy.FormAutofillUtils.stringBundle.GetStringFromName(
             `cardNetwork.${profile["cc-type"]}`
           );
         } catch (e) {
@@ -478,7 +465,7 @@ class CreditCardResult extends ProfileAutoCompleteResult {
 
   getStyleAt(index) {
     this._checkIndexBounds(index);
-    if (!this._isSecure && insecureWarningEnabled) {
+    if (!this._isSecure) {
       return "autofill-insecureWarning";
     }
 
@@ -486,31 +473,8 @@ class CreditCardResult extends ProfileAutoCompleteResult {
   }
 
   getImageAt(index) {
-    const PATH = "chrome://formautofill/content/";
-    const THIRD_PARTY_PATH = PATH + "third-party/";
-
     this._checkIndexBounds(index);
-    switch (this._cardTypes[index]) {
-      case "amex":
-        return THIRD_PARTY_PATH + "cc-logo-amex.png";
-      case "cartebancaire":
-        return THIRD_PARTY_PATH + "cc-logo-cartebancaire.png";
-      case "diners":
-        return THIRD_PARTY_PATH + "cc-logo-diners.svg";
-      case "discover":
-        return THIRD_PARTY_PATH + "cc-logo-discover.png";
-      case "jcb":
-        return THIRD_PARTY_PATH + "cc-logo-jcb.svg";
-      case "mastercard":
-        return THIRD_PARTY_PATH + "cc-logo-mastercard.svg";
-      case "mir":
-        return THIRD_PARTY_PATH + "cc-logo-mir.svg";
-      case "unionpay":
-        return THIRD_PARTY_PATH + "cc-logo-unionpay.svg";
-      case "visa":
-        return THIRD_PARTY_PATH + "cc-logo-visa.svg";
-      default:
-        return PATH + "icon-credit-card-generic.svg";
-    }
+    let network = this._cardTypes[index];
+    return lazy.CreditCard.getCreditCardLogo(network);
   }
 }

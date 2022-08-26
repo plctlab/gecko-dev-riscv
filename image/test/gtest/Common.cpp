@@ -277,13 +277,13 @@ already_AddRefed<Decoder> CreateTrivialDecoder() {
 }
 
 void AssertCorrectPipelineFinalState(SurfaceFilter* aFilter,
-                                     const gfx::IntRect& aInputSpaceRect,
-                                     const gfx::IntRect& aOutputSpaceRect) {
+                                     const IntRect& aInputSpaceRect,
+                                     const IntRect& aOutputSpaceRect) {
   EXPECT_TRUE(aFilter->IsSurfaceFinished());
   Maybe<SurfaceInvalidRect> invalidRect = aFilter->TakeInvalidRect();
   EXPECT_TRUE(invalidRect.isSome());
-  EXPECT_EQ(aInputSpaceRect, invalidRect->mInputSpaceRect);
-  EXPECT_EQ(aOutputSpaceRect, invalidRect->mOutputSpaceRect);
+  EXPECT_EQ(aInputSpaceRect, invalidRect->mInputSpaceRect.ToUnknownRect());
+  EXPECT_EQ(aOutputSpaceRect, invalidRect->mOutputSpaceRect.ToUnknownRect());
 }
 
 void CheckGeneratedImage(Decoder* aDecoder, const IntRect& aRect,
@@ -1034,12 +1034,12 @@ RefPtr<Image> TestCaseToDecodedImage(const ImageTestCase& aTestCase) {
   MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   // Write the data into the image.
-  rv = image->OnImageDataAvailable(nullptr, nullptr, inputStream, 0,
+  rv = image->OnImageDataAvailable(nullptr, inputStream, 0,
                                    static_cast<uint32_t>(length));
   MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   // Let the image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
+  rv = image->OnImageDataComplete(nullptr, NS_OK, true);
   MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   RefPtr<ProgressTracker> tracker = image->GetProgressTracker();

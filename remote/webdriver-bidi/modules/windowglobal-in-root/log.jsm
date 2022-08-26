@@ -6,16 +6,33 @@
 
 const EXPORTED_SYMBOLS = ["log"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Module: "chrome://remote/content/shared/messagehandler/Module.jsm",
+const { Module } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/Module.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  TabManager: "chrome://remote/content/shared/TabManager.jsm",
 });
 
-class Log extends Module {
+class LogModule extends Module {
   destroy() {}
+
+  interceptEvent(name, payload) {
+    if (name == "log.entryAdded") {
+      // Resolve browsing context to a TabManager id.
+      payload.source.context = lazy.TabManager.getIdForBrowsingContext(
+        payload.source.context
+      );
+    }
+
+    return payload;
+  }
 }
 
-const log = Log;
+const log = LogModule;

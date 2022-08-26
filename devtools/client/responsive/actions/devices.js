@@ -87,7 +87,7 @@ module.exports = {
   // This function is only exported for testing purposes
   _loadPreferredDevices: loadPreferredDevices,
 
-  updatePreferredDevices: updatePreferredDevices,
+  updatePreferredDevices,
 
   addCustomDevice(device) {
     return async function({ dispatch }) {
@@ -168,19 +168,19 @@ module.exports = {
     return async function({ dispatch }) {
       dispatch({ type: LOAD_DEVICE_LIST_START });
       const preferredDevices = loadPreferredDevices();
-      let devices;
+      let deviceByTypes;
 
       try {
-        devices = await getDevices();
+        deviceByTypes = await getDevices();
       } catch (e) {
         console.error("Could not load device list: " + e);
         dispatch({ type: LOAD_DEVICE_LIST_ERROR });
         return;
       }
 
-      for (const type of devices.TYPES) {
+      for (const [type, devices] of deviceByTypes.entries()) {
         dispatch(module.exports.addDeviceType(type));
-        for (const device of devices[type]) {
+        for (const device of devices) {
           if (device.os == "fxos") {
             continue;
           }
@@ -196,7 +196,7 @@ module.exports = {
       }
 
       // Add an empty "custom" type if it doesn't exist in device storage
-      if (!devices.TYPES.find(type => type == "custom")) {
+      if (!deviceByTypes.has("custom")) {
         dispatch(module.exports.addDeviceType("custom"));
       }
 

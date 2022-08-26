@@ -1,3 +1,4 @@
+
 [package]
 name = "gkrust-shared"
 version = "0.1.0"
@@ -6,10 +7,12 @@ license = "MPL-2.0"
 description = "Shared Rust code for libxul"
 
 [dependencies]
+moz_asserts = "0.1"
+mozglue-static = { path = "../../../../mozglue/static/rust" }
 geckoservo = { path = "../../../../servo/ports/geckolib" }
 kvstore = { path = "../../../components/kvstore" }
 lmdb-rkv-sys = { version = "0.11", features = ["mdb_idl_logn_9"] }
-mp4parse_capi = { git = "https://github.com/mozilla/mp4parse-rust", rev = "72eb355ddeada541d7e57dbe5fb60eb5124dea0d", features = ["missing-pixi-permitted"] }
+mp4parse_capi = { git = "https://github.com/mozilla/mp4parse-rust", rev = "3bfc47d9a571d0842676043ba60716318e946c06", features = ["missing-pixi-permitted"] }
 nserror = { path = "../../../../xpcom/rust/nserror" }
 nsstring = { path = "../../../../xpcom/rust/nsstring" }
 netwerk_helper = { path = "../../../../netwerk/base/rust-helper" }
@@ -19,12 +22,23 @@ static_prefs = { path = "../../../../modules/libpref/init/static_prefs" }
 profiler_helper = { path = "../../../../tools/profiler/rust-helper", optional = true }
 mozurl = { path = "../../../../netwerk/base/mozurl" }
 webrender_bindings = { path = "../../../../gfx/webrender_bindings" }
-cubeb-coreaudio = { git = "https://github.com/mozilla/cubeb-coreaudio-rs", rev = "4ee3b283182926f9a8bb31d603219ff2db70d2fd", optional = true }
-cubeb-pulse = { git = "https://github.com/mozilla/cubeb-pulse-rs", rev="e9e55a4529642da99e64452467ecaef9f7753531", optional = true, features=["pulse-dlopen"] }
-cubeb-sys = { version = "0.9", optional = true, features=["gecko-in-tree"] }
+cubeb-coreaudio = { git = "https://github.com/mozilla/cubeb-coreaudio-rs", rev = "44eca95823bb57e964cf7b6d9791ed2ccb4b2108", optional = true }
+cubeb-pulse = { git = "https://github.com/mozilla/cubeb-pulse-rs", rev="1f1fe1e08e01a9a534ec7f079702a583a0899ce7", optional = true, features=["pulse-dlopen"] }
+cubeb-sys = { version = "0.10", optional = true, features=["gecko-in-tree"] }
+audioipc2-client = { git = "https://github.com/kinetiknz/audioipc-2", rev = "499b95580c8b276e52bd9757d735249504202e5c", optional = true } # macos (v2) branch
+audioipc2-server = { git = "https://github.com/kinetiknz/audioipc-2", rev = "499b95580c8b276e52bd9757d735249504202e5c", optional = true } # macos (v2) branch
+audioipc-client = { git = "https://github.com/mozilla/audioipc", rev = "fb7a2b12ced3b43e6a268621989c6191d1ed7e39", optional = true }
+audioipc-server = { git = "https://github.com/mozilla/audioipc", rev = "fb7a2b12ced3b43e6a268621989c6191d1ed7e39", optional = true }
+# Force tokio-reactor on an old version to avoid new dependencies of newer versions.
+# Remove when audioipc-client and audioipc-server above are replaced with
+# audioipc2-client and audioipc2-server.
+tokio-reactor = { version = "=0.1.3", optional = true }
+# Force tokio-threadpool on an old version that doesn't depend on crossbeam-queue 0.2
+# that has licensing issues.
+# Remove when audioipc-client and audioipc-server above are replaced with
+# audioipc2-client and audioipc2-server.
+tokio-threadpool = { version = "=0.1.17", optional = true }
 encoding_glue = { path = "../../../../intl/encoding_glue" }
-audioipc-client = { git = "https://github.com/mozilla/audioipc-2", rev = "fce878ff15f4e1dba1e5b54f82460af605fb4d14", optional = true }
-audioipc-server = { git = "https://github.com/mozilla/audioipc-2", rev = "fce878ff15f4e1dba1e5b54f82460af605fb4d14", optional = true }
 authenticator = "0.3.1"
 gkrust_utils = { path = "../../../../xpcom/rust/gkrust_utils" }
 gecko_logger = { path = "../../../../xpcom/rust/gecko_logger" }
@@ -40,7 +54,7 @@ bitsdownload = { path = "../../../components/bitsdownload", optional = true }
 storage = { path = "../../../../storage/rust" }
 bookmark_sync = { path = "../../../components/places/bookmark_sync", optional = true }
 chardetng_c = "0.1.1"
-audio_thread_priority = "0.23.4"
+audio_thread_priority = { version = "0.26.1", default_features = false, features = ["winapi"] }
 mdns_service = { path="../../../../dom/media/webrtc/transport/mdns_service", optional = true }
 neqo_glue = { path = "../../../../netwerk/socket/neqo_glue" }
 wgpu_bindings = { path = "../../../../gfx/wgpu_bindings" }
@@ -52,54 +66,77 @@ unic-langid = { version = "0.9", features = ["likelysubtags"] }
 unic-langid-ffi = { path = "../../../../intl/locale/rust/unic-langid-ffi" }
 fluent-langneg = { version = "0.13", features = ["cldr"] }
 fluent-langneg-ffi = { path = "../../../../intl/locale/rust/fluent-langneg-ffi" }
+regex-ffi = { path = "../../../components/regex-ffi" }
 rust_minidump_writer_linux = { path = "../../../crashreporter/rust_minidump_writer_linux", optional = true }
 gecko-profiler = { path = "../../../../tools/profiler/rust-api"}
+midir_impl = { path = "../../../../dom/midi/midir_impl", optional = true }
+dom = { path = "../../../../dom/base/rust" }
+origin-trials-ffi = { path = "../../../../dom/origin-trials/ffi" }
+jog = { path = "../../../components/glean/bindings/jog" }
+dap_ffi = { path = "../../../components/telemetry/dap/ffi" }
+data-encoding-ffi = { path = "../../../../dom/fs/parent/rust/data-encoding-ffi" }
+uniffi-example-arithmetic = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "bb2039f077a29dba0879372a67e764e6ace8e33f", optional = true }
+uniffi-example-geometry = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "bb2039f077a29dba0879372a67e764e6ace8e33f", optional = true }
+uniffi-example-rondpoint = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "bb2039f077a29dba0879372a67e764e6ace8e33f", optional = true }
+uniffi-example-sprites = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "bb2039f077a29dba0879372a67e764e6ace8e33f", optional = true }
+uniffi-example-todolist = { git = "https://github.com/mozilla/uniffi-rs.git", rev = "bb2039f077a29dba0879372a67e764e6ace8e33f", optional = true }
 
 # Note: `modern_sqlite` means rusqlite's bindings file be for a sqlite with
 # version less than or equal to what we link to. This isn't a problem because we
 # tend to keep this up to date, but it needs to be taken into consideration when
 # changing this version.
-rusqlite = { version = "0.24.1", features = ["modern_sqlite", "in_gecko"] }
+rusqlite = { version = "0.27.0", features = ["modern_sqlite", "in_gecko"] }
 
-fluent = { version = "0.16", features = ["fluent-pseudo"] }
+fluent = { version = "0.16.0", features = ["fluent-pseudo"] }
 fluent-ffi = { path = "../../../../intl/l10n/rust/fluent-ffi" }
 l10nregistry-ffi = { path = "../../../../intl/l10n/rust/l10nregistry-ffi" }
-l10nregistry = { git = "https://github.com/mozilla/l10nregistry-rs", rev = "fd02134161505f978e132114cbabdac057ce3b71" }
-fluent-fallback = "0.5"
+l10nregistry = { path = "../../../../intl/l10n/rust/l10nregistry-rs" }
+fluent-fallback = "0.6.0"
 localization-ffi = { path = "../../../../intl/l10n/rust/localization-ffi" }
 
 processtools = { path = "../../../components/processtools" }
 qcms = { path = "../../../../gfx/qcms", features = ["c_bindings", "neon"], default-features = false }
 
+# Force url to stay at 2.1.0. See bug 1734538.
+url = "=2.1.0"
+
+# Force mio to stay at 0.8.0 to avoid windows-sys dependencies.
+mio = "=0.8.0"
+
 [target.'cfg(not(target_os = "android"))'.dependencies]
-viaduct = { git = "https://github.com/mozilla/application-services", rev = "8a576fbe79199fa8664f64285524017f74ebcc5f"}
+viaduct = "0.1"
 webext_storage_bridge = { path = "../../../components/extensions/storage/webext_storage_bridge" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+detect_win32k_conflicts = { path = "../../../xre/detect_win32k_conflicts" }
 
 [features]
 default = []
-cubeb-remoting = ["cubeb-sys", "audioipc-client", "audioipc-server"]
+moz_memory = ["mozglue-static/moz_memory"]
+cubeb-remoting = ["cubeb-sys", "audioipc-client", "audioipc-server", "audioipc2-client", "audioipc2-server"]
 cubeb_coreaudio_rust = ["cubeb-sys", "cubeb-coreaudio"]
 cubeb_pulse_rust = ["cubeb-sys", "cubeb-pulse"]
 gecko_debug = ["geckoservo/gecko_debug", "nsstring/gecko_debug"]
 gecko_refcount_logging = ["geckoservo/gecko_refcount_logging", "xpcom/gecko_refcount_logging"]
 simd-accel = ["encoding_glue/simd-accel", "jsrust_shared/simd-accel"]
 moz_places = ["bookmark_sync"]
-spidermonkey_rust = ["jsrust_shared/baldrdash"]
-cranelift_x86 = ["jsrust_shared/cranelift_x86"]
-cranelift_arm32 = ["jsrust_shared/cranelift_arm32"]
-cranelift_arm64 = ["jsrust_shared/cranelift_arm64"]
-cranelift_none = ["jsrust_shared/cranelift_none"]
+spidermonkey_rust = []
 smoosh = ["jsrust_shared/smoosh"]
 gecko_profiler = ["gecko-profiler/enabled", "profiler_helper"]
 gecko_profiler_parse_elf = ["profiler_helper/parse_elf"]
 new_xulstore = ["xulstore"]
-libfuzzer = []
+libfuzzer = ["neqo_glue/fuzzing"]
 webrtc = ["mdns_service"]
 glean_disable_upload = ["fog_control/disable_upload"]
-glean_with_gecko = ["fog_control/with_gecko"]
+glean_with_gecko = ["fog_control/with_gecko", "jog/with_gecko"]
 oxidized_breakpad = ["rust_minidump_writer_linux"]
 with_dbus = ["audio_thread_priority/with_dbus"]
 thread_sanitizer = ["xpcom/thread_sanitizer"]
+uniffi_fixtures = [
+    "uniffi-example-arithmetic", "uniffi-example-geometry", "uniffi-example-rondpoint", "uniffi-example-sprites",
+    "uniffi-example-todolist",
+]
+webmidi_midir_impl = ["midir_impl"]
 
 [lib]
 path = "lib.rs"

@@ -23,21 +23,13 @@ class SurfaceDescriptor;
 // corresponding RenderXXXTextureHost used by RendererOGL at RenderThread.
 class WebRenderTextureHost : public TextureHost {
  public:
-  WebRenderTextureHost(const SurfaceDescriptor& aDesc, TextureFlags aFlags,
-                       TextureHost* aTexture,
-                       wr::ExternalImageId& aExternalImageId);
+  WebRenderTextureHost(TextureFlags aFlags, TextureHost* aTexture,
+                       const wr::ExternalImageId& aExternalImageId);
   virtual ~WebRenderTextureHost();
 
   void DeallocateDeviceData() override {}
 
-  bool Lock() override;
-
-  void Unlock() override;
-
-  void PrepareTextureSource(CompositableTextureSourceRef& aTexture) override;
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override;
   void UnbindTextureSource() override;
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
 
   gfx::SurfaceFormat GetFormat() const override;
 
@@ -53,6 +45,7 @@ class WebRenderTextureHost : public TextureHost {
 
   already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override;
 
+  gfx::ColorDepth GetColorDepth() const override;
   gfx::YUVColorSpace GetYUVColorSpace() const override;
   gfx::ColorRange GetColorRange() const override;
 
@@ -64,13 +57,13 @@ class WebRenderTextureHost : public TextureHost {
 
   WebRenderTextureHost* AsWebRenderTextureHost() override { return this; }
 
+  bool IsWrappingBufferTextureHost() override;
+
   virtual void PrepareForUse() override;
 
   wr::ExternalImageId GetExternalImageKey();
 
   int32_t GetRGBStride();
-
-  bool HasIntermediateBuffer() const override;
 
   bool NeedsDeferredDeletion() const override;
 
@@ -89,8 +82,6 @@ class WebRenderTextureHost : public TextureHost {
 
   bool SupportsExternalCompositing(WebRenderBackend aBackend) override;
 
-  bool NeedsYFlip() const override;
-
   void SetAcquireFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
 
   void SetReleaseFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
@@ -101,8 +92,9 @@ class WebRenderTextureHost : public TextureHost {
 
   void MaybeNotifyForUse(wr::TransactionBuilder& aTxn);
 
- protected:
-  RefPtr<TextureHost> mWrappedTextureHost;
+  TextureHostType GetTextureHostType() override;
+
+  const RefPtr<TextureHost> mWrappedTextureHost;
 };
 
 }  // namespace layers

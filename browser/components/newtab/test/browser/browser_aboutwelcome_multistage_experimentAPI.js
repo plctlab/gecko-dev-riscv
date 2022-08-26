@@ -13,7 +13,6 @@ const { TelemetryTestUtils } = ChromeUtils.import(
 const TEST_PROTON_CONTENT = [
   {
     id: "AW_STEP1",
-    order: 0,
     content: {
       title: "Step 1",
       primary_button: {
@@ -35,11 +34,11 @@ const TEST_PROTON_CONTENT = [
       help_text: {
         text: "Here's some sample help text",
       },
+      has_noodles: true,
     },
   },
   {
     id: "AW_STEP2",
-    order: 1,
     content: {
       title: "Step 2",
       primary_button: {
@@ -51,11 +50,11 @@ const TEST_PROTON_CONTENT = [
       secondary_button: {
         label: "link",
       },
+      has_noodles: true,
     },
   },
   {
     id: "AW_STEP3",
-    order: 2,
     content: {
       title: "Step 3",
       tiles: {
@@ -88,11 +87,11 @@ const TEST_PROTON_CONTENT = [
           data: { source: "chrome" },
         },
       },
+      has_noodles: true,
     },
   },
   {
     id: "AW_STEP4",
-    order: 3,
     content: {
       title: "Step 4",
       primary_button: {
@@ -104,6 +103,7 @@ const TEST_PROTON_CONTENT = [
       secondary_button: {
         label: "link",
       },
+      has_noodles: true,
     },
   },
 ];
@@ -150,7 +150,6 @@ add_task(async function test_multistage_aboutwelcome_experimentAPI() {
   const TEST_CONTENT = [
     {
       id: "AW_STEP1",
-      order: 0,
       content: {
         title: "Step 1",
         tiles: {
@@ -186,11 +185,11 @@ add_task(async function test_multistage_aboutwelcome_experimentAPI() {
             data: { entrypoint: "test" },
           },
         },
+        has_noodles: true,
       },
     },
     {
       id: "AW_STEP2",
-      order: 1,
       content: {
         zap: true,
         title: "Step 2 test",
@@ -203,12 +202,13 @@ add_task(async function test_multistage_aboutwelcome_experimentAPI() {
         secondary_button: {
           label: "link",
         },
+        has_noodles: true,
       },
     },
     {
       id: "AW_STEP3",
-      order: 2,
       content: {
+        logo: {},
         title: "Step 3",
         primary_button: {
           label: "Next",
@@ -223,6 +223,7 @@ add_task(async function test_multistage_aboutwelcome_experimentAPI() {
             data: { source: "chrome" },
           },
         },
+        has_noodles: true,
       },
     },
   ];
@@ -325,7 +326,7 @@ add_task(async function test_multistage_aboutwelcome_experimentAPI() {
     [
       "div.onboardingContainer",
       "main.AW_STEP3",
-      "div.brand-logo",
+      "img.brand-logo",
       "div.welcome-text",
     ],
     // Unexpected selectors:
@@ -396,7 +397,7 @@ add_task(async function test_multistage_aboutwelcome_transitions() {
     browser,
     "multistage proton step 1",
     // Expected selectors:
-    ["div.proton.transition- .screen-0"],
+    ["div.proton.transition- .screen"],
     // Unexpected selectors:
     ["div.proton.transition-out"]
   );
@@ -409,7 +410,7 @@ add_task(async function test_multistage_aboutwelcome_transitions() {
     browser,
     "multistage proton step 1 transition to 2",
     // Expected selectors:
-    ["div.proton.transition-out .screen-0", "div.proton.transition- .screen-1"]
+    ["div.proton.transition-out .screen", "div.proton.transition- .screen-1"]
   );
 
   await doExperimentCleanup();
@@ -453,7 +454,7 @@ add_task(async function test_multistage_aboutwelcome_transitions_off() {
     browser,
     "multistage proton step 1",
     // Expected selectors:
-    ["div.proton.transition- .screen-0"],
+    ["div.proton.transition- .screen"],
     // Unexpected selectors:
     ["div.proton.transition-out"]
   );

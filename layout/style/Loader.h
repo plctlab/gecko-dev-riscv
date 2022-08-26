@@ -235,6 +235,15 @@ class Loader final {
 
   using StylePreloadKind = css::StylePreloadKind;
 
+  bool HasLoaded(const SheetLoadDataHashKey& aKey) const {
+    return mLoadsPerformed.Contains(aKey);
+  }
+
+  void WillStartPendingLoad() {
+    MOZ_DIAGNOSTIC_ASSERT(mPendingLoadCount, "Where did this load come from?");
+    mPendingLoadCount--;
+  }
+
   nsCompatibility CompatMode(StylePreloadKind aPreloadKind) const {
     // For Link header preload, we guess non-quirks, because otherwise it is
     // useless for modern pages.
@@ -399,6 +408,8 @@ class Loader final {
    * Get the document we live for. May return null.
    */
   dom::Document* GetDocument() const { return mDocument; }
+
+  bool IsDocumentAssociated() const { return mIsDocumentAssociated; }
 
   /**
    * Return true if this loader has pending loads (ones that would send
@@ -622,6 +633,9 @@ class Loader final {
   uint32_t mParsedSheetCount = 0;
 
   bool mEnabled = true;
+
+  // Whether we had a document at the point of creation.
+  bool mIsDocumentAssociated = false;
 
 #ifdef DEBUG
   // Whether we're in a necko callback atm.

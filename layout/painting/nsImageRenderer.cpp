@@ -14,6 +14,7 @@
 #include "gfxDrawable.h"
 #include "ImageOps.h"
 #include "ImageRegion.h"
+#include "mozilla/image/WebRenderImageProvider.h"
 #include "mozilla/layers/RenderRootStateManager.h"
 #include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
@@ -86,8 +87,9 @@ bool nsImageRenderer::PrepareImage() {
     MOZ_DIAGNOSTIC_ASSERT(isImageRequest);
 
     // Make sure the image is actually decoding.
-    bool frameComplete =
-        request->StartDecodingWithResult(imgIContainer::FLAG_ASYNC_NOTIFY);
+    bool frameComplete = request->StartDecodingWithResult(
+        imgIContainer::FLAG_ASYNC_NOTIFY |
+        imgIContainer::FLAG_AVOID_REDECODE_FOR_SIZE);
 
     // Boost the loading priority since we know we want to draw the image.
     if (mFlags & nsImageRenderer::FLAG_PAINTING_TO_WINDOW) {
@@ -104,13 +106,31 @@ bool nsImageRenderer::PrepareImage() {
         return false;
       }
 
-      // Special case: If not errored, and we requested a sync decode, and the
-      // image has loaded, push on through because the Draw() will do a sync
-      // decode then.
+      // If not errored, and we requested a sync decode, and the image has
+      // loaded, push on through because the Draw() will do a sync decode then.
       const bool syncDecodeWillComplete =
           (mFlags & FLAG_SYNC_DECODE_IMAGES) &&
           (imageStatus & imgIRequest::STATUS_LOAD_COMPLETE);
-      if (!syncDecodeWillComplete) {
+
+      bool canDrawPartial =
+          (mFlags & nsImageRenderer::FLAG_DRAW_PARTIAL_FRAMES) &&
+          isImageRequest && mImage->IsSizeAvailable() && !mImage->IsRect();
+
+      // If we are drawing a partial frame then we want to make sure there are
+      // some pixels to draw, otherwise we waste effort pushing through to draw
+      // nothing.
+      if (!syncDecodeWillComplete && canDrawPartial) {
+        nsCOMPtr<imgIContainer> image;
+        canDrawPartial =
+            canDrawPartial &&
+            NS_SUCCEEDED(request->GetImage(getter_AddRefs(image))) && image &&
+            image->GetType() == imgIContainer::TYPE_RASTER &&
+            image->HasDecodedPixels();
+      }
+
+      // If we can draw partial then proceed if we at least have the size
+      // available.
+      if (!(syncDecodeWillComplete || canDrawPartial)) {
         mPrepareResult = ImgDrawResult::NOT_READY;
         return false;
       }
@@ -119,10 +139,13 @@ bool nsImageRenderer::PrepareImage() {
 
   if (isImageRequest) {
     nsCOMPtr<imgIContainer> srcImage;
-    DebugOnly<nsresult> rv = request->GetImage(getter_AddRefs(srcImage));
+    nsresult rv = request->GetImage(getter_AddRefs(srcImage));
     MOZ_ASSERT(NS_SUCCEEDED(rv) && srcImage,
                "If GetImage() is failing, mImage->IsComplete() "
                "should have returned false");
+    if (!NS_SUCCEEDED(rv)) {
+      srcImage = nullptr;
+    }
 
     if (srcImage) {
       srcImage = nsLayoutUtils::OrientImage(
@@ -417,7 +440,7 @@ void nsImageRenderer::SetPreferredSize(const CSSSizeOrRatio& aIntrinsicSize,
 // Convert from nsImageRenderer flags to the flags we want to use for drawing in
 // the imgIContainer namespace.
 static uint32_t ConvertImageRendererToDrawFlags(uint32_t aImageRendererFlags) {
-  uint32_t drawFlags = imgIContainer::FLAG_NONE;
+  uint32_t drawFlags = imgIContainer::FLAG_ASYNC_NOTIFY;
   if (aImageRendererFlags & nsImageRenderer::FLAG_SYNC_DECODE_IMAGES) {
     drawFlags |= imgIContainer::FLAG_SYNC_DECODE;
   }
@@ -460,9 +483,8 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
     if (tmpDTRect.IsEmpty()) {
       return ImgDrawResult::SUCCESS;
     }
-    RefPtr<DrawTarget> tempDT =
-        gfxPlatform::GetPlatform()->CreateSimilarSoftwareDrawTarget(
-            ctx->GetDrawTarget(), tmpDTRect.Size(), SurfaceFormat::B8G8R8A8);
+    RefPtr<DrawTarget> tempDT = ctx->GetDrawTarget()->CreateSimilarDrawTarget(
+        tmpDTRect.Size(), SurfaceFormat::B8G8R8A8);
     if (!tempDT || !tempDT->IsValid()) {
       gfxDevCrash(LogReason::InvalidContext)
           << "ImageRenderer::Draw problem " << gfx::hexa(tempDT);
@@ -586,14 +608,7 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
         extendMode = ExtendMode::CLAMP;
       }
 
-      uint32_t containerFlags = imgIContainer::FLAG_ASYNC_NOTIFY;
-      if (mFlags & (nsImageRenderer::FLAG_PAINTING_TO_WINDOW |
-                    nsImageRenderer::FLAG_HIGH_QUALITY_SCALING)) {
-        containerFlags |= imgIContainer::FLAG_HIGH_QUALITY_SCALING;
-      }
-      if (mFlags & nsImageRenderer::FLAG_SYNC_DECODE_IMAGES) {
-        containerFlags |= imgIContainer::FLAG_SYNC_DECODE;
-      }
+      uint32_t containerFlags = ConvertImageRendererToDrawFlags(mFlags);
       if (extendMode == ExtendMode::CLAMP &&
           StaticPrefs::image_svg_blob_image() &&
           mImageContainer->GetType() == imgIContainer::TYPE_VECTOR) {
@@ -604,8 +619,7 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
           nsPresContext::AppUnitsToIntCSSPixels(aDest.width),
           nsPresContext::AppUnitsToIntCSSPixels(aDest.height)};
 
-      Maybe<SVGImageContext> svgContext(
-          Some(SVGImageContext(Some(destCSSSize))));
+      SVGImageContext svgContext(Some(destCSSSize));
       Maybe<ImageIntRegion> region;
 
       const int32_t appUnitsPerDevPixel =
@@ -621,44 +635,30 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
               mImageContainer, mForFrame, destRect, clipRect, aSc,
               containerFlags, svgContext, region);
 
-      if (extendMode != ExtendMode::CLAMP) {
-        region = Nothing();
-      }
-
-      RefPtr<layers::ImageContainer> container;
-      drawResult = mImageContainer->GetImageContainerAtSize(
+      RefPtr<image::WebRenderImageProvider> provider;
+      drawResult = mImageContainer->GetImageProvider(
           aManager->LayerManager(), decodeSize, svgContext, region,
-          containerFlags, getter_AddRefs(container));
-      if (!container) {
-        NS_WARNING("Failed to get image container");
-        break;
-      }
+          containerFlags, getter_AddRefs(provider));
 
-      if (containerFlags & imgIContainer::FLAG_RECORD_BLOB) {
-        MOZ_ASSERT(extendMode == ExtendMode::CLAMP);
-        aManager->CommandBuilder().PushBlobImage(
-            aItem, container, aBuilder, aResources, clipRect, clipRect);
+      Maybe<wr::ImageKey> key =
+          aManager->CommandBuilder().CreateImageProviderKey(
+              aItem, provider, drawResult, aResources);
+      if (key.isNothing()) {
         break;
       }
 
       auto rendering =
           wr::ToImageRendering(aItem->Frame()->UsedImageRendering());
-      gfx::IntSize size;
-      Maybe<wr::ImageKey> key = aManager->CommandBuilder().CreateImageKey(
-          aItem, container, aBuilder, aResources, rendering, aSc, size,
-          Nothing());
-
-      if (key.isNothing()) {
-        break;
-      }
-
-      wr::LayoutRect dest = wr::ToLayoutRect(destRect);
       wr::LayoutRect clip = wr::ToLayoutRect(clipRect);
+
+      // If we provided a region to the provider, then it already took the
+      // dest rect into account when it did the recording.
+      wr::LayoutRect dest = region ? clip : wr::ToLayoutRect(destRect);
 
       if (extendMode == ExtendMode::CLAMP) {
         // The image is not repeating. Just push as a regular image.
-        aBuilder.PushImage(dest, clip, !aItem->BackfaceIsHidden(), rendering,
-                           key.value(), true,
+        aBuilder.PushImage(dest, clip, !aItem->BackfaceIsHidden(), false,
+                           rendering, key.value(), true,
                            wr::ColorF{1.0f, 1.0f, 1.0f, aOpacity});
       } else {
         nsPoint firstTilePos = nsLayoutUtils::GetBackgroundFirstTilePos(
@@ -964,7 +964,7 @@ ImgDrawResult nsImageRenderer::DrawBorderImageComponent(
     if (!RequiresScaling(aFill, aHFill, aVFill, aUnitSize)) {
       ImgDrawResult result = nsLayoutUtils::DrawSingleImage(
           aRenderingContext, aPresContext, subImage, samplingFilter, aFill,
-          aDirtyRect, /* no SVGImageContext */ Nothing(), drawFlags);
+          aDirtyRect, SVGImageContext(), drawFlags);
 
       if (!mImage->IsComplete()) {
         result &= ImgDrawResult::SUCCESS_NOT_COMPLETE;
@@ -1033,7 +1033,7 @@ ImgDrawResult nsImageRenderer::DrawShapeImage(nsPresContext* aPresContext,
     // closest pixel in the image.
     return nsLayoutUtils::DrawSingleImage(
         aRenderingContext, aPresContext, mImageContainer, SamplingFilter::POINT,
-        dest, dest, Nothing(), drawFlags);
+        dest, dest, SVGImageContext(), drawFlags);
   }
 
   if (mImage->IsGradient()) {
@@ -1052,12 +1052,6 @@ ImgDrawResult nsImageRenderer::DrawShapeImage(nsPresContext* aPresContext,
 bool nsImageRenderer::IsRasterImage() {
   return mImageContainer &&
          mImageContainer->GetType() == imgIContainer::TYPE_RASTER;
-}
-
-bool nsImageRenderer::IsAnimatedImage() {
-  bool animated = false;
-  return mImageContainer &&
-         NS_SUCCEEDED(mImageContainer->GetAnimated(&animated)) && animated;
 }
 
 already_AddRefed<imgIContainer> nsImageRenderer::GetImage() {

@@ -8,6 +8,7 @@ import argparse
 import collections
 import collections.abc
 
+from typing import Optional
 from .base import MachError
 from .registrar import Registrar
 from mozbuild.base import MachCommandBase
@@ -43,6 +44,8 @@ class _MachCommand(object):
         # For subcommands, the global order that the subcommand's declaration
         # was seen.
         "decl_order",
+        # Whether to disable automatic logging to last_log.json for the command.
+        "no_auto_log",
     )
 
     def __init__(
@@ -56,6 +59,7 @@ class _MachCommand(object):
         order=None,
         virtualenv_name=None,
         ok_if_tests_disabled=False,
+        no_auto_log=False,
     ):
         self.name = name
         self.subcommand = subcommand
@@ -77,6 +81,7 @@ class _MachCommand(object):
         self.metrics_path = None
         self.subcommand_handlers = {}
         self.decl_order = None
+        self.no_auto_log = no_auto_log
 
     def create_instance(self, context, virtualenv_name):
         metrics = None
@@ -86,7 +91,12 @@ class _MachCommand(object):
         # This ensures the resulting class is defined inside `mach` so that logging
         # works as expected, and has a meaningful name
         subclass = type(self.name, (MachCommandBase,), {})
-        return subclass(context, virtualenv_name=virtualenv_name, metrics=metrics)
+        return subclass(
+            context,
+            virtualenv_name=virtualenv_name,
+            metrics=metrics,
+            no_auto_log=self.no_auto_log,
+        )
 
     @property
     def parser(self):
@@ -173,7 +183,7 @@ class Command(object):
             pass
     """
 
-    def __init__(self, name, metrics_path=None, **kwargs):
+    def __init__(self, name, metrics_path: Optional[str] = None, **kwargs):
         self._mach_command = _MachCommand(name=name, **kwargs)
         self._mach_command.metrics_path = metrics_path
 
@@ -208,10 +218,20 @@ class SubCommand(object):
     global_order = 0
 
     def __init__(
-        self, command, subcommand, description=None, parser=None, metrics_path=None
+        self,
+        command,
+        subcommand,
+        description=None,
+        parser=None,
+        metrics_path: Optional[str] = None,
+        virtualenv_name: Optional[str] = None,
     ):
         self._mach_command = _MachCommand(
-            name=command, subcommand=subcommand, description=description, parser=parser
+            name=command,
+            subcommand=subcommand,
+            description=description,
+            parser=parser,
+            virtualenv_name=virtualenv_name,
         )
         self._mach_command.decl_order = SubCommand.global_order
         SubCommand.global_order += 1

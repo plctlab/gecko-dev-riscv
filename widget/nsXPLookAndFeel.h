@@ -56,6 +56,8 @@ class nsXPLookAndFeel : public mozilla::LookAndFeel {
 
   virtual uint32_t GetPasswordMaskDelayImpl() { return 600; }
 
+  virtual bool GetDefaultDrawInTitlebar() { return true; }
+
   static bool LookAndFeelFontToStyle(const LookAndFeelFont&, nsString& aName,
                                      gfxFontStyle&);
   static LookAndFeelFont StyleToLookAndFeelFont(const nsAString& aName,
@@ -75,10 +77,8 @@ class nsXPLookAndFeel : public mozilla::LookAndFeel {
 
   // A platform-agnostic dark-color scheme, for platforms where we don't have
   // "native" dark colors, like Windows and Android.
-  //
-  // TODO: In the future we should use this as well for standins (i.e.,
-  // resistFingerprinting, etc).
   static mozilla::Maybe<nscolor> GenericDarkColor(ColorID);
+  mozilla::Maybe<nscolor> GetUncachedColor(ColorID, ColorScheme, UseStandins);
 
   void RecordTelemetry();
   virtual void RecordLookAndFeelSpecificTelemetry() {}

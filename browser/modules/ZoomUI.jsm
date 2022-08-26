@@ -10,11 +10,12 @@ const gLoadContext = Cu.createLoadContext();
 const gContentPrefs = Cc["@mozilla.org/content-pref/service;1"].getService(
   Ci.nsIContentPrefService2
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const gZoomPropertyName = "browser.content.full-zoom";
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PanelMultiView",
   "resource:///modules/PanelMultiView.jsm"
 );
@@ -129,7 +130,7 @@ async function updateZoomUI(aBrowser, aAnimate = false) {
     return;
   }
 
-  let appMenuZoomReset = PanelMultiView.getViewNode(
+  let appMenuZoomReset = lazy.PanelMultiView.getViewNode(
     win.document,
     "appMenu-zoomReset-button2"
   );
@@ -187,6 +188,8 @@ async function updateZoomUI(aBrowser, aAnimate = false) {
     }
     urlbarZoomButton.setAttribute("label", label);
   }
+
+  win.FullZoom.updateCommands();
 }
 
 const { CustomizableUI } = ChromeUtils.import(

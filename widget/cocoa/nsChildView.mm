@@ -17,7 +17,9 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
+#include "mozilla/NativeKeyBindingsType.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SwipeTracker.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TouchEvents.h"
@@ -105,7 +107,6 @@
 #include "mozilla/layers/ChromeProcessController.h"
 #include "nsLayoutUtils.h"
 #include "InputData.h"
-#include "SwipeTracker.h"
 #include "VibrancyManager.h"
 #include "nsNativeThemeCocoa.h"
 #include "nsIDOMWindowUtils.h"
@@ -211,19 +212,6 @@ static inline void FlipCocoaScreenCoordinate(NSPoint& inPoint) {
   inPoint.y = nsCocoaUtils::FlippedScreenY(inPoint.y);
 }
 
-namespace mozilla {
-
-struct SwipeEventQueue {
-  SwipeEventQueue(uint32_t aAllowedDirections, uint64_t aInputBlockId)
-      : allowedDirections(aAllowedDirections), inputBlockId(aInputBlockId) {}
-
-  nsTArray<PanGestureInput> queuedEvents;
-  uint32_t allowedDirections;
-  uint64_t inputBlockId;
-};
-
-}  // namespace mozilla
-
 #pragma mark -
 
 nsChildView::nsChildView()
@@ -234,16 +222,11 @@ nsChildView::nsChildView()
       mCompositingLock("ChildViewCompositing"),
       mBackingScaleFactor(0.0),
       mVisible(false),
+      mSizeMode(nsSizeMode_Normal),
       mDrawing(false),
-      mIsDispatchPaint(false),
-      mCurrentPanGestureBelongsToSwipe{false} {}
+      mIsDispatchPaint(false) {}
 
 nsChildView::~nsChildView() {
-  if (mSwipeTracker) {
-    mSwipeTracker->Destroy();
-    mSwipeTracker = nullptr;
-  }
-
   // Notify the children that we're gone.  childView->ResetParent() can change
   // our list of children while it's being iterated, so the way we iterate the
   // list must allow for this.
@@ -727,7 +710,6 @@ void nsChildView::Move(double aX, double aY) {
     [mView setFrame:DevPixelsToCocoaPoints(mBounds)];
   });
 
-  NotifyRollupGeometryChange();
   ReportMoveEvent();
 
   NS_OBJC_END_TRY_IGNORE_BLOCK;
@@ -753,7 +735,6 @@ void nsChildView::Resize(double aWidth, double aHeight, bool aRepaint) {
     [[mView pixelHostingView] setNeedsDisplay:YES];
   }
 
-  NotifyRollupGeometryChange();
   ReportSizeEvent();
 
   NS_OBJC_END_TRY_IGNORE_BLOCK;
@@ -793,7 +774,6 @@ void nsChildView::Resize(double aX, double aY, double aWidth, double aHeight, bo
     [[mView pixelHostingView] setNeedsDisplay:YES];
   }
 
-  NotifyRollupGeometryChange();
   if (isMoving) {
     ReportMoveEvent();
     if (mOnDestroyCalled) return;
@@ -1135,6 +1115,9 @@ nsresult nsChildView::ActivateNativeMenuItemAt(const nsAString& indexString) {
     if (parent) {
       // NSLog(@"Performing action for native menu item titled: %@\n",
       //       [[currentSubmenu itemAtIndex:targetIndex] title]);
+      mozilla::AutoRestore<bool> autoRestore(
+          nsMenuUtilsX::gIsSynchronouslyActivatingNativeMenuItemDuringTest);
+      nsMenuUtilsX::gIsSynchronouslyActivatingNativeMenuItemDuringTest = true;
       [parent performActionForItemAtIndex:[parent indexOfItem:item]];
       return NS_OK;
     }
@@ -1211,7 +1194,7 @@ void nsChildView::Invalidate(const LayoutDeviceIntRect& aRect) {
 
   if (!mView || !mVisible) return;
 
-  NS_ASSERTION(GetWindowRenderer()->GetBackendType() != LayersBackend::LAYERS_CLIENT,
+  NS_ASSERTION(GetWindowRenderer()->GetBackendType() != LayersBackend::LAYERS_WR,
                "Shouldn't need to invalidate with accelerated OMTC layers!");
 
   EnsureContentLayerForMainThreadPainting();
@@ -1249,10 +1232,6 @@ bool nsChildView::ShouldUseOffMainThreadCompositing() {
 }
 
 #pragma mark -
-
-nsresult nsChildView::ConfigureChildren(const nsTArray<Configuration>& aConfigurations) {
-  return NS_OK;
-}
 
 // Invokes callback and ProcessEvent methods on Event Listener object
 nsresult nsChildView::DispatchEvent(WidgetGUIEvent* event, nsEventStatus& aStatus) {
@@ -1294,12 +1273,6 @@ nsresult nsChildView::DispatchEvent(WidgetGUIEvent* event, nsEventStatus& aStatu
   if (listener) aStatus = listener->HandleEvent(event, mUseAttachedEvents);
 
   return NS_OK;
-}
-
-bool nsChildView::DispatchWindowEvent(WidgetGUIEvent& event) {
-  nsEventStatus status;
-  DispatchEvent(&event, status);
-  return ConvertStatus(status);
 }
 
 nsIWidget* nsChildView::GetWidgetForListenerEvents() {
@@ -1356,14 +1329,9 @@ bool nsChildView::PaintWindowInDrawTarget(gfx::DrawTarget* aDT,
   targetContext->Clip();
 
   nsAutoRetainCocoaObject kungFuDeathGrip(mView);
-  if (GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_NONE ||
-      GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_BASIC) {
+  if (GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_NONE) {
     nsBaseWidget::AutoLayerManagerSetup setupLayerManager(this, targetContext,
                                                           BufferMode::BUFFER_NONE);
-    return PaintWindow(aRegion);
-  }
-  if (GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_CLIENT) {
-    // We only need this so that we actually get DidPaintWindow fired
     return PaintWindow(aRegion);
   }
   return false;
@@ -1408,8 +1376,7 @@ void nsChildView::PaintWindowInContentLayer() {
 void nsChildView::HandleMainThreadCATransaction() {
   WillPaintWindow();
 
-  if (GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_NONE ||
-      GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_BASIC) {
+  if (GetWindowRenderer()->GetBackendType() == LayersBackend::LAYERS_NONE) {
     // We're in BasicLayers mode, i.e. main thread software compositing.
     // Composite the window into our layer's surface.
     PaintWindowInContentLayer();
@@ -1601,7 +1568,7 @@ bool nsChildView::GetEditCommands(NativeKeyBindingsType aType, const WidgetKeybo
   Maybe<WritingMode> writingMode;
   if (aEvent.NeedsToRemapNavigationKey()) {
     if (RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher()) {
-      writingMode = dispatcher->MaybeWritingModeAtSelection();
+      writingMode = dispatcher->MaybeQueryWritingModeAtSelection();
     }
   }
 
@@ -1643,7 +1610,7 @@ void nsChildView::ConfigureAPZCTreeManager() { nsBaseWidget::ConfigureAPZCTreeMa
 
 void nsChildView::ConfigureAPZControllerThread() { nsBaseWidget::ConfigureAPZControllerThread(); }
 
-bool nsChildView::PreRender(WidgetRenderingContext* aContext) {
+bool nsChildView::PreRender(WidgetRenderingContext* aContext) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   // The lock makes sure that we don't attempt to tear down the view while
   // compositing. That would make us unable to call postRender on it when the
   // composition is done, thus keeping the GL context locked forever.
@@ -1656,7 +1623,9 @@ bool nsChildView::PreRender(WidgetRenderingContext* aContext) {
   return true;
 }
 
-void nsChildView::PostRender(WidgetRenderingContext* aContext) { mCompositingLock.Unlock(); }
+void nsChildView::PostRender(WidgetRenderingContext* aContext) MOZ_NO_THREAD_SAFETY_ANALYSIS {
+  mCompositingLock.Unlock();
+}
 
 RefPtr<layers::NativeLayerRoot> nsChildView::GetNativeLayerRoot() { return mNativeLayerRoot; }
 
@@ -1664,10 +1633,8 @@ static int32_t FindTitlebarBottom(const nsTArray<nsIWidget::ThemeGeometry>& aThe
                                   int32_t aWindowWidth) {
   int32_t titlebarBottom = 0;
   for (auto& g : aThemeGeometries) {
-    if ((g.mType == eThemeGeometryTypeTitlebar ||
-         g.mType == eThemeGeometryTypeVibrantTitlebarLight ||
-         g.mType == eThemeGeometryTypeVibrantTitlebarDark) &&
-        g.mRect.X() <= 0 && g.mRect.XMost() >= aWindowWidth && g.mRect.Y() <= 0) {
+    if (g.mType == eThemeGeometryTypeTitlebar && g.mRect.X() <= 0 &&
+        g.mRect.XMost() >= aWindowWidth && g.mRect.Y() <= 0) {
       titlebarBottom = std::max(titlebarBottom, g.mRect.YMost());
     }
   }
@@ -1733,10 +1700,6 @@ void nsChildView::UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeo
 static Maybe<VibrancyType> ThemeGeometryTypeToVibrancyType(
     nsITheme::ThemeGeometryType aThemeGeometryType) {
   switch (aThemeGeometryType) {
-    case eThemeGeometryTypeVibrantTitlebarLight:
-      return Some(VibrancyType::TITLEBAR_LIGHT);
-    case eThemeGeometryTypeVibrantTitlebarDark:
-      return Some(VibrancyType::TITLEBAR_DARK);
     case eThemeGeometryTypeTooltip:
       return Some(VibrancyType::TOOLTIP);
     case eThemeGeometryTypeMenu:
@@ -1786,10 +1749,6 @@ static void MakeRegionsNonOverlapping(Region& aFirst, Regions&... aRest) {
 }
 
 void nsChildView::UpdateVibrancy(const nsTArray<ThemeGeometry>& aThemeGeometries) {
-  LayoutDeviceIntRegion vibrantTitlebarLightRegion =
-      GatherVibrantRegion(aThemeGeometries, VibrancyType::TITLEBAR_LIGHT);
-  LayoutDeviceIntRegion vibrantTitlebarDarkRegion =
-      GatherVibrantRegion(aThemeGeometries, VibrancyType::TITLEBAR_DARK);
   LayoutDeviceIntRegion menuRegion = GatherVibrantRegion(aThemeGeometries, VibrancyType::MENU);
   LayoutDeviceIntRegion tooltipRegion =
       GatherVibrantRegion(aThemeGeometries, VibrancyType::TOOLTIP);
@@ -1802,14 +1761,11 @@ void nsChildView::UpdateVibrancy(const nsTArray<ThemeGeometry>& aThemeGeometries
   LayoutDeviceIntRegion activeSourceListSelectionRegion =
       GatherVibrantRegion(aThemeGeometries, VibrancyType::ACTIVE_SOURCE_LIST_SELECTION);
 
-  MakeRegionsNonOverlapping(vibrantTitlebarLightRegion, vibrantTitlebarDarkRegion, menuRegion,
-                            tooltipRegion, highlightedMenuItemRegion, sourceListRegion,
+  MakeRegionsNonOverlapping(menuRegion, tooltipRegion, highlightedMenuItemRegion, sourceListRegion,
                             sourceListSelectionRegion, activeSourceListSelectionRegion);
 
   auto& vm = EnsureVibrancyManager();
   bool changed = false;
-  changed |= vm.UpdateVibrantRegion(VibrancyType::TITLEBAR_LIGHT, vibrantTitlebarLightRegion);
-  changed |= vm.UpdateVibrantRegion(VibrancyType::TITLEBAR_DARK, vibrantTitlebarDarkRegion);
   changed |= vm.UpdateVibrantRegion(VibrancyType::MENU, menuRegion);
   changed |= vm.UpdateVibrantRegion(VibrancyType::TOOLTIP, tooltipRegion);
   changed |= vm.UpdateVibrantRegion(VibrancyType::HIGHLIGHTED_MENUITEM, highlightedMenuItemRegion);
@@ -1830,53 +1786,6 @@ mozilla::VibrancyManager& nsChildView::EnsureVibrancyManager() {
   }
   return *mVibrancyManager;
 }
-
-nsChildView::SwipeInfo nsChildView::SendMayStartSwipe(
-    const mozilla::PanGestureInput& aSwipeStartEvent) {
-  nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
-
-  uint32_t direction = (aSwipeStartEvent.mPanDisplacement.x > 0.0)
-                           ? (uint32_t)dom::SimpleGestureEvent_Binding::DIRECTION_RIGHT
-                           : (uint32_t)dom::SimpleGestureEvent_Binding::DIRECTION_LEFT;
-
-  // We're ready to start the animation. Tell Gecko about it, and at the same
-  // time ask it if it really wants to start an animation for this event.
-  // This event also reports back the directions that we can swipe in.
-  LayoutDeviceIntPoint position =
-      RoundedToInt(aSwipeStartEvent.mPanStartPoint * ScreenToLayoutDeviceScale(1));
-  WidgetSimpleGestureEvent geckoEvent = SwipeTracker::CreateSwipeGestureEvent(
-      eSwipeGestureMayStart, this, position, aSwipeStartEvent.mTimeStamp);
-  geckoEvent.mDirection = direction;
-  geckoEvent.mDelta = 0.0;
-  geckoEvent.mAllowedDirections = 0;
-  bool shouldStartSwipe = DispatchWindowEvent(geckoEvent);  // event cancelled == swipe should start
-
-  SwipeInfo result = {shouldStartSwipe, geckoEvent.mAllowedDirections};
-  return result;
-}
-
-void nsChildView::TrackScrollEventAsSwipe(const mozilla::PanGestureInput& aSwipeStartEvent,
-                                          uint32_t aAllowedDirections) {
-  // If a swipe is currently being tracked kill it -- it's been interrupted
-  // by another gesture event.
-  if (mSwipeTracker) {
-    mSwipeTracker->CancelSwipe(aSwipeStartEvent.mTimeStamp);
-    mSwipeTracker->Destroy();
-    mSwipeTracker = nullptr;
-  }
-
-  uint32_t direction = (aSwipeStartEvent.mPanDisplacement.x > 0.0)
-                           ? (uint32_t)dom::SimpleGestureEvent_Binding::DIRECTION_RIGHT
-                           : (uint32_t)dom::SimpleGestureEvent_Binding::DIRECTION_LEFT;
-
-  mSwipeTracker = new SwipeTracker(*this, aSwipeStartEvent, aAllowedDirections, direction);
-
-  if (!mAPZC) {
-    mCurrentPanGestureBelongsToSwipe = true;
-  }
-}
-
-void nsChildView::SwipeFinished() { mSwipeTracker = nullptr; }
 
 void nsChildView::UpdateBoundsFromView() {
   auto oldSize = mBounds.Size();
@@ -1946,19 +1855,6 @@ void nsChildView::UpdateWindowDraggingRegion(const LayoutDeviceIntRegion& aRegio
   }
 }
 
-void nsChildView::ReportSwipeStarted(uint64_t aInputBlockId, bool aStartSwipe) {
-  if (mSwipeEventQueue && mSwipeEventQueue->inputBlockId == aInputBlockId) {
-    if (aStartSwipe) {
-      PanGestureInput& startEvent = mSwipeEventQueue->queuedEvents[0];
-      TrackScrollEventAsSwipe(startEvent, mSwipeEventQueue->allowedDirections);
-      for (size_t i = 1; i < mSwipeEventQueue->queuedEvents.Length(); i++) {
-        mSwipeTracker->ProcessEvent(mSwipeEventQueue->queuedEvents[i]);
-      }
-    }
-    mSwipeEventQueue = nullptr;
-  }
-}
-
 nsEventStatus nsChildView::DispatchAPZInputEvent(InputData& aEvent) {
   APZEventResult result;
 
@@ -2008,36 +1904,8 @@ void nsChildView::DispatchAPZWheelInputEvent(InputData& aEvent, bool aCanTrigger
           return;
         }
 
-        PanGestureInput& panInput = aEvent.AsPanGestureInput();
-
-        event = panInput.ToWidgetEvent(this);
-        if (aCanTriggerSwipe && panInput.mOverscrollBehaviorAllowsSwipe) {
-          SwipeInfo swipeInfo = SendMayStartSwipe(panInput);
-          event.mCanTriggerSwipe = swipeInfo.wantsSwipe;
-          if (swipeInfo.wantsSwipe) {
-            if (result.GetStatus() == nsEventStatus_eIgnore) {
-              // APZ has determined and that scrolling horizontally in the
-              // requested direction is impossible, so it didn't do any
-              // scrolling for the event.
-              // We know now that MayStartSwipe wants a swipe, so we can start
-              // the swipe now.
-              TrackScrollEventAsSwipe(panInput, swipeInfo.allowedDirections);
-            } else {
-              // We don't know whether this event can start a swipe, so we need
-              // to queue up events and wait for a call to ReportSwipeStarted.
-              // APZ might already have started scrolling in response to the
-              // event if it knew that it's the right thing to do. In that case
-              // we'll still get a call to ReportSwipeStarted, and we will
-              // discard the queued events at that point.
-              mSwipeEventQueue =
-                  MakeUnique<SwipeEventQueue>(swipeInfo.allowedDirections, result.mInputBlockId);
-            }
-          }
-        }
-
-        if (mSwipeEventQueue && mSwipeEventQueue->inputBlockId == result.mInputBlockId) {
-          mSwipeEventQueue->queuedEvents.AppendElement(panInput);
-        }
+        event = MayStartSwipeForAPZ(aEvent.AsPanGestureInput(), result,
+                                    CanTriggerSwipe{aCanTriggerSwipe});
         break;
       }
       case SCROLLWHEEL_INPUT: {
@@ -2066,48 +1934,10 @@ void nsChildView::DispatchAPZWheelInputEvent(InputData& aEvent, bool aCanTrigger
   nsEventStatus status;
   switch (aEvent.mInputType) {
     case PANGESTURE_INPUT: {
-      PanGestureInput panInput = aEvent.AsPanGestureInput();
-      if (panInput.mType == PanGestureInput::PANGESTURE_MAYSTART ||
-          panInput.mType == PanGestureInput::PANGESTURE_START) {
-        mCurrentPanGestureBelongsToSwipe = false;
-      }
-      if (mCurrentPanGestureBelongsToSwipe) {
-        // Ignore this event. It's a momentum event from a scroll gesture
-        // that was processed as a swipe, and the swipe animation has
-        // already finished (so mSwipeTracker is already null).
-        MOZ_ASSERT(panInput.IsMomentum(),
-                   "If the fingers are still on the touchpad, we should still have a SwipeTracker, "
-                   "and it should have consumed this event.");
+      if (MayStartSwipeForNonAPZ(aEvent.AsPanGestureInput(), CanTriggerSwipe{aCanTriggerSwipe})) {
         return;
       }
-
-      event = panInput.ToWidgetEvent(this);
-      if (aCanTriggerSwipe) {
-        SwipeInfo swipeInfo = SendMayStartSwipe(panInput);
-
-        // We're in the non-APZ case here, but we still want to know whether
-        // the event was routed to a child process, so we use InputAPZContext
-        // to get that piece of information.
-        ScrollableLayerGuid guid;
-        InputAPZContext context(guid, 0, nsEventStatus_eIgnore);
-
-        event.mCanTriggerSwipe = swipeInfo.wantsSwipe;
-        DispatchEvent(&event, status);
-        if (swipeInfo.wantsSwipe) {
-          if (context.WasRoutedToChildProcess()) {
-            // We don't know whether this event can start a swipe, so we need
-            // to queue up events and wait for a call to ReportSwipeStarted.
-            mSwipeEventQueue = MakeUnique<SwipeEventQueue>(swipeInfo.allowedDirections, 0);
-          } else if (event.TriggersSwipe()) {
-            TrackScrollEventAsSwipe(panInput, swipeInfo.allowedDirections);
-          }
-        }
-
-        if (mSwipeEventQueue && mSwipeEventQueue->inputBlockId == 0) {
-          mSwipeEventQueue->queuedEvents.AppendElement(panInput);
-        }
-        return;
-      }
+      event = aEvent.AsPanGestureInput().ToWidgetEvent(this);
       break;
     }
     case SCROLLWHEEL_INPUT: {
@@ -2893,33 +2723,17 @@ NSEvent* gLastDragMouseDownEvent = nil;  // [strong]
 }
 
 - (bool)shouldConsiderStartingSwipeFromEvent:(NSEvent*)anEvent {
-  // This method checks whether the AppleEnableSwipeNavigateWithScrolls global
-  // preference is set.  If it isn't, fluid swipe tracking is disabled, and a
-  // horizontal two-finger gesture is always a scroll (even in Safari).  This
-  // preference can't (currently) be set from the Preferences UI -- only using
-  // 'defaults write'.
-  if (![NSEvent isSwipeTrackingFromScrollEventsEnabled]) {
-    return false;
-  }
-
   // Only initiate horizontal tracking for gestures that have just begun --
   // otherwise a scroll to one side of the page can have a swipe tacked on
   // to it.
+  // [NSEvent isSwipeTrackingFromScrollEventsEnabled] checks whether the
+  // AppleEnableSwipeNavigateWithScrolls global preference is set.  If it isn't,
+  // fluid swipe tracking is disabled, and a horizontal two-finger gesture is
+  // always a scroll (even in Safari).  This preference can't (currently) be set
+  // from the Preferences UI -- only using 'defaults write'.
   NSEventPhase eventPhase = [anEvent phase];
-  if ([anEvent type] != NSEventTypeScrollWheel || eventPhase != NSEventPhaseBegan ||
-      ![anEvent hasPreciseScrollingDeltas]) {
-    return false;
-  }
-
-  // Only initiate horizontal tracking for events whose horizontal element is
-  // at least eight times larger than its vertical element. This minimizes
-  // performance problems with vertical scrolls (by minimizing the possibility
-  // that they'll be misinterpreted as horizontal swipes), while still
-  // tolerating a small vertical element to a true horizontal swipe.  The number
-  // '8' was arrived at by trial and error.
-  CGFloat deltaX = [anEvent scrollingDeltaX];
-  CGFloat deltaY = [anEvent scrollingDeltaY];
-  return std::abs(deltaX) > std::abs(deltaY) * 8;
+  return [anEvent type] == NSEventTypeScrollWheel && eventPhase == NSEventPhaseBegan &&
+         [anEvent hasPreciseScrollingDeltas] && [NSEvent isSwipeTrackingFromScrollEventsEnabled];
 }
 
 - (void)setUsingOMTCompositor:(BOOL)aUseOMTC {
@@ -3400,23 +3214,21 @@ static gfx::IntPoint GetIntegerDeltaForEvent(NSEvent* aEvent) {
 
   if (usePreciseDeltas && hasPhaseInformation) {
     PanGestureInput panEvent(PanGestureTypeForEvent(theEvent), eventIntervalTime, eventTimeStamp,
-                             position, preciseDelta, modifiers);
-    panEvent.SetLineOrPageDeltas(lineOrPageDelta.x, lineOrPageDelta.y);
+                             position, ScreenPoint(), modifiers);
 
-    if (panEvent.mType == PanGestureInput::PANGESTURE_END) {
-      // Check if there's a momentum start event in the event queue, so that we
-      // can annotate this event.
-      NSEvent* nextWheelEvent = [NSApp nextEventMatchingMask:NSEventMaskScrollWheel
-                                                   untilDate:[NSDate distantPast]
-                                                      inMode:NSDefaultRunLoopMode
-                                                     dequeue:NO];
-      if (nextWheelEvent &&
-          PanGestureTypeForEvent(nextWheelEvent) == PanGestureInput::PANGESTURE_MOMENTUMSTART) {
-        panEvent.mFollowedByMomentum = true;
-      }
+    // Always force zero deltas on event types that shouldn't cause any scrolling,
+    // so that we don't dispatch DOM wheel events for them.
+    bool shouldIgnoreDeltas = panEvent.mType == PanGestureInput::PANGESTURE_MAYSTART ||
+                              panEvent.mType == PanGestureInput::PANGESTURE_CANCELLED;
+
+    if (!shouldIgnoreDeltas) {
+      panEvent.mPanDisplacement = preciseDelta;
+      panEvent.SetLineOrPageDeltas(lineOrPageDelta.x, lineOrPageDelta.y);
     }
 
-    bool canTriggerSwipe = [self shouldConsiderStartingSwipeFromEvent:theEvent];
+    bool canTriggerSwipe = [self shouldConsiderStartingSwipeFromEvent:theEvent] &&
+                           SwipeTracker::CanTriggerSwipe(panEvent);
+    ;
     panEvent.mRequiresContentResponseIfCannotScrollHorizontallyInStartDirection = canTriggerSwipe;
     geckoChildDeathGrip->DispatchAPZWheelInputEvent(panEvent, canTriggerSwipe);
   } else if (usePreciseDeltas) {
@@ -4347,6 +4159,7 @@ static gfx::IntPoint GetIntegerDeltaForEvent(NSEvent* aEvent) {
           nsCOMPtr<nsIDragService> dragService = mDragService;
           dragService->EndDragSession(false, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
         }
+        break;
       }
       default:
         break;
@@ -4419,6 +4232,10 @@ static gfx::IntPoint GetIntegerDeltaForEvent(NSEvent* aEvent) {
               operation:(NSDragOperation)aOperation {
   NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
+#ifdef NIGHTLY_BUILD
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+#endif
+
   gDraggedTransferables = nullptr;
 
   NSEvent* currentEvent = [NSApp currentEvent];
@@ -4431,14 +4248,16 @@ static gfx::IntPoint GetIntegerDeltaForEvent(NSEvent* aEvent) {
   }
 
   if (mDragService) {
-    // set the dragend point from the current mouse location
     RefPtr<nsDragService> dragService = static_cast<nsDragService*>(mDragService);
-    FlipCocoaScreenCoordinate(aPoint);
-    dragService->SetDragEndPoint(gfx::IntPoint::Round(aPoint.x, aPoint.y));
 
+    // Set the dragend point from the current mouse location
+    // FIXME(emilio): Weird that we wouldn't use aPoint instead? Seems to work
+    // locally as well...
+    // NSPoint pnt = aPoint;
     NSPoint pnt = [NSEvent mouseLocation];
+    NSPoint locationInWindow = nsCocoaUtils::ConvertPointFromScreen([self window], pnt);
     FlipCocoaScreenCoordinate(pnt);
-    dragService->SetDragEndPoint(gfx::IntPoint::Round(pnt.x, pnt.y));
+    dragService->SetDragEndPoint([self convertWindowCoordinates:locationInWindow]);
 
     // XXX: dropEffect should be updated per |aOperation|.
     // As things stand though, |aOperation| isn't well handled within "our"
@@ -4523,6 +4342,10 @@ static CFTypeRefPtr<CFURLRef> GetPasteLocation(NSPasteboard* aPasteboard) {
                   item:(NSPasteboardItem*)aItem
     provideDataForType:(NSString*)aType {
   NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
+
+#ifdef NIGHTLY_BUILD
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+#endif
 
   if (!gDraggedTransferables) {
     return;
@@ -4629,9 +4452,17 @@ static CFTypeRefPtr<CFURLRef> GetPasteLocation(NSPasteboard* aPasteboard) {
 
 // Support for the "Services" menu. We currently only support sending strings
 // and HTML to system services.
-
+// This method can be called on any thread (see bug 1751687). We can only usefully
+// handle it on the main thread.
 - (id)validRequestorForSendType:(NSString*)sendType returnType:(NSString*)returnType {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  if (!NS_IsMainThread()) {
+    // We don't have any thread-safe ways of checking whether we can send
+    // or receive content. Just say no. In normal cases, we expect this
+    // method to be called on the main thread.
+    return [super validRequestorForSendType:sendType returnType:returnType];
+  }
 
   // sendType contains the type of data that the service would like this
   // application to send to it.  sendType is nil if the service is not

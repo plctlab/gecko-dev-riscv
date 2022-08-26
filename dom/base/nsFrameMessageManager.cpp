@@ -69,6 +69,7 @@
 #include "mozilla/dom/MessageManagerCallback.h"
 #include "mozilla/dom/ipc/SharedMap.h"
 #include "mozilla/dom/ipc/StructuredCloneData.h"
+#include "mozilla/scache/StartupCacheUtils.h"
 #include "nsASCIIMask.h"
 #include "nsBaseHashtable.h"
 #include "nsCOMPtr.h"
@@ -80,7 +81,6 @@
 #include "nsTHashMap.h"
 #include "nsDebug.h"
 #include "nsError.h"
-#include "nsFrameMessageManager.h"
 #include "nsHashKeys.h"
 #include "nsIChannel.h"
 #include "nsIConsoleService.h"
@@ -130,6 +130,8 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::dom::ipc;
+
+#define CACHE_PREFIX(type) "mm/" type
 
 nsFrameMessageManager::nsFrameMessageManager(MessageManagerCallback* aCallback,
                                              MessageManagerFlags aFlags)
@@ -222,26 +224,14 @@ void MessageManagerCallback::DoGetRemoteType(nsACString& aRemoteType,
   parent->GetRemoteType(aRemoteType, aError);
 }
 
-bool MessageManagerCallback::BuildClonedMessageDataForParent(
-    ContentParent* aParent, StructuredCloneData& aData,
-    ClonedMessageData& aClonedData) {
-  return aData.BuildClonedMessageDataForParent(aParent, aClonedData);
+bool MessageManagerCallback::BuildClonedMessageData(
+    StructuredCloneData& aData, ClonedMessageData& aClonedData) {
+  return aData.BuildClonedMessageData(aClonedData);
 }
 
-bool MessageManagerCallback::BuildClonedMessageDataForChild(
-    ContentChild* aChild, StructuredCloneData& aData,
-    ClonedMessageData& aClonedData) {
-  return aData.BuildClonedMessageDataForChild(aChild, aClonedData);
-}
-
-void mozilla::dom::ipc::UnpackClonedMessageDataForParent(
+void mozilla::dom::ipc::UnpackClonedMessageData(
     const ClonedMessageData& aClonedData, StructuredCloneData& aData) {
-  aData.BorrowFromClonedMessageDataForParent(aClonedData);
-}
-
-void mozilla::dom::ipc::UnpackClonedMessageDataForChild(
-    const ClonedMessageData& aClonedData, StructuredCloneData& aData) {
-  aData.BorrowFromClonedMessageDataForChild(aClonedData);
+  aData.BorrowFromClonedMessageData(aClonedData);
 }
 
 void nsFrameMessageManager::AddMessageListener(const nsAString& aMessageName,
@@ -427,8 +417,8 @@ bool nsFrameMessageManager::GetParamsForMessage(JSContext* aCx,
                                                 const JS::Value& aTransfer,
                                                 StructuredCloneData& aData) {
   // First try to use structured clone on the whole thing.
-  JS::RootedValue v(aCx, aValue);
-  JS::RootedValue t(aCx, aTransfer);
+  JS::Rooted<JS::Value> v(aCx, aValue);
+  JS::Rooted<JS::Value> t(aCx, aTransfer);
   ErrorResult rv;
   aData.Write(aCx, v, t, JS::CloneDataPolicy(), rv);
   if (!rv.Failed()) {
@@ -450,13 +440,13 @@ bool nsFrameMessageManager::GetParamsForMessage(JSContext* aCx,
         u"Sending message that cannot be cloned. Are "
         "you trying to send an XPCOM object?"_ns,
         filename, u""_ns, lineno, column, nsIScriptError::warningFlag,
-        "chrome javascript", false /* from private window */,
+        "chrome javascript"_ns, false /* from private window */,
         true /* from chrome context */);
     console->LogMessage(error);
   }
 
   // Not clonable, try JSON
-  // XXX This is ugly but currently structured cloning doesn't handle
+  // Bug 1749037 - This is ugly but currently structured cloning doesn't handle
   //    properly cases when interface is implemented in JS and used
   //    as a dictionary.
   nsAutoString json;
@@ -808,7 +798,7 @@ void nsFrameMessageManager::ReceiveMessage(
             nsCOMPtr<nsIScriptError> error(
                 do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
             error->Init(msg, u""_ns, u""_ns, 0, 0, nsIScriptError::warningFlag,
-                        "chrome javascript", false /* from private window */,
+                        "chrome javascript"_ns, false /* from private window */,
                         true /* from chrome context */);
             console->LogMessage(error);
           }
@@ -894,7 +884,7 @@ void nsFrameMessageManager::Disconnect(bool aRemoveFromParent) {
 }
 
 void nsFrameMessageManager::SetInitialProcessData(
-    JS::HandleValue aInitialData) {
+    JS::Handle<JS::Value> aInitialData) {
   MOZ_ASSERT(!mChrome);
   MOZ_ASSERT(mIsProcessManager);
   MOZ_ASSERT(aInitialData.isObject());
@@ -907,14 +897,14 @@ void nsFrameMessageManager::GetInitialProcessData(
   MOZ_ASSERT(mIsProcessManager);
   MOZ_ASSERT_IF(mChrome, IsBroadcaster());
 
-  JS::RootedValue init(aCx, mInitialProcessData);
+  JS::Rooted<JS::Value> init(aCx, mInitialProcessData);
   if (mChrome && init.isUndefined()) {
     // We create the initial object in the junk scope. If we created it in a
     // normal realm, that realm would leak until shutdown.
-    JS::RootedObject global(aCx, xpc::PrivilegedJunkScope());
+    JS::Rooted<JSObject*> global(aCx, xpc::PrivilegedJunkScope());
     JSAutoRealm ar(aCx, global);
 
-    JS::RootedObject obj(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
     if (!obj) {
       aError.NoteJSContextException(aCx);
       return;
@@ -1202,14 +1192,9 @@ void nsMessageManagerScriptExecutor::LoadScriptInternal(
   if (stencil) {
     JS::CompileOptions options(cx);
     FillCompileOptionsForCachedStencil(options);
-
-    if (JS::StencilCanLazilyParse(stencil)) {
-      // See TryCacheLoadAndCompileScript.
-      options.setSourceIsLazy(false);
-    }
-
+    JS::InstantiateOptions instantiateOptions(options);
     JS::Rooted<JSScript*> script(
-        cx, JS::InstantiateGlobalStencil(cx, options, stencil));
+        cx, JS::InstantiateGlobalStencil(cx, instantiateOptions, stencil));
 
     if (script) {
       if (aRunInUniqueScope) {
@@ -1221,7 +1206,7 @@ void nsMessageManagerScriptExecutor::LoadScriptInternal(
           mAnonymousGlobalScopes.AppendElement(scope);
         }
       } else {
-        JS::RootedValue rval(cx);
+        JS::Rooted<JS::Value> rval(cx);
         JS::RootedVector<JSObject*> envChain(cx);
         if (!envChain.append(aMessageManager)) {
           return;
@@ -1264,7 +1249,8 @@ nsMessageManagerScriptExecutor::TryCacheLoadAndCompileScript(
   // We don't cache data: scripts!
   nsAutoCString scheme;
   uri->GetScheme(scheme);
-  bool useScriptPreloader = !scheme.EqualsLiteral("data");
+  bool isCacheable = !scheme.EqualsLiteral("data");
+  bool useScriptPreloader = isCacheable;
 
   // If the script will be reused in this session, compile it in the compilation
   // scope instead of the current global to avoid keeping the current
@@ -1275,14 +1261,16 @@ nsMessageManagerScriptExecutor::TryCacheLoadAndCompileScript(
   }
   JSContext* cx = jsapi.cx();
 
-  JS::CompileOptions options(cx);
-  FillCompileOptionsForCachedStencil(options);
-  options.setFileAndLine(url.get(), 1);
-
   RefPtr<JS::Stencil> stencil;
   if (useScriptPreloader) {
-    stencil =
-        ScriptPreloader::GetChildSingleton().GetCachedStencil(cx, options, url);
+    nsAutoCString cachePath;
+    rv = scache::PathifyURI(CACHE_PREFIX("script"), uri, cachePath);
+    NS_ENSURE_SUCCESS(rv, nullptr);
+
+    JS::DecodeOptions decodeOptions;
+    ScriptPreloader::FillDecodeOptionsForCachedStencil(decodeOptions);
+    stencil = ScriptPreloader::GetChildSingleton().GetCachedStencil(
+        cx, decodeOptions, cachePath);
   }
 
   if (!stencil) {
@@ -1319,6 +1307,10 @@ nsMessageManagerScriptExecutor::TryCacheLoadAndCompileScript(
       return nullptr;
     }
 
+    JS::CompileOptions options(cx);
+    FillCompileOptionsForCachedStencil(options);
+    options.setFileAndLine(url.get(), 1);
+
     // If we are not encoding to the ScriptPreloader cache, we can now relax the
     // compile options and use the JS syntax-parser for lower latency.
     if (!useScriptPreloader || !ScriptPreloader::GetChildSingleton().Active()) {
@@ -1336,21 +1328,28 @@ nsMessageManagerScriptExecutor::TryCacheLoadAndCompileScript(
     if (!stencil) {
       return nullptr;
     }
+
+    if (isCacheable && !isRunOnce) {
+      // Store into our cache only when we compile it here.
+      auto* holder = new nsMessageManagerScriptHolder(stencil);
+      sCachedScripts->InsertOrUpdate(aURL, holder);
+    }
+
+#ifdef DEBUG
+    // The above shouldn't touch any options for instantiation.
+    JS::InstantiateOptions instantiateOptions(options);
+    instantiateOptions.assertDefault();
+#endif
   }
 
   MOZ_ASSERT(stencil);
 
   if (useScriptPreloader) {
-    ScriptPreloader::GetChildSingleton().NoteStencil(url, url, stencil,
+    nsAutoCString cachePath;
+    rv = scache::PathifyURI(CACHE_PREFIX("script"), uri, cachePath);
+    NS_ENSURE_SUCCESS(rv, nullptr);
+    ScriptPreloader::GetChildSingleton().NoteStencil(url, cachePath, stencil,
                                                      isRunOnce);
-
-    // If this script will only run once per process, only cache it in the
-    // preloader cache, not the session cache.
-    if (!isRunOnce) {
-      // Root the object also for caching.
-      auto* holder = new nsMessageManagerScriptHolder(stencil);
-      sCachedScripts->InsertOrUpdate(aURL, holder);
-    }
   }
 
   return stencil.forget();
@@ -1460,7 +1459,7 @@ class ChildProcessMessageManagerCallback : public MessageManagerCallback {
       return true;
     }
     ClonedMessageData data;
-    if (!BuildClonedMessageDataForChild(cc, aData, data)) {
+    if (!BuildClonedMessageData(aData, data)) {
       return false;
     }
     return cc->SendSyncMessage(PromiseFlatString(aMessage), data, aRetVal);
@@ -1473,7 +1472,7 @@ class ChildProcessMessageManagerCallback : public MessageManagerCallback {
       return NS_OK;
     }
     ClonedMessageData data;
-    if (!BuildClonedMessageDataForChild(cc, aData, data)) {
+    if (!BuildClonedMessageData(aData, data)) {
       return NS_ERROR_DOM_DATA_CLONE_ERR;
     }
     if (!cc->SendAsyncMessage(PromiseFlatString(aMessage), data)) {

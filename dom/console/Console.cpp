@@ -22,12 +22,12 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/ToJSValue.h"
-#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/dom/WorkletGlobalScope.h"
 #include "mozilla/dom/WorkletImpl.h"
 #include "mozilla/dom/WorkletThread.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/JSObjectHolder.h"
@@ -1119,23 +1119,9 @@ void Console::ProfileMethod(const GlobalObject& aGlobal, MethodName aName,
   console->ProfileMethodInternal(cx, aName, aAction, aData);
 }
 
-bool Console::IsEnabled(JSContext* aCx) const {
-  // Console is always enabled if it is a custom Chrome-Only instance.
-  if (mChromeInstance) {
-    return true;
-  }
-
-  // Make all Console API no-op if DevTools aren't enabled.
-  return StaticPrefs::devtools_enabled();
-}
-
 void Console::ProfileMethodInternal(JSContext* aCx, MethodName aMethodName,
                                     const nsAString& aAction,
                                     const Sequence<JS::Value>& aData) {
-  if (!IsEnabled(aCx)) {
-    return;
-  }
-
   if (!ShouldProceed(aMethodName)) {
     return;
   }
@@ -1288,10 +1274,6 @@ void Console::Method(const GlobalObject& aGlobal, MethodName aMethodName,
 void Console::MethodInternal(JSContext* aCx, MethodName aMethodName,
                              const nsAString& aMethodString,
                              const Sequence<JS::Value>& aData) {
-  if (!IsEnabled(aCx)) {
-    return;
-  }
-
   if (!ShouldProceed(aMethodName)) {
     return;
   }
@@ -1550,15 +1532,13 @@ void MainThreadConsoleData::ProcessCallData(
     return;
   }
 
-  nsAutoString innerID, outerID;
+  nsAutoString innerID;
 
   MOZ_ASSERT(aData->mIDType != ConsoleCallData::eUnknown);
   if (aData->mIDType == ConsoleCallData::eString) {
-    outerID = aData->mOuterIDString;
     innerID = aData->mInnerIDString;
   } else {
     MOZ_ASSERT(aData->mIDType == ConsoleCallData::eNumber);
-    outerID.AppendInt(aData->mOuterIDNumber);
     innerID.AppendInt(aData->mInnerIDNumber);
   }
 
@@ -1567,7 +1547,7 @@ void MainThreadConsoleData::ProcessCallData(
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "ClearEvents failed");
   }
 
-  if (NS_FAILED(mStorage->RecordEvent(innerID, outerID, eventValue))) {
+  if (NS_FAILED(mStorage->RecordEvent(innerID, eventValue))) {
     NS_WARNING("Failed to record a console event.");
   }
 }
@@ -2619,8 +2599,7 @@ bool Console::MonotonicTimer(JSContext* aCx, MethodName aMethodName,
     *aTimeStamp = performance->Now();
 
     nsDocShell* docShell = static_cast<nsDocShell*>(win->GetDocShell());
-    RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-    bool isTimelineRecording = timelines && timelines->HasConsumer(docShell);
+    bool isTimelineRecording = TimelineConsumers::HasConsumer(docShell);
 
     // The 'timeStamp' recordings do not need an argument; use empty string
     // if no arguments passed in.
@@ -2637,8 +2616,8 @@ bool Console::MonotonicTimer(JSContext* aCx, MethodName aMethodName,
         return false;
       }
 
-      timelines->AddMarkerForDocShell(docShell,
-                                      MakeUnique<TimestampTimelineMarker>(key));
+      TimelineConsumers::AddMarkerForDocShell(
+          docShell, MakeUnique<TimestampTimelineMarker>(key));
     }
     // For `console.time(foo)` and `console.timeEnd(foo)`.
     else if (isTimelineRecording && aData.Length() == 1) {
@@ -2653,7 +2632,7 @@ bool Console::MonotonicTimer(JSContext* aCx, MethodName aMethodName,
         return false;
       }
 
-      timelines->AddMarkerForDocShell(
+      TimelineConsumers::AddMarkerForDocShell(
           docShell,
           MakeUnique<ConsoleTimelineMarker>(key, aMethodName == MethodTime
                                                      ? MarkerTracingType::START
@@ -2837,7 +2816,7 @@ ConsoleLogLevel PrefToValue(const nsAString& aPref,
     message.AssignLiteral("Invalid Console.maxLogLevelPref value: ");
     message.Append(NS_ConvertUTF8toUTF16(value));
 
-    nsContentUtils::LogSimpleConsoleError(message, "chrome", false,
+    nsContentUtils::LogSimpleConsoleError(message, "chrome"_ns, false,
                                           true /* from chrome context*/);
     return aLevel;
   }

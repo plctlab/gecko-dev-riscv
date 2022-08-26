@@ -11,6 +11,7 @@
 // necessary:
 //   - malloc_good_size (used to be called je_malloc_usable_in_advance)
 //   - jemalloc_stats
+//   - jemalloc_stats_num_bins
 //   - jemalloc_purge_freed_pages
 //   - jemalloc_free_dirty_pages
 //   - jemalloc_thread_local_arena
@@ -23,6 +24,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Types.h"
 #include "mozjemalloc_types.h"
+#include "stdbool.h"
 
 #ifdef MOZ_MEMORY
 // On OSX, malloc/malloc.h contains the declaration for malloc_good_size,
@@ -57,6 +59,11 @@ static inline void jemalloc_stats(jemalloc_stats_t* aStats,
 static inline void jemalloc_stats(jemalloc_stats_t* aStats) {
   jemalloc_stats_internal(aStats, NULL);
 }
+#  endif
+
+// Configurator for delaying on OOM. See bug 1716727.
+#  if defined(XP_WIN)
+MOZ_JEMALLOC_API void mozjemalloc_win_set_always_stall(bool);
 #  endif
 
 #endif  // MOZ_MEMORY

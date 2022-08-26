@@ -19,13 +19,16 @@ loader.lazyRequireGetter(
 );
 
 exports.ScreenshotContentActor = ActorClassWithSpec(screenshotContentSpec, {
-  initialize: function(conn, targetActor) {
+  initialize(conn, targetActor) {
     Actor.prototype.initialize.call(this, conn);
     this.targetActor = targetActor;
   },
 
   _getRectForNode(node) {
-    return getRect(node.ownerGlobal.top, node, node.ownerGlobal);
+    const originWindow = this.targetActor.ignoreSubFrames
+      ? node.ownerGlobal
+      : node.ownerGlobal.top;
+    return getRect(originWindow, node, node.ownerGlobal);
   },
 
   /**
@@ -53,7 +56,13 @@ exports.ScreenshotContentActor = ActorClassWithSpec(screenshotContentSpec, {
    */
   prepareCapture({ fullpage, selector, nodeActorID }) {
     const { window } = this.targetActor;
-    const windowDpr = window.devicePixelRatio;
+    // Use the override if set, note that the override is not returned by
+    // devicePixelRatio on privileged code, see bug 1759962.
+    //
+    // FIXME(bug 1760711): Whether zoom is included in devicePixelRatio depends
+    // on whether there's an override, this is a bit suspect.
+    const windowDpr =
+      window.browsingContext.top.overrideDPPX || window.devicePixelRatio;
     const windowZoom = getCurrentZoom(window);
     const messages = [];
 

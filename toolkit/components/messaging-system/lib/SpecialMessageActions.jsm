@@ -5,18 +5,20 @@
 
 const EXPORTED_SYMBOLS = ["SpecialMessageActions"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const DOH_DOORHANGER_DECISION_PREF = "doh-rollout.doorhanger-decision";
 const NETWORK_TRR_MODE_PREF = "network.trr.mode";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   UITour: "resource:///modules/UITour.jsm",
   FxAccounts: "resource://gre/modules/FxAccounts.jsm",
   MigrationUtils: "resource:///modules/MigrationUtils.jsm",
+  Spotlight: "resource://activity-stream/lib/Spotlight.jsm",
 });
 
 const SpecialMessageActions = {
@@ -65,10 +67,10 @@ const SpecialMessageActions = {
       // AddonManager installation source associated to the addons installed from activitystream's CFR
       // and RTAMO (source is going to be "amo" if not configured explicitly in the message provider).
       const telemetryInfo = { source: telemetrySource };
-      const install = await AddonManager.getInstallForURL(aUri.spec, {
+      const install = await lazy.AddonManager.getInstallForURL(aUri.spec, {
         telemetryInfo,
       });
-      await AddonManager.installAddonFromWebpage(
+      await lazy.AddonManager.installAddonFromWebpage(
         "application/x-xpinstall",
         browser,
         systemPrincipal,
@@ -83,9 +85,10 @@ const SpecialMessageActions = {
    * Pin Firefox to taskbar.
    *
    * @param {Window} window Reference to a window object
+   * @param {boolean} pin Private Browsing Mode if true
    */
-  pinFirefoxToTaskbar(window) {
-    window.getShellService().pinToTaskbar();
+  pinFirefoxToTaskbar(window, privateBrowsing = false) {
+    return window.getShellService().pinToTaskbar(privateBrowsing);
   },
 
   /**
@@ -169,19 +172,62 @@ const SpecialMessageActions = {
   },
 
   /**
+   * Set prefs with special message actions
+   *
+   * @param {Object} pref - A pref to be updated.
+   * @param {string} pref.name - The name of the pref to be updated
+   * @param {string} [pref.value] - The value of the pref to be updated. If not included, the pref will be reset.
+   */
+  setPref(pref) {
+    // Array of prefs that are allowed to be edited by SET_PREF
+    const allowedPrefs = [
+      "browser.privacySegmentation.enabled",
+      "browser.startup.homepage",
+      "browser.privacySegmentation.windowSeparation.enabled",
+      "browser.firefox-view.feature-tour",
+    ];
+
+    if (!allowedPrefs.includes(pref.name)) {
+      throw new Error(
+        `Special message action with type SET_PREF and pref of "${pref.name}" is unsupported.`
+      );
+    }
+    // If pref has no value, reset it, otherwise set it to desired value
+    switch (typeof pref.value) {
+      case "object":
+      case "undefined":
+        Services.prefs.clearUserPref(pref.name);
+        break;
+      case "string":
+        Services.prefs.setStringPref(pref.name, pref.value);
+        break;
+      case "number":
+        Services.prefs.setIntPref(pref.name, pref.value);
+        break;
+      case "boolean":
+        Services.prefs.setBoolPref(pref.name, pref.value);
+        break;
+      default:
+        throw new Error(
+          `Special message action with type SET_PREF, pref of "${pref.name}" is an unsupported type.`
+        );
+    }
+  },
+
+  /**
    * Processes "Special Message Actions", which are definitions of behaviors such as opening tabs
    * installing add-ons, or focusing the awesome bar that are allowed to can be triggered from
    * Messaging System interactions.
    *
    * @param {{type: string, data?: any}} action User action defined in message JSON.
-   * @param browser {Browser} The browser most relvant to the message.
+   * @param browser {Browser} The browser most relevant to the message.
    */
   async handleAction(action, browser) {
     const window = browser.ownerGlobal;
     switch (action.type) {
       case "SHOW_MIGRATION_WIZARD":
-        MigrationUtils.showMigrationWizard(window, [
-          MigrationUtils.MIGRATION_ENTRYPOINT_NEWTAB,
+        lazy.MigrationUtils.showMigrationWizard(window, [
+          lazy.MigrationUtils.MIGRATION_ENTRYPOINT_NEWTAB,
           action.data?.source,
         ]);
         break;
@@ -212,6 +258,9 @@ const SpecialMessageActions = {
           action.data.where || "tab"
         );
         break;
+      case "OPEN_FIREFOX_VIEW":
+        window.FirefoxViewHandler.openTab();
+        break;
       case "OPEN_PREFERENCES_PAGE":
         window.openPreferences(
           action.data.category || action.data.args,
@@ -221,12 +270,12 @@ const SpecialMessageActions = {
         );
         break;
       case "OPEN_APPLICATIONS_MENU":
-        UITour.showMenu(window, action.data.args);
+        lazy.UITour.showMenu(window, action.data.args);
         break;
       case "HIGHLIGHT_FEATURE":
-        const highlight = await UITour.getTarget(window, action.data.args);
+        const highlight = await lazy.UITour.getTarget(window, action.data.args);
         if (highlight) {
-          await UITour.showHighlight(window, highlight, "none", {
+          await lazy.UITour.showHighlight(window, highlight, "none", {
             autohide: true,
           });
         }
@@ -239,10 +288,10 @@ const SpecialMessageActions = {
         );
         break;
       case "PIN_FIREFOX_TO_TASKBAR":
-        this.pinFirefoxToTaskbar(window);
+        await this.pinFirefoxToTaskbar(window, action.data?.privatePin);
         break;
       case "PIN_AND_DEFAULT":
-        this.pinFirefoxToTaskbar(window);
+        await this.pinFirefoxToTaskbar(window, action.data?.privatePin);
         this.setDefaultBrowser(window);
         break;
       case "SET_DEFAULT_BROWSER":
@@ -257,7 +306,7 @@ const SpecialMessageActions = {
         break;
       case "SHOW_FIREFOX_ACCOUNTS":
         const data = action.data;
-        const url = await FxAccounts.config.promiseConnectAccountURI(
+        const url = await lazy.FxAccounts.config.promiseConnectAccountURI(
           (data && data.entrypoint) || "snippets",
           (data && data.extraParams) || {}
         );
@@ -312,6 +361,36 @@ const SpecialMessageActions = {
         Services.prefs.setBoolPref(
           "privacy.restrict3rdpartystorage.rollout.enabledByDefault",
           true
+        );
+        break;
+      case "ENABLE_TOTAL_COOKIE_PROTECTION_SECTION_AND_OPT_OUT":
+        Services.prefs.setBoolPref(
+          "privacy.restrict3rdpartystorage.rollout.enabledByDefault",
+          false
+        );
+        Services.prefs.setBoolPref(
+          "privacy.restrict3rdpartystorage.rollout.preferences.TCPToggleInStandard",
+          true
+        );
+        break;
+      case "SHOW_SPOTLIGHT":
+        lazy.Spotlight.showSpotlightDialog(browser, action.data);
+        break;
+      case "BLOCK_MESSAGE":
+        await this.blockMessageById(action.data.id);
+        break;
+      case "SET_PREF":
+        this.setPref(action.data.pref);
+        break;
+      case "MULTI_ACTION":
+        await Promise.all(
+          action.data.actions.map(async action => {
+            try {
+              await this.handleAction(action, browser);
+            } catch (err) {
+              throw new Error(`Error in MULTI_ACTION event: ${err.message}`);
+            }
+          })
         );
         break;
       default:

@@ -206,13 +206,32 @@ struct ComputedStyleMap {
 
   struct Entry {
     // Create a pointer-to-member-function type.
-    typedef already_AddRefed<CSSValue> (nsComputedDOMStyle::*ComputeMethod)();
+    using ComputeMethod = already_AddRefed<CSSValue> (nsComputedDOMStyle::*)();
 
     nsCSSPropertyID mProperty;
-    ComputeMethod mGetter;
+
+    // Whether the property can ever be exposed in getComputedStyle(). For
+    // example, @page descriptors implemented as CSS properties or other
+    // internal properties, would have this flag set to `false`.
+    bool mCanBeExposed = false;
+
+    ComputeMethod mGetter = nullptr;
+
+    bool IsEnumerable() const {
+      return IsEnabled() && !nsCSSProps::IsShorthand(mProperty);
+    }
 
     bool IsEnabled() const {
-      return nsCSSProps::IsEnabled(mProperty, CSSEnabledState::ForAllContent);
+      if (!mCanBeExposed ||
+          !nsCSSProps::IsEnabled(mProperty, CSSEnabledState::ForAllContent)) {
+        return false;
+      }
+      if (nsCSSProps::IsShorthand(mProperty) &&
+          !StaticPrefs::layout_css_computed_style_shorthands()) {
+        return nsCSSProps::PropHasFlags(
+            mProperty, CSSPropFlags::ShorthandUnconditionallyExposedOnGetCS);
+      }
+      return true;
     }
   };
 
@@ -226,7 +245,7 @@ struct ComputedStyleMap {
    */
   uint32_t Length() {
     Update();
-    return mExposedPropertyCount;
+    return mEnumerablePropertyCount;
   }
 
   /**
@@ -245,21 +264,23 @@ struct ComputedStyleMap {
    * or is currently disabled.
    */
   const Entry* FindEntryForProperty(nsCSSPropertyID aPropID) {
-    Update();
-    for (uint32_t i = 0; i < mExposedPropertyCount; i++) {
-      const Entry* entry = &kEntries[EntryIndex(i)];
-      if (entry->mProperty == aPropID) {
-        return entry;
-      }
+    if (size_t(aPropID) >= ArrayLength(kEntryIndices)) {
+      MOZ_ASSERT(aPropID == eCSSProperty_UNKNOWN);
+      return nullptr;
     }
-    return nullptr;
+    MOZ_ASSERT(kEntryIndices[aPropID] < ArrayLength(kEntries));
+    const auto& entry = kEntries[kEntryIndices[aPropID]];
+    if (!entry.IsEnabled()) {
+      return nullptr;
+    }
+    return &entry;
   }
 
   /**
    * Records that mIndexMap needs updating, due to prefs changing that could
    * affect the set of properties exposed on an nsComputedDOMStyle.
    */
-  void MarkDirty() { mExposedPropertyCount = 0; }
+  void MarkDirty() { mEnumerablePropertyCount = 0; }
 
   // The member variables are public so that we can use an initializer in
   // nsComputedDOMStyle::GetComputedStyleMap.  Use the member functions
@@ -271,7 +292,7 @@ struct ComputedStyleMap {
    * prefs are disabled.  A value of 0 indicates that it and mIndexMap are out
    * of date.
    */
-  uint32_t mExposedPropertyCount;
+  uint32_t mEnumerablePropertyCount = 0;
 
   /**
    * A map of indexes on the nsComputedDOMStyle object to indexes into kEntries.
@@ -280,13 +301,13 @@ struct ComputedStyleMap {
 
  private:
   /**
-   * Returns whether mExposedPropertyCount and mIndexMap are out of date.
+   * Returns whether mEnumerablePropertyCount and mIndexMap are out of date.
    */
-  bool IsDirty() { return mExposedPropertyCount == 0; }
+  bool IsDirty() { return mEnumerablePropertyCount == 0; }
 
   /**
-   * Updates mExposedPropertyCount and mIndexMap to take into account properties
-   * whose prefs are currently disabled.
+   * Updates mEnumerablePropertyCount and mIndexMap to take into account
+   * properties whose prefs are currently disabled.
    */
   void Update();
 
@@ -294,13 +315,15 @@ struct ComputedStyleMap {
    * Maps an nsComputedDOMStyle indexed getter index to an index into kEntries.
    */
   uint32_t EntryIndex(uint32_t aIndex) const {
-    MOZ_ASSERT(aIndex < mExposedPropertyCount);
+    MOZ_ASSERT(aIndex < mEnumerablePropertyCount);
     return mIndexMap[aIndex];
   }
 };
 
 constexpr ComputedStyleMap::Entry
     ComputedStyleMap::kEntries[ArrayLength(kEntries)];
+
+constexpr size_t ComputedStyleMap::kEntryIndices[ArrayLength(kEntries)];
 
 void ComputedStyleMap::Update() {
   if (!IsDirty()) {
@@ -309,11 +332,11 @@ void ComputedStyleMap::Update() {
 
   uint32_t index = 0;
   for (uint32_t i = 0; i < ArrayLength(kEntries); i++) {
-    if (kEntries[i].IsEnabled()) {
+    if (kEntries[i].IsEnumerable()) {
       mIndexMap[index++] = i;
     }
   }
-  mExposedPropertyCount = index;
+  mEnumerablePropertyCount = index;
 }
 
 nsComputedDOMStyle::nsComputedDOMStyle(dom::Element* aElement,
@@ -485,7 +508,7 @@ nsresult nsComputedDOMStyle::GetPropertyValue(
 }
 
 /* static */
-already_AddRefed<ComputedStyle> nsComputedDOMStyle::GetComputedStyle(
+already_AddRefed<const ComputedStyle> nsComputedDOMStyle::GetComputedStyle(
     Element* aElement, PseudoStyleType aPseudo, StyleType aStyleType) {
   if (Document* doc = aElement->GetComposedDoc()) {
     doc->FlushPendingNotifications(FlushType::Style);
@@ -501,7 +524,7 @@ already_AddRefed<ComputedStyle> nsComputedDOMStyle::GetComputedStyle(
  * ::first-letter frame, in which case we can't return the frame style, and we
  * need to resolve it. See bug 505515.
  */
-static bool MustReresolveStyle(const mozilla::ComputedStyle* aStyle) {
+static bool MustReresolveStyle(const ComputedStyle* aStyle) {
   MOZ_ASSERT(aStyle);
 
   // TODO(emilio): We may want to avoid re-resolving pseudo-element styles
@@ -509,9 +532,28 @@ static bool MustReresolveStyle(const mozilla::ComputedStyle* aStyle) {
   return aStyle->HasPseudoElementData() && !aStyle->IsPseudoElement();
 }
 
-already_AddRefed<ComputedStyle> nsComputedDOMStyle::DoGetComputedStyleNoFlush(
-    const Element* aElement, PseudoStyleType aPseudo, PresShell* aPresShell,
-    StyleType aStyleType) {
+static bool IsInFlatTree(const Element& aElement) {
+  const auto* topmost = &aElement;
+  while (true) {
+    if (topmost->HasServoData()) {
+      // If we have styled this element then we know it's in the flat tree.
+      return true;
+    }
+    const Element* parent = topmost->GetFlattenedTreeParentElement();
+    if (!parent) {
+      break;
+    }
+    topmost = parent;
+  }
+  auto* root = topmost->GetFlattenedTreeParentNode();
+  return root && root->IsDocument();
+}
+
+already_AddRefed<const ComputedStyle>
+nsComputedDOMStyle::DoGetComputedStyleNoFlush(const Element* aElement,
+                                              PseudoStyleType aPseudo,
+                                              PresShell* aPresShell,
+                                              StyleType aStyleType) {
   MOZ_ASSERT(aElement, "NULL element");
 
   // If the content has a pres shell, we must use it.  Otherwise we'd
@@ -534,9 +576,11 @@ already_AddRefed<ComputedStyle> nsComputedDOMStyle::DoGetComputedStyleNoFlush(
   if (!aElement->IsInComposedDoc()) {
     // Don't return styles for disconnected elements, that makes no sense. This
     // can only happen with a non-null presShell for cross-document calls.
-    //
-    // FIXME(emilio, bug 1483798): This should also not return styles for
-    // elements outside of the flat tree, not just outside of the document.
+    return nullptr;
+  }
+
+  if (!StaticPrefs::layout_css_computed_style_styles_outside_flat_tree() &&
+      !IsInFlatTree(*aElement)) {
     return nullptr;
   }
 
@@ -546,14 +590,10 @@ already_AddRefed<ComputedStyle> nsComputedDOMStyle::DoGetComputedStyleNoFlush(
   if (inDocWithShell && aStyleType == StyleType::All &&
       !aElement->IsHTMLElement(nsGkAtoms::area)) {
     if (const Element* element = GetRenderedElement(aElement, aPseudo)) {
-      if (nsIFrame* styleFrame = nsLayoutUtils::GetStyleFrame(element)) {
-        ComputedStyle* result = styleFrame->Style();
-        // Don't use the style if it was influenced by pseudo-elements,
-        // since then it's not the primary style for this element / pseudo.
-        if (!MustReresolveStyle(result)) {
-          RefPtr<ComputedStyle> ret = result;
-          return ret.forget();
-        }
+      if (element->HasServoData()) {
+        const ComputedStyle* result =
+            Servo_Element_GetMaybeOutOfDateStyle(element);
+        return do_AddRef(result);
       }
     }
   }
@@ -570,10 +610,11 @@ already_AddRefed<ComputedStyle> nsComputedDOMStyle::DoGetComputedStyleNoFlush(
   return result.forget();
 }
 
-already_AddRefed<ComputedStyle>
+already_AddRefed<const ComputedStyle>
 nsComputedDOMStyle::GetUnanimatedComputedStyleNoFlush(Element* aElement,
                                                       PseudoStyleType aPseudo) {
-  RefPtr<ComputedStyle> style = GetComputedStyleNoFlush(aElement, aPseudo);
+  RefPtr<const ComputedStyle> style =
+      GetComputedStyleNoFlush(aElement, aPseudo);
   if (!style) {
     return nullptr;
   }
@@ -666,7 +707,7 @@ static void CollectImageURLsForProperty(nsCSSPropertyID aProp,
 
   switch (aProp) {
     case eCSSProperty_cursor:
-      for (auto& image : aStyle.StyleUI()->mCursor.images.AsSpan()) {
+      for (auto& image : aStyle.StyleUI()->Cursor().images.AsSpan()) {
         AddImageURL(image.image, aURLs);
       }
       break;
@@ -750,7 +791,7 @@ void nsComputedDOMStyle::ClearComputedStyle() {
 }
 
 void nsComputedDOMStyle::SetResolvedComputedStyle(
-    RefPtr<ComputedStyle>&& aContext, uint64_t aGeneration) {
+    RefPtr<const ComputedStyle>&& aContext, uint64_t aGeneration) {
   if (!mResolvedComputedStyle) {
     mResolvedComputedStyle = true;
     mElement->AddMutationObserver(this);
@@ -1045,9 +1086,6 @@ void nsComputedDOMStyle::UpdateCurrentStyleSources(nsCSSPropertyID aPropID) {
   // For undisplayed elements we need to take into account any DOM changes that
   // might cause a restyle, because Servo will not increase the generation for
   // undisplayed elements.
-  // As for Gecko, GetUndisplayedRestyleGeneration is effectively equal to
-  // GetRestyleGeneration, since the generation is incremented whenever we
-  // process restyles.
   uint64_t currentGeneration =
       mPresShell->GetPresContext()->GetUndisplayedRestyleGeneration();
 
@@ -1059,9 +1097,8 @@ void nsComputedDOMStyle::UpdateCurrentStyleSources(nsCSSPropertyID aPropID) {
 
   mComputedStyle = nullptr;
 
-  // XXX the !mElement->IsHTMLElement(nsGkAtoms::area)
-  // check is needed due to bug 135040 (to avoid using
-  // mPrimaryFrame). Remove it once that's fixed.
+  // XXX the !mElement->IsHTMLElement(nsGkAtoms::area) check is needed due to
+  // bug 135040 (to avoid using mPrimaryFrame). Remove it once that's fixed.
   if (mStyleType == StyleType::All &&
       !mElement->IsHTMLElement(nsGkAtoms::area)) {
     mOuterFrame = GetOuterFrame();
@@ -1076,9 +1113,10 @@ void nsComputedDOMStyle::UpdateCurrentStyleSources(nsCSSPropertyID aPropID) {
   if (!mComputedStyle || MustReresolveStyle(mComputedStyle)) {
     PresShell* presShellForContent = mElement->OwnerDoc()->GetPresShell();
     // Need to resolve a style.
-    RefPtr<ComputedStyle> resolvedComputedStyle = DoGetComputedStyleNoFlush(
-        mElement, mPseudo,
-        presShellForContent ? presShellForContent : mPresShell, mStyleType);
+    RefPtr<const ComputedStyle> resolvedComputedStyle =
+        DoGetComputedStyleNoFlush(
+            mElement, mPseudo,
+            presShellForContent ? presShellForContent : mPresShell, mStyleType);
     if (!resolvedComputedStyle) {
       ClearComputedStyle();
       return;
@@ -1190,19 +1228,6 @@ void nsComputedDOMStyle::IndexedGetter(uint32_t aIndex, bool& aFound,
 
 already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetBottom() {
   return GetOffsetWidthFor(eSideBottom);
-}
-
-/* static */
-void nsComputedDOMStyle::SetToRGBAColor(nsROCSSPrimitiveValue* aValue,
-                                        nscolor aColor) {
-  nsAutoString string;
-  nsStyleUtil::GetSerializedColorValue(aColor, string);
-  aValue->SetString(string);
-}
-
-void nsComputedDOMStyle::SetValueFromComplexColor(
-    nsROCSSPrimitiveValue* aValue, const mozilla::StyleColor& aColor) {
-  SetToRGBAColor(aValue, aColor.CalcColor(*mComputedStyle));
 }
 
 already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetColumnRuleWidth() {
@@ -1330,7 +1355,7 @@ already_AddRefed<nsROCSSPrimitiveValue> nsComputedDOMStyle::MatrixToCSSValue(
   return val.forget();
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetOsxFontSmoothing() {
+already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMozOsxFontSmoothing() {
   if (nsContentUtils::ShouldResistFingerprinting(
           mPresShell->GetPresContext()->GetDocShell())) {
     return nullptr;
@@ -1807,20 +1832,20 @@ already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetBorderRightWidth() {
   return GetBorderWidthFor(eSideRight);
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginTopWidth() {
-  return GetMarginWidthFor(eSideTop);
+already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginTop() {
+  return GetMarginFor(eSideTop);
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginBottomWidth() {
-  return GetMarginWidthFor(eSideBottom);
+already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginBottom() {
+  return GetMarginFor(eSideBottom);
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginLeftWidth() {
-  return GetMarginWidthFor(eSideLeft);
+already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginLeft() {
+  return GetMarginFor(eSideLeft);
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginRightWidth() {
-  return GetMarginWidthFor(eSideRight);
+already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMarginRight() {
+  return GetMarginFor(eSideRight);
 }
 
 already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetLineHeight() {
@@ -1846,41 +1871,6 @@ already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetLineHeight() {
     val->SetString("normal");
   }
   return val.forget();
-}
-
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetTextDecoration() {
-  auto getPropertyValue = [&](nsCSSPropertyID aID) {
-    RefPtr<nsROCSSPrimitiveValue> value = new nsROCSSPrimitiveValue;
-    nsAutoCString string;
-    mComputedStyle->GetComputedPropertyValue(aID, string);
-    value->SetString(string);
-    return value.forget();
-  };
-
-  const nsStyleTextReset* textReset = StyleTextReset();
-  RefPtr<nsDOMCSSValueList> valueList = GetROCSSValueList(false);
-
-  if (textReset->mTextDecorationLine != StyleTextDecorationLine::NONE) {
-    valueList->AppendCSSValue(
-        getPropertyValue(eCSSProperty_text_decoration_line));
-  }
-
-  if (!textReset->mTextDecorationThickness.IsAuto()) {
-    valueList->AppendCSSValue(
-        getPropertyValue(eCSSProperty_text_decoration_thickness));
-  }
-
-  if (textReset->mTextDecorationStyle != NS_STYLE_TEXT_DECORATION_STYLE_SOLID) {
-    valueList->AppendCSSValue(
-        getPropertyValue(eCSSProperty_text_decoration_style));
-  }
-
-  // The resolved color shouldn't be currentColor, so we always serialize it.
-  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
-  SetValueFromComplexColor(val, StyleTextReset()->mTextDecorationColor);
-  valueList->AppendCSSValue(val.forget());
-
-  return valueList.forget();
 }
 
 already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetHeight() {
@@ -2163,9 +2153,7 @@ already_AddRefed<CSSValue> nsComputedDOMStyle::GetPaddingWidthFor(
 bool nsComputedDOMStyle::GetLineHeightCoord(nscoord& aCoord) {
   nscoord blockHeight = NS_UNCONSTRAINEDSIZE;
   const auto& lh = StyleText()->mLineHeight;
-
-  if (lh.IsNormal() &&
-      StaticPrefs::layout_css_line_height_normal_as_resolved_value_enabled()) {
+  if (lh.IsNormal()) {
     return false;
   }
 
@@ -2222,8 +2210,7 @@ already_AddRefed<CSSValue> nsComputedDOMStyle::GetBorderWidthFor(
   return val.forget();
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::GetMarginWidthFor(
-    mozilla::Side aSide) {
+already_AddRefed<CSSValue> nsComputedDOMStyle::GetMarginFor(Side aSide) {
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
 
   auto& margin = StyleMargin()->mMargin.Get(aSide);
@@ -2482,32 +2469,6 @@ already_AddRefed<CSSValue> nsComputedDOMStyle::GetTransformValue(
   return MatrixToCSSValue(matrix);
 }
 
-already_AddRefed<CSSValue> nsComputedDOMStyle::DoGetMask() {
-  const nsStyleSVGReset* svg = StyleSVGReset();
-  const nsStyleImageLayers::Layer& firstLayer = svg->mMask.mLayers[0];
-
-  // Mask is now a shorthand, but it used to be a longhand, so that we
-  // need to support computed style for the cases where it used to be
-  // a longhand.
-  if (svg->mMask.mImageCount > 1 ||
-      firstLayer.mClip != StyleGeometryBox::BorderBox ||
-      firstLayer.mOrigin != StyleGeometryBox::BorderBox ||
-      firstLayer.mComposite != StyleMaskComposite::Add ||
-      firstLayer.mMaskMode != StyleMaskMode::MatchSource ||
-      firstLayer.mPosition != Position::FromPercentage(0.0f) ||
-      !firstLayer.mRepeat.IsInitialValue() ||
-      !firstLayer.mSize.IsInitialValue() ||
-      !(firstLayer.mImage.IsNone() || firstLayer.mImage.IsUrl())) {
-    return nullptr;
-  }
-
-  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
-
-  SetValueToURLValue(firstLayer.mImage.GetImageRequestURLValue(), val);
-
-  return val.forget();
-}
-
 already_AddRefed<CSSValue> nsComputedDOMStyle::DummyGetter() {
   MOZ_CRASH("DummyGetter is not supposed to be invoked");
 }
@@ -2555,6 +2516,10 @@ void nsComputedDOMStyle::RegisterPrefChangeCallbacks() {
       prefs.InsertElementSorted(p->mPref);
     }
   }
+
+  prefs.AppendElement(
+      StaticPrefs::GetPrefName_layout_css_computed_style_shorthands());
+
   prefs.AppendElement(nullptr);
 
   MOZ_ASSERT(!gCallbackPrefs);

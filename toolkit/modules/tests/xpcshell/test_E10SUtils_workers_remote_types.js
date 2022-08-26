@@ -36,14 +36,13 @@ const principalPrivilegedMozilla = ssm.createContentPrincipal(
 );
 
 const {
-  DEFAULT_REMOTE_TYPE,
   EXTENSION_REMOTE_TYPE,
   FILE_REMOTE_TYPE,
   FISSION_WEB_REMOTE_TYPE,
-  LARGE_ALLOCATION_REMOTE_TYPE,
   NOT_REMOTE,
   PRIVILEGEDABOUT_REMOTE_TYPE,
   PRIVILEGEDMOZILLA_REMOTE_TYPE,
+  SERVICEWORKER_REMOTE_TYPE,
   WEB_REMOTE_COOP_COEP_TYPE_PREFIX,
   WEB_REMOTE_TYPE,
 } = E10SUtils;
@@ -53,7 +52,8 @@ const {
   REMOTE_WORKER_TYPE_SERVICE,
 } = Ci.nsIE10SUtils;
 
-// Test ServiceWorker remoteType selection with multiprocess and/or site isolation enabled.
+// Test ServiceWorker remoteType selection with multiprocess and/or site
+// isolation enabled.
 add_task(function test_get_remote_type_for_service_worker() {
   // ServiceWorkers with system or null principal are unexpected and we expect
   // the method call to throw.
@@ -77,7 +77,7 @@ add_task(function test_get_remote_type_for_service_worker() {
   //   - content principal + any preferred remote type => web remote type
   // - fission enabled:
   //   - extension principal + any preferred remote type => extension remote type
-  //   - content principal + any preferred remote type => webIsolated=siteOrigin remote type
+  //   - content principal + any preferred remote type => webServiceWorker=siteOrigin remote type
   function* getTestCase(fission = false) {
     const TEST_PRINCIPALS = [
       principalSecureCom,
@@ -129,7 +129,7 @@ add_task(function test_get_remote_type_for_service_worker() {
   // Test cases for e10s mode + fission enabled.
   for (const testCase of getTestCase(true)) {
     const [msg, principal, ...args] = testCase;
-    let expected = `${FISSION_WEB_REMOTE_TYPE}=${principal.siteOrigin}`;
+    let expected = `${SERVICEWORKER_REMOTE_TYPE}=${principal.siteOrigin}`;
 
     if (principal == principalExtension) {
       expected = WebExtensionPolicy.useRemoteWebExtensions
@@ -145,12 +145,12 @@ add_task(function test_get_remote_type_for_service_worker() {
   }
 });
 
-// Test SharedWorker remoteType selection with multiprocess and/or site isolation enabled.
+// Test SharedWorker remoteType selection with multiprocess and/or site
+// isolation enabled.
 add_task(function test_get_remote_type_for_shared_worker() {
-  // Verify that for shared worker registered from a large allocation or web
-  // coop+coep remote types we are going to select a web or fission remote type.
+  // Verify that for shared worker registered from a web coop+coep remote type
+  // we are going to select a web or fission remote type.
   for (const [principal, preferredRemoteType] of [
-    [principalSecureCom, LARGE_ALLOCATION_REMOTE_TYPE],
     [
       principalSecureCom,
       `${WEB_REMOTE_COOP_COEP_TYPE_PREFIX}=${principalSecureCom.siteOrigin}`,
@@ -244,7 +244,6 @@ add_task(function test_get_remote_type_for_shared_worker() {
   // Shared worker registered for web+custom urls.
   for (const [preferredRemoteType, expectedRemoteType] of [
     [WEB_REMOTE_TYPE, WEB_REMOTE_TYPE],
-    [LARGE_ALLOCATION_REMOTE_TYPE, WEB_REMOTE_TYPE],
     ["fakeRemoteType", "fakeRemoteType"],
     // This seems to be actually failing with a SecurityError
     // as soon as the SharedWorker constructor is being called with
@@ -268,7 +267,6 @@ add_task(function test_get_remote_type_for_shared_worker() {
   // Shared worker registered for ext+custom urls.
   for (const [preferredRemoteType, expectedRemoteType] of [
     [WEB_REMOTE_TYPE, WEB_REMOTE_TYPE],
-    [LARGE_ALLOCATION_REMOTE_TYPE, WEB_REMOTE_TYPE],
     ["fakeRemoteType", "fakeRemoteType"],
     // This seems to be actually prevented by failing a ClientIsValidPrincipalInfo
     // check (but only when the remote worker is being launched in the child process

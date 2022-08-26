@@ -51,6 +51,7 @@
 #include "mozilla/StaticPrefs_image.h"
 #include "mozilla/SVGImageContext.h"
 #include "Units.h"
+#include "mozilla/image/WebRenderImageProvider.h"
 #include "mozilla/layers/RenderRootStateManager.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
 #include "mozilla/dom/ImageTracker.h"
@@ -81,14 +82,14 @@ class nsImageBoxFrameEvent : public Runnable {
   NS_IMETHOD Run() override;
 
  private:
-  nsCOMPtr<nsIContent> mContent;
+  const nsCOMPtr<nsIContent> mContent;
   EventMessage mMessage;
 };
 
-NS_IMETHODIMP
-nsImageBoxFrameEvent::Run() {
-  RefPtr<nsPresContext> pres_context = mContent->OwnerDoc()->GetPresContext();
-  if (!pres_context) {
+// TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230, bug 1535398)
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP nsImageBoxFrameEvent::Run() {
+  RefPtr<nsPresContext> presContext = mContent->OwnerDoc()->GetPresContext();
+  if (!presContext) {
     return NS_OK;
   }
 
@@ -96,7 +97,7 @@ nsImageBoxFrameEvent::Run() {
   WidgetEvent event(true, mMessage);
 
   event.mFlags.mBubbles = false;
-  EventDispatcher::Dispatch(mContent, pres_context, &event, nullptr, &status);
+  EventDispatcher::Dispatch(mContent, presContext, &event, nullptr, &status);
   return NS_OK;
 }
 
@@ -329,7 +330,7 @@ void nsImageBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   DisplayListClipState::AutoClipContainingBlockDescendantsToContentBox clip(
       aBuilder, this, clipFlags);
 
-  nsDisplayList list;
+  nsDisplayList list(aBuilder);
   list.AppendNewToTop<nsDisplayXULImage>(aBuilder, this);
 
   CreateOwnLayerIfNeeded(aBuilder, &list,
@@ -389,7 +390,7 @@ ImgDrawResult nsImageBoxFrame::PaintImage(gfxContext& aRenderingContext,
 
   bool hasSubRect = !mUseSrcAttr && (mSubRect.width > 0 || mSubRect.height > 0);
 
-  Maybe<SVGImageContext> svgContext;
+  SVGImageContext svgContext;
   SVGImageContext::MaybeStoreContextPaint(svgContext, this, imgCon);
   return nsLayoutUtils::DrawSingleImage(
       aRenderingContext, PresContext(), imgCon,
@@ -421,46 +422,29 @@ ImgDrawResult nsImageBoxFrame::CreateWebRenderCommands(
   LayoutDeviceRect fillRect =
       LayoutDeviceRect::FromAppUnits(dest, appUnitsPerDevPixel);
 
-  Maybe<SVGImageContext> svgContext;
+  SVGImageContext svgContext;
   Maybe<ImageIntRegion> region;
   gfx::IntSize decodeSize =
       nsLayoutUtils::ComputeImageContainerDrawingParameters(
           imgCon, aItem->Frame(), fillRect, fillRect, aSc, aFlags, svgContext,
           region);
 
-  RefPtr<layers::ImageContainer> container;
-  result = imgCon->GetImageContainerAtSize(aManager->LayerManager(), decodeSize,
-                                           svgContext, region, aFlags,
-                                           getter_AddRefs(container));
-  if (!container) {
-    NS_WARNING("Failed to get image container");
+  RefPtr<image::WebRenderImageProvider> provider;
+  result =
+      imgCon->GetImageProvider(aManager->LayerManager(), decodeSize, svgContext,
+                               region, aFlags, getter_AddRefs(provider));
+
+  Maybe<wr::ImageKey> key = aManager->CommandBuilder().CreateImageProviderKey(
+      aItem, provider, result, aResources);
+  if (key.isNothing()) {
     return result;
   }
 
   auto rendering = wr::ToImageRendering(aItem->Frame()->UsedImageRendering());
   wr::LayoutRect fill = wr::ToLayoutRect(fillRect);
 
-  if (aFlags & imgIContainer::FLAG_RECORD_BLOB) {
-    Maybe<wr::BlobImageKey> key = aManager->CommandBuilder().CreateBlobImageKey(
-        aItem, container, aResources);
-    if (key.isNothing()) {
-      return result;
-    }
-
-    aBuilder.PushImage(fill, fill, !BackfaceIsHidden(), rendering,
-                       wr::AsImageKey(key.value()));
-    return result;
-  }
-
-  gfx::IntSize size;
-  Maybe<wr::ImageKey> key = aManager->CommandBuilder().CreateImageKey(
-      aItem, container, aBuilder, aResources, rendering, aSc, size, Nothing());
-  if (key.isNothing()) {
-    return result;
-  }
-
-  aBuilder.PushImage(fill, fill, !BackfaceIsHidden(), rendering, key.value());
-
+  aBuilder.PushImage(fill, fill, !BackfaceIsHidden(), false, rendering,
+                     key.value());
   return result;
 }
 
@@ -520,10 +504,8 @@ void nsDisplayXULImage::Paint(nsDisplayListBuilder* aBuilder,
   if (aBuilder->UseHighQualityScaling())
     flags |= imgIContainer::FLAG_HIGH_QUALITY_SCALING;
 
-  ImgDrawResult result = static_cast<nsImageBoxFrame*>(mFrame)->PaintImage(
+  Unused << static_cast<nsImageBoxFrame*>(mFrame)->PaintImage(
       *aCtx, GetPaintRect(aBuilder, aCtx), ToReferenceFrame(), flags);
-
-  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
 }
 
 bool nsDisplayXULImage::CreateWebRenderCommands(
@@ -556,30 +538,7 @@ bool nsDisplayXULImage::CreateWebRenderCommands(
     return false;
   }
 
-  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
   return true;
-}
-
-nsDisplayItemGeometry* nsDisplayXULImage::AllocateGeometry(
-    nsDisplayListBuilder* aBuilder) {
-  return new nsDisplayItemGenericImageGeometry(this, aBuilder);
-}
-
-void nsDisplayXULImage::ComputeInvalidationRegion(
-    nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
-    nsRegion* aInvalidRegion) const {
-  auto boxFrame = static_cast<nsImageBoxFrame*>(mFrame);
-  auto geometry =
-      static_cast<const nsDisplayItemGenericImageGeometry*>(aGeometry);
-
-  if (aBuilder->ShouldSyncDecodeImages() && boxFrame->mImageRequest &&
-      geometry->ShouldInvalidateToSyncDecodeImages()) {
-    bool snap;
-    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
-  }
-
-  nsPaintedDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry,
-                                                  aInvalidRegion);
 }
 
 bool nsImageBoxFrame::CanOptimizeToImageLayer() {
@@ -841,8 +800,8 @@ void nsImageBoxFrame::OnFrameUpdate(imgIRequest* aRequest) {
   // Check if WebRender has interacted with this frame. If it has
   // we need to let it know that things have changed.
   const auto type = DisplayItemType::TYPE_XUL_IMAGE;
-  const auto producerId = aRequest->GetProducerId();
-  if (WebRenderUserData::ProcessInvalidateForImage(this, type, producerId)) {
+  const auto providerId = aRequest->GetProviderId();
+  if (WebRenderUserData::ProcessInvalidateForImage(this, type, providerId)) {
     return;
   }
 

@@ -16,6 +16,8 @@ var {
   callFunctionWithAsyncStack,
 } = require("devtools/shared/platform/stack");
 
+loader.lazyRequireGetter(this, "OS", "resource://gre/modules/osfile.jsm", true);
+
 loader.lazyRequireGetter(
   this,
   "FileUtils",
@@ -65,6 +67,35 @@ exports.executeSoon = function(fn) {
 };
 
 /**
+ * Similar to executeSoon, but enters microtask before executing the callback
+ * if this is called on the main thread.
+ */
+exports.executeSoonWithMicroTask = function(fn) {
+  if (isWorker) {
+    setImmediate(fn);
+  } else {
+    let executor;
+    // Only enable async stack reporting when DEBUG_JS_MODULES is set
+    // (customized local builds) to avoid a performance penalty.
+    if (AppConstants.DEBUG_JS_MODULES || flags.testing) {
+      const stack = getStack();
+      executor = () => {
+        callFunctionWithAsyncStack(
+          fn,
+          stack,
+          "DevToolsUtils.executeSoonWithMicroTask"
+        );
+      };
+    } else {
+      executor = fn;
+    }
+    Services.tm.dispatchToMainThreadWithMicroTask({
+      run: exports.makeInfallible(executor),
+    });
+  }
+};
+
+/**
  * Waits for the next tick in the event loop.
  *
  * @return Promise
@@ -104,13 +135,13 @@ exports.waitForTime = function(delay) {
 exports.defineLazyPrototypeGetter = function(object, key, callback) {
   Object.defineProperty(object, key, {
     configurable: true,
-    get: function() {
+    get() {
       const value = callback.call(this);
 
       Object.defineProperty(this, key, {
         configurable: true,
         writable: true,
-        value: value,
+        value,
       });
 
       return value;
@@ -378,7 +409,7 @@ exports.dumpv = function(msg) {
  */
 exports.defineLazyGetter = function(object, name, lambda) {
   Object.defineProperty(object, name, {
-    get: function() {
+    get() {
       delete object[name];
       object[name] = lambda.apply(object);
       return object[name];
@@ -462,10 +493,6 @@ exports.defineLazyModuleGetter = function(object, name, resource, symbol) {
 
 DevToolsUtils.defineLazyGetter(this, "NetUtil", () => {
   return require("resource://gre/modules/NetUtil.jsm").NetUtil;
-});
-
-DevToolsUtils.defineLazyGetter(this, "OS", () => {
-  return require("resource://gre/modules/osfile.jsm").OS;
 });
 
 DevToolsUtils.defineLazyGetter(this, "NetworkHelper", () => {
@@ -645,6 +672,8 @@ function mainThreadFetch(
           // This can be removed when bug 982654 is fixed.
 
           uri.QueryInterface(Ci.nsIFileURL);
+          // Bug 1779574: IOUtils is not available in non-parent processes.
+          // eslint-disable-next-line mozilla/reject-osfile
           const result = OS.File.read(uri.file.path).then(bytes => {
             // Convert the bytearray to a String.
             const decoder = new TextDecoder();
@@ -700,8 +729,8 @@ function newChannelForURL(
   }
   const channelOptions = {
     contentPolicyType: policy,
-    securityFlags: securityFlags,
-    uri: uri,
+    securityFlags,
+    uri,
   };
 
   // Ensure that we have some contentPolicyType type set if one was
@@ -817,7 +846,7 @@ exports.saveAs = async function(
     return;
   }
 
-  await OS.File.writeAtomic(returnFile.path, dataArray, {
+  await IOUtils.write(returnFile.path, dataArray, {
     tmpPath: returnFile.path + ".tmp",
   });
 };

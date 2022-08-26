@@ -7,11 +7,13 @@
 
 "use strict";
 
-var { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+var { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 var { Assert } = require("resource://testing-common/Assert.jsm");
 var { gDevTools } = require("devtools/client/framework/devtools");
 var { BrowserLoader } = ChromeUtils.import(
-  "resource://devtools/client/shared/browser-loader.js"
+  "resource://devtools/shared/loader/browser-loader.js"
 );
 var Services = require("Services");
 var { DevToolsServer } = require("devtools/server/devtools-server");
@@ -38,7 +40,7 @@ const TestRenderer = browserRequire(
   "devtools/client/shared/vendor/react-test-renderer"
 );
 
-var EXAMPLE_URL = "http://example.com/browser/browser/devtools/shared/test/";
+var EXAMPLE_URL = "https://example.com/browser/browser/devtools/shared/test/";
 
 SimpleTest.registerCleanupFunction(() => {
   window._snapshots = null;
@@ -232,7 +234,6 @@ function checkFrameString({
 
   const $func = $(".frame-link-function-display-name");
   const $source = $(".frame-link-source");
-  const $sourceInner = $(".frame-link-source-inner");
   const $locationPrefix = $(".frame-link-prefix");
   const $filename = $(".frame-link-filename");
   const $line = $(".frame-link-line");
@@ -248,7 +249,7 @@ function checkFrameString({
     column ? `${column}` : null,
     "Expected `data-column` found"
   );
-  is($sourceInner.getAttribute("title"), tooltip, "Correct tooltip");
+  is($source.getAttribute("title"), tooltip, "Correct tooltip");
   is($source.tagName, shouldLink ? "A" : "SPAN", "Correct linkable status");
   if (shouldLink) {
     is($source.getAttribute("href"), source, "Correct source");

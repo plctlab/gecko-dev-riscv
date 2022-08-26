@@ -89,8 +89,7 @@ void AsyncLog(nsIInterceptedChannel* aInterceptedChannel,
 
 }  // anonymous namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 CancelChannelRunnable::CancelChannelRunnable(
     nsMainThreadPtrHandle<nsIInterceptedChannel>& aChannel,
@@ -153,6 +152,11 @@ already_AddRefed<FetchEvent> FetchEvent::Constructor(
   MOZ_ASSERT(global);
   ErrorResult rv;
   e->mHandled = Promise::Create(global, rv);
+  if (rv.Failed()) {
+    rv.SuppressException();
+    return nullptr;
+  }
+  e->mPreloadResponse = Promise::Create(global, rv);
   if (rv.Failed()) {
     rv.SuppressException();
     return nullptr;
@@ -245,7 +249,7 @@ NS_IMPL_ISUPPORTS(BodyCopyHandle, nsIInterceptedBodyCallback)
 
 class StartResponse final : public Runnable {
   nsMainThreadPtrHandle<nsIInterceptedChannel> mChannel;
-  RefPtr<InternalResponse> mInternalResponse;
+  SafeRefPtr<InternalResponse> mInternalResponse;
   ChannelInfo mWorkerChannelInfo;
   const nsCString mScriptSpec;
   const nsCString mResponseURLSpec;
@@ -253,14 +257,14 @@ class StartResponse final : public Runnable {
 
  public:
   StartResponse(nsMainThreadPtrHandle<nsIInterceptedChannel>& aChannel,
-                InternalResponse* aInternalResponse,
+                SafeRefPtr<InternalResponse> aInternalResponse,
                 const ChannelInfo& aWorkerChannelInfo,
                 const nsACString& aScriptSpec,
                 const nsACString& aResponseURLSpec,
                 UniquePtr<RespondWithClosure>&& aClosure)
       : Runnable("dom::StartResponse"),
         mChannel(aChannel),
-        mInternalResponse(aInternalResponse),
+        mInternalResponse(std::move(aInternalResponse)),
         mWorkerChannelInfo(aWorkerChannelInfo),
         mScriptSpec(aScriptSpec),
         mResponseURLSpec(aResponseURLSpec),
@@ -427,9 +431,11 @@ class RespondWithHandler final : public PromiseNativeHandler {
         mRequestWasHandled(false) {
   }
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
   void CancelRequest(nsresult aStatus);
 
@@ -556,7 +562,8 @@ class MOZ_STACK_CLASS AutoCancel {
 NS_IMPL_ISUPPORTS0(RespondWithHandler)
 
 void RespondWithHandler::ResolvedCallback(JSContext* aCx,
-                                          JS::Handle<JS::Value> aValue) {
+                                          JS::Handle<JS::Value> aValue,
+                                          ErrorResult& aRv) {
   AutoCancel autoCancel(this, mRequestURL);
 
   if (!aValue.isObject()) {
@@ -654,7 +661,7 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     }
   }
 
-  RefPtr<InternalResponse> ir = response->GetInternalResponse();
+  SafeRefPtr<InternalResponse> ir = response->GetInternalResponse();
   if (NS_WARN_IF(!ir)) {
     return;
   }
@@ -667,8 +674,6 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     MOZ_DIAGNOSTIC_ASSERT(false, "Cors or opaque Response without a URL");
     return;
   }
-
-  Telemetry::ScalarAdd(Telemetry::ScalarID::SW_SYNTHESIZED_RES_COUNT, 1);
 
   if (mRequestMode == RequestMode::Same_origin &&
       response->Type() == ResponseType::Cors) {
@@ -707,9 +712,9 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
       mInterceptedChannel, mRegistration, mRequestURL, mRespondWithScriptSpec,
       mRespondWithLineNumber, mRespondWithColumnNumber));
 
-  nsCOMPtr<nsIRunnable> startRunnable =
-      new StartResponse(mInterceptedChannel, ir, worker->GetChannelInfo(),
-                        mScriptSpec, responseURL, std::move(closure));
+  nsCOMPtr<nsIRunnable> startRunnable = new StartResponse(
+      mInterceptedChannel, ir.clonePtr(), worker->GetChannelInfo(), mScriptSpec,
+      responseURL, std::move(closure));
 
   nsCOMPtr<nsIInputStream> body;
   ir->GetUnfilteredBody(getter_AddRefs(body));
@@ -732,7 +737,8 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
 }
 
 void RespondWithHandler::RejectedCallback(JSContext* aCx,
-                                          JS::Handle<JS::Value> aValue) {
+                                          JS::Handle<JS::Value> aValue,
+                                          ErrorResult& aRv) {
   nsCString sourceSpec = mRespondWithScriptSpec;
   uint32_t line = mRespondWithLineNumber;
   uint32_t column = mRespondWithColumnNumber;
@@ -792,9 +798,8 @@ void FetchEvent::RespondWith(JSContext* aCx, Promise& aArg, ErrorResult& aRv) {
         ir->GetFragment(), spec, line, column);
 
     aArg.AppendNativeHandler(handler);
-  } else {
-    MOZ_ASSERT(mRespondWithHandler);
-
+    // mRespondWithHandler can be nullptr for self-dispatched FetchEvent.
+  } else if (mRespondWithHandler) {
     mRespondWithHandler->RespondWithCalledAt(spec, line, column);
     aArg.AppendNativeHandler(mRespondWithHandler);
     mRespondWithHandler = nullptr;
@@ -841,7 +846,8 @@ void FetchEvent::ReportCanceled() {
     ::AsyncLog(mChannel.get(), mPreventDefaultScriptSpec,
                mPreventDefaultLineNumber, mPreventDefaultColumnNumber,
                "InterceptionCanceledWithURL"_ns, requestURL);
-  } else {
+    // mRespondWithHandler could be nullptr for self-dispatched FetchEvent.
+  } else if (mRespondWithHandler) {
     mRespondWithHandler->ReportCanceled(mPreventDefaultScriptSpec,
                                         mPreventDefaultLineNumber,
                                         mPreventDefaultColumnNumber);
@@ -876,11 +882,13 @@ class WaitUntilHandler final : public PromiseNativeHandler {
     nsJSUtils::GetCallingLocation(aCx, mSourceSpec, &mLine, &mColumn);
   }
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValu,
+                        ErrorResult& aRve) override {
     // do nothing, we are only here to report errors
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mWorkerPrivate->AssertIsOnWorkerThread();
 
     nsString spec;
@@ -960,7 +968,8 @@ NS_IMPL_RELEASE_INHERITED(FetchEvent, ExtendableEvent)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FetchEvent)
 NS_INTERFACE_MAP_END_INHERITING(ExtendableEvent)
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED(FetchEvent, ExtendableEvent, mRequest)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(FetchEvent, ExtendableEvent, mRequest,
+                                   mHandled, mPreloadResponse)
 
 ExtendableEvent::ExtendableEvent(EventTarget* aOwner)
     : Event(aOwner, nullptr, nullptr) {}
@@ -1018,7 +1027,8 @@ nsresult ExtractBytesFromUSVString(const nsAString& aStr,
   uint32_t result;
   size_t read;
   size_t written;
-  Tie(result, read, written) =
+  // Do not use structured binding lest deal with [-Werror=unused-variable]
+  std::tie(result, read, written) =
       encoder->EncodeFromUTF16WithoutReplacement(aStr, aBytes, true);
   MOZ_ASSERT(result == kInputEmpty);
   MOZ_ASSERT(read == aStr.Length());
@@ -1265,5 +1275,4 @@ NS_INTERFACE_MAP_END_INHERITING(Event)
 NS_IMPL_ADDREF_INHERITED(ExtendableMessageEvent, Event)
 NS_IMPL_RELEASE_INHERITED(ExtendableMessageEvent, Event)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

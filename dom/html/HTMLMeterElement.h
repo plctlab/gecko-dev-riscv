@@ -14,15 +14,14 @@
 #include "nsAlgorithm.h"
 #include <algorithm>
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class HTMLMeterElement final : public nsGenericHTMLElement {
  public:
   explicit HTMLMeterElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-  virtual EventStates IntrinsicState() const override;
+  virtual ElementState IntrinsicState() const override;
 
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
@@ -35,6 +34,9 @@ class HTMLMeterElement final : public nsGenericHTMLElement {
 
   /* @return the value */
   double Value() const;
+  /* Returns the percentage that this element should be filed based on the
+   * min/max/value */
+  double Position() const;
   void SetValue(double aValue, ErrorResult& aRv) {
     SetDoubleAttr(nsGkAtoms::value, aValue, aRv);
   }
@@ -84,18 +86,17 @@ class HTMLMeterElement final : public nsGenericHTMLElement {
 
   /**
    * Returns the optimum state of the element.
-   * NS_EVENT_STATE_OPTIMUM if the actual value is in the optimum region.
-   * NS_EVENT_STATE_SUB_OPTIMUM if the actual value is in the sub-optimal
+   * ElementState::OPTIMUM if the actual value is in the optimum region.
+   * ElementState::SUB_OPTIMUM if the actual value is in the sub-optimal
    *                            region.
-   * NS_EVENT_STATE_SUB_SUB_OPTIMUM if the actual value is in the
+   * ElementState::SUB_SUB_OPTIMUM if the actual value is in the
    *                                sub-sub-optimal region.
    *
    * @return the optimum state of the element.
    */
-  EventStates GetOptimumState() const;
+  ElementState GetOptimumState() const;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_HTMLMeterElement_h

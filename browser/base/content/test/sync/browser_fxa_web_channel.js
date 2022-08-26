@@ -3,7 +3,7 @@
  */
 
 XPCOMUtils.defineLazyGetter(this, "FxAccountsCommon", function() {
-  return ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js", {});
+  return ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
 });
 
 ChromeUtils.defineModuleGetter(
@@ -12,11 +12,8 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/WebChannel.jsm"
 );
 
-// FxAccountsWebChannel isn't explicitly exported by FxAccountsWebChannel.jsm
-// but we can get it here via a backstage pass.
 var { FxAccountsWebChannel } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsWebChannel.jsm",
-  null
+  "resource://gre/modules/FxAccountsWebChannel.jsm"
 );
 
 const TEST_HTTP_PATH = "http://example.com";
@@ -203,6 +200,49 @@ var gTests = [
           await promiseDelete;
         }
       );
+    },
+  },
+  {
+    desc:
+      "fxa web channel - firefox_view messages should call the openFirefoxView helper",
+    async run() {
+      let wasCalled = false;
+      let promiseMessageHandled = new Promise((resolve, reject) => {
+        let openFirefoxView = (browser, entryPoint) => {
+          wasCalled = true;
+          Assert.ok(
+            !!browser.ownerGlobal,
+            "openFirefoxView called with a browser argument"
+          );
+          Assert.equal(
+            typeof browser.ownerGlobal.FirefoxViewHandler.openTab,
+            "function",
+            "We can reach the openTab method"
+          );
+
+          client.tearDown();
+          resolve();
+        };
+
+        let client = new FxAccountsWebChannel({
+          content_uri: TEST_HTTP_PATH,
+          channel_id: TEST_CHANNEL_ID,
+          helpers: {
+            openFirefoxView,
+          },
+        });
+      });
+
+      await BrowserTestUtils.withNewTab(
+        {
+          gBrowser,
+          url: TEST_BASE_URL + "?firefox_view",
+        },
+        async function() {
+          await promiseMessageHandled;
+        }
+      );
+      Assert.ok(wasCalled, "openFirefoxView did get called");
     },
   },
 ]; // gTests

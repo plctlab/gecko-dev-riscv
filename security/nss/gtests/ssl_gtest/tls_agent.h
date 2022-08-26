@@ -39,6 +39,13 @@ enum SessionResumptionMode {
   RESUME_BOTH = RESUME_SESSIONID | RESUME_TICKET
 };
 
+enum class ClientAuthCallbackType {
+  kAsyncImmediate,
+  kAsyncDelay,
+  kSync,
+  kNone,
+};
+
 class PacketFilter;
 class TlsAgent;
 class TlsCipherSpec;
@@ -144,9 +151,13 @@ class TlsAgent : public PollTarget {
   bool ConfigServerCertWithChain(const std::string& name);
   bool EnsureTlsSetup(PRFileDesc* modelSocket = nullptr);
 
-  void SetupClientAuth();
+  void SetupClientAuth(
+      ClientAuthCallbackType callbackType = ClientAuthCallbackType::kSync,
+      bool callbackSuccess = true);
   void RequestClientAuth(bool requireAuth);
-
+  void ClientAuthCallbackComplete();
+  bool CheckClientAuthCallbacksCompleted(uint8_t expected);
+  void CheckClientAuthCompleted(uint8_t handshakes = 1);
   void SetOption(int32_t option, int value);
   void ConfigureSessionCache(SessionResumptionMode mode);
   void Set0RttEnabled(bool en);
@@ -193,7 +204,7 @@ class TlsAgent : public PollTarget {
   void SetDowngradeCheckVersion(uint16_t version);
   void CheckSecretsDestroyed();
   void ConfigNamedGroups(const std::vector<SSLNamedGroup>& groups);
-  void DisableECDHEServerKeyReuse();
+  void EnableECDHEServerKeyReuse();
   bool GetPeerChainLength(size_t* count);
   void CheckCipherSuite(uint16_t cipher_suite);
   void SetResumptionTokenCallback();
@@ -233,7 +244,7 @@ class TlsAgent : public PollTarget {
   static const char* state_str(State state) { return states[state]; }
 
   NssManagedFileDesc ssl_fd() const {
-    return NssManagedFileDesc(ssl_fd_.get(), policy_);
+    return NssManagedFileDesc(ssl_fd_.get(), policy_, option_);
   }
   std::shared_ptr<DummyPrSocket>& adapter() { return adapter_; }
 
@@ -313,6 +324,9 @@ class TlsAgent : public PollTarget {
   // set the given policy before this agent runs
   void SetPolicy(SECOidTag oid, PRUint32 set, PRUint32 clear) {
     policy_ = NssPolicy(oid, set, clear);
+  }
+  void SetNssOption(PRInt32 id, PRInt32 value) {
+    option_ = NssOption(id, value);
   }
 
  private:
@@ -461,6 +475,12 @@ class TlsAgent : public PollTarget {
   bool skip_version_checks_;
   std::vector<uint8_t> resumption_token_;
   NssPolicy policy_;
+  NssOption option_;
+  ClientAuthCallbackType client_auth_callback_type_ =
+      ClientAuthCallbackType::kNone;
+  bool client_auth_callback_success_ = false;
+  uint8_t client_auth_callback_fired_ = 0;
+  bool client_auth_callback_awaiting_ = false;
 };
 
 inline std::ostream& operator<<(std::ostream& stream,

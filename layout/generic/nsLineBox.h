@@ -1634,55 +1634,97 @@ nsLineList_const_reverse_iterator::operator=(
 
 class nsLineIterator final : public nsILineIterator {
  public:
-  nsLineIterator(nsLineList& aLines, bool aRightToLeft);
-  ~nsLineIterator();
+  nsLineIterator(const nsLineList& aLines, bool aRightToLeft)
+      : mLines(aLines), mRightToLeft(aRightToLeft) {
+    mIter = mLines.begin();
+    if (mIter != mLines.end()) {
+      mIndex = 0;
+    }
+  }
 
-  virtual void DisposeLineIterator() override;
+  int32_t GetNumLines() const final {
+    if (mNumLines < 0) {
+      mNumLines = int32_t(mLines.size());  // This is O(N) in number of lines!
+    }
+    return mNumLines;
+  }
 
-  virtual int32_t GetNumLines() const override;
-  virtual bool GetDirection() override;
+  bool GetDirection() final { return mRightToLeft; }
 
-  mozilla::Result<LineInfo, nsresult> GetLine(
-      int32_t aLineNumber) const override;
-  virtual int32_t FindLineContaining(nsIFrame* aFrame,
-                                     int32_t aStartLine = 0) override;
+  // Note that this updates the iterator's current position!
+  mozilla::Result<LineInfo, nsresult> GetLine(int32_t aLineNumber) final;
+
+  int32_t FindLineContaining(nsIFrame* aFrame, int32_t aStartLine = 0) final;
+
   NS_IMETHOD FindFrameAt(int32_t aLineNumber, nsPoint aPos,
                          nsIFrame** aFrameFound, bool* aPosIsBeforeFirstFrame,
-                         bool* aPosIsAfterLastFrame) const override;
+                         bool* aPosIsAfterLastFrame) final;
 
   NS_IMETHOD CheckLineOrder(int32_t aLine, bool* aIsReordered,
                             nsIFrame** aFirstVisual,
-                            nsIFrame** aLastVisual) override;
+                            nsIFrame** aLastVisual) final;
 
  private:
   nsLineIterator() = delete;
   nsLineIterator(const nsLineIterator& aOther) = delete;
 
-  nsLineBox* PrevLine() {
-    if (0 == mIndex) {
+  const nsLineBox* GetNextLine() {
+    MOZ_ASSERT(mIter != mLines.end(), "Already at end!");
+    ++mIndex;
+    ++mIter;
+    if (mIter == mLines.end()) {
+      MOZ_ASSERT(mNumLines < 0 || mNumLines == mIndex);
+      mNumLines = mIndex;
       return nullptr;
     }
-    return mLines[--mIndex];
+    return mIter.get();
   }
 
-  nsLineBox* NextLine() {
-    if (mIndex >= mNumLines - 1) {
+  // Note that this updates the iterator's current position to the given line.
+  const nsLineBox* GetLineAt(int32_t aIndex) {
+    MOZ_ASSERT(mIndex >= 0);
+    if (aIndex < 0 || (mNumLines >= 0 && aIndex >= mNumLines)) {
       return nullptr;
     }
-    return mLines[++mIndex];
-  }
-
-  nsLineBox* LineAt(int32_t aIndex) {
-    if ((aIndex < 0) || (aIndex >= mNumLines)) {
-      return nullptr;
+    // Check if we should start counting lines from mIndex, or reset to the
+    // start or end of the list and count from there (if the requested index is
+    // closer to an end than to the current position).
+    if (aIndex < mIndex / 2) {
+      // Reset to the beginning and search from there.
+      mIter = mLines.begin();
+      mIndex = 0;
+    } else if (mNumLines > 0 && aIndex > (mNumLines + mIndex) / 2) {
+      // Jump to the end and search back from there.
+      mIter = mLines.end();
+      --mIter;
+      mIndex = mNumLines - 1;
     }
-    return mLines[aIndex];
+    while (mIndex > aIndex) {
+      // This cannot run past the start of the list, because we checked that
+      // aIndex is non-negative.
+      --mIter;
+      --mIndex;
+    }
+    while (mIndex < aIndex) {
+      // Here we have to check for reaching the end, as aIndex could be out of
+      // range (if mNumLines was not initialized, so we couldn't range-check
+      // aIndex on entry).
+      if (mIter == mLines.end()) {
+        MOZ_ASSERT(mNumLines < 0 || mNumLines == mIndex);
+        mNumLines = mIndex;
+        return nullptr;
+      }
+      ++mIter;
+      ++mIndex;
+    }
+    return mIter.get();
   }
 
-  nsLineBox** mLines;
-  int32_t mIndex;
-  int32_t mNumLines;
-  bool mRightToLeft;
+  const nsLineList& mLines;
+  nsLineList_const_iterator mIter;
+  int32_t mIndex = -1;
+  mutable int32_t mNumLines = -1;
+  const bool mRightToLeft;
 };
 
 #endif /* nsLineBox_h___ */

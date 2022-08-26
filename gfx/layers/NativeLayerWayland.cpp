@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "gfxUtils.h"
+#include "nsGtkUtils.h"
 #include "GLContextProvider.h"
 #include "GLBlitHelper.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
@@ -76,6 +77,11 @@ NativeLayerRootWayland::NativeLayerRootWayland(MozContainer* aContainer)
 }
 
 NativeLayerRootWayland::~NativeLayerRootWayland() {
+  GdkWindow* gdkWindow = gtk_widget_get_window(GTK_WIDGET(mContainer));
+  if (gdkWindow) {
+    GdkFrameClock* frameClock = gdk_window_get_frame_clock(gdkWindow);
+    g_signal_handlers_disconnect_by_data(frameClock, this);
+  }
   g_object_unref(mContainer);
 }
 
@@ -142,11 +148,12 @@ bool NativeLayerRootWayland::CommitToScreen() {
 bool NativeLayerRootWayland::CommitToScreen(const MutexAutoLock& aProofOfLock) {
   mFrameInProcess = false;
 
-  wl_surface* containerSurface = moz_container_wayland_surface_lock(mContainer);
+  MozContainerSurfaceLock lock(mContainer);
+  struct wl_surface* containerSurface = lock.GetSurface();
   if (!containerSurface) {
     if (!mCallbackRequested) {
       RefPtr<NativeLayerRootWayland> self(this);
-      moz_container_wayland_add_initial_draw_callback(
+      moz_container_wayland_add_initial_draw_callback_locked(
           mContainer, [self]() -> void {
             MutexAutoLock lock(self->mMutex);
             if (!self->mFrameInProcess) {
@@ -189,7 +196,8 @@ bool NativeLayerRootWayland::CommitToScreen(const MutexAutoLock& aProofOfLock) {
 
     if (roundf(surfaceRectClipped.width) > 0 &&
         roundf(surfaceRectClipped.height) > 0) {
-      layer->SetBufferTransformFlipped(transform2D.HasNegativeScaling());
+      layer->SetBufferTransformFlipped(transform2D._11 < 0.0,
+                                       transform2D._22 < 0.0);
 
       double bufferScale = moz_container_wayland_get_scale(mContainer);
       layer->SetSubsurfacePosition(floor(surfaceRectClipped.x / bufferScale),
@@ -200,8 +208,6 @@ bool NativeLayerRootWayland::CommitToScreen(const MutexAutoLock& aProofOfLock) {
 
       auto transform2DInversed = transform2D.Inverse();
       Rect bufferClip = transform2DInversed.TransformBounds(surfaceRectClipped);
-      // avoid floating point issues - we always expect integer values here
-      bufferClip.Round();
       layer->SetViewportSourceRect(bufferClip);
 
       layer->Commit();
@@ -235,7 +241,6 @@ bool NativeLayerRootWayland::CommitToScreen(const MutexAutoLock& aProofOfLock) {
     wl_surface_commit(containerSurface);
   }
 
-  moz_container_wayland_surface_unlock(mContainer, &containerSurface);
   wl_display_flush(widget::WaylandDisplayGet()->GetDisplay());
   return true;
 }
@@ -251,11 +256,11 @@ void NativeLayerRootWayland::RequestFrameCallback(CallbackFunc aCallbackFunc,
     layer->RequestFrameCallback(mCallbackMultiplexHelper);
   }
 
-  wl_surface* wlSurface = moz_container_wayland_surface_lock(mContainer);
+  MozContainerSurfaceLock lockContainer(mContainer);
+  struct wl_surface* wlSurface = lockContainer.GetSurface();
   if (wlSurface) {
     wl_surface_commit(wlSurface);
     wl_display_flush(widget::WaylandDisplayGet()->GetDisplay());
-    moz_container_wayland_surface_unlock(mContainer, &wlSurface);
   }
 }
 
@@ -266,14 +271,13 @@ static void sAfterFrameClockAfterPaint(
 
 void NativeLayerRootWayland::AfterFrameClockAfterPaint() {
   MutexAutoLock lock(mMutex);
-  wl_surface* containerSurface = moz_container_wayland_surface_lock(mContainer);
-
+  MozContainerSurfaceLock lockContainer(mContainer);
+  struct wl_surface* containerSurface = lockContainer.GetSurface();
   for (const RefPtr<NativeLayerWayland>& layer : mSublayersOnMainThread) {
     wl_surface_commit(layer->mWlSurface);
   }
   if (containerSurface) {
     wl_surface_commit(containerSurface);
-    moz_container_wayland_surface_unlock(mContainer, &containerSurface);
   }
 }
 
@@ -288,7 +292,8 @@ void NativeLayerRootWayland::UpdateLayersOnMainThread() {
       (void (*)(GdkWindow*, struct wl_surface*))dlsym(
           RTLD_DEFAULT, "gdk_wayland_window_remove_frame_callback_surface");
 
-  wl_surface* containerSurface = moz_container_wayland_surface_lock(mContainer);
+  MozContainerSurfaceLock lockContainer(mContainer);
+  struct wl_surface* containerSurface = lockContainer.GetSurface();
   GdkWindow* gdkWindow = gtk_widget_get_window(GTK_WIDGET(mContainer));
 
   mSublayersOnMainThread.RemoveElementsBy([&](const auto& layer) {
@@ -334,22 +339,13 @@ void NativeLayerRootWayland::UpdateLayersOnMainThread() {
 
   if (containerSurface) {
     wl_surface_commit(containerSurface);
-    moz_container_wayland_surface_unlock(mContainer, &containerSurface);
   }
 
   if (!mGdkAfterPaintId && gdkWindow) {
-    GdkFrameClock* frame_clock = gdk_window_get_frame_clock(gdkWindow);
+    GdkFrameClock* frameClock = gdk_window_get_frame_clock(gdkWindow);
     mGdkAfterPaintId =
-        g_signal_connect_after(frame_clock, "after-paint",
+        g_signal_connect_after(frameClock, "after-paint",
                                G_CALLBACK(sAfterFrameClockAfterPaint), this);
-  }
-}
-
-void NativeLayerRootWayland::PauseCompositor() {
-  MutexAutoLock lock(mMutex);
-
-  for (RefPtr<NativeLayerWayland>& layer : mSublayers) {
-    layer->EnsureParentSurface(nullptr);
   }
 }
 
@@ -393,10 +389,10 @@ NativeLayerWayland::~NativeLayerWayland() {
     mSurfacePoolHandle->ReturnBufferToPool(mFrontBuffer);
     mFrontBuffer = nullptr;
   }
-  g_clear_pointer(&mCallback, wl_callback_destroy);
-  g_clear_pointer(&mViewport, wp_viewport_destroy);
-  g_clear_pointer(&mWlSubsurface, wl_subsurface_destroy);
-  g_clear_pointer(&mWlSurface, wl_surface_destroy);
+  MozClearPointer(mCallback, wl_callback_destroy);
+  MozClearPointer(mViewport, wp_viewport_destroy);
+  MozClearPointer(mWlSubsurface, wl_subsurface_destroy);
+  MozClearPointer(mWlSurface, wl_surface_destroy);
 }
 
 void NativeLayerWayland::AttachExternalImage(
@@ -634,7 +630,7 @@ void NativeLayerWayland::EnsureParentSurface(wl_surface* aParentSurface) {
   MutexAutoLock lock(mMutex);
 
   if (aParentSurface != mParentWlSurface) {
-    g_clear_pointer(&mWlSubsurface, wl_subsurface_destroy);
+    MozClearPointer(mWlSubsurface, wl_subsurface_destroy);
     mSubsurfacePosition = IntPoint(0, 0);
 
     if (aParentSurface) {
@@ -647,19 +643,31 @@ void NativeLayerWayland::EnsureParentSurface(wl_surface* aParentSurface) {
   }
 }
 
-void NativeLayerWayland::SetBufferTransformFlipped(bool aFlipped) {
+void NativeLayerWayland::SetBufferTransformFlipped(bool aFlippedX,
+                                                   bool aFlippedY) {
   MutexAutoLock lock(mMutex);
 
-  if (aFlipped == mBufferTransformFlipped) {
+  if (aFlippedX == mBufferTransformFlippedX &&
+      aFlippedY == mBufferTransformFlippedY) {
     return;
   }
 
-  mBufferTransformFlipped = aFlipped;
-  if (mBufferTransformFlipped) {
-    wl_surface_set_buffer_transform(mWlSurface,
-                                    WL_OUTPUT_TRANSFORM_FLIPPED_180);
+  mBufferTransformFlippedX = aFlippedX;
+  mBufferTransformFlippedY = aFlippedY;
+
+  if (mBufferTransformFlippedY) {
+    if (mBufferTransformFlippedX) {
+      wl_surface_set_buffer_transform(mWlSurface, WL_OUTPUT_TRANSFORM_180);
+    } else {
+      wl_surface_set_buffer_transform(mWlSurface,
+                                      WL_OUTPUT_TRANSFORM_FLIPPED_180);
+    }
   } else {
-    wl_surface_set_buffer_transform(mWlSurface, WL_OUTPUT_TRANSFORM_NORMAL);
+    if (mBufferTransformFlippedX) {
+      wl_surface_set_buffer_transform(mWlSurface, WL_OUTPUT_TRANSFORM_FLIPPED);
+    } else {
+      wl_surface_set_buffer_transform(mWlSurface, WL_OUTPUT_TRANSFORM_NORMAL);
+    }
   }
 }
 
@@ -680,11 +688,14 @@ void NativeLayerWayland::SetSubsurfacePosition(int aX, int aY) {
 void NativeLayerWayland::SetViewportSourceRect(const Rect aSourceRect) {
   MutexAutoLock lock(mMutex);
 
-  if (aSourceRect == mViewportSourceRect) {
+  Rect bufferRect = Rect(0, 0, mSize.width, mSize.height);
+  Rect sourceRect = aSourceRect.Intersect(bufferRect);
+
+  if (mViewportSourceRect == sourceRect) {
     return;
   }
 
-  mViewportSourceRect = aSourceRect;
+  mViewportSourceRect = sourceRect;
   wp_viewport_set_source(mViewport, wl_fixed_from_double(mViewportSourceRect.x),
                          wl_fixed_from_double(mViewportSourceRect.y),
                          wl_fixed_from_double(mViewportSourceRect.width),
@@ -729,7 +740,7 @@ void NativeLayerWayland::FrameCallbackHandler(wl_callback* aCallback,
   MutexAutoLock lock(mMutex);
 
   MOZ_RELEASE_ASSERT(aCallback == mCallback);
-  g_clear_pointer(&mCallback, wl_callback_destroy);
+  MozClearPointer(mCallback, wl_callback_destroy);
 
   for (const RefPtr<CallbackMultiplexHelper>& callbackMultiplexHelper :
        mCallbackMultiplexHelpers) {

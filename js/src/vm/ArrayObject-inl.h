@@ -19,9 +19,9 @@
 namespace js {
 
 /* static */ MOZ_ALWAYS_INLINE ArrayObject* ArrayObject::create(
-    JSContext* cx, gc::AllocKind kind, gc::InitialHeap heap, HandleShape shape,
-    uint32_t length, uint32_t slotSpan, AutoSetNewObjectMetadata& metadata,
-    gc::AllocSite* site) {
+    JSContext* cx, gc::AllocKind kind, gc::InitialHeap heap,
+    Handle<Shape*> shape, uint32_t length, uint32_t slotSpan,
+    AutoSetNewObjectMetadata& metadata, gc::AllocSite* site) {
   debugCheckNewObject(shape, kind, heap);
 
   const JSClass* clasp = &ArrayObject::class_;
@@ -55,11 +55,7 @@ namespace js {
   MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
   cx->realm()->setObjectPendingMetadata(cx, aobj);
 
-  uint32_t capacity =
-      gc::GetGCKindSlots(kind) - ObjectElements::VALUES_PER_HEADER;
-
-  aobj->setFixedElements();
-  new (aobj->getElementsHeader()) ObjectElements(capacity, length);
+  aobj->initFixedElements(kind, length);
 
   if (slotSpan > 0) {
     aobj->initDynamicSlots(slotSpan);

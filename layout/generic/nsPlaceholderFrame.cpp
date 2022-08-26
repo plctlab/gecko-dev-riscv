@@ -22,6 +22,7 @@
 #include "nsDisplayList.h"
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
+#include "nsPresContextInlines.h"
 #include "nsIFrameInlines.h"
 #include "nsIContentInlines.h"
 
@@ -110,10 +111,16 @@ void nsPlaceholderFrame::Reflow(nsPresContext* aPresContext,
   // (See bug 1367711.)
 
 #ifdef DEBUG
-  // We should be getting reflowed before our out-of-flow.
-  // If this is our first reflow, and our out-of-flow has already received its
-  // first reflow (before us), complain.
+  // We should be getting reflowed before our out-of-flow. If this is our first
+  // reflow, and our out-of-flow has already received its first reflow (before
+  // us), complain.
+  //
+  // Popups are an exception though, because their position doesn't depend on
+  // the placeholder, so they don't have this requirement (and this condition
+  // doesn't hold anyways because the default popupgroup goes before than the
+  // default tooltip, for example).
   if (HasAnyStateBits(NS_FRAME_FIRST_REFLOW) &&
+      !HasAnyStateBits(PLACEHOLDER_FOR_POPUP) &&
       !mOutOfFlowFrame->HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
     // Unfortunately, this can currently happen when the placeholder is in a
     // later continuation or later IB-split sibling than its out-of-flow (as
@@ -141,8 +148,6 @@ void nsPlaceholderFrame::Reflow(nsPresContext* aPresContext,
   DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
   aDesiredSize.ClearSize();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 static nsIFrame::ChildListID ChildListIDForOutOfFlow(
@@ -227,37 +232,11 @@ ComputedStyle* nsPlaceholderFrame::GetLayoutParentStyleForOutOfFlow(
   return *aProviderFrame ? (*aProviderFrame)->Style() : nullptr;
 }
 
-#ifdef DEBUG
-static void PaintDebugPlaceholder(nsIFrame* aFrame, DrawTarget* aDrawTarget,
-                                  const nsRect& aDirtyRect, nsPoint aPt) {
-  ColorPattern cyan(ToDeviceColor(sRGBColor(0.f, 1.f, 1.f, 1.f)));
-  int32_t appUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
-
-  nscoord x = nsPresContext::CSSPixelsToAppUnits(-5);
-  nsRect r(aPt.x + x, aPt.y, nsPresContext::CSSPixelsToAppUnits(13),
-           nsPresContext::CSSPixelsToAppUnits(3));
-  aDrawTarget->FillRect(NSRectToRect(r, appUnitsPerDevPixel), cyan);
-
-  nscoord y = nsPresContext::CSSPixelsToAppUnits(-10);
-  r = nsRect(aPt.x, aPt.y + y, nsPresContext::CSSPixelsToAppUnits(3),
-             nsPresContext::CSSPixelsToAppUnits(10));
-  aDrawTarget->FillRect(NSRectToRect(r, appUnitsPerDevPixel), cyan);
-}
-#endif  // DEBUG
-
 #if defined(DEBUG) || (defined(MOZ_REFLOW_PERF_DSP) && defined(MOZ_REFLOW_PERF))
 
 void nsPlaceholderFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                           const nsDisplayListSet& aLists) {
   DO_GLOBAL_REFLOW_COUNT_DSP("nsPlaceholderFrame");
-
-#  ifdef DEBUG
-  if (GetShowFrameBorders()) {
-    aLists.Outlines()->AppendNewToTop<nsDisplayGeneric>(
-        aBuilder, this, PaintDebugPlaceholder, "DebugPlaceholder",
-        DisplayItemType::TYPE_DEBUG_PLACEHOLDER);
-  }
-#  endif
 }
 #endif  // DEBUG || (MOZ_REFLOW_PERF_DSP && MOZ_REFLOW_PERF)
 

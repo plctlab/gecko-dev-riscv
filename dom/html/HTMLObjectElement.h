@@ -8,12 +8,11 @@
 #define mozilla_dom_HTMLObjectElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "nsGenericHTMLElement.h"
 #include "nsObjectLoadingContent.h"
-#include "nsIConstraintValidation.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class FormData;
 template <typename T>
@@ -22,7 +21,7 @@ class WindowProxyHolder;
 
 class HTMLObjectElement final : public nsGenericHTMLFormControlElement,
                                 public nsObjectLoadingContent,
-                                public nsIConstraintValidation {
+                                public ConstraintValidation {
  public:
   explicit HTMLObjectElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -61,7 +60,7 @@ class HTMLObjectElement final : public nsGenericHTMLFormControlElement,
   virtual nsMapRuleToAttributesFunc GetAttributeMappingFunction()
       const override;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
-  virtual EventStates IntrinsicState() const override;
+  virtual ElementState IntrinsicState() const override;
   virtual void DestroyContent() override;
 
   // nsObjectLoadingContent
@@ -107,8 +106,8 @@ class HTMLObjectElement final : public nsGenericHTMLFormControlElement,
 
   Nullable<WindowProxyHolder> GetContentWindow(nsIPrincipal& aSubjectPrincipal);
 
-  using nsIConstraintValidation::GetValidationMessage;
-  using nsIConstraintValidation::SetCustomValidity;
+  using ConstraintValidation::GetValidationMessage;
+  using ConstraintValidation::SetCustomValidity;
   void GetAlign(DOMString& aValue) { GetHTMLAttr(nsGkAtoms::align, aValue); }
   void SetAlign(const nsAString& aValue, ErrorResult& aRv) {
     SetHTMLAttr(nsGkAtoms::align, aValue, aRv);
@@ -212,7 +211,6 @@ class HTMLObjectElement final : public nsGenericHTMLFormControlElement,
   bool mIsDoneAddingChildren;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_HTMLObjectElement_h

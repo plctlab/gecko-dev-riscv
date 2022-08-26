@@ -68,17 +68,8 @@ observe and control these settings.
 But there are some other pieces of state which absolutely must come from a
 profile, such as the telemetry client ID and logging level settings (see
 `BackgroundTasksUtils.jsm <https://searchfox.org/mozilla-central/source/toolkit/components/backgroundtasks/BackgroundTasksUtils.jsm>`__).
-We also need to have access to Normandy, so that we can control the rollout of
-the background updater itself, as well as support possible future experiments or
-staged rollouts. It isn't possible to do that on a per-installation basis where
-multiple profiles could be affected, because the profiles could find themselves
-in different experiment groups, and confusion would abound (both for the user
-and for our unfortunate code).  The regular per-profile preference
-``app.update.background.scheduling.enabled`` is mirrored from the default
-profile to the per-installation default value of
-``app.update.background.enabled`` for these purposes.
 
-All of this means that, in addition to our per-installation prefs, we also need
+This means that, in addition to our per-installation prefs, we also need
 to be able to identify and load a profile. To do that, we leverage `the profile
 service <https://searchfox.org/mozilla-central/source/toolkit/profile/nsIToolkitProfileService.idl>`__
 to determine what the default profile for the installation would be if we were
@@ -140,7 +131,7 @@ Scheduling background tasks
 
 We use OS-level scheduling mechanisms to schedule the command ``firefox
 --backgroundtask backgroundupdate`` to run on a particular cadence. This cadence
-is controlled by the ``app.background.update.interval`` preference, which
+is controlled by the ``app.update.background.interval`` preference, which
 defaults to 7 hours.
 
 On Windows, we use the `Task Scheduler
@@ -180,11 +171,13 @@ The task then fishes configuration settings from the default profile, namely:
 -  The (legacy) Telemetry client ID, so that background update Telemetry
    can be correlated with other Firefox Telemetry
 
-The background task creates a temporary profile for itself to load, because a
+The background task creates a distinct profile for itself to load, because a
 profile must be present in order for most of the Firefox code that it relies on
-to function.
+to function.  This distinct profile is non-ephemeral, i.e., persistent, but not
+visible to users: see `bug 1775132
+<https://bugzilla.mozilla.org/show_bug.cgi?id=1775132>`__
 
-After setting up the temporary profile and reading all the configuration we need
+After setting up this profile and reading all the configuration we need
 into it, the regular
 `UpdateService.jsm <https://searchfox.org/mozilla-central/source/toolkit/mozapps/update/UpdateService.jsm>`__
 check process is initiated. To the greatest extent possible, this process is

@@ -20,10 +20,11 @@ loader.lazyGetter(this, "ExtensionStorageIDB", () => {
   return require("resource://gre/modules/ExtensionStorageIDB.jsm")
     .ExtensionStorageIDB;
 });
-loader.lazyGetter(
+loader.lazyRequireGetter(
   this,
-  "WebExtensionPolicy",
-  () => Cu.getGlobalForObject(ExtensionProcessScript).WebExtensionPolicy
+  "getAddonIdForWindowGlobal",
+  "devtools/server/actors/watcher/browsing-context-helpers.jsm",
+  true
 );
 
 const EXTENSION_STORAGE_ENABLED_PREF =
@@ -54,7 +55,6 @@ const SAFE_HOSTS_PREFIXES_REGEX = /^(about\+|https?\+|file\+|moz-extension\+)/;
 // devtools/server/tests/browser/head.js
 const SEPARATOR_GUID = "{9d414cc5-8319-0a04-0586-c0a6ae01670a}";
 
-loader.lazyImporter(this, "OS", "resource://gre/modules/osfile.jsm");
 loader.lazyImporter(this, "Sqlite", "resource://gre/modules/Sqlite.jsm");
 
 // We give this a funny name to avoid confusion with the global
@@ -144,7 +144,7 @@ var StorageActors = {};
  */
 StorageActors.defaults = function(typeName, observationTopics) {
   return {
-    typeName: typeName,
+    typeName,
 
     get conn() {
       return this.storageActor.conn;
@@ -332,7 +332,7 @@ StorageActors.defaults = function(typeName, observationTopics) {
 
       return {
         actor: this.actorID,
-        hosts: hosts,
+        hosts,
         traits: this._getTraits(),
       };
     },
@@ -399,7 +399,7 @@ StorageActors.defaults = function(typeName, observationTopics) {
       const sortOn = options.sortOn || "name";
 
       const toReturn = {
-        offset: offset,
+        offset,
         total: 0,
         data: [],
       };
@@ -439,7 +439,14 @@ StorageActors.defaults = function(typeName, observationTopics) {
           }
         }
 
-        toReturn.total = this.getObjectsSize(host, names, options);
+        if (this.typeName === "Cache") {
+          // Cache storage contains several items per name but misses a custom
+          // `getObjectsSize` implementation, as implemented for IndexedDB.
+          // See Bug 1745242.
+          toReturn.total = toReturn.data.length;
+        } else {
+          toReturn.total = this.getObjectsSize(host, names, options);
+        }
       } else {
         let obj = await this.getValuesForHost(
           host,
@@ -675,7 +682,7 @@ StorageActors.createActor(
       } else {
         // If we can't find the window by host, fallback to the top window
         // origin attributes.
-        originAttributes = this.storageActor.document.effectiveStoragePrincipal
+        originAttributes = this.storageActor.document?.effectiveStoragePrincipal
           .originAttributes;
       }
 
@@ -697,7 +704,7 @@ StorageActors.createActor(
      */
     onCookieChanged(subject, topic, action) {
       if (
-        topic !== "cookie-changed" ||
+        (topic !== "cookie-changed" && topic !== "private-cookie-changed") ||
         !this.storageActor ||
         !this.storageActor.windows
       ) {
@@ -881,7 +888,7 @@ StorageActors.createActor(
           "debug:storage-cookie-request-parent",
           {
             method: methodName,
-            args: args,
+            args,
           }
         );
 
@@ -1130,11 +1137,13 @@ var cookieHelpers = {
 
   addCookieObservers() {
     Services.obs.addObserver(cookieHelpers, "cookie-changed");
+    Services.obs.addObserver(cookieHelpers, "private-cookie-changed");
     return null;
   },
 
   removeCookieObservers() {
     Services.obs.removeObserver(cookieHelpers, "cookie-changed");
+    Services.obs.removeObserver(cookieHelpers, "private-cookie-changed");
     return null;
   },
 
@@ -1145,6 +1154,7 @@ var cookieHelpers = {
 
     switch (topic) {
       case "cookie-changed":
+      case "private-cookie-changed":
         if (data === "batch-deleted") {
           const cookiesNoInterface = subject.QueryInterface(Ci.nsIArray);
           const cookies = [];
@@ -1259,7 +1269,7 @@ exports.setupParentProcessForCookies = function({ mm, prefix }) {
     try {
       mm.sendAsyncMessage("debug:storage-cookie-request-child", {
         method: methodName,
-        args: args,
+        args,
       });
     } catch (e) {
       // We may receive a NS_ERROR_NOT_INITIALIZED if the target window has
@@ -1601,7 +1611,7 @@ const extensionStorageHelpers = {
       "debug:storage-extensionStorage-request-child",
       {
         method: "backToChild",
-        args: args,
+        args,
       }
     );
   },
@@ -1711,7 +1721,7 @@ const extensionStorageHelpers = {
       "debug:storage-extensionStorage-request-parent",
       {
         method: methodName,
-        args: args,
+        args,
       }
     );
 
@@ -2166,7 +2176,7 @@ StorageActors.createActor(
 
       return {
         actor: this.actorID,
-        hosts: hosts,
+        hosts,
         traits: this._getTraits(),
       };
     },
@@ -2180,6 +2190,27 @@ StorageActors.createActor(
 
     async getValuesForHost(host, name) {
       if (!name) {
+        // if we get here, we most likely clicked on the refresh button
+        // which called getStoreObjects, itself calling this method,
+        // all that, without having selected any particular cache name.
+        //
+        // Try to detect if a new cache has been added and notify the client
+        // asynchronously, via a RDP event.
+        const previousCaches = [...this.hostVsStores.get(host).keys()];
+        await this.preListStores();
+        const updatedCaches = [...this.hostVsStores.get(host).keys()];
+        const newCaches = updatedCaches.filter(
+          cacheName => !previousCaches.includes(cacheName)
+        );
+        newCaches.forEach(cacheName =>
+          this.onItemUpdated("added", host, [cacheName])
+        );
+        const removedCaches = previousCaches.filter(
+          cacheName => !updatedCaches.includes(cacheName)
+        );
+        removedCaches.forEach(cacheName =>
+          this.onItemUpdated("deleted", host, [cacheName])
+        );
         return [];
       }
       // UI is weird and expect a JSON stringified array... and pass it back :/
@@ -2683,7 +2714,7 @@ StorageActors.createActor(
 
       return {
         actor: this.actorID,
-        hosts: hosts,
+        hosts,
         traits: this._getTraits(),
       };
     },
@@ -2777,7 +2808,7 @@ StorageActors.createActor(
 
         mm.sendAsyncMessage("debug:storage-indexedDB-request-parent", {
           method: methodName,
-          args: args,
+          args,
         });
 
         return promise;
@@ -2821,7 +2852,7 @@ var indexedDBHelpers = {
   backToChild(...args) {
     Services.mm.broadcastAsyncMessage("debug:storage-indexedDB-request-child", {
       method: "backToChild",
-      args: args,
+      args,
     });
   },
 
@@ -2857,7 +2888,7 @@ var indexedDBHelpers = {
     });
   },
 
-  splitNameAndStorage: function(name) {
+  splitNameAndStorage(name) {
     const lastOpenBracketIndex = name.lastIndexOf("(");
     const lastCloseBracketIndex = name.lastIndexOf(")");
     const delta = lastCloseBracketIndex - lastOpenBracketIndex - 1;
@@ -2874,17 +2905,26 @@ var indexedDBHelpers = {
    * the browser.
    */
   async getInternalHosts() {
-    const profileDir = OS.Constants.Path.profileDir;
-    const storagePath = OS.Path.join(profileDir, "storage", "permanent");
-    const iterator = new OS.File.DirectoryIterator(storagePath);
+    const profileDir = PathUtils.profileDir;
+    const storagePath = PathUtils.join(profileDir, "storage", "permanent");
+    const children = await IOUtils.getChildren(storagePath);
     const hosts = [];
 
-    await iterator.forEach(entry => {
-      if (entry.isDir && !SAFE_HOSTS_PREFIXES_REGEX.test(entry.name)) {
-        hosts.push(entry.name);
+    for (const path of children) {
+      const exists = await IOUtils.exists(path);
+      if (!exists) {
+        continue;
       }
-    });
-    iterator.close();
+
+      const stats = await IOUtils.stat(path);
+      if (
+        stats.type === "directory" &&
+        !SAFE_HOSTS_PREFIXES_REGEX.test(stats.path)
+      ) {
+        const basename = PathUtils.filename(path);
+        hosts.push(basename);
+      }
+    }
 
     return this.backToChild("getInternalHosts", hosts);
   },
@@ -2893,9 +2933,9 @@ var indexedDBHelpers = {
    * Opens an indexed db connection for the given `principal` and
    * database `name`.
    */
-  openWithPrincipal: function(principal, name, storage) {
+  openWithPrincipal(principal, name, storage) {
     return indexedDBForStorage.openForPrincipal(principal, name, {
-      storage: storage,
+      storage,
     });
   },
 
@@ -2903,7 +2943,7 @@ var indexedDBHelpers = {
     const result = new Promise(resolve => {
       const { name, storage } = this.splitNameAndStorage(dbName);
       const request = indexedDBForStorage.deleteForPrincipal(principal, name, {
-        storage: storage,
+        storage,
       });
 
       request.onsuccess = () => {
@@ -3008,10 +3048,10 @@ var indexedDBHelpers = {
    */
   async getDBNamesForHost(host, principal) {
     const sanitizedHost = this.getSanitizedHost(host) + principal.originSuffix;
-    const profileDir = OS.Constants.Path.profileDir;
+    const profileDir = PathUtils.profileDir;
+    const storagePath = PathUtils.join(profileDir, "storage");
     const files = [];
     const names = [];
-    const storagePath = OS.Path.join(profileDir, "storage");
 
     // We expect sqlite DB paths to look something like this:
     // - PathToProfileDir/storage/default/http+++www.example.com/
@@ -3031,7 +3071,7 @@ var indexedDBHelpers = {
     );
 
     for (const file of sqliteFiles) {
-      const splitPath = OS.Path.split(file).components;
+      const splitPath = PathUtils.split(file);
       const idbIndex = splitPath.indexOf("idb");
       const storage = splitPath[idbIndex - 2];
       const relative = file.substr(profileDir.length + 1);
@@ -3065,13 +3105,19 @@ var indexedDBHelpers = {
     const sqlitePaths = [];
     const idbPaths = await this.findIDBPathsForHost(storagePath, sanitizedHost);
     for (const idbPath of idbPaths) {
-      const iterator = new OS.File.DirectoryIterator(idbPath);
-      await iterator.forEach(entry => {
-        if (!entry.isDir && entry.path.endsWith(".sqlite")) {
-          sqlitePaths.push(entry.path);
+      const children = await IOUtils.getChildren(idbPath);
+
+      for (const path of children) {
+        const exists = await IOUtils.exists(path);
+        if (!exists) {
+          continue;
         }
-      });
-      iterator.close();
+
+        const stats = await IOUtils.stat(path);
+        if (stats.type !== "directory" && stats.path.endsWith(".sqlite")) {
+          sqlitePaths.push(path);
+        }
+      }
     }
     return sqlitePaths;
   },
@@ -3084,8 +3130,8 @@ var indexedDBHelpers = {
     const idbPaths = [];
     const typePaths = await this.findStorageTypePaths(storagePath);
     for (const typePath of typePaths) {
-      const idbPath = OS.Path.join(typePath, sanitizedHost, "idb");
-      if (await OS.File.exists(idbPath)) {
+      const idbPath = PathUtils.join(typePath, sanitizedHost, "idb");
+      if (await IOUtils.exists(idbPath)) {
         idbPaths.push(idbPath);
       }
     }
@@ -3098,14 +3144,21 @@ var indexedDBHelpers = {
    * types that currently exist in the profile.
    */
   async findStorageTypePaths(storagePath) {
-    const iterator = new OS.File.DirectoryIterator(storagePath);
+    const children = await IOUtils.getChildren(storagePath);
     const typePaths = [];
-    await iterator.forEach(entry => {
-      if (entry.isDir) {
-        typePaths.push(entry.path);
+
+    for (const path of children) {
+      const exists = await IOUtils.exists(path);
+      if (!exists) {
+        continue;
       }
-    });
-    iterator.close();
+
+      const stats = await IOUtils.stat(path);
+      if (stats.type === "directory") {
+        typePaths.push(path);
+      }
+    }
+
     return typePaths;
   },
 
@@ -3133,7 +3186,7 @@ var indexedDBHelpers = {
     // will throw. Thus we retry for some time to see if lock is removed.
     while (!connection && retryCount++ < 25) {
       try {
-        connection = await Sqlite.openConnection({ path: path });
+        connection = await Sqlite.openConnection({ path });
       } catch (ex) {
         // Continuously retrying is overkill. Waiting for 100ms before next try
         await sleep(100);
@@ -3174,7 +3227,7 @@ var indexedDBHelpers = {
           dbs.push(db.toObject());
         }
       }
-      return this.backToChild("getValuesForHost", { dbs: dbs });
+      return this.backToChild("getValuesForHost", { dbs });
     }
 
     const [db2, objectStore, id] = name;
@@ -3194,7 +3247,7 @@ var indexedDBHelpers = {
         }
       }
       return this.backToChild("getValuesForHost", {
-        objectStores: objectStores,
+        objectStores,
       });
     }
     // Get either all entries from the object store, or a particular id
@@ -3205,14 +3258,14 @@ var indexedDBHelpers = {
       db2,
       storage,
       {
-        objectStore: objectStore,
-        id: id,
+        objectStore,
+        id,
         index: options.index,
         offset: options.offset,
         size: options.size,
       }
     );
-    return this.backToChild("getValuesForHost", { result: result });
+    return this.backToChild("getValuesForHost", { result });
   },
 
   /**
@@ -3268,7 +3321,7 @@ var indexedDBHelpers = {
           const count = event2.target.result;
           objectsSize.push({
             key: host + dbName + objectStore + index,
-            count: count,
+            count,
           });
 
           if (!offset) {
@@ -3291,8 +3344,8 @@ var indexedDBHelpers = {
               if (!cursor || data.length >= size) {
                 db.close();
                 resolve({
-                  data: data,
-                  objectsSize: objectsSize,
+                  data,
+                  objectsSize,
                 });
                 return;
               }
@@ -3572,11 +3625,8 @@ const StorageActor = protocol.ActorClassWithSpec(specs.storageSpec, {
   },
 
   isIncludedInTargetExtension(subject) {
-    const { document } = subject;
-    return (
-      document.nodePrincipal.addonId &&
-      document.nodePrincipal.addonId === this.parentActor.addonId
-    );
+    const addonId = getAddonIdForWindowGlobal(subject.windowGlobalChild);
+    return addonId && addonId === this.parentActor.addonId;
   },
 
   isIncludedInTopLevelWindow(window) {

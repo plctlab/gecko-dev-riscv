@@ -965,10 +965,6 @@ pub const SHM_UNLOCK: ::c_int = 12;
 pub const SHM_HUGETLB: ::c_int = 0o4000;
 pub const SHM_NORESERVE: ::c_int = 0o10000;
 
-pub const EPOLLRDHUP: ::c_int = 0x2000;
-pub const EPOLLEXCLUSIVE: ::c_int = 0x10000000;
-pub const EPOLLONESHOT: ::c_int = 0x40000000;
-
 pub const QFMT_VFS_OLD: ::c_int = 1;
 pub const QFMT_VFS_V0: ::c_int = 2;
 
@@ -1372,8 +1368,6 @@ pub const PTRACE_INTERRUPT: ::c_int = 0x4207;
 pub const PTRACE_LISTEN: ::c_int = 0x4208;
 pub const PTRACE_PEEKSIGINFO: ::c_int = 0x4209;
 
-pub const EPOLLWAKEUP: ::c_int = 0x20000000;
-
 pub const PTRACE_GETFPREGS: ::c_uint = 14;
 pub const PTRACE_SETFPREGS: ::c_uint = 15;
 pub const PTRACE_GETFPXREGS: ::c_uint = 18;
@@ -1674,6 +1668,8 @@ pub const ATF_MAGIC: ::c_int = 0x80;
 pub const PRIO_PROCESS: ::c_int = 0;
 pub const PRIO_PGRP: ::c_int = 1;
 pub const PRIO_USER: ::c_int = 2;
+
+pub const SOMAXCONN: ::c_int = 128;
 
 f! {
     pub fn CMSG_NXTHDR(mhdr: *const msghdr,

@@ -138,10 +138,8 @@ RegI32 BaseCompiler::captureReturnedI32() {
   RegI32 r = RegI32(ReturnReg);
   MOZ_ASSERT(isAvailableI32(r));
   needI32(r);
-#if defined(JS_CODEGEN_X64)
-  if (JitOptions.spectreIndexMasking) {
-    masm.movl(r, r);
-  }
+#if defined(JS_64BIT)
+  masm.widenInt32(r);
 #endif
   return r;
 }
@@ -261,15 +259,6 @@ void BaseCompiler::branchTo(Assembler::Condition c, RegI64 lhs, Imm64 rhs,
 void BaseCompiler::branchTo(Assembler::Condition c, RegRef lhs, ImmWord rhs,
                             Label* l) {
   masm.branchPtr(c, lhs, rhs, l);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-//
-// Debugger API.
-
-void BaseCompiler::insertBreakablePoint(CallSiteDesc::Kind kind) {
-  fr.loadTlsPtr(WasmTlsReg);
-  masm.nopPatchableToCall(CallSiteDesc(iter_.lastOpcodeOffset(), kind));
 }
 
 //////////////////////////////////////////////////////////////////////////////

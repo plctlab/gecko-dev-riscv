@@ -70,8 +70,14 @@ menu-file-open-location =
 menu-file-open-file =
     .label = Open File…
     .accesskey = O
-menu-file-close =
-    .label = Close
+# Variables:
+#  $tabCount (Number): the number of tabs that are affected by the action.
+menu-file-close-tab =
+    .label =
+        { $tabCount ->
+            [1] Close Tab
+           *[other] Close { $tabCount } Tabs
+        }
     .accesskey = C
 menu-file-close-window =
     .label = Close Window
@@ -88,9 +94,6 @@ menu-file-share-url =
 menu-file-print-setup =
     .label = Page Setup…
     .accesskey = u
-menu-file-print-preview =
-    .label = Print Preview
-    .accesskey = v
 menu-file-print =
     .label = Print…
     .accesskey = P
@@ -215,10 +218,10 @@ menu-bookmarks-menu =
     .accesskey = B
 menu-bookmarks-manage =
     .label = Manage Bookmarks
-menu-bookmark-current-tab =
-    .label = Bookmark Current Tab
-menu-bookmark-edit =
-    .label = Edit This Bookmark
+menu-bookmark-tab =
+    .label = Bookmark Current Tab…
+menu-edit-bookmark =
+    .label = Edit This Bookmark…
 menu-bookmarks-all-tabs =
     .label = Bookmark All Tabs…
 menu-bookmarks-toolbar =
@@ -302,8 +305,8 @@ menu-help-more-troubleshooting-info =
     .accesskey = T
 menu-help-report-site-issue =
     .label = Report Site Issue…
-menu-help-feedback-page =
-    .label = Submit Feedback…
+menu-help-share-ideas =
+    .label = Share Ideas and Feedback…
     .accesskey = S
 menu-help-enter-troubleshoot-mode2 =
     .label = Troubleshoot Mode…

@@ -8,6 +8,7 @@ import os
 
 from mozbuild.base import (
     BuildEnvironmentNotFoundException,
+    MachCommandConditions as conditions,
 )
 
 
@@ -28,9 +29,10 @@ thunderbird_excludes = os.path.join("comm", "tools", "lint", "GlobalExclude.txt"
 if os.path.exists(thunderbird_excludes):
     EXCLUSION_FILES_OPTIONAL.append(thunderbird_excludes)
 
-GLOBAL_EXCLUDES = ["node_modules", "tools/lint/test/files", ".hg", ".git"]
+GLOBAL_EXCLUDES = ["**/node_modules", "tools/lint/test/files", ".hg", ".git"]
 
 VALID_FORMATTERS = {"black", "clang-format", "rustfmt"}
+VALID_ANDROID_FORMATTERS = {"android-format"}
 
 
 def setup_argument_parser():
@@ -39,9 +41,10 @@ def setup_argument_parser():
     return cli.MozlintParser()
 
 
-def get_global_excludes(topsrcdir):
+def get_global_excludes(**lintargs):
     # exclude misc paths
     excludes = GLOBAL_EXCLUDES[:]
+    topsrcdir = lintargs["root"]
 
     # exclude top level paths that look like objdirs
     excludes.extend(
@@ -51,6 +54,11 @@ def get_global_excludes(topsrcdir):
             if name.startswith("obj") and os.path.isdir(name)
         ]
     )
+
+    if lintargs.get("include_thirdparty"):
+        # For some linters, we want to include the thirdparty code too.
+        # Example: trojan-source linter should run also on third party code.
+        return excludes
 
     for path in EXCLUSION_FILES + EXCLUSION_FILES_OPTIONAL:
         with open(os.path.join(topsrcdir, path), "r") as fh:
@@ -64,6 +72,7 @@ def get_global_excludes(topsrcdir):
     category="devenv",
     description="Run linters.",
     parser=setup_argument_parser,
+    virtualenv_name="lint",
 )
 def lint(command_context, *runargs, **lintargs):
     """Run linters."""
@@ -80,7 +89,7 @@ def lint(command_context, *runargs, **lintargs):
         pass
 
     lintargs.setdefault("root", command_context.topsrcdir)
-    lintargs["exclude"] = get_global_excludes(lintargs["root"])
+    lintargs["exclude"] = get_global_excludes(**lintargs)
     lintargs["config_paths"].insert(0, here)
     lintargs["virtualenv_bin_path"] = command_context.virtualenv_manager.bin_path
     lintargs["virtualenv_manager"] = command_context.virtualenv_manager
@@ -88,7 +97,10 @@ def lint(command_context, *runargs, **lintargs):
         parser.GLOBAL_SUPPORT_FILES.append(
             os.path.join(command_context.topsrcdir, path)
         )
-    return cli.run(*runargs, **lintargs)
+    setupargs = {
+        "mach_command_context": command_context,
+    }
+    return cli.run(*runargs, setupargs=setupargs, **lintargs)
 
 
 @Command(
@@ -143,16 +155,20 @@ def eslint(command_context, paths, extra_args=[], **kwargs):
 def format_files(command_context, paths, extra_args=[], **kwargs):
     linters = kwargs["linters"]
 
+    formatters = VALID_FORMATTERS
+    if conditions.is_android(command_context):
+        formatters |= VALID_ANDROID_FORMATTERS
+
     if not linters:
-        linters = VALID_FORMATTERS
+        linters = formatters
     else:
-        invalid_linters = set(linters) - VALID_FORMATTERS
+        invalid_linters = set(linters) - formatters
         if invalid_linters:
             print(
                 "error: One or more linters passed are not valid formatters. "
                 "Note that only the following linters are valid formatters:"
             )
-            print("\n".join(sorted(VALID_FORMATTERS)))
+            print("\n".join(sorted(formatters)))
             return 1
 
     kwargs["linters"] = list(linters)

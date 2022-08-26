@@ -2,21 +2,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "EnableDelayHelper",
   "resource://gre/modules/SharedPromptUtils.jsm"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gReputationService",
   "@mozilla.org/reputationservice/application-reputation-service;1",
   Ci.nsIApplicationReputationService
@@ -25,9 +25,8 @@ XPCOMUtils.defineLazyServiceGetter(
 const { Integration } = ChromeUtils.import(
   "resource://gre/modules/Integration.jsm"
 );
-/* global DownloadIntegration */
 Integration.downloads.defineModuleGetter(
-  this,
+  lazy,
   "DownloadIntegration",
   "resource://gre/modules/DownloadIntegration.jsm"
 );
@@ -294,11 +293,13 @@ nsUnknownContentTypeDialog.prototype = {
           let defaultFolder = new FileUtils.File(preferredDir);
 
           try {
-            result = this.validateLeafName(
-              defaultFolder,
-              aDefaultFileName,
-              aSuggestedFileExtension
-            );
+            if (aDefaultFileName) {
+              result = this.validateLeafName(
+                defaultFolder,
+                aDefaultFileName,
+                aSuggestedFileExtension
+              );
+            }
           } catch (ex) {
             // When the default download directory is write-protected,
             // prompt the user for a different target file.
@@ -306,13 +307,6 @@ nsUnknownContentTypeDialog.prototype = {
 
           // Check to make sure we have a valid directory, otherwise, prompt
           if (result) {
-            // Notifications for CloudStorage API consumers to show offer
-            // prompts while downloading. See Bug 1365129
-            Services.obs.notifyObservers(
-              null,
-              "cloudstorage-prompt-notification",
-              result.path
-            );
             // This path is taken when we have a writable default download directory.
             aLauncher.saveDestinationAvailable(result);
             return;
@@ -414,7 +408,8 @@ nsUnknownContentTypeDialog.prototype = {
               }
             }
           }
-          aLauncher.saveDestinationAvailable(result);
+          // Don't pop up the downloads panel redundantly.
+          aLauncher.saveDestinationAvailable(result, true);
         });
       });
     })().catch(Cu.reportError);
@@ -502,15 +497,29 @@ nsUnknownContentTypeDialog.prototype = {
     this.mDialog.document.addEventListener("dialogaccept", this);
     this.mDialog.document.addEventListener("dialogcancel", this);
 
-    // Some URIs do not implement nsIURL, so we can't just QI.
     var url = this.mLauncher.source;
     if (url instanceof Ci.nsINestedURI) {
       url = url.innermostURI;
+    }
+    if (url.scheme == "blob") {
+      let origin = new URL(url.spec).origin;
+      // Origin can be "null" for blob URIs from a sandbox.
+      if (origin != "null") {
+        // `newURI` can throw (like for null) and throwing here breaks...
+        // a lot of stuff. So let's avoid doing that in case there are other
+        // edgecases we're missing here.
+        try {
+          url = Services.io.newURI(origin);
+        } catch (ex) {
+          Cu.reportError(ex);
+        }
+      }
     }
 
     var fname = "";
     var iconPath = "goat";
     this.mSourcePath = url.prePath;
+    // Some URIs do not implement nsIURL, so we can't just QI.
     if (url instanceof Ci.nsIURL) {
       // A url, use file name from it.
       fname = iconPath = url.fileName;
@@ -548,13 +557,20 @@ nsUnknownContentTypeDialog.prototype = {
     // then set up simple ui
     var mimeType = this.mLauncher.MIMEInfo.MIMEType;
     let isPlain = mimeType == "text/plain";
+
+    this.isExemptExecutableExtension = Services.policies.isExemptExecutableExtension(
+      url.spec,
+      fname?.split(".").at(-1)
+    );
+
     var shouldntRememberChoice =
       mimeType == "application/octet-stream" ||
       mimeType == "application/x-msdownload" ||
-      this.mLauncher.targetFileIsExecutable ||
+      (this.mLauncher.targetFileIsExecutable &&
+        !this.isExemptExecutableExtension) ||
       // Do not offer to remember text/plain mimetype choices if the file
       // isn't actually a 'plain' text file.
-      (isPlain && gReputationService.isBinary(suggestedFileName));
+      (isPlain && lazy.gReputationService.isBinary(suggestedFileName));
     if (
       (shouldntRememberChoice && !this.openWithDefaultOK()) ||
       Services.prefs.getBoolPref("browser.download.forbid_open_with")
@@ -615,7 +631,7 @@ nsUnknownContentTypeDialog.prototype = {
       this.dialog.postShowCallback();
     }, 0);
 
-    this.delayHelper = new EnableDelayHelper({
+    this.delayHelper = new lazy.EnableDelayHelper({
       disableDialog: () => {
         dialog.getButton("accept").disabled = true;
       },
@@ -728,7 +744,10 @@ nsUnknownContentTypeDialog.prototype = {
       // in that case).
 
       //  Default is Ok if the file isn't executable (and vice-versa).
-      return !this.mLauncher.targetFileIsExecutable;
+      return (
+        !this.mLauncher.targetFileIsExecutable ||
+        this.isExemptExecutableExtension
+      );
     }
     // On other platforms, default is Ok if there is a default app.
     // Note that nsIMIMEInfo providers need to ensure that this holds true
@@ -769,8 +788,10 @@ nsUnknownContentTypeDialog.prototype = {
     var mimeType = this.mLauncher.MIMEInfo.MIMEType;
     var openHandler = this.dialogElement("openHandler");
     if (
-      this.mLauncher.targetFileIsExecutable ||
+      (this.mLauncher.targetFileIsExecutable &&
+        !this.isExemptExecutableExtension) ||
       ((mimeType == "application/octet-stream" ||
+        mimeType == "application/x-msdos-program" ||
         mimeType == "application/x-msdownload") &&
         !openWithDefaultOK)
     ) {
@@ -852,7 +873,9 @@ nsUnknownContentTypeDialog.prototype = {
       // If that's the default, then switch to "save to disk."
       if (isSelected) {
         openHandler.selectedIndex = 1;
-        modeGroup.selectedItem = this.dialogElement("save");
+        if (this.dialogElement("open").selected) {
+          modeGroup.selectedItem = this.dialogElement("save");
+        }
       }
     }
 
@@ -1066,7 +1089,7 @@ nsUnknownContentTypeDialog.prototype = {
     // taking over).
     this.mLauncher.setWebProgressListener(null);
 
-    // saveToDisk and launchWithApplication can return errors in
+    // saveToDisk and setDownloadToLaunch can return errors in
     // certain circumstances (e.g. The user clicks cancel in the
     // "Save to Disk" dialog. In those cases, we don't want to
     // update the helper application preferences in the RDF file.
@@ -1081,7 +1104,13 @@ nsUnknownContentTypeDialog.prototype = {
         );
         this._saveToDiskTimer.initWithCallback(this, 0, nsITimer.TYPE_ONE_SHOT);
       } else {
-        this.mLauncher.launchWithApplication(this.handleInternally, null);
+        let uri = this.mLauncher.source;
+        // Launch local files immediately without downloading them:
+        if (uri instanceof Ci.nsIFileURL) {
+          this.mLauncher.launchLocalFile();
+        } else {
+          this.mLauncher.setDownloadToLaunch(this.handleInternally, null);
+        }
       }
 
       // Update user pref for this mime type (if necessary). We do not
@@ -1095,7 +1124,9 @@ nsUnknownContentTypeDialog.prototype = {
       ) {
         this.updateHelperAppPref();
       }
-    } catch (e) {}
+    } catch (e) {
+      Cu.reportError(e);
+    }
 
     this.onUnload();
   },
@@ -1107,7 +1138,10 @@ nsUnknownContentTypeDialog.prototype = {
     // Cancel app launcher.
     try {
       this.mLauncher.cancel(Cr.NS_BINDING_ABORTED);
-    } catch (exception) {}
+    } catch (e) {
+      Cu.reportError(e);
+    }
+
     this.onUnload();
   },
 
@@ -1320,7 +1354,7 @@ nsUnknownContentTypeDialog.prototype = {
         "browser.helperApps.showOpenOptionForViewableInternally",
         false
       ) &&
-      DownloadIntegration.shouldViewDownloadInternally(
+      lazy.DownloadIntegration.shouldViewDownloadInternally(
         this.mLauncher.MIMEInfo.MIMEType,
         primaryExtension
       )

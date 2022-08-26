@@ -428,6 +428,11 @@ void MacroAssembler::rotateRight64(Imm32 count, Register64 src, Register64 dest,
 // ===============================================================
 // Condition functions
 
+void MacroAssembler::cmp64Set(Condition cond, Address lhs, Imm64 rhs,
+                              Register dest) {
+  cmpPtrSet(cond, lhs, ImmWord(static_cast<uintptr_t>(rhs.value)), dest);
+}
+
 template <typename T1, typename T2>
 void MacroAssembler::cmpPtrSet(Condition cond, T1 lhs, T2 rhs, Register dest) {
   cmpPtr(lhs, rhs);
@@ -881,19 +886,6 @@ void MacroAssembler::spectreBoundsCheckPtr(Register index,
 
 // ========================================================================
 // SIMD.
-//
-// These are x64-only because they use ScratchRegister or they use a quadword
-// operation.  SSE4.1 or better is assumed.
-
-// Any lane true, ie any bit set
-
-void MacroAssembler::anyTrueSimd128(FloatRegister src, Register dest) {
-  ScratchRegisterScope one(*this);
-  movl(Imm32(1), one);
-  movl(Imm32(0), dest);
-  vptest(src, src);
-  cmovCCl(NonZero, one, dest);
-}
 
 // Extract lane as scalar
 
@@ -913,11 +905,20 @@ void MacroAssembler::replaceLaneInt64x2(unsigned lane, Register64 rhs,
   vpinsrq(lane, rhs.reg, lhsDest, lhsDest);
 }
 
+void MacroAssembler::replaceLaneInt64x2(unsigned lane, FloatRegister lhs,
+                                        Register64 rhs, FloatRegister dest) {
+  vpinsrq(lane, rhs.reg, lhs, dest);
+}
+
 // Splat
 
 void MacroAssembler::splatX2(Register64 src, FloatRegister dest) {
-  vpinsrq(0, src.reg, dest, dest);
-  vpinsrq(1, src.reg, dest, dest);
+  vmovq(src.reg, dest);
+  if (HasAVX2()) {
+    vbroadcastq(Operand(dest), dest);
+  } else {
+    vpunpcklqdq(dest, dest, dest);
+  }
 }
 
 // ========================================================================

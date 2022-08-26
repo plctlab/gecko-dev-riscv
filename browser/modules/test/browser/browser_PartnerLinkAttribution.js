@@ -16,12 +16,15 @@ const SUGGEST_URLBAR_PREF = "browser.urlbar.suggest.searches";
 const SUGGESTION_ENGINE_NAME =
   "browser_UsageTelemetry usageTelemetrySearchSuggestions.xml";
 
+ChromeUtils.defineESModuleGetters(this, {
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+});
+
 XPCOMUtils.defineLazyModuleGetters(this, {
   CustomizableUITestUtils:
     "resource://testing-common/CustomizableUITestUtils.jsm",
   Region: "resource://gre/modules/Region.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
   HttpServer: "resource://testing-common/httpd.js",
 });
 
@@ -36,7 +39,7 @@ function submitHandler(request, response) {
   response.setStatusLine(request.httpVersion, 200, "Ok");
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   // Ensure the initial init is complete.
   await Services.search.init();
 

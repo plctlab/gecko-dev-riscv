@@ -126,9 +126,8 @@ enum class GCAbortReason {
   _(WasmResolveResponseClosure)            \
   _(WasmModule)                            \
   _(WasmTableTable)                        \
-  _(WasmTagTag)                            \
+  _(WasmExceptionData)                     \
   _(WasmTagType)                           \
-  _(WasmExceptionTag)                      \
   _(WasmRttValueChildren)                  \
   _(FileObjectFile)                        \
   _(Debugger)                              \
@@ -140,10 +139,11 @@ enum class GCAbortReason {
   _(FinalizationRegistryRecordVector)      \
   _(FinalizationRegistryRegistrations)     \
   _(FinalizationRecordVector)              \
-  _(ZoneAllocPolicy)                       \
+  _(TrackedAllocPolicy)                    \
   _(SharedArrayRawBuffer)                  \
   _(XDRBufferElements)                     \
-  _(GlobalObjectData)
+  _(GlobalObjectData)                      \
+  _(ProxyExternalValueArray)
 
 #define JS_FOR_EACH_MEMORY_USE(_)  \
   JS_FOR_EACH_PUBLIC_MEMORY_USE(_) \

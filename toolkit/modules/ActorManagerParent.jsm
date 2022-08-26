@@ -11,8 +11,11 @@
 
 var EXPORTED_SYMBOLS = ["ActorManagerParent"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
 /**
@@ -39,11 +42,21 @@ let JSPROCESSACTORS = {
       moduleURI: "resource://gre/modules/ContentPrefServiceChild.jsm",
     },
   },
+
   ExtensionContent: {
     child: {
       moduleURI: "resource://gre/modules/ExtensionContent.jsm",
     },
     includeParent: true,
+  },
+
+  ProcessConduits: {
+    parent: {
+      moduleURI: "resource://gre/modules/ConduitsParent.jsm",
+    },
+    child: {
+      moduleURI: "resource://gre/modules/ConduitsChild.jsm",
+    },
   },
 };
 
@@ -385,23 +398,6 @@ let JSWINDOWACTORS = {
     allFrames: true,
   },
 
-  Select: {
-    parent: {
-      moduleURI: "resource://gre/actors/SelectParent.jsm",
-    },
-
-    child: {
-      moduleURI: "resource://gre/actors/SelectChild.jsm",
-      events: {
-        mozshowdropdown: {},
-        "mozshowdropdown-sourcetouch": {},
-        mozhidedropdown: { mozSystemGroup: true },
-      },
-    },
-
-    allFrames: true,
-  },
-
   // This actor is available for all pages that one can
   // view the source of, however it won't be created until a
   // request to view the source is made via the message
@@ -478,6 +474,67 @@ let JSWINDOWACTORS = {
     allFrames: true,
   },
 };
+
+/**
+ * Note that turning on page data collection for snapshots currently disables
+ * collection of generic page info for normal history entries. See bug 1740234.
+ */
+if (!Services.prefs.getBoolPref("browser.pagedata.enabled", false)) {
+  JSWINDOWACTORS.ContentMeta = {
+    parent: {
+      moduleURI: "resource://gre/actors/ContentMetaParent.jsm",
+    },
+
+    child: {
+      moduleURI: "resource://gre/actors/ContentMetaChild.jsm",
+      events: {
+        DOMContentLoaded: {},
+        DOMMetaAdded: { createActor: false },
+      },
+    },
+
+    messageManagerGroups: ["browsers"],
+  };
+}
+
+if (AppConstants.platform != "android") {
+  // For GeckoView support see bug 1776829.
+  JSWINDOWACTORS.ClipboardReadTextPaste = {
+    parent: {
+      moduleURI: "resource://gre/actors/ClipboardReadTextPasteParent.jsm",
+    },
+
+    child: {
+      moduleURI: "resource://gre/actors/ClipboardReadTextPasteChild.jsm",
+      events: {
+        MozClipboardReadTextPaste: {},
+      },
+    },
+
+    allFrames: true,
+  };
+
+  /**
+   * Note that GeckoView has another implementation in mobile/android/actors.
+   */
+  JSWINDOWACTORS.Select = {
+    parent: {
+      moduleURI: "resource://gre/actors/SelectParent.jsm",
+    },
+
+    child: {
+      moduleURI: "resource://gre/actors/SelectChild.jsm",
+      events: {
+        mozshowdropdown: {},
+        "mozshowdropdown-sourcetouch": {},
+        mozhidedropdown: { mozSystemGroup: true },
+      },
+    },
+
+    includeChrome: true,
+    allFrames: true,
+  };
+}
 
 var ActorManagerParent = {
   _addActors(actors, kind) {

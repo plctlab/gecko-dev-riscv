@@ -3,6 +3,8 @@ import Adapter from "enzyme-adapter-react-16";
 import { chaiAssertions } from "test/schemas/pings";
 import chaiJsonSchema from "chai-json-schema";
 import enzyme from "enzyme";
+import FxMSCommonSchema from "../../content-src/asrouter/schemas/FxMSCommon.schema.json";
+
 enzyme.configure({ adapter: new Adapter() });
 
 // Cause React warnings to make tests that trigger them fail
@@ -29,6 +31,7 @@ sinon.assert.expose(assert, { prefix: "" });
 
 chai.use(chaiAssertions);
 chai.use(chaiJsonSchema);
+chai.tv4.addSchema("file:///FxMSCommon.schema.json", FxMSCommonSchema);
 
 const overrider = new GlobalOverrider();
 
@@ -74,6 +77,37 @@ class Logger {
   warn() {}
 }
 
+function ConsoleAPI() {}
+ConsoleAPI.prototype.debug = () => {};
+ConsoleAPI.prototype.trace = () => {};
+// Comment out the above prototype assignments and uncomment the ones below to get more
+// ASRouter logging in tests:
+//ConsoleAPI.prototype.debug = console.debug;
+//ConsoleAPI.prototype.trace = console.trace;
+
+// Detect plain object passed to lazy getter APIs, and set its prototype to
+// global object, and return the global object for further modification.
+// Returns the object if it's not plain object.
+//
+// This is a workaround to make the existing testharness and testcase keep
+// working even after lazy getters are moved to plain `lazy` object.
+const cachedPlainObject = new Set();
+function updateGlobalOrObject(object) {
+  // Given this function modifies the prototype, and the following
+  // condition doesn't meet on the second call, cache the result.
+  if (cachedPlainObject.has(object)) {
+    return global;
+  }
+
+  if (Object.getPrototypeOf(object).constructor.name !== "Object") {
+    return object;
+  }
+
+  cachedPlainObject.add(object);
+  Object.setPrototypeOf(object, global);
+  return global;
+}
+
 const TEST_GLOBAL = {
   JSWindowActorParent,
   JSWindowActorChild,
@@ -94,6 +128,9 @@ const TEST_GLOBAL = {
     },
     platform: "win",
   },
+  ASRouterPreferences: {
+    console: new ConsoleAPI(),
+  },
   UpdateUtils: { getUpdateChannel() {} },
   BasePromiseWorker: class {
     constructor() {
@@ -104,11 +141,15 @@ const TEST_GLOBAL = {
   browserSearchRegion: "US",
   BrowserWindowTracker: { getTopWindow() {} },
   ChromeUtils: {
-    defineModuleGetter() {},
+    defineModuleGetter: updateGlobalOrObject,
+    defineESModuleGetters: updateGlobalOrObject,
     generateQI() {
       return {};
     },
     import() {
+      return global;
+    },
+    importESModule() {
       return global;
     },
   },
@@ -131,6 +172,7 @@ const TEST_GLOBAL = {
     },
     isSuccessCode: () => true,
   },
+  ConsoleAPI,
   // NB: These are functions/constructors
   // eslint-disable-next-line object-shorthand
   ContentSearchUIController: function() {},
@@ -218,6 +260,27 @@ const TEST_GLOBAL = {
     writeJSON() {
       return Promise.resolve(0);
     },
+    readJSON() {
+      return Promise.resolve({});
+    },
+    read() {
+      return Promise.resolve(new Uint8Array());
+    },
+    makeDirectory() {
+      return Promise.resolve(0);
+    },
+    write() {
+      return Promise.resolve(0);
+    },
+    exists() {
+      return Promise.resolve(0);
+    },
+    remove() {
+      return Promise.resolve(0);
+    },
+    stat() {
+      return Promise.resolve(0);
+    },
   },
   NewTabUtils: {
     activityStreamProvider: {
@@ -249,6 +312,9 @@ const TEST_GLOBAL = {
   },
   PathUtils: {
     join(...parts) {
+      return parts[parts.length - 1];
+    },
+    joinRelative(...parts) {
       return parts[parts.length - 1];
     },
     getProfileDir() {
@@ -422,22 +488,15 @@ const TEST_GLOBAL = {
   },
   XPCOMUtils: {
     defineLazyGetter(object, name, f) {
-      if (object && name) {
-        object[name] = f();
-      } else {
-        f();
-      }
+      updateGlobalOrObject(object)[name] = f();
     },
-    defineLazyGlobalGetters() {},
-    defineLazyModuleGetter() {},
-    defineLazyModuleGetters() {},
-    defineLazyServiceGetter() {},
-    defineLazyServiceGetters() {},
-    defineLazyPreferenceGetter(obj, name) {
-      Object.defineProperty(obj, name, {
-        configurable: true,
-        get: () => "",
-      });
+    defineLazyGlobalGetters: updateGlobalOrObject,
+    defineLazyModuleGetter: updateGlobalOrObject,
+    defineLazyModuleGetters: updateGlobalOrObject,
+    defineLazyServiceGetter: updateGlobalOrObject,
+    defineLazyServiceGetters: updateGlobalOrObject,
+    defineLazyPreferenceGetter(object, name) {
+      updateGlobalOrObject(object)[name] = "";
     },
     generateQI() {
       return {};
@@ -476,8 +535,16 @@ const TEST_GLOBAL = {
     off: () => {},
   },
   NimbusFeatures: {
+    glean: {
+      getVariable() {},
+    },
     newtab: {
-      isEnabled() {},
+      getVariable() {},
+      getAllVariables() {},
+      onUpdate() {},
+      off() {},
+    },
+    pocketNewtab: {
       getVariable() {},
       getAllVariables() {},
       onUpdate() {},
@@ -520,8 +587,38 @@ const TEST_GLOBAL = {
     removeExpirationFilter() {},
   },
   Logger,
+  getFxAccountsSingleton() {},
+  AboutNewTab: {},
+  Glean: {
+    newtab: {
+      opened: {
+        record() {},
+      },
+      closed: {
+        record() {},
+      },
+      locale: {
+        set() {},
+      },
+    },
+    topsites: {
+      impression: {
+        record() {},
+      },
+      click: {
+        record() {},
+      },
+    },
+  },
+  GleanPings: {
+    newtab: {
+      submit() {},
+    },
+  },
+  Utils: {
+    SERVER_URL: "bogus://foo",
+  },
 };
-TEST_GLOBAL.NimbusFeatures.pocketNewtab = TEST_GLOBAL.NimbusFeatures.newtab;
 overrider.set(TEST_GLOBAL);
 
 describe("activity-stream", () => {

@@ -15,8 +15,6 @@
 #include <string.h>
 #include <stdarg.h>
 
-#define kNotFound -1
-
 #include "nsStringFlags.h"
 #include "nsTStringRepr.h"
 #include "nsTSubstring.h"
@@ -26,8 +24,8 @@
  * ASCII case-insensitive comparator.  (for Unicode case-insensitive
  * comparision, see nsUnicharUtils.h)
  */
-int nsCaseInsensitiveCStringComparator(const char*, const char*, uint32_t,
-                                       uint32_t);
+int nsCaseInsensitiveCStringComparator(const char*, const char*, size_t,
+                                       size_t);
 
 class nsCaseInsensitiveCStringArrayComparator {
  public:

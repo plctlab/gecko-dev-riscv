@@ -11,10 +11,6 @@ interface XULControllers;
 interface XULElement : Element {
   [HTMLConstructor] constructor();
 
-  // Layout properties
-  [SetterThrows]
-  attribute DOMString flex;
-
   // Properties for hiding elements.
   attribute boolean hidden;
   attribute boolean collapsed;
@@ -44,10 +40,6 @@ interface XULElement : Element {
   attribute DOMString maxWidth;
   [SetterThrows]
   attribute DOMString maxHeight;
-
-  // Return the screen coordinates of the element.
-  readonly attribute long screenX;
-  readonly attribute long screenY;
 
   // Tooltip
   [SetterThrows]

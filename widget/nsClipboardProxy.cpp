@@ -11,7 +11,7 @@
 #include "nsComponentManagerUtils.h"
 #include "nsXULAppAPI.h"
 #include "nsContentUtils.h"
-#include "nsStringStream.h"
+#include "PermissionMessageUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -33,8 +33,7 @@ nsClipboardProxy::SetData(nsITransferable* aTransferable,
   nsCOMPtr<nsIPrincipal> requestingPrincipal =
       aTransferable->GetRequestingPrincipal();
   nsContentPolicyType contentPolicyType = aTransferable->GetContentPolicyType();
-  child->SendSetClipboard(ipcDataTransfer, isPrivateData,
-                          IPC::Principal(requestingPrincipal),
+  child->SendSetClipboard(ipcDataTransfer, isPrivateData, requestingPrincipal,
                           contentPolicyType, aWhichClipboard);
 
   return NS_OK;
@@ -46,62 +45,12 @@ nsClipboardProxy::GetData(nsITransferable* aTransferable,
   nsTArray<nsCString> types;
   aTransferable->FlavorsTransferableCanImport(types);
 
-  nsresult rv;
   IPCDataTransfer dataTransfer;
   ContentChild::GetSingleton()->SendGetClipboard(types, aWhichClipboard,
                                                  &dataTransfer);
-
-  auto& items = dataTransfer.items();
-  for (uint32_t j = 0; j < items.Length(); ++j) {
-    const IPCDataTransferItem& item = items[j];
-
-    if (item.data().type() == IPCDataTransferData::TnsString) {
-      nsCOMPtr<nsISupportsString> dataWrapper =
-          do_CreateInstance(NS_SUPPORTS_STRING_CONTRACTID, &rv);
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      const nsString& data = item.data().get_nsString();
-      rv = dataWrapper->SetData(data);
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      rv = aTransferable->SetTransferData(item.flavor().get(), dataWrapper);
-      NS_ENSURE_SUCCESS(rv, rv);
-    } else if (item.data().type() == IPCDataTransferData::TShmem) {
-      // If this is an image, convert it into an nsIInputStream.
-      const nsCString& flavor = item.flavor();
-      mozilla::ipc::Shmem data = item.data().get_Shmem();
-      if (flavor.EqualsLiteral(kJPEGImageMime) ||
-          flavor.EqualsLiteral(kJPGImageMime) ||
-          flavor.EqualsLiteral(kPNGImageMime) ||
-          flavor.EqualsLiteral(kGIFImageMime)) {
-        nsCOMPtr<nsIInputStream> stream;
-
-        NS_NewCStringInputStream(
-            getter_AddRefs(stream),
-            nsDependentCSubstring(data.get<char>(), data.Size<char>()));
-
-        rv = aTransferable->SetTransferData(flavor.get(), stream);
-        NS_ENSURE_SUCCESS(rv, rv);
-      } else if (flavor.EqualsLiteral(kNativeHTMLMime) ||
-                 flavor.EqualsLiteral(kRTFMime) ||
-                 flavor.EqualsLiteral(kCustomTypesMime)) {
-        nsCOMPtr<nsISupportsCString> dataWrapper =
-            do_CreateInstance(NS_SUPPORTS_CSTRING_CONTRACTID, &rv);
-        NS_ENSURE_SUCCESS(rv, rv);
-
-        rv = dataWrapper->SetData(
-            nsDependentCSubstring(data.get<char>(), data.Size<char>()));
-        NS_ENSURE_SUCCESS(rv, rv);
-
-        rv = aTransferable->SetTransferData(item.flavor().get(), dataWrapper);
-        NS_ENSURE_SUCCESS(rv, rv);
-      }
-
-      mozilla::Unused << ContentChild::GetSingleton()->DeallocShmem(data);
-    }
-  }
-
-  return NS_OK;
+  return nsContentUtils::IPCTransferableToTransferable(
+      dataTransfer, false /* aAddDataFlavor */, aTransferable,
+      ContentChild::GetSingleton());
 }
 
 NS_IMETHODIMP
@@ -137,4 +86,62 @@ nsClipboardProxy::SupportsFindClipboard(bool* aIsSupported) {
 void nsClipboardProxy::SetCapabilities(
     const ClipboardCapabilities& aClipboardCaps) {
   mClipboardCaps = aClipboardCaps;
+}
+
+RefPtr<DataFlavorsPromise> nsClipboardProxy::AsyncHasDataMatchingFlavors(
+    const nsTArray<nsCString>& aFlavorList, int32_t aWhichClipboard) {
+  auto promise = MakeRefPtr<DataFlavorsPromise::Private>(__func__);
+  ContentChild::GetSingleton()
+      ->SendClipboardHasTypesAsync(aFlavorList, aWhichClipboard)
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          /* resolve */
+          [promise](nsTArray<nsCString> types) {
+            promise->Resolve(std::move(types), __func__);
+          },
+          /* reject */
+          [promise](mozilla::ipc::ResponseRejectReason aReason) {
+            promise->Reject(NS_ERROR_FAILURE, __func__);
+          });
+
+  return promise.forget();
+}
+
+RefPtr<GenericPromise> nsClipboardProxy::AsyncGetData(
+    nsITransferable* aTransferable, int32_t aWhichClipboard) {
+  if (!aTransferable) {
+    return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
+  }
+
+  // Get a list of flavors this transferable can import
+  nsTArray<nsCString> flavors;
+  nsresult rv = aTransferable->FlavorsTransferableCanImport(flavors);
+  if (NS_FAILED(rv)) {
+    return GenericPromise::CreateAndReject(rv, __func__);
+  }
+
+  nsCOMPtr<nsITransferable> transferable(aTransferable);
+  auto promise = MakeRefPtr<GenericPromise::Private>(__func__);
+  ContentChild::GetSingleton()
+      ->SendGetClipboardAsync(flavors, aWhichClipboard)
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          /* resolve */
+          [promise, transferable](const IPCDataTransfer& ipcDataTransfer) {
+            nsresult rv = nsContentUtils::IPCTransferableToTransferable(
+                ipcDataTransfer, false /* aAddDataFlavor */, transferable,
+                ContentChild::GetSingleton());
+            if (NS_FAILED(rv)) {
+              promise->Reject(rv, __func__);
+              return;
+            }
+
+            promise->Resolve(true, __func__);
+          },
+          /* reject */
+          [promise](mozilla::ipc::ResponseRejectReason aReason) {
+            promise->Reject(NS_ERROR_FAILURE, __func__);
+          });
+
+  return promise.forget();
 }

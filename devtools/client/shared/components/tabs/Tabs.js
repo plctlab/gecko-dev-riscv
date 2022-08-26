@@ -119,7 +119,8 @@ define(function(require, exports, module) {
       }
     }
 
-    componentWillReceiveProps(nextProps) {
+    // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+    UNSAFE_componentWillReceiveProps(nextProps) {
       let { children, activeTab } = nextProps;
       const panels = children.filter(panel => panel);
       let created = [...this.state.created];
@@ -408,7 +409,7 @@ define(function(require, exports, module) {
             {
               id: id ? id + "-panel" : "panel-" + index,
               key: id,
-              style: style,
+              style,
               className: selected ? "tab-panel-box" : "tab-panel-box hidden",
               role: "tabpanel",
               "aria-labelledby": id ? id + "-tab" : "tab-" + index,

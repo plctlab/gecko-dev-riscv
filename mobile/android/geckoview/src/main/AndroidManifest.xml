@@ -7,6 +7,7 @@
           package="org.mozilla.geckoview">
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -65,10 +66,25 @@
                 android:process=":socket">
         </service>
         <service
-                android:name="org.mozilla.gecko.gfx.SurfaceAllocatorService"
+                android:name="org.mozilla.gecko.process.GeckoChildProcessServices$gpu"
                 android:enabled="true"
                 android:exported="false"
-                android:isolatedProcess="false">
+                android:isolatedProcess="false"
+                android:process=":gpu">
+        </service>
+        <service
+                android:name="org.mozilla.gecko.process.GeckoChildProcessServices$utility"
+                android:enabled="true"
+                android:exported="false"
+                android:isolatedProcess="false"
+                android:process=":utility">
+        </service>
+        <service
+                android:name="org.mozilla.gecko.process.GeckoChildProcessServices$ipdlunittest"
+                android:enabled="true"
+                android:exported="false"
+                android:isolatedProcess="false"
+                android:process=":ipdlunittest">
         </service>
     </application>
 

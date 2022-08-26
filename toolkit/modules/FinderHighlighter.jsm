@@ -6,22 +6,23 @@
 
 var EXPORTED_SYMBOLS = ["FinderHighlighter"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Color",
   "resource://gre/modules/Color.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Rect",
   "resource://gre/modules/Geometry.jsm"
 );
-XPCOMUtils.defineLazyGetter(this, "kDebug", () => {
+XPCOMUtils.defineLazyGetter(lazy, "kDebug", () => {
   const kDebugPref = "findbar.modalHighlight.debug";
   return (
     Services.prefs.getPrefType(kDebugPref) &&
@@ -600,7 +601,7 @@ FinderHighlighter.prototype = {
     this._removeRangeOutline(window);
   },
 
-  // Update the tick marks that should appear on the page's vertical scrollbar.
+  // Update the tick marks that should appear on the page's scrollbar(s).
   updateScrollMarks() {
     // Only show scrollbar marks when normal highlighting is enabled.
     if (this.useModal() || !this._highlightAll) {
@@ -610,7 +611,12 @@ FinderHighlighter.prototype = {
 
     let marks = new Set(); // Use a set so duplicate values are removed.
     let window = this.finder._getWindow();
-    let yStart = window.scrollY;
+    // Show the marks on the horizontal scrollbar for vertical writing modes.
+    let onHorizontalScrollbar = !window
+      .getComputedStyle(window.document.body || window.document.documentElement)
+      .writingMode.startsWith("horizontal");
+    let yStart = window.scrollY - window.scrollMinY;
+    let xStart = window.scrollX - window.scrollMinX;
 
     let hasRanges = false;
     if (window) {
@@ -632,16 +638,32 @@ FinderHighlighter.prototype = {
         }
 
         // No need to calculate the mark positions if there is no visible scrollbar.
-        if (window.scrollMaxY > 0) {
+        if (window.scrollMaxY > window.scrollMinY && !onHorizontalScrollbar) {
           // Use the body's scrollHeight if available.
-          let scrollElement =
-            window.document.body || window.document.documentElement;
-          let yAdj = window.scrollMaxY / scrollElement.scrollHeight;
+          let scrollHeight =
+            window.document.body?.scrollHeight ||
+            window.document.documentElement.scrollHeight;
+          let yAdj = (window.scrollMaxY - window.scrollMinY) / scrollHeight;
 
           for (let r = 0; r < rangeCount; r++) {
             let rect = findSelection.getRangeAt(r).getBoundingClientRect();
             let yPos = Math.round((yStart + rect.y + rect.height / 2) * yAdj); // use the midpoint
             marks.add(yPos);
+          }
+        } else if (
+          window.scrollMaxX > window.scrollMinX &&
+          onHorizontalScrollbar
+        ) {
+          // Use the body's scrollWidth if available.
+          let scrollWidth =
+            window.document.body?.scrollWidth ||
+            window.document.documentElement.scrollWidth;
+          let xAdj = (window.scrollMaxX - window.scrollMinX) / scrollWidth;
+
+          for (let r = 0; r < rangeCount; r++) {
+            let rect = findSelection.getRangeAt(r).getBoundingClientRect();
+            let xPos = Math.round((xStart + rect.x + rect.width / 2) * xAdj);
+            marks.add(xPos);
           }
         }
       }
@@ -650,7 +672,7 @@ FinderHighlighter.prototype = {
     if (hasRanges) {
       // Assign the marks to the window and add a listener for the MozScrolledAreaChanged
       // event which fires whenever the scrollable area's size is updated.
-      this.setScrollMarks(window, Array.from(marks));
+      this.setScrollMarks(window, Array.from(marks), onHorizontalScrollbar);
 
       if (!this._marksListener) {
         this._marksListener = event => {
@@ -698,15 +720,19 @@ FinderHighlighter.prototype = {
    *
    * @param window window to set the scrollbar marks on
    * @param marks array of integer scrollbar mark positions
+   * @param onHorizontalScrollbar whether to display the marks on the horizontal scrollbar
    */
-  setScrollMarks(window, marks) {
-    window.setScrollMarks(marks);
+  setScrollMarks(window, marks, onHorizontalScrollbar = false) {
+    window.setScrollMarks(marks, onHorizontalScrollbar);
 
     // Fire an event containing the found mark values if testing mode is enabled.
     if (this._testing) {
       window.dispatchEvent(
         new CustomEvent("find-scrollmarks-changed", {
-          detail: Array.from(marks),
+          detail: {
+            marks: Array.from(marks),
+            onHorizontalScrollbar,
+          },
         })
       );
     }
@@ -814,7 +840,7 @@ FinderHighlighter.prototype = {
    */
   _getRootBounds(window, includeScroll = true) {
     let dwu = this._getDWU(this.getTopWindow(window, true));
-    let cssPageRect = Rect.fromRect(dwu.getRootBounds());
+    let cssPageRect = lazy.Rect.fromRect(dwu.getRootBounds());
     let scrollX = {};
     let scrollY = {};
     if (includeScroll && window == this.getTopWindow(window, true)) {
@@ -833,7 +859,7 @@ FinderHighlighter.prototype = {
       let el = currWin.browsingContext.embedderElement;
       currWin = currWin.parent;
       dwu = this._getDWU(currWin);
-      let parentRect = Rect.fromRect(dwu.getBoundsWithoutFlushing(el));
+      let parentRect = lazy.Rect.fromRect(dwu.getBoundsWithoutFlushing(el));
 
       if (includeScroll) {
         dwu.getScrollXY(false, scrollX, scrollY);
@@ -1007,7 +1033,7 @@ FinderHighlighter.prototype = {
       return false;
     }
     cssColor.shift();
-    return !new Color(...cssColor).useBrightText;
+    return !new lazy.Color(...cssColor).useBrightText;
   },
 
   /**
@@ -1130,7 +1156,7 @@ FinderHighlighter.prototype = {
     // encompassing rectangle, which is too much for our purpose here.
     let { rectList, textList } = range.getClientRectsAndTexts();
     for (let rect of rectList) {
-      rect = Rect.fromRect(rect);
+      rect = lazy.Rect.fromRect(rect);
       rect.x += bounds.x;
       rect.y += bounds.y;
       // If the rect is not even visible from the top document, we can ignore it.
@@ -1307,7 +1333,7 @@ FinderHighlighter.prototype = {
           ["width", rect.width + "px"],
         ],
         borderStyles,
-        kDebug ? kModalStyles.outlineNodeDebug : []
+        lazy.kDebug ? kModalStyles.outlineNodeDebug : []
       );
       fontStyle.lineHeight = rect.height + "px";
       let textStyle =
@@ -1347,7 +1373,7 @@ FinderHighlighter.prototype = {
     }
 
     if (rebuildOutline) {
-      dict.modalHighlightOutline = kDebug
+      dict.modalHighlightOutline = lazy.kDebug
         ? mockAnonymousContentNode(
             (document.body || document.documentElement).appendChild(outlineBox)
           )
@@ -1401,7 +1427,7 @@ FinderHighlighter.prototype = {
       return;
     }
 
-    if (kDebug) {
+    if (lazy.kDebug) {
       dict.modalHighlightOutline.remove();
     } else {
       try {
@@ -1480,7 +1506,7 @@ FinderHighlighter.prototype = {
       let document = window.document;
       let maskNode = document.createElementNS(kNSHTML, "div");
       maskNode.setAttribute("id", kMaskId);
-      dict.modalHighlightAllMask = kDebug
+      dict.modalHighlightAllMask = lazy.kDebug
         ? mockAnonymousContentNode(
             (document.body || document.documentElement).appendChild(maskNode)
           )
@@ -1503,7 +1529,7 @@ FinderHighlighter.prototype = {
       ],
       dict.brightText ? kModalStyles.maskNodeBrightText : [],
       paintContent ? kModalStyles.maskNodeTransition : [],
-      kDebug ? kModalStyles.maskNodeDebug : []
+      lazy.kDebug ? kModalStyles.maskNodeDebug : []
     );
     dict.modalHighlightAllMask.setAttributeForElement(
       kMaskId,
@@ -1567,7 +1593,7 @@ FinderHighlighter.prototype = {
 
     // If the current window isn't the one the content was inserted into, this
     // will fail, but that's fine.
-    if (kDebug) {
+    if (lazy.kDebug) {
       dict.modalHighlightAllMask.remove();
     } else {
       try {

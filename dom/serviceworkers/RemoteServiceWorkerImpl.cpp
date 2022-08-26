@@ -15,8 +15,7 @@
 #include "ServiceWorkerChild.h"
 #include "ServiceWorkerCloneData.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::BackgroundChild;
 using mozilla::ipc::PBackgroundChild;
@@ -68,8 +67,7 @@ void RemoteServiceWorkerImpl::PostMessage(
   }
 
   ClonedOrErrorMessageData data;
-  if (!aData->BuildClonedMessageDataForBackgroundChild(mActor->Manager(),
-                                                       data)) {
+  if (!aData->BuildClonedMessageData(data)) {
     return;
   }
 
@@ -114,5 +112,4 @@ void RemoteServiceWorkerImpl::RevokeActor(ServiceWorkerChild* aActor) {
   mShutdown = true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

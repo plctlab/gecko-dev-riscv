@@ -22,7 +22,6 @@
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/MessageChannel.h"         // for MessageChannel, etc
-#include "mozilla/ipc/Transport.h"              // for Transport
 #include "mozilla/layers/CompositableClient.h"  // for CompositableChild, etc
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/ISurfaceAllocator.h"  // for ISurfaceAllocator
@@ -133,10 +132,23 @@ void ImageBridgeChild::UseTextures(
                                             OpUseTexture(textures)));
 }
 
-void ImageBridgeChild::UseComponentAlphaTextures(
-    CompositableClient* aCompositable, TextureClient* aTextureOnBlack,
-    TextureClient* aTextureOnWhite) {
-  MOZ_CRASH("should not be called");
+void ImageBridgeChild::UseRemoteTexture(CompositableClient* aCompositable,
+                                        const RemoteTextureId aTextureId,
+                                        const RemoteTextureOwnerId aOwnerId,
+                                        const gfx::IntSize aSize,
+                                        const TextureFlags aFlags) {
+  MOZ_ASSERT(aCompositable);
+  MOZ_ASSERT(aCompositable->GetIPCHandle());
+  MOZ_ASSERT(aCompositable->IsConnected());
+
+  mTxn->AddNoSwapEdit(CompositableOperation(
+      aCompositable->GetIPCHandle(),
+      OpUseRemoteTexture(aTextureId, aOwnerId, aSize, aFlags)));
+}
+
+void ImageBridgeChild::EnableAsyncCompositable(
+    CompositableClient* aCompositable, bool aEnable) {
+  // On ImageBridge, Compositable is always async.
 }
 
 void ImageBridgeChild::HoldUntilCompositableRefReleasedIfNecessary(
@@ -185,7 +197,7 @@ void ImageBridgeChild::CancelWaitForNotifyNotUsed(uint64_t aTextureId) {
 }
 
 // Singleton
-static StaticMutex sImageBridgeSingletonLock;
+static StaticMutex sImageBridgeSingletonLock MOZ_UNANNOTATED;
 static StaticRefPtr<ImageBridgeChild> sImageBridgeChildSingleton;
 static StaticRefPtr<nsIThread> sImageBridgeChildThread;
 
@@ -273,23 +285,18 @@ void ImageBridgeChild::Connect(CompositableClient* aCompositable,
   MOZ_ASSERT(InImageBridgeChildThread());
   MOZ_ASSERT(CanSend());
 
-  // Note: this is static, rather than per-IBC, so IDs are not re-used across
-  // ImageBridgeChild instances. This is relevant for the GPU process, where
-  // we don't want old IDs to potentially leak into a recreated ImageBridge.
-  static uint64_t sNextID = 1;
-  uint64_t id = sNextID++;
+  CompositableHandle handle = CompositableHandle::GetNext();
 
   // ImageClient of ImageContainer provides aImageContainer.
   // But offscreen canvas does not provide it.
   if (aImageContainer) {
     MutexAutoLock lock(mContainerMapLock);
-    MOZ_ASSERT(mImageContainerListeners.find(id) ==
+    MOZ_ASSERT(mImageContainerListeners.find(uint64_t(handle)) ==
                mImageContainerListeners.end());
     mImageContainerListeners.emplace(
-        id, aImageContainer->GetImageContainerListener());
+        uint64_t(handle), aImageContainer->GetImageContainerListener());
   }
 
-  CompositableHandle handle(id);
   aCompositable->InitIPDL(handle);
   SendNewCompositable(handle, aCompositable->GetTextureInfo());
 }
@@ -335,6 +342,42 @@ void ImageBridgeChild::UpdateImageClient(RefPtr<ImageContainer> aContainer) {
 
   BeginTransaction();
   client->UpdateImage(aContainer, Layer::CONTENT_OPAQUE);
+  EndTransaction();
+}
+
+void ImageBridgeChild::UpdateCompositable(
+    const RefPtr<ImageContainer> aContainer, const RemoteTextureId aTextureId,
+    const RemoteTextureOwnerId aOwnerId, const gfx::IntSize aSize,
+    const TextureFlags aFlags) {
+  if (!aContainer) {
+    return;
+  }
+
+  if (!InImageBridgeChildThread()) {
+    RefPtr<Runnable> runnable = WrapRunnable(
+        RefPtr<ImageBridgeChild>(this), &ImageBridgeChild::UpdateCompositable,
+        aContainer, aTextureId, aOwnerId, aSize, aFlags);
+    GetThread()->Dispatch(runnable.forget());
+    return;
+  }
+
+  if (!CanSend()) {
+    return;
+  }
+
+  RefPtr<ImageClient> client = aContainer->GetImageClient();
+  if (NS_WARN_IF(!client)) {
+    return;
+  }
+
+  // If the client has become disconnected before this event was dispatched,
+  // early return now.
+  if (!client->IsConnected()) {
+    return;
+  }
+
+  BeginTransaction();
+  UseRemoteTexture(client, aTextureId, aOwnerId, aSize, aFlags);
   EndTransaction();
 }
 
@@ -464,8 +507,7 @@ void ImageBridgeChild::Bind(Endpoint<PImageBridgeChild>&& aEndpoint) {
 }
 
 void ImageBridgeChild::BindSameProcess(RefPtr<ImageBridgeParent> aParent) {
-  ipc::MessageChannel* parentChannel = aParent->GetIPCChannel();
-  Open(parentChannel, aParent->GetThread(), mozilla::ipc::ChildSide);
+  Open(aParent, aParent->GetThread(), mozilla::ipc::ChildSide);
 
   // This reference is dropped in DeallocPImageBridgeChild.
   this->AddRef();
@@ -596,58 +638,7 @@ void ImageBridgeChild::IdentifyCompositorTextureHost(
 
 void ImageBridgeChild::UpdateTextureFactoryIdentifier(
     const TextureFactoryIdentifier& aIdentifier) {
-  // ImageHost is incompatible between WebRender enabled and WebRender disabled.
-  // Then drop all ImageContainers' ImageClients during disabling WebRender.
-  bool disablingWebRender =
-      GetCompositorBackendType() == LayersBackend::LAYERS_WR &&
-      aIdentifier.mParentBackend != LayersBackend::LAYERS_WR;
-
-  // Do not update TextureFactoryIdentifier if aIdentifier is going to disable
-  // WebRender, but gecko is still using WebRender. Since gecko uses different
-  // incompatible ImageHost and TextureHost between WebRender and non-WebRender.
-  //
-  // Even when WebRender is still in use, if non-accelerated widget is opened,
-  // aIdentifier disables WebRender at ImageBridgeChild.
-  if (disablingWebRender && gfxVars::UseWebRender()) {
-    return;
-  }
-
-  // D3DTexture might become obsolte. To prevent to use obsoleted D3DTexture,
-  // drop all ImageContainers' ImageClients.
-
-  // During re-creating GPU process, there was a period that ImageBridgeChild
-  // was re-created, but ImageBridgeChild::UpdateTextureFactoryIdentifier() was
-  // not called yet. In the period, if ImageBridgeChild::CreateImageClient() is
-  // called, ImageBridgeParent creates incompatible ImageHost than
-  // WebRenderImageHost.
-  bool initializingWebRender =
-      GetCompositorBackendType() != LayersBackend::LAYERS_WR &&
-      aIdentifier.mParentBackend == LayersBackend::LAYERS_WR;
-
-  bool needsDrop = disablingWebRender || initializingWebRender;
-
-#if defined(XP_WIN)
-  RefPtr<ID3D11Device> device = gfx::DeviceManagerDx::Get()->GetImageDevice();
-  needsDrop |= !!mImageDevice && mImageDevice != device &&
-               GetCompositorBackendType() == LayersBackend::LAYERS_D3D11;
-  mImageDevice = device;
-#endif
-
   IdentifyTextureHost(aIdentifier);
-  if (needsDrop) {
-    nsTArray<RefPtr<ImageContainerListener> > listeners;
-    {
-      MutexAutoLock lock(mContainerMapLock);
-      for (const auto& entry : mImageContainerListeners) {
-        listeners.AppendElement(entry.second);
-      }
-    }
-    // Drop ImageContainer's ImageClient whithout holding mContainerMapLock to
-    // avoid deadlock.
-    for (auto container : listeners) {
-      container->DropImageClient();
-    }
-  }
 }
 
 RefPtr<ImageClient> ImageBridgeChild::CreateImageClient(
@@ -686,36 +677,31 @@ RefPtr<ImageClient> ImageBridgeChild::CreateImageClientNow(
   return client;
 }
 
-bool ImageBridgeChild::AllocUnsafeShmem(
-    size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-    ipc::Shmem* aShmem) {
+bool ImageBridgeChild::AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (!InImageBridgeChildThread()) {
-    return DispatchAllocShmemInternal(aSize, aType, aShmem,
+    return DispatchAllocShmemInternal(aSize, aShmem,
                                       true);  // true: unsafe
   }
 
   if (!CanSend()) {
     return false;
   }
-  return PImageBridgeChild::AllocUnsafeShmem(aSize, aType, aShmem);
+  return PImageBridgeChild::AllocUnsafeShmem(aSize, aShmem);
 }
 
-bool ImageBridgeChild::AllocShmem(size_t aSize,
-                                  ipc::SharedMemory::SharedMemoryType aType,
-                                  ipc::Shmem* aShmem) {
+bool ImageBridgeChild::AllocShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (!InImageBridgeChildThread()) {
-    return DispatchAllocShmemInternal(aSize, aType, aShmem,
+    return DispatchAllocShmemInternal(aSize, aShmem,
                                       false);  // false: unsafe
   }
 
   if (!CanSend()) {
     return false;
   }
-  return PImageBridgeChild::AllocShmem(aSize, aType, aShmem);
+  return PImageBridgeChild::AllocShmem(aSize, aShmem);
 }
 
 void ImageBridgeChild::ProxyAllocShmemNow(SynchronousTask* aTask, size_t aSize,
-                                          SharedMemory::SharedMemoryType aType,
                                           ipc::Shmem* aShmem, bool aUnsafe,
                                           bool* aSuccess) {
   AutoCompleteTask complete(aTask);
@@ -726,22 +712,22 @@ void ImageBridgeChild::ProxyAllocShmemNow(SynchronousTask* aTask, size_t aSize,
 
   bool ok = false;
   if (aUnsafe) {
-    ok = AllocUnsafeShmem(aSize, aType, aShmem);
+    ok = AllocUnsafeShmem(aSize, aShmem);
   } else {
-    ok = AllocShmem(aSize, aType, aShmem);
+    ok = AllocShmem(aSize, aShmem);
   }
   *aSuccess = ok;
 }
 
-bool ImageBridgeChild::DispatchAllocShmemInternal(
-    size_t aSize, SharedMemory::SharedMemoryType aType, ipc::Shmem* aShmem,
-    bool aUnsafe) {
+bool ImageBridgeChild::DispatchAllocShmemInternal(size_t aSize,
+                                                  ipc::Shmem* aShmem,
+                                                  bool aUnsafe) {
   SynchronousTask task("AllocatorProxy alloc");
 
   bool success = false;
   RefPtr<Runnable> runnable = WrapRunnable(
       RefPtr<ImageBridgeChild>(this), &ImageBridgeChild::ProxyAllocShmemNow,
-      &task, aSize, aType, aShmem, aUnsafe, &success);
+      &task, aSize, aShmem, aUnsafe, &success);
   GetThread()->Dispatch(runnable.forget());
 
   task.Wait();
@@ -786,7 +772,7 @@ bool ImageBridgeChild::DeallocShmem(ipc::Shmem& aShmem) {
 }
 
 PTextureChild* ImageBridgeChild::AllocPTextureChild(
-    const SurfaceDescriptor&, const ReadLockDescriptor&, const LayersBackend&,
+    const SurfaceDescriptor&, ReadLockDescriptor&, const LayersBackend&,
     const TextureFlags&, const uint64_t& aSerial,
     const wr::MaybeExternalImageId& aExternalImageId) {
   MOZ_ASSERT(CanSend());
@@ -877,12 +863,13 @@ mozilla::ipc::IPCResult ImageBridgeChild::RecvReportFramesDropped(
 }
 
 PTextureChild* ImageBridgeChild::CreateTexture(
-    const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+    const SurfaceDescriptor& aSharedData, ReadLockDescriptor&& aReadLock,
     LayersBackend aLayersBackend, TextureFlags aFlags, uint64_t aSerial,
-    wr::MaybeExternalImageId& aExternalImageId, nsISerialEventTarget* aTarget) {
+    wr::MaybeExternalImageId& aExternalImageId) {
   MOZ_ASSERT(CanSend());
-  return SendPTextureConstructor(aSharedData, aReadLock, aLayersBackend, aFlags,
-                                 aSerial, aExternalImageId);
+  return SendPTextureConstructor(aSharedData, std::move(aReadLock),
+                                 aLayersBackend, aFlags, aSerial,
+                                 aExternalImageId);
 }
 
 static bool IBCAddOpDestroy(CompositableTransaction* aTxn,

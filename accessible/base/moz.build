@@ -8,6 +8,7 @@ EXPORTS += ["AccEvent.h", "nsAccessibilityService.h"]
 
 EXPORTS.mozilla.a11y += [
     "AccAttributes.h",
+    "AccGroupInfo.h",
     "AccTypes.h",
     "CacheConstants.h",
     "DocManager.h",
@@ -33,6 +34,7 @@ UNIFIED_SOURCES += [
     "ARIAMap.cpp",
     "ARIAStateMap.cpp",
     "Asserts.cpp",
+    "CachedTableAccessible.cpp",
     "DocManager.cpp",
     "EmbeddedObjCollector.cpp",
     "EventQueue.cpp",
@@ -115,6 +117,3 @@ else:
 FINAL_LIBRARY = "xul"
 
 include("/ipc/chromium/chromium-config.mozbuild")
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]

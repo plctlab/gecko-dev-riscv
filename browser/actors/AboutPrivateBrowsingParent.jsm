@@ -6,29 +6,39 @@
 
 var EXPORTED_SYMBOLS = ["AboutPrivateBrowsingParent"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { ASRouter } = ChromeUtils.import(
+  "resource://activity-stream/lib/ASRouter.jsm"
+);
+const { BrowserUtils } = ChromeUtils.import(
+  "resource://gre/modules/BrowserUtils.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const SHOWN_PREF = "browser.search.separatePrivateDefault.ui.banner.shown";
+const lazy = {};
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "MAX_SEARCH_BANNER_SHOW_COUNT",
   "browser.search.separatePrivateDefault.ui.banner.max",
   0
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "isPrivateSearchUIEnabled",
   "browser.search.separatePrivateDefault.ui.enabled",
   false
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Region: "resource://gre/modules/Region.jsm",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
+ChromeUtils.defineESModuleGetters(lazy, {
+  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  SpecialMessageActions:
+    "resource://messaging-system/lib/SpecialMessageActions.jsm",
 });
 
 // We only show the private search banner once per browser session.
@@ -125,7 +135,7 @@ class AboutPrivateBrowsingParent extends JSWindowActorParent {
           "browser.urlbar.placeholderName.private",
           ""
         );
-        let shouldHandOffToSearchMode = UrlbarPrefs.get(
+        let shouldHandOffToSearchMode = lazy.UrlbarPrefs.get(
           "shouldHandOffToSearchMode"
         );
         return [engineName, shouldHandOffToSearchMode];
@@ -141,12 +151,12 @@ class AboutPrivateBrowsingParent extends JSWindowActorParent {
           return null;
         }
 
-        if (!isPrivateSearchUIEnabled || gSearchBannerShownThisSession) {
+        if (!lazy.isPrivateSearchUIEnabled || gSearchBannerShownThisSession) {
           return null;
         }
         gSearchBannerShownThisSession = true;
         const shownTimes = Services.prefs.getIntPref(SHOWN_PREF, 0);
-        if (shownTimes >= MAX_SEARCH_BANNER_SHOW_COUNT) {
+        if (shownTimes >= lazy.MAX_SEARCH_BANNER_SHOW_COUNT) {
           return null;
         }
         Services.prefs.setIntPref(SHOWN_PREF, shownTimes + 1);
@@ -157,17 +167,23 @@ class AboutPrivateBrowsingParent extends JSWindowActorParent {
         });
       }
       case "SearchBannerDismissed": {
-        Services.prefs.setIntPref(SHOWN_PREF, MAX_SEARCH_BANNER_SHOW_COUNT);
+        Services.prefs.setIntPref(
+          SHOWN_PREF,
+          lazy.MAX_SEARCH_BANNER_SHOW_COUNT
+        );
         break;
       }
-      case "ShouldShowVPNPromo": {
-        const homeRegion = Region.home || "";
-        const currentRegion = Region.current || "";
-        return (
-          homeRegion.toLowerCase() !== "cn" &&
-          currentRegion.toLowerCase() !== "cn" &&
-          Services.policies.status !== Services.policies.ACTIVE
+      case "ShouldShowPromo": {
+        return BrowserUtils.shouldShowPromo(
+          BrowserUtils.PromoType[aMessage.data.type]
         );
+      }
+      case "SpecialMessageActionDispatch": {
+        lazy.SpecialMessageActions.handleAction(aMessage.data, browser);
+        break;
+      }
+      case "IsPromoBlocked": {
+        return !ASRouter.isUnblockedMessage(aMessage.data);
       }
     }
 

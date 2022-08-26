@@ -6,15 +6,22 @@
 
 const EXPORTED_SYMBOLS = ["error"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const { RemoteError } = ChromeUtils.import(
+  "chrome://remote/content/shared/RemoteError.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   pprint: "chrome://remote/content/shared/Format.jsm",
 });
 
 const ERRORS = new Set([
+  "DetachedShadowRootError",
   "ElementClickInterceptedError",
   "ElementNotAccessibleError",
   "ElementNotInteractableError",
@@ -29,6 +36,7 @@ const ERRORS = new Set([
   "NoSuchAlertError",
   "NoSuchElementError",
   "NoSuchFrameError",
+  "NoSuchShadowRootError",
   "NoSuchWindowError",
   "ScriptTimeoutError",
   "SessionNotCreatedError",
@@ -54,7 +62,7 @@ const BUILTIN_ERRORS = new Set([
 ]);
 
 /** @namespace */
-this.error = {
+const error = {
   /**
    * Check if ``val`` is an instance of the ``Error`` prototype.
    *
@@ -105,6 +113,9 @@ this.error = {
    *     false otherwise.
    */
   isWebDriverError(obj) {
+    // Don't use "instanceof" to compare error objects because of possible
+    // problems when the other instance was created in a different global and
+    // as such won't have the same prototype object.
     return error.isError(obj) && "name" in obj && ERRORS.has(obj.name);
   },
 
@@ -171,7 +182,7 @@ this.error = {
  * It should not be used directly, as it does not correspond to a real
  * error in the specification.
  */
-class WebDriverError extends Error {
+class WebDriverError extends RemoteError {
   /**
    * @param {(string|Error)=} x
    *     Optional string describing error situation or Error instance
@@ -260,18 +271,18 @@ class ElementClickInterceptedError extends WebDriverError {
       switch (obscuredEl.style.pointerEvents) {
         case "none":
           msg =
-            pprint`Element ${obscuredEl} is not clickable ` +
+            lazy.pprint`Element ${obscuredEl} is not clickable ` +
             `at point (${coords.x},${coords.y}) ` +
             `because it does not have pointer events enabled, ` +
-            pprint`and element ${overlayingEl} ` +
+            lazy.pprint`and element ${overlayingEl} ` +
             `would receive the click instead`;
           break;
 
         default:
           msg =
-            pprint`Element ${obscuredEl} is not clickable ` +
+            lazy.pprint`Element ${obscuredEl} is not clickable ` +
             `at point (${coords.x},${coords.y}) ` +
-            pprint`because another element ${overlayingEl} ` +
+            lazy.pprint`because another element ${overlayingEl} ` +
             `obscures it`;
           break;
       }
@@ -396,6 +407,26 @@ class NoSuchElementError extends WebDriverError {
 }
 
 /**
+ * A shadow root was not attached to the element.
+ */
+class NoSuchShadowRootError extends WebDriverError {
+  constructor(message) {
+    super(message);
+    this.status = "no such shadow root";
+  }
+}
+
+/**
+ * A shadow root is no longer attached to the document
+ */
+class DetachedShadowRootError extends WebDriverError {
+  constructor(message) {
+    super(message);
+    this.status = "detached shadow root";
+  }
+}
+
+/**
  * A command to switch to a frame could not be satisfied because
  * the frame could not be found.
  */
@@ -502,6 +533,7 @@ class UnsupportedOperationError extends WebDriverError {
 }
 
 const STATUSES = new Map([
+  ["detached shadow root", DetachedShadowRootError],
   ["element click intercepted", ElementClickInterceptedError],
   ["element not accessible", ElementNotAccessibleError],
   ["element not interactable", ElementNotInteractableError],
@@ -516,6 +548,7 @@ const STATUSES = new Map([
   ["no such alert", NoSuchAlertError],
   ["no such element", NoSuchElementError],
   ["no such frame", NoSuchFrameError],
+  ["no such shadow root", NoSuchShadowRootError],
   ["no such window", NoSuchWindowError],
   ["script timeout", ScriptTimeoutError],
   ["session not created", SessionNotCreatedError],
@@ -530,7 +563,7 @@ const STATUSES = new Map([
 ]);
 
 // Errors must be expored on the local this scope so that the
-// EXPORTED_SYMBOLS and the Cu.import("foo", {}) machinery sees them.
+// EXPORTED_SYMBOLS and the ChromeUtils.import("foo") machinery sees them.
 // We could assign each error definition directly to |this|, but
 // because they are Error prototypes this would mess up their names.
 for (let cls of STATUSES.values()) {

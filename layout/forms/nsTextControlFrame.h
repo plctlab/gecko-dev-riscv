@@ -156,7 +156,7 @@ class nsTextControlFrame : public nsContainerFrame,
   GetTextEditor() override;
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD
   SetSelectionRange(uint32_t aSelectionStart, uint32_t aSelectionEnd,
-                    SelectionDirection aDirection = eNone) override;
+                    SelectionDirection = SelectionDirection::None) override;
   NS_IMETHOD GetOwnedSelectionController(
       nsISelectionController** aSelCon) override;
   nsFrameSelection* GetOwnedFrameSelection() override;
@@ -222,6 +222,8 @@ class nsTextControlFrame : public nsContainerFrame,
   Element* GetPreviewNode() const { return mPreviewDiv; }
 
   Element* GetPlaceholderNode() const { return mPlaceholderDiv; }
+
+  Element* GetRevealButton() const { return mRevealButton; }
 
   // called by the focus listener
   nsresult MaybeBeginSecureKeyboardInput();
@@ -309,11 +311,11 @@ class nsTextControlFrame : public nsContainerFrame,
   // helper methods
   MOZ_CAN_RUN_SCRIPT nsresult SetSelectionInternal(
       nsINode* aStartNode, uint32_t aStartOffset, nsINode* aEndNode,
-      uint32_t aEndOffset, SelectionDirection aDirection = eNone);
+      uint32_t aEndOffset, SelectionDirection = SelectionDirection::None);
   MOZ_CAN_RUN_SCRIPT nsresult SelectAllOrCollapseToEndOfText(bool aSelect);
   MOZ_CAN_RUN_SCRIPT nsresult
   SetSelectionEndPoints(uint32_t aSelStart, uint32_t aSelEnd,
-                        SelectionDirection aDirection = eNone);
+                        SelectionDirection = SelectionDirection::None);
 
   void FinishedInitializer() { RemoveProperty(TextControlInitializer()); }
 
@@ -351,6 +353,9 @@ class nsTextControlFrame : public nsContainerFrame,
   RefPtr<Element> mRootNode;
   RefPtr<Element> mPlaceholderDiv;
   RefPtr<Element> mPreviewDiv;
+  // The Reveal Password button.  Only used for type=password, nullptr
+  // otherwise.
+  RefPtr<Element> mRevealButton;
   RefPtr<nsAnonDivObserver> mMutationObserver;
   // Cache of the |.value| of <input> or <textarea> element without hard-wrap.
   // If its IsVoid() returns true, it doesn't cache |.value|.

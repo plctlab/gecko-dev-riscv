@@ -14,11 +14,11 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { connect } = require("devtools/client/shared/vendor/react-redux");
 
-const frameworkActions = require("devtools/client/framework/actions/index");
+const targetActions = require("devtools/shared/commands/target/actions/targets");
 const webconsoleActions = require("devtools/client/webconsole/actions/index");
 
 const { l10n } = require("devtools/client/webconsole/utils/messages");
-const targetSelectors = require("devtools/client/framework/reducers/targets");
+const targetSelectors = require("devtools/shared/commands/target/selectors/targets");
 
 loader.lazyGetter(this, "TARGET_TYPES", function() {
   return require("devtools/shared/commands/target/target-command").TYPES;
@@ -116,7 +116,7 @@ class EvaluationContextSelector extends Component {
       type: "checkbox",
       checked: selectedTarget ? selectedTarget == target : target.isTopLevel,
       label,
-      tooltip: target.url,
+      tooltip: target.url || target.name,
       icon: this.getIcon(target),
       onClick: () => selectTarget(target.actorID),
     });
@@ -130,33 +130,82 @@ class EvaluationContextSelector extends Component {
     targets.sort((a, b) => collator.compare(a.name, b.name));
 
     let mainTarget;
-    const frames = [];
-    const contentProcesses = [];
-    const dedicatedWorkers = [];
-    const sharedWorkers = [];
-    const serviceWorkers = [];
-
-    const dict = {
-      [TARGET_TYPES.FRAME]: frames,
-      [TARGET_TYPES.PROCESS]: contentProcesses,
-      [TARGET_TYPES.WORKER]: dedicatedWorkers,
-      [TARGET_TYPES.SHARED_WORKER]: sharedWorkers,
-      [TARGET_TYPES.SERVICE_WORKER]: serviceWorkers,
+    const sections = {
+      [TARGET_TYPES.FRAME]: [],
+      [TARGET_TYPES.WORKER]: [],
+      [TARGET_TYPES.SHARED_WORKER]: [],
+      [TARGET_TYPES.SERVICE_WORKER]: [],
     };
+    // When in Browser Toolbox, we want to display the process targets with the frames
+    // in the same process as a group
+    // e.g.
+    //     |------------------------------|
+    //     | Top                          |
+    //     | -----------------------------|
+    //     | (pid 1234) priviledgedabout  |
+    //     | New Tab                      |
+    //     | -----------------------------|
+    //     | (pid 5678) web               |
+    //     | cnn.com                      |
+    //     | -----------------------------|
+    //     | RemoteSettingWorker.js       |
+    //     |------------------------------|
+    //
+    // This object will be keyed by PID, and each property will be an object with a
+    // `process` property (for the process target item), and a `frames` property (and array
+    // for all the frame target items).
+    const processes = {};
+
+    const { webConsoleUI } = this.props;
+    const handleProcessTargets =
+      webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole;
 
     for (const target of targets) {
       const menuItem = this.renderMenuItem(target);
 
       if (target.isTopLevel) {
         mainTarget = menuItem;
+      } else if (target.targetType == TARGET_TYPES.PROCESS) {
+        if (!processes[target.processID]) {
+          processes[target.processID] = { frames: [] };
+        }
+        processes[target.processID].process = menuItem;
+      } else if (
+        target.targetType == TARGET_TYPES.FRAME &&
+        handleProcessTargets &&
+        target.processID
+      ) {
+        // The associated process target might not have been handled yet, so make sure
+        // to create it.
+        if (!processes[target.processID]) {
+          processes[target.processID] = { frames: [] };
+        }
+        processes[target.processID].frames.push(menuItem);
       } else {
-        dict[target.targetType].push(menuItem);
+        sections[target.targetType].push(menuItem);
       }
     }
 
-    const items = [mainTarget];
+    // Note that while debugging popups, we might have a small period
+    // of time where we don't have any top level target when we reload
+    // the original tab
+    const items = mainTarget ? [mainTarget] : [];
 
-    for (const [targetType, menuItems] of Object.entries(dict)) {
+    // Handle PROCESS targets sections first, as we want to display the associated frames
+    // below the process to group them.
+    if (processes) {
+      for (const [pid, { process, frames }] of Object.entries(processes)) {
+        items.push(dom.hr({ role: "menuseparator", key: `${pid}-separator` }));
+        if (process) {
+          items.push(process);
+        }
+        if (frames) {
+          items.push(...frames);
+        }
+      }
+    }
+
+    for (const [targetType, menuItems] of Object.entries(sections)) {
       if (menuItems.length > 0) {
         items.push(
           dom.hr({ role: "menuseparator", key: `${targetType}-separator` }),
@@ -183,12 +232,16 @@ class EvaluationContextSelector extends Component {
 
   render() {
     const { webConsoleUI, targets, selectedTarget } = this.props;
-    const doc = webConsoleUI.document;
-    const { toolbox } = webConsoleUI.wrapper;
 
-    if (targets.length <= 1) {
+    // Don't render if there's only one target.
+    // Also bail out if the console is being destroyed (where WebConsoleUI.wrapper gets
+    // nullified).
+    if (targets.length <= 1 || !webConsoleUI.wrapper) {
       return null;
     }
+
+    const doc = webConsoleUI.document;
+    const { toolbox } = webConsoleUI.wrapper;
 
     return MenuButton(
       {
@@ -197,9 +250,7 @@ class EvaluationContextSelector extends Component {
         label: this.getLabel(),
         className:
           "webconsole-evaluation-selector-button devtools-button devtools-dropdown-button" +
-          (selectedTarget && !selectedTarget.isTopLevel
-            ? " webconsole-evaluation-selector-button-non-top"
-            : ""),
+          (selectedTarget && !selectedTarget.isTopLevel ? " checked" : ""),
         title: l10n.getStr("webconsole.input.selector.tooltip"),
       },
       // We pass the children in a function so we don't require the MenuItem and MenuList
@@ -216,10 +267,10 @@ const toolboxConnected = connect(
     lastTargetRefresh: targetSelectors.getLastTargetRefresh(state),
   }),
   dispatch => ({
-    selectTarget: actorID => dispatch(frameworkActions.selectTarget(actorID)),
+    selectTarget: actorID => dispatch(targetActions.selectTarget(actorID)),
   }),
   undefined,
-  { storeKey: "toolbox-store" }
+  { storeKey: "target-store" }
 )(EvaluationContextSelector);
 
 module.exports = connect(

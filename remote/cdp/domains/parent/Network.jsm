@@ -6,16 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["Network"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { Domain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/Domain.jsm"
 );
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
-  Domain: "chrome://remote/content/cdp/domains/Domain.jsm",
-});
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
 const MAX_COOKIE_EXPIRY = Number.MAX_SAFE_INTEGER;
 
@@ -184,10 +177,17 @@ class Network extends Domain {
    *     Array of cookie objects.
    */
   async getCookies(options = {}) {
-    // Bug 1605354 - Add support for options.urls
-    const urls = this.session.target.browsingContext
-      .getAllBrowsingContextsInSubtree()
-      .map(context => context.currentURI.spec);
+    const { urls = this._getDefaultUrls() } = options;
+
+    if (!Array.isArray(urls)) {
+      throw new TypeError("urls: array expected");
+    }
+
+    for (const [index, url] of urls.entries()) {
+      if (typeof url !== "string") {
+        throw new TypeError(`urls: string value expected at index ${index}`);
+      }
+    }
 
     const cookies = [];
     for (let url of urls) {
@@ -396,10 +396,13 @@ class Network extends Domain {
 
   _onRequest(eventName, httpChannel, data) {
     const wrappedChannel = ChannelWrapper.get(httpChannel);
+    const urlFragment = httpChannel.URI.hasRef
+      ? "#" + httpChannel.URI.ref
+      : undefined;
 
     const request = {
-      url: httpChannel.URI.spec,
-      urlFragment: undefined,
+      url: httpChannel.URI.specIgnoringRef,
+      urlFragment,
       method: httpChannel.requestMethod,
       headers: headersAsObject(data.headers),
       postData: undefined,
@@ -412,7 +415,8 @@ class Network extends Domain {
     this.emit("Network.requestWillBeSent", {
       requestId: data.requestId,
       loaderId: data.loaderId,
-      documentURL: wrappedChannel.documentURL || httpChannel.URI.spec,
+      documentURL:
+        wrappedChannel.documentURL || httpChannel.URI.specIgnoringRef,
       request,
       timestamp: Date.now() / 1000,
       wallTime: undefined,
@@ -453,6 +457,19 @@ class Network extends Domain {
       },
       frameId: data.frameId.toString(),
     });
+  }
+
+  /**
+   * Creates an array of all Urls in the page context
+   *
+   * @param {Array<string>=} urls
+   */
+  _getDefaultUrls() {
+    const urls = this.session.target.browsingContext
+      .getAllBrowsingContextsInSubtree()
+      .map(context => context.currentURI.spec);
+
+    return urls;
   }
 }
 

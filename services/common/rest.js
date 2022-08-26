@@ -8,7 +8,6 @@ var EXPORTED_SYMBOLS = [
   "TokenAuthenticatedRESTRequest",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { PromiseUtils } = ChromeUtils.import(
@@ -18,8 +17,10 @@ const { CommonUtils } = ChromeUtils.import(
   "resource://services-common/utils.js"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CryptoUtils",
   "resource://services-crypto/utils.js"
 );
@@ -710,7 +711,7 @@ TokenAuthenticatedRESTRequest.prototype = {
   __proto__: RESTRequest.prototype,
 
   async dispatch(method, data) {
-    let sig = await CryptoUtils.computeHTTPMACSHA1(
+    let sig = await lazy.CryptoUtils.computeHTTPMACSHA1(
       this.authToken.id,
       this.authToken.key,
       method,

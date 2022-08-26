@@ -64,6 +64,9 @@ user_pref("browser.ui.layout.tablet", 0); // force tablet UI off
 // Ensure UITour won't hit the network
 user_pref("browser.uitour.pinnedTabUrl", "http://{server}/uitour-dummy/pinnedTab");
 user_pref("browser.uitour.url", "http://{server}/uitour-dummy/tour");
+// Turn off Merino suggestions in the location bar so as not to trigger network
+// connections.
+user_pref("browser.urlbar.merino.endpointURL", "");
 user_pref("browser.urlbar.speculativeConnect.enabled", false);
 // Turn off search suggestions in the location bar so as not to trigger network
 // connections.
@@ -195,7 +198,6 @@ user_pref("remote.prefs.recommended", false);
 user_pref("security.default_personal_cert", "Select Automatically"); // Need to client auth test be w/o any dialogs
 // Existing tests don't wait for the notification button security delay
 user_pref("security.notification_enable_delay", 0);
-user_pref("security.warn_viewing_mixed", false);
 // Ensure blocklist updates don't hit the network
 user_pref("services.settings.server", "http://{server}/dummy-kinto/v1");
 user_pref("shell.checkDefaultClient", false);

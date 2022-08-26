@@ -6,7 +6,7 @@
 /* exported DevToolsClient, initTestDevToolsServer */
 
 const { loader, require } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
 const Services = require("Services");
 const xpcInspector = require("xpcInspector");
@@ -29,8 +29,6 @@ loader.lazyRequireGetter(
 // Services.prefs.setBoolPref("devtools.debugger.log.verbose", true);
 // Enable remote debugging for the relevant tests.
 Services.prefs.setBoolPref("devtools.debugger.remote-enabled", true);
-// Fast timeout for TLS tests
-Services.prefs.setIntPref("devtools.remote.tls-handshake-timeout", 1000);
 
 // Convert an nsIScriptError 'logLevel' value into an appropriate string.
 function scriptErrorLogLevel(message) {
@@ -48,7 +46,7 @@ function scriptErrorLogLevel(message) {
 // Register a console listener, so console messages don't just disappear
 // into the ether.
 var listener = {
-  observe: function(message) {
+  observe(message) {
     let string;
     try {
       message.QueryInterface(Ci.nsIScriptError);

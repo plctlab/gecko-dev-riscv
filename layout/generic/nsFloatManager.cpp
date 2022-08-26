@@ -250,6 +250,14 @@ nsFlowAreaRect nsFloatManager::GetFlowArea(
       (haveFloats ? nsFlowAreaRectFlags::HasFloats
                   : nsFlowAreaRectFlags::NoFlags) |
       (mayWiden ? nsFlowAreaRectFlags::MayWiden : nsFlowAreaRectFlags::NoFlags);
+  // Some callers clamp the inline size of nsFlowAreaRect to be nonnegative
+  // "for compatibility with nsSpaceManager". So, we set a flag here to record
+  // the fact that the ISize is actually negative, so that downstream code can
+  // realize that there's no place here where we could put a float-avoiding
+  // block (even one with ISize of 0).
+  if (lineRight - lineLeft < 0) {
+    flags |= nsFlowAreaRectFlags::ISizeIsActuallyNegative;
+  }
 
   return nsFlowAreaRect(aWM, inlineStart, blockStart - mBlockStart,
                         lineRight - lineLeft, blockSize, flags);
@@ -424,7 +432,7 @@ void nsFloatManager::PopState(SavedState* aState) {
   mFloats.TruncateLength(aState->mFloatInfoCount);
 }
 
-nscoord nsFloatManager::GetLowestFloatTop() const {
+nscoord nsFloatManager::LowestFloatBStart() const {
   if (mPushedLeftFloatPastBreak || mPushedRightFloatPastBreak) {
     return nscoord_MAX;
   }
@@ -2804,7 +2812,9 @@ nscoord nsFloatManager::ShapeInfo::XInterceptAtY(const nscoord aY,
                                                  const nscoord aRadiusY) {
   // Solve for x in the ellipse equation (x/radiusX)^2 + (y/radiusY)^2 = 1.
   MOZ_ASSERT(aRadiusY > 0);
-  return aRadiusX * std::sqrt(1 - (aY * aY) / double(aRadiusY * aRadiusY));
+  const auto ratioY = aY / static_cast<double>(aRadiusY);
+  MOZ_ASSERT(ratioY <= 1, "Why is position y outside of the radius on y-axis?");
+  return NSToCoordTrunc(aRadiusX * std::sqrt(1 - ratioY * ratioY));
 }
 
 /* static */

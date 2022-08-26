@@ -20,6 +20,7 @@
 #include "mozilla/layers/TransactionIdAllocator.h"
 #include "mozilla/layers/WebRenderBridgeChild.h"
 #include "mozilla/layers/UpdateImageHelper.h"
+#include "mozilla/PerfStats.h"
 #include "nsDisplayList.h"
 #include "nsLayoutUtils.h"
 #include "WebRenderCanvasRenderer.h"
@@ -78,10 +79,9 @@ bool WebRenderLayerManager::Initialize(
 
   LayoutDeviceIntSize size = mWidget->GetClientSize();
   // Check widget size
-  if (XRE_IsParentProcess() &&
-      (size.width < 0 || size.width > wr::MAX_RENDER_TASK_SIZE ||
-       size.height < 0 || size.height > wr::MAX_RENDER_TASK_SIZE)) {
-    gfxCriticalNote << "Widget size is not valid " << size;
+  if (!wr::WindowSizeSanityCheck(size.width, size.height)) {
+    gfxCriticalNoteOnce << "Widget size is not valid " << size
+                        << " isParent: " << XRE_IsParentProcess();
   }
 
   PWebRenderBridgeChild* bridge =
@@ -98,11 +98,13 @@ bool WebRenderLayerManager::Initialize(
     return false;
   }
 
+  mWrChild = static_cast<WebRenderBridgeChild*>(bridge);
+
   TextureFactoryIdentifier textureFactoryIdentifier;
   wr::MaybeIdNamespace idNamespace;
   // Sync ipc
-  if (!bridge->SendEnsureConnected(&textureFactoryIdentifier, &idNamespace,
-                                   &aError)) {
+  if (!WrBridge()->SendEnsureConnected(&textureFactoryIdentifier, &idNamespace,
+                                       &aError)) {
     gfxCriticalNote << "Failed as lost WebRenderBridgeChild.";
     aError.Assign(hasInitialized
                       ? "FEATURE_FAILURE_WEBRENDER_INITIALIZE_SYNC_POST"_ns
@@ -112,12 +114,12 @@ bool WebRenderLayerManager::Initialize(
 
   if (textureFactoryIdentifier.mParentBackend == LayersBackend::LAYERS_NONE ||
       idNamespace.isNothing()) {
-    gfxCriticalNote << "Failed to connect WebRenderBridgeChild.";
+    gfxCriticalNote << "Failed to connect WebRenderBridgeChild. isParent="
+                    << XRE_IsParentProcess();
     aError.Append(hasInitialized ? "_POST"_ns : "_FIRST"_ns);
     return false;
   }
 
-  mWrChild = static_cast<WebRenderBridgeChild*>(bridge);
   WrBridge()->SetWebRenderLayerManager(this);
   WrBridge()->IdentifyTextureHost(textureFactoryIdentifier);
   WrBridge()->SetNamespace(idNamespace.ref());
@@ -454,6 +456,13 @@ void WebRenderLayerManager::EndTransactionWithoutLayer(
             ? wr::GeckoDisplayListType::Full(aGeckoDLBuildTime)
             : wr::GeckoDisplayListType::Partial(aGeckoDLBuildTime);
 
+    // convert from nanoseconds to microseconds
+    auto duration = TimeDuration::FromMicroseconds(
+        double(dlData.mDLDesc.builder_finish_time -
+               dlData.mDLDesc.builder_start_time) /
+        1000.);
+    PerfStats::RecordMeasurement(PerfStats::Metric::WrDisplayListBuilding,
+                                 duration);
     bool ret = WrBridge()->EndTransaction(
         std::move(dlData), mLatestTransactionId, containsSVGGroup,
         mTransactionIdAllocator->GetVsyncId(),
@@ -602,11 +611,6 @@ void WebRenderLayerManager::DidComposite(
       mTransactionIdAllocator->NotifyTransactionCompleted(aTransactionId);
     }
   }
-
-  // These observers fire whether or not we were in a transaction.
-  for (size_t i = 0; i < mDidCompositeObservers.Length(); i++) {
-    mDidCompositeObservers[i]->DidComposite();
-  }
 }
 
 void WebRenderLayerManager::ClearCachedResources() {
@@ -624,6 +628,14 @@ void WebRenderLayerManager::ClearCachedResources() {
   DiscardImages();
   mStateManager.ClearCachedResources();
   WrBridge()->EndClearCachedResources();
+}
+
+void WebRenderLayerManager::ClearAnimationResources() {
+  if (!WrBridge()->IPCOpen()) {
+    gfxCriticalNote << "IPC Channel is already torn down unexpectedly\n";
+    return;
+  }
+  WrBridge()->SendClearAnimationResources();
 }
 
 void WebRenderLayerManager::WrUpdated() {
@@ -673,19 +685,7 @@ TransactionId WebRenderLayerManager::GetLastTransactionId() {
   return mLatestTransactionId;
 }
 
-void WebRenderLayerManager::AddDidCompositeObserver(
-    DidCompositeObserver* aObserver) {
-  if (!mDidCompositeObservers.Contains(aObserver)) {
-    mDidCompositeObservers.AppendElement(aObserver);
-  }
-}
-
-void WebRenderLayerManager::RemoveDidCompositeObserver(
-    DidCompositeObserver* aObserver) {
-  mDidCompositeObservers.RemoveElement(aObserver);
-}
-
-void WebRenderLayerManager::FlushRendering() {
+void WebRenderLayerManager::FlushRendering(wr::RenderReasons aReasons) {
   CompositorBridgeChild* cBridge = GetCompositorBridgeChild();
   if (!cBridge) {
     return;
@@ -696,15 +696,19 @@ void WebRenderLayerManager::FlushRendering() {
   // might happen.
   bool resizing = mWidget && mWidget->IsResizingNativeWidget().valueOr(true);
 
+  if (resizing) {
+    aReasons = aReasons | wr::RenderReasons::RESIZE;
+  }
+
   // Limit async FlushRendering to !resizing and Win DComp.
   // XXX relax the limitation
   if (WrBridge()->GetCompositorUseDComp() && !resizing) {
-    cBridge->SendFlushRenderingAsync();
+    cBridge->SendFlushRenderingAsync(aReasons);
   } else if (mWidget->SynchronouslyRepaintOnResize() ||
              StaticPrefs::layers_force_synchronous_resize()) {
-    cBridge->SendFlushRendering();
+    cBridge->SendFlushRendering(aReasons);
   } else {
-    cBridge->SendFlushRenderingAsync();
+    cBridge->SendFlushRenderingAsync(aReasons);
   }
 }
 
@@ -731,8 +735,8 @@ void WebRenderLayerManager::SendInvalidRegion(const nsIntRegion& aRegion) {
   }
 }
 
-void WebRenderLayerManager::ScheduleComposite() {
-  WrBridge()->SendScheduleComposite();
+void WebRenderLayerManager::ScheduleComposite(wr::RenderReasons aReasons) {
+  WrBridge()->SendScheduleComposite(aReasons);
 }
 
 already_AddRefed<PersistentBufferProvider>

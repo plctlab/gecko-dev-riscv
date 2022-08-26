@@ -11,11 +11,13 @@
 
 var EXPORTED_SYMBOLS = ["FormAutofillPrompter"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   CreditCard: "resource://gre/modules/GeckoViewAutocomplete.jsm",
   GeckoViewAutocomplete: "resource://gre/modules/GeckoViewAutocomplete.jsm",
   GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.jsm",
@@ -44,24 +46,18 @@ let FormAutofillPrompter = {
   },
 
   async promptToSaveCreditCard(browser, creditCard, storage) {
-    const prompt = new GeckoViewPrompter(browser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(browser.ownerGlobal);
 
     let newCreditCard;
     if (creditCard.guid) {
       let originalCCData = await storage.creditCards.get(creditCard.guid);
-
-      newCreditCard = CreditCard.fromGecko(originalCCData || creditCard.record);
-      newCreditCard.record.name = creditCard.record.name;
-      newCreditCard.record.number = creditCard.record.number;
-      newCreditCard.record.expMonth = creditCard.record.expMonth;
-      newCreditCard.record.expYear = creditCard.record.expYear;
-      newCreditCard.record.type = creditCard.record.type;
+      newCreditCard = { ...originalCCData, ...creditCard.record };
     } else {
-      newCreditCard = creditCard;
+      newCreditCard = creditCard.record;
     }
 
     prompt.asyncShowPrompt(
-      this._createMessage([CreditCard.fromGecko(newCreditCard.record)]),
+      this._createMessage([lazy.CreditCard.fromGecko(newCreditCard)]),
       result => {
         const selectedCreditCard = result?.selection?.value;
 
@@ -69,7 +65,7 @@ let FormAutofillPrompter = {
           return;
         }
 
-        GeckoViewAutocomplete.onCreditCardSave(selectedCreditCard);
+        lazy.GeckoViewAutocomplete.onCreditCardSave(selectedCreditCard);
       }
     );
   },

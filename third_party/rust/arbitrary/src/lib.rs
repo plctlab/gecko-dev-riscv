@@ -45,6 +45,7 @@ use core::time::Duration;
 use std::borrow::{Cow, ToOwned};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 use std::ffi::{CString, OsString};
+use std::hash::BuildHasher;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -98,7 +99,7 @@ use std::sync::{Arc, Mutex};
 /// Implementing `Arbitrary` mostly involves nested calls to other `Arbitrary`
 /// arbitrary implementations for each of your `struct` or `enum`'s members. But
 /// sometimes you need some amount of raw data, or you need to generate a
-/// variably-sized collection type, or you something of that sort. The
+/// variably-sized collection type, or something of that sort. The
 /// [`Unstructured`][crate::Unstructured] type helps you with these tasks.
 ///
 /// ```
@@ -139,12 +140,15 @@ pub trait Arbitrary<'a>: Sized {
     /// Arbitrary>::arbitrary` to construct an arbitrary instance of `MyType`
     /// from that unstuctured data.
     ///
-    /// Implementation may return an error if there is not enough data to
-    /// construct a full instance of `Self`. This is generally OK: it is better
-    /// to exit early and get the fuzzer to provide more input data, than it is
-    /// to generate default values in place of the missing data, which would
-    /// bias the distribution of generated values, and ultimately make fuzzing
-    /// less efficient.
+    /// Implementations may return an error if there is not enough data to
+    /// construct a full instance of `Self`, or they may fill out the rest of
+    /// `Self` with dummy values. Using dummy values when the underlying data is
+    /// exhausted can help avoid accidentally "defeating" some of the fuzzer's
+    /// mutations to the underlying byte stream that might otherwise lead to
+    /// interesting runtime behavior or new code coverage if only we had just a
+    /// few more bytes. However, it also requires that implementations for
+    /// recursive types (e.g. `struct Foo(Option<Box<Foo>>)`) avoid infinite
+    /// recursion when the underlying data is exhausted.
     ///
     /// ```
     /// # #[cfg(feature = "derive")] fn foo() {
@@ -173,11 +177,13 @@ pub trait Arbitrary<'a>: Sized {
     /// See also the documentation for [`Unstructured`][crate::Unstructured].
     fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self>;
 
-    /// Generate an arbitrary value of `Self` from the entirety of the given unstructured data.
+    /// Generate an arbitrary value of `Self` from the entirety of the given
+    /// unstructured data.
     ///
-    /// This is similar to Arbitrary::arbitrary, however it assumes that it is the
-    /// last consumer of the given data, and is thus able to consume it all if it needs.
-    /// See also the documentation for [`Unstructured`][crate::Unstructured].
+    /// This is similar to Arbitrary::arbitrary, however it assumes that it is
+    /// the last consumer of the given data, and is thus able to consume it all
+    /// if it needs.  See also the documentation for
+    /// [`Unstructured`][crate::Unstructured].
     fn arbitrary_take_rest(mut u: Unstructured<'a>) -> Result<Self> {
         Self::arbitrary(&mut u)
     }
@@ -200,6 +206,17 @@ pub trait Arbitrary<'a>: Sized {
     /// collection (such as `Vec`), you are strongly encouraged to override this
     /// default with a better implementation. The
     /// [`size_hint`][crate::size_hint] module will help with this task.
+    ///
+    /// ## Invariant
+    ///
+    /// It must be possible to construct every possible output using only inputs
+    /// of lengths bounded by these parameters. This applies to both
+    /// [`Arbitrary::arbitrary`] and [`Arbitrary::arbitrary_take_rest`].
+    ///
+    /// This is trivially true for `(0, None)`. To restrict this further, it
+    /// must be proven that all inputs that are now excluded produced redundant
+    /// outputs which are still possible to produce using the reduced input
+    /// space.
     ///
     /// ## The `depth` Parameter
     ///
@@ -671,8 +688,8 @@ impl<'a> Arbitrary<'a> for &'a [u8] {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        <usize as Arbitrary>::size_hint(depth)
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -686,8 +703,8 @@ impl<'a, A: Arbitrary<'a>> Arbitrary<'a> for Vec<A> {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -701,8 +718,8 @@ impl<'a, K: Arbitrary<'a> + Ord, V: Arbitrary<'a>> Arbitrary<'a> for BTreeMap<K,
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -716,8 +733,8 @@ impl<'a, A: Arbitrary<'a> + Ord> Arbitrary<'a> for BTreeSet<A> {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -731,13 +748,13 @@ impl<'a, A: Arbitrary<'a> + Ord> Arbitrary<'a> for BinaryHeap<A> {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
-impl<'a, K: Arbitrary<'a> + Eq + ::std::hash::Hash, V: Arbitrary<'a>> Arbitrary<'a>
-    for HashMap<K, V>
+impl<'a, K: Arbitrary<'a> + Eq + ::std::hash::Hash, V: Arbitrary<'a>, S: BuildHasher + Default>
+    Arbitrary<'a> for HashMap<K, V, S>
 {
     fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
         u.arbitrary_iter()?.collect()
@@ -748,12 +765,14 @@ impl<'a, K: Arbitrary<'a> + Eq + ::std::hash::Hash, V: Arbitrary<'a>> Arbitrary<
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
-impl<'a, A: Arbitrary<'a> + Eq + ::std::hash::Hash> Arbitrary<'a> for HashSet<A> {
+impl<'a, A: Arbitrary<'a> + Eq + ::std::hash::Hash, S: BuildHasher + Default> Arbitrary<'a>
+    for HashSet<A, S>
+{
     fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
         u.arbitrary_iter()?.collect()
     }
@@ -763,8 +782,8 @@ impl<'a, A: Arbitrary<'a> + Eq + ::std::hash::Hash> Arbitrary<'a> for HashSet<A>
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -778,8 +797,8 @@ impl<'a, A: Arbitrary<'a>> Arbitrary<'a> for LinkedList<A> {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -793,8 +812,8 @@ impl<'a, A: Arbitrary<'a>> Arbitrary<'a> for VecDeque<A> {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -843,8 +862,8 @@ impl<'a> Arbitrary<'a> for &'a str {
     }
 
     #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        crate::size_hint::and(<usize as Arbitrary>::size_hint(depth), (0, None))
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -1101,6 +1120,56 @@ impl<'a> Arbitrary<'a> for Ipv6Addr {
 mod test {
     use super::*;
 
+    /// Generates an arbitrary `T`, and checks that the result is consistent with the
+    /// `size_hint()` reported by `T`.
+    fn checked_arbitrary<'a, T: Arbitrary<'a>>(u: &mut Unstructured<'a>) -> Result<T> {
+        let (min, max) = T::size_hint(0);
+
+        let len_before = u.len();
+        let result = T::arbitrary(u);
+
+        let consumed = len_before - u.len();
+
+        if let Some(max) = max {
+            assert!(
+                consumed <= max,
+                "incorrect maximum size: indicated {}, actually consumed {}",
+                max,
+                consumed
+            );
+        }
+
+        if result.is_ok() {
+            assert!(
+                consumed >= min,
+                "incorrect minimum size: indicated {}, actually consumed {}",
+                min,
+                consumed
+            );
+        }
+
+        result
+    }
+
+    /// Like `checked_arbitrary()`, but calls `arbitrary_take_rest()` instead of `arbitrary()`.
+    fn checked_arbitrary_take_rest<'a, T: Arbitrary<'a>>(u: Unstructured<'a>) -> Result<T> {
+        let (min, _) = T::size_hint(0);
+
+        let len_before = u.len();
+        let result = T::arbitrary_take_rest(u);
+
+        if result.is_ok() {
+            assert!(
+                len_before >= min,
+                "incorrect minimum size: indicated {}, worked with {}",
+                min,
+                len_before
+            );
+        }
+
+        result
+    }
+
     #[test]
     fn finite_buffer_fill_buffer() {
         let x = [1, 2, 3, 4];
@@ -1119,7 +1188,7 @@ mod test {
         let x = [1, 2, 3, 4];
         let mut buf = Unstructured::new(&x);
         let expected = 1 | (2 << 8) | (3 << 16) | (4 << 24);
-        let actual = i32::arbitrary(&mut buf).unwrap();
+        let actual = checked_arbitrary::<i32>(&mut buf).unwrap();
         assert_eq!(expected, actual);
     }
 
@@ -1128,7 +1197,7 @@ mod test {
         let x = [1, 2, 3, 4, 4];
         let mut buf = Unstructured::new(&x);
         let expected = &[1, 2, 3, 4];
-        let actual = <&[u8] as Arbitrary>::arbitrary(&mut buf).unwrap();
+        let actual = checked_arbitrary::<&[u8]>(&mut buf).unwrap();
         assert_eq!(expected, actual);
     }
 
@@ -1137,26 +1206,30 @@ mod test {
         let x = [1, 2, 3, 4];
         let buf = Unstructured::new(&x);
         let expected = &[1, 2, 3, 4];
-        let actual = <&[u8] as Arbitrary>::arbitrary_take_rest(buf).unwrap();
+        let actual = checked_arbitrary_take_rest::<&[u8]>(buf).unwrap();
         assert_eq!(expected, actual);
     }
 
     #[test]
     fn arbitrary_collection() {
         let x = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 12,
         ];
         assert_eq!(
-            Vec::<u8>::arbitrary(&mut Unstructured::new(&x)).unwrap(),
+            checked_arbitrary::<&[u8]>(&mut Unstructured::new(&x)).unwrap(),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3]
+        );
+        assert_eq!(
+            checked_arbitrary::<Vec<u8>>(&mut Unstructured::new(&x)).unwrap(),
             &[2, 4, 6, 8, 1]
         );
         assert_eq!(
-            Vec::<u32>::arbitrary(&mut Unstructured::new(&x)).unwrap(),
+            checked_arbitrary::<Vec<u32>>(&mut Unstructured::new(&x)).unwrap(),
             &[84148994]
         );
         assert_eq!(
-            String::arbitrary(&mut Unstructured::new(&x)).unwrap(),
-            "\x01\x02\x03\x04\x05\x06\x07\x08"
+            checked_arbitrary::<String>(&mut Unstructured::new(&x)).unwrap(),
+            "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x01\x02\x03"
         );
     }
 
@@ -1164,16 +1237,29 @@ mod test {
     fn arbitrary_take_rest() {
         let x = [1, 2, 3, 4];
         assert_eq!(
-            Vec::<u8>::arbitrary_take_rest(Unstructured::new(&x)).unwrap(),
+            checked_arbitrary_take_rest::<&[u8]>(Unstructured::new(&x)).unwrap(),
             &[1, 2, 3, 4]
         );
         assert_eq!(
-            Vec::<u32>::arbitrary_take_rest(Unstructured::new(&x)).unwrap(),
+            checked_arbitrary_take_rest::<Vec<u8>>(Unstructured::new(&x)).unwrap(),
+            &[1, 2, 3, 4]
+        );
+        assert_eq!(
+            checked_arbitrary_take_rest::<Vec<u32>>(Unstructured::new(&x)).unwrap(),
             &[0x4030201]
         );
         assert_eq!(
-            String::arbitrary_take_rest(Unstructured::new(&x)).unwrap(),
+            checked_arbitrary_take_rest::<String>(Unstructured::new(&x)).unwrap(),
             "\x01\x02\x03\x04"
+        );
+
+        assert_eq!(
+            checked_arbitrary_take_rest::<&[u8]>(Unstructured::new(&[])).unwrap(),
+            &[]
+        );
+        assert_eq!(
+            checked_arbitrary_take_rest::<Vec<u8>>(Unstructured::new(&[])).unwrap(),
+            &[]
         );
     }
 
@@ -1183,9 +1269,6 @@ mod test {
             (7, Some(7)),
             <(bool, u16, i32) as Arbitrary<'_>>::size_hint(0)
         );
-        assert_eq!(
-            (1 + mem::size_of::<usize>(), None),
-            <(u8, Vec<u8>) as Arbitrary>::size_hint(0)
-        );
+        assert_eq!((1, None), <(u8, Vec<u8>) as Arbitrary>::size_hint(0));
     }
 }

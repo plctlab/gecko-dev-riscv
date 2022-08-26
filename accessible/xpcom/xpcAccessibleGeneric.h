@@ -37,7 +37,8 @@ class xpcAccessibleGeneric : public xpcAccessible,
   NS_DECL_ISUPPORTS
 
   // nsIAccessible
-  LocalAccessible* ToInternalAccessible() const final;
+  LocalAccessible* ToInternalAccessible() final;
+  Accessible* ToInternalGeneric() final { return mIntl; }
 
   // xpcAccessibleGeneric
   virtual void Shutdown();
@@ -81,11 +82,8 @@ inline Accessible* xpcAccessibleHyperLink::Intl() {
   return static_cast<xpcAccessibleGeneric*>(this)->mIntl;
 }
 
-inline LocalAccessible* xpcAccessibleSelectable::Intl() {
-  if (!static_cast<xpcAccessibleGeneric*>(this)->mIntl) {
-    return nullptr;
-  }
-  return static_cast<xpcAccessibleGeneric*>(this)->mIntl->AsLocal();
+inline Accessible* xpcAccessibleSelectable::Intl() {
+  return static_cast<xpcAccessibleGeneric*>(this)->mIntl;
 }
 
 inline Accessible* xpcAccessibleValue::Intl() {

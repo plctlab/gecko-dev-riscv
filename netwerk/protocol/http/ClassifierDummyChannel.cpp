@@ -7,17 +7,20 @@
 
 #include "ClassifierDummyChannel.h"
 
-#include "mozilla/ContentBlocking.h"
 #include "mozilla/net/ClassifierDummyChannelChild.h"
 #include "mozilla/net/UrlClassifierCommon.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_privacy.h"
+#include "mozilla/StorageAccess.h"
 #include "nsContentSecurityManager.h"
 #include "nsIChannel.h"
 #include "nsIURI.h"
 #include "nsProxyRelease.h"
 #include "nsQueryObject.h"
+#include "NeckoChild.h"
+#include "nsIHttpChannel.h"
+#include "nsIStreamListener.h"
 
 namespace mozilla {
 namespace net {
@@ -60,7 +63,7 @@ ClassifierDummyChannel::StorageAllowed(
     return eAsyncNeeded;
   }
 
-  if (ContentBlocking::ShouldAllowAccessFor(httpChannel, uri, nullptr)) {
+  if (ShouldAllowAccessFor(httpChannel, uri, nullptr)) {
     return eStorageGranted;
   }
 
@@ -95,9 +98,6 @@ ClassifierDummyChannel::ClassifierDummyChannel(nsIURI* aURI,
 ClassifierDummyChannel::~ClassifierDummyChannel() {
   NS_ReleaseOnMainThread("ClassifierDummyChannel::mLoadInfo",
                          mLoadInfo.forget());
-  NS_ReleaseOnMainThread("ClassifierDummyChannel::mURI", mURI.forget());
-  NS_ReleaseOnMainThread("ClassifierDummyChannel::mTopWindowURI",
-                         mTopWindowURI.forget());
 }
 
 void ClassifierDummyChannel::AddClassificationFlags(
@@ -115,7 +115,7 @@ void ClassifierDummyChannel::AddClassificationFlags(
 
 NS_IMETHODIMP
 ClassifierDummyChannel::GetOriginalURI(nsIURI** aOriginalURI) {
-  NS_IF_ADDREF(*aOriginalURI = mURI);
+  *aOriginalURI = do_AddRef(mURI).take();
   return NS_OK;
 }
 
@@ -127,7 +127,7 @@ ClassifierDummyChannel::SetOriginalURI(nsIURI* aOriginalURI) {
 
 NS_IMETHODIMP
 ClassifierDummyChannel::GetURI(nsIURI** aURI) {
-  NS_IF_ADDREF(*aURI = mURI);
+  *aURI = do_AddRef(mURI).take();
   return NS_OK;
 }
 
@@ -237,7 +237,7 @@ ClassifierDummyChannel::GetContentDispositionHeader(
 
 NS_IMETHODIMP
 ClassifierDummyChannel::GetLoadInfo(nsILoadInfo** aLoadInfo) {
-  NS_IF_ADDREF(*aLoadInfo = mLoadInfo);
+  *aLoadInfo = do_AddRef(mLoadInfo).take();
   return NS_OK;
 }
 
@@ -523,6 +523,11 @@ ClassifierDummyChannel::GetIsResolvedByTRR(bool* aResolvedByTRR) {
 }
 
 NS_IMETHODIMP
+ClassifierDummyChannel::GetIsLoadedBySocketProcess(bool*) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 ClassifierDummyChannel::GetIsOCSP(bool* value) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -560,12 +565,12 @@ ClassifierDummyChannel::SetCorsIncludeCredentials(
 }
 
 NS_IMETHODIMP
-ClassifierDummyChannel::GetCorsMode(uint32_t* aCorsMode) {
+ClassifierDummyChannel::GetRequestMode(dom::RequestMode* aRequestMode) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
-ClassifierDummyChannel::SetCorsMode(uint32_t aCorsMode) {
+ClassifierDummyChannel::SetRequestMode(dom::RequestMode aRequestMode) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -767,6 +772,7 @@ NS_IMETHODIMP ClassifierDummyChannel::IsThirdPartySocialTrackingResource(
 void ClassifierDummyChannel::DoDiagnosticAssertWhenOnStopNotCalledOnDestroy() {}
 
 NS_IMETHODIMP ClassifierDummyChannel::GetResponseEmbedderPolicy(
+    bool aIsOriginTrialCoepCredentiallessEnabled,
     nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -785,6 +791,14 @@ NS_IMETHODIMP
 ClassifierDummyChannel::GetHasHTTPSRR(bool*) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
+
+NS_IMETHODIMP
+ClassifierDummyChannel::SetEarlyHintObserver(nsIEarlyHintObserver* aObserver) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+void ClassifierDummyChannel::SetConnectionInfo(
+    mozilla::net::nsHttpConnectionInfo* aInfo) {}
 
 }  // namespace net
 }  // namespace mozilla

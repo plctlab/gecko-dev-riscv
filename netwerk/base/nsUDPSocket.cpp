@@ -29,9 +29,15 @@
 #include "nsIDNSRecord.h"
 #include "nsIDNSService.h"
 #include "nsICancelable.h"
+#include "nsIPipe.h"
 #include "nsWrapperCacheInlines.h"
 #include "HttpConnectionUDP.h"
 #include "mozilla/StaticPrefs_network.h"
+
+#if defined(FUZZING)
+#  include "FuzzyLayer.h"
+#  include "mozilla/StaticPrefs_fuzzing.h"
+#endif
 
 namespace mozilla {
 namespace net {
@@ -205,12 +211,12 @@ nsUDPMessage::GetData(nsACString& aData) {
 NS_IMETHODIMP
 nsUDPMessage::GetOutputStream(nsIOutputStream** aOutputStream) {
   NS_ENSURE_ARG_POINTER(aOutputStream);
-  NS_IF_ADDREF(*aOutputStream = mOutputStream);
+  *aOutputStream = do_AddRef(mOutputStream).take();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsUDPMessage::GetRawData(JSContext* cx, JS::MutableHandleValue aRawData) {
+nsUDPMessage::GetRawData(JSContext* cx, JS::MutableHandle<JS::Value> aRawData) {
   if (!mJsobj) {
     mJsobj =
         dom::Uint8Array::Create(cx, nullptr, mData.Length(), mData.Elements());
@@ -362,14 +368,15 @@ UDPMessageProxy::GetData(nsACString& aData) {
 FallibleTArray<uint8_t>& UDPMessageProxy::GetDataAsTArray() { return mData; }
 
 NS_IMETHODIMP
-UDPMessageProxy::GetRawData(JSContext* cx, JS::MutableHandleValue aRawData) {
+UDPMessageProxy::GetRawData(JSContext* cx,
+                            JS::MutableHandle<JS::Value> aRawData) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
 UDPMessageProxy::GetOutputStream(nsIOutputStream** aOutputStream) {
   NS_ENSURE_ARG_POINTER(aOutputStream);
-  NS_IF_ADDREF(*aOutputStream = mOutputStream);
+  *aOutputStream = do_AddRef(mOutputStream).take();
   return NS_OK;
 }
 
@@ -571,6 +578,18 @@ nsUDPSocket::InitWithAddress(const NetAddr* aAddr, nsIPrincipal* aPrincipal,
     NS_WARNING("unable to create UDP socket");
     return NS_ERROR_FAILURE;
   }
+
+#ifdef FUZZING
+  if (StaticPrefs::fuzzing_necko_enabled()) {
+    rv = AttachFuzzyIOLayer(mFD);
+    if (NS_FAILED(rv)) {
+      UDPSOCKET_LOG(("Failed to attach fuzzing IOLayer [rv=%" PRIx32 "].\n",
+                     static_cast<uint32_t>(rv)));
+      return rv;
+    }
+    UDPSOCKET_LOG(("Successfully attached fuzzing IOLayer.\n"));
+  }
+#endif
 
   uint16_t port;
   if (NS_FAILED(aAddr->GetPort(&port))) {

@@ -5,16 +5,19 @@
 
 #include "HTMLEditUtils.h"
 
-#include "CSSEditUtils.h"  // for CSSEditUtils
-#include "WSRunObject.h"   // for WSRunScanner
+#include "AutoRangeArray.h"  // for AutoRangeArray
+#include "CSSEditUtils.h"    // for CSSEditUtils
+#include "EditAction.h"      // for EditAction
+#include "EditorBase.h"      // for EditorBase, EditorType
+#include "EditorDOMPoint.h"  // for EditorDOMPoint, etc.
+#include "EditorForwards.h"  // for CollectChildrenOptions
+#include "EditorUtils.h"     // for EditorUtils
+#include "WSRunObject.h"     // for WSRunScanner
 
-#include "mozilla/ArrayUtils.h"      // for ArrayLength
-#include "mozilla/Assertions.h"      // for MOZ_ASSERT, etc.
-#include "mozilla/EditAction.h"      // for EditAction
-#include "mozilla/EditorBase.h"      // for EditorBase, EditorType
-#include "mozilla/EditorDOMPoint.h"  // for EditorDOMPoint, etc.
-#include "mozilla/EditorUtils.h"     // for EditorUtils
-#include "mozilla/dom/Element.h"     // for Element, nsINode
+#include "mozilla/ArrayUtils.h"   // for ArrayLength
+#include "mozilla/Assertions.h"   // for MOZ_ASSERT, etc.
+#include "mozilla/RangeUtils.h"   // for RangeUtils
+#include "mozilla/dom/Element.h"  // for Element, nsINode
 #include "mozilla/dom/HTMLAnchorElement.h"
 #include "mozilla/dom/HTMLInputElement.h"
 #include "mozilla/dom/Text.h"  // for Text
@@ -95,6 +98,19 @@ template EditorRawDOMPoint HTMLEditUtils::GetBetterInsertionPointFor(
     const nsIContent& aContentToInsert, const EditorDOMPoint& aPointToInsert,
     const Element& aEditingHost);
 
+template Result<EditorDOMPoint, nsresult>
+HTMLEditUtils::ComputePointToPutCaretInElementIfOutside(
+    const Element& aElement, const EditorDOMPoint& aCurrentPoint);
+template Result<EditorRawDOMPoint, nsresult>
+HTMLEditUtils::ComputePointToPutCaretInElementIfOutside(
+    const Element& aElement, const EditorDOMPoint& aCurrentPoint);
+template Result<EditorDOMPoint, nsresult>
+HTMLEditUtils::ComputePointToPutCaretInElementIfOutside(
+    const Element& aElement, const EditorRawDOMPoint& aCurrentPoint);
+template Result<EditorRawDOMPoint, nsresult>
+HTMLEditUtils::ComputePointToPutCaretInElementIfOutside(
+    const Element& aElement, const EditorRawDOMPoint& aCurrentPoint);
+
 bool HTMLEditUtils::CanContentsBeJoined(const nsIContent& aLeftContent,
                                         const nsIContent& aRightContent,
                                         StyleDifference aStyleDifference) {
@@ -160,7 +176,7 @@ bool HTMLEditUtils::IsInlineStyle(nsINode* aNode) {
 }
 
 bool HTMLEditUtils::IsDisplayOutsideInline(const Element& aElement) {
-  RefPtr<ComputedStyle> elementStyle =
+  RefPtr<const ComputedStyle> elementStyle =
       nsComputedDOMStyle::GetComputedStyleNoFlush(&aElement);
   if (!elementStyle) {
     return false;
@@ -352,20 +368,16 @@ bool HTMLEditUtils::IsMozDiv(nsINode* aNode) {
 /**
  * IsMailCite() returns true if aNode is an html blockquote with |type=cite|.
  */
-bool HTMLEditUtils::IsMailCite(nsINode* aNode) {
-  MOZ_ASSERT(aNode);
-
+bool HTMLEditUtils::IsMailCite(const Element& aElement) {
   // don't ask me why, but our html mailcites are id'd by "type=cite"...
-  if (aNode->IsElement() &&
-      aNode->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::type,
-                                      u"cite"_ns, eIgnoreCase)) {
+  if (aElement.AttrValueIs(kNameSpaceID_None, nsGkAtoms::type, u"cite"_ns,
+                           eIgnoreCase)) {
     return true;
   }
 
   // ... but our plaintext mailcites by "_moz_quote=true".  go figure.
-  if (aNode->IsElement() &&
-      aNode->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::mozquote,
-                                      u"true"_ns, eIgnoreCase)) {
+  if (aElement.AttrValueIs(kNameSpaceID_None, nsGkAtoms::mozquote, u"true"_ns,
+                           eIgnoreCase)) {
     return true;
   }
 
@@ -551,8 +563,7 @@ Element* HTMLEditUtils::GetElementOfImmediateBlockBoundary(
       continue;
     }
     for (uint32_t i = 0; i < textFragment.GetLength(); i++) {
-      if (textFragment.CharAt(AssertedCast<int32_t>(i)) ==
-          HTMLEditUtils::kNewLine) {
+      if (textFragment.CharAt(i) == HTMLEditUtils::kNewLine) {
         if (isNewLinePreformatted) {
           return nullptr;  // found a visible text node.
         }
@@ -588,18 +599,22 @@ bool HTMLEditUtils::IsEmptyNode(nsPresContext* aPresContext,
                : !IsVisibleTextNode(*text);
   }
 
-  // if it's not a text node (handled above) and it's not a container,
-  // then we don't call it empty (it's an <hr>, or <br>, etc.).
-  // Also, if it's an anchor then don't treat it as empty - even though
-  // anchors are containers, named anchors are "empty" but we don't
-  // want to treat them as such.  Also, don't call ListItems or table
-  // cells empty if caller desires.  Form Widgets not empty.
   // XXX Why do we treat non-content node is not empty?
   // XXX Why do we treat non-text data node may be not empty?
-  if (!aNode.IsContent() || !IsContainerNode(*aNode.AsContent()) ||
-      IsNamedAnchor(&aNode) || IsFormWidget(&aNode) ||
+  if (!aNode.IsContent() ||
+      // If it's not a container such as an <hr> or <br>, etc, it should be
+      // treated as not empty.
+      !IsContainerNode(*aNode.AsContent()) ||
+      // If it's a named anchor, we shouldn't treat it as empty because it
+      // has special meaning even if invisible.
+      IsNamedAnchor(&aNode) ||
+      // Form widgets should be treated as not empty because they have special
+      // meaning even if invisible.
+      IsFormWidget(&aNode) ||
+      // If the caller treats a list item element as visible, respect it.
       (aOptions.contains(EmptyCheckOption::TreatListItemAsVisible) &&
        IsListItem(&aNode)) ||
+      // If the caller treats a table cell element as visible, respect it.
       (aOptions.contains(EmptyCheckOption::TreatTableCellAsVisible) &&
        IsTableCell(&aNode))) {
     return false;
@@ -608,13 +623,12 @@ bool HTMLEditUtils::IsEmptyNode(nsPresContext* aPresContext,
   const bool isListItem = IsListItem(&aNode);
   const bool isTableCell = IsTableCell(&aNode);
 
-  // loop over children of node. if no children, or all children are either
-  // empty text nodes or non-editable, then node qualifies as empty
   bool seenBR = aSeenBR && *aSeenBR;
   for (nsIContent* childContent = aNode.GetFirstChild(); childContent;
        childContent = childContent->GetNextSibling()) {
     // Is the child editable and non-empty?  if so, return false
-    if (!EditorUtils::IsEditableContent(*childContent, EditorType::HTML)) {
+    if (!aOptions.contains(EmptyCheckOption::IgnoreEditableState) &&
+        !EditorUtils::IsEditableContent(*childContent, EditorType::HTML)) {
       continue;
     }
 
@@ -677,7 +691,7 @@ bool HTMLEditUtils::IsEmptyNode(nsPresContext* aPresContext,
 }
 
 bool HTMLEditUtils::ShouldInsertLinefeedCharacter(
-    EditorDOMPoint& aPointToInsert, const Element& aEditingHost) {
+    const EditorDOMPoint& aPointToInsert, const Element& aEditingHost) {
   MOZ_ASSERT(aPointToInsert.IsSetAndValid());
 
   if (!aPointToInsert.IsInContentNode()) {
@@ -688,7 +702,7 @@ bool HTMLEditUtils::ShouldInsertLinefeedCharacter(
   // element.
   Element* closestEditableBlockElement =
       HTMLEditUtils::GetInclusiveAncestorElement(
-          *aPointToInsert.ContainerAsContent(),
+          *aPointToInsert.ContainerAs<nsIContent>(),
           HTMLEditUtils::ClosestEditableBlockElement);
 
   // If and only if the nearest block is the editing host or its parent,
@@ -698,7 +712,7 @@ bool HTMLEditUtils::ShouldInsertLinefeedCharacter(
           closestEditableBlockElement == &aEditingHost) &&
          HTMLEditUtils::IsDisplayOutsideInline(aEditingHost) &&
          EditorUtils::IsNewLinePreformatted(
-             *aPointToInsert.ContainerAsContent());
+             *aPointToInsert.ContainerAs<nsIContent>());
 }
 
 // We use bitmasks to test containment of elements. Elements are marked to be
@@ -907,7 +921,6 @@ static const ElementInfo kElements[eHTMLTag_userdefined] = {
     ELEM(mark, true, true, GROUP_PHRASE, GROUP_INLINE_ELEMENT),
     ELEM(marquee, true, false, GROUP_NONE, GROUP_NONE),
     ELEM(menu, true, true, GROUP_BLOCK, GROUP_LI | GROUP_FLOW_ELEMENT),
-    ELEM(menuitem, false, false, GROUP_NONE, GROUP_NONE),
     ELEM(meta, false, false, GROUP_HEAD_CONTENT, GROUP_NONE),
     ELEM(meter, true, false, GROUP_SPECIAL, GROUP_FLOW_ELEMENT),
     ELEM(multicol, false, false, GROUP_NONE, GROUP_NONE),
@@ -1044,14 +1057,14 @@ bool HTMLEditUtils::IsContainerNode(nsHTMLTag aTagId) {
   return kElements[aTagId - 1].mIsContainer;
 }
 
-bool HTMLEditUtils::IsNonListSingleLineContainer(nsINode& aNode) {
+bool HTMLEditUtils::IsNonListSingleLineContainer(const nsINode& aNode) {
   return aNode.IsAnyOfHTMLElements(
       nsGkAtoms::address, nsGkAtoms::div, nsGkAtoms::h1, nsGkAtoms::h2,
       nsGkAtoms::h3, nsGkAtoms::h4, nsGkAtoms::h5, nsGkAtoms::h6,
       nsGkAtoms::listing, nsGkAtoms::p, nsGkAtoms::pre, nsGkAtoms::xmp);
 }
 
-bool HTMLEditUtils::IsSingleLineContainer(nsINode& aNode) {
+bool HTMLEditUtils::IsSingleLineContainer(const nsINode& aNode) {
   return IsNonListSingleLineContainer(aNode) ||
          aNode.IsAnyOfHTMLElements(nsGkAtoms::li, nsGkAtoms::dt, nsGkAtoms::dd);
 }
@@ -1072,7 +1085,8 @@ nsIContent* HTMLEditUtils::GetPreviousContent(
   if (aPoint.IsStartOfContainer() || aPoint.IsInTextNode()) {
     if (aOptions.contains(WalkTreeOption::StopAtBlockBoundary) &&
         aPoint.IsInContentNode() &&
-        HTMLEditUtils::IsBlockElement(*aPoint.ContainerAsContent())) {
+        HTMLEditUtils::IsBlockElement(
+            *aPoint.template ContainerAs<nsIContent>())) {
       // If we aren't allowed to cross blocks, don't look before this block.
       return nullptr;
     }
@@ -1117,7 +1131,7 @@ nsIContent* HTMLEditUtils::GetNextContent(
       "GetNextContent() doesn't assume that the start point is a "
       "data node except text node");
 
-  EditorRawDOMPoint point(aPoint);
+  auto point = aPoint.template To<EditorRawDOMPoint>();
 
   // if the container is a text node, use its location instead
   if (point.IsInTextNode()) {
@@ -1163,7 +1177,8 @@ nsIContent* HTMLEditUtils::GetNextContent(
   // and want the next one.
   if (aOptions.contains(WalkTreeOption::StopAtBlockBoundary) &&
       point.IsInContentNode() &&
-      HTMLEditUtils::IsBlockElement(*point.ContainerAsContent())) {
+      HTMLEditUtils::IsBlockElement(
+          *point.template ContainerAs<nsIContent>())) {
     // don't cross out of parent block
     return nullptr;
   }
@@ -1742,11 +1757,12 @@ EditorDOMPointType HTMLEditUtils::GetBetterInsertionPointFor(
     return EditorDOMPointType();
   }
 
-  EditorDOMPointType pointToInsert(
-      aPointToInsert.GetNonAnonymousSubtreePoint());
-  if (NS_WARN_IF(!pointToInsert.IsSet()) ||
-      NS_WARN_IF(!pointToInsert.GetContainer()->IsInclusiveDescendantOf(
-          &aEditingHost))) {
+  auto pointToInsert =
+      aPointToInsert.template GetNonAnonymousSubtreePoint<EditorDOMPointType>();
+  if (MOZ_UNLIKELY(
+          NS_WARN_IF(!pointToInsert.IsSet()) ||
+          NS_WARN_IF(!pointToInsert.GetContainer()->IsInclusiveDescendantOf(
+              &aEditingHost)))) {
     // Cannot insert aContentToInsert into this DOM tree.
     return EditorDOMPointType();
   }
@@ -1791,7 +1807,165 @@ EditorDOMPointType HTMLEditUtils::GetBetterInsertionPointFor(
     return pointToInsert;
   }
 
-  return forwardScanFromPointToInsertResult.RawPointAfterContent();
+  return forwardScanFromPointToInsertResult
+      .template PointAfterContent<EditorDOMPointType>();
+}
+
+//  static
+template <typename EditorDOMPointType, typename EditorDOMPointTypeInput>
+Result<EditorDOMPointType, nsresult>
+HTMLEditUtils::ComputePointToPutCaretInElementIfOutside(
+    const Element& aElement, const EditorDOMPointTypeInput& aCurrentPoint) {
+  MOZ_ASSERT(aCurrentPoint.IsSet());
+
+  // FYI: This was moved from
+  // https://searchfox.org/mozilla-central/rev/d3c2f51d89c3ca008ff0cb5a057e77ccd973443e/editor/libeditor/HTMLEditSubActionHandler.cpp#9193
+
+  // Use ranges and RangeUtils::CompareNodeToRange() to compare selection
+  // start to new block.
+  RefPtr<StaticRange> staticRange =
+      StaticRange::Create(aCurrentPoint.ToRawRangeBoundary(),
+                          aCurrentPoint.ToRawRangeBoundary(), IgnoreErrors());
+  if (MOZ_UNLIKELY(!staticRange)) {
+    NS_WARNING("StaticRange::Create() failed");
+    return Err(NS_ERROR_FAILURE);
+  }
+
+  bool nodeBefore, nodeAfter;
+  nsresult rv = RangeUtils::CompareNodeToRange(
+      const_cast<Element*>(&aElement), staticRange, &nodeBefore, &nodeAfter);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("RangeUtils::CompareNodeToRange() failed");
+    return Err(rv);
+  }
+
+  if (nodeBefore && nodeAfter) {
+    return EditorDOMPointType();  // aCurrentPoint is in aElement
+  }
+
+  if (nodeBefore) {
+    // selection is after block.  put at end of block.
+    const nsIContent* lastEditableContent = HTMLEditUtils::GetLastChild(
+        aElement, {WalkTreeOption::IgnoreNonEditableNode});
+    if (!lastEditableContent) {
+      lastEditableContent = &aElement;
+    }
+    if (lastEditableContent->IsText() ||
+        HTMLEditUtils::IsContainerNode(*lastEditableContent)) {
+      return EditorDOMPointType::AtEndOf(*lastEditableContent);
+    }
+    MOZ_ASSERT(lastEditableContent->GetParentNode());
+    return EditorDOMPointType::After(*lastEditableContent);
+  }
+
+  // selection is before block.  put at start of block.
+  const nsIContent* firstEditableContent = HTMLEditUtils::GetFirstChild(
+      aElement, {WalkTreeOption::IgnoreNonEditableNode});
+  if (!firstEditableContent) {
+    firstEditableContent = &aElement;
+  }
+  if (firstEditableContent->IsText() ||
+      HTMLEditUtils::IsContainerNode(*firstEditableContent)) {
+    MOZ_ASSERT(firstEditableContent->GetParentNode());
+    // XXX Shouldn't this be EditorDOMPointType(firstEditableContent, 0u)?
+    return EditorDOMPointType(firstEditableContent);
+  }
+  // XXX And shouldn't this be EditorDOMPointType(firstEditableContent)?
+  return EditorDOMPointType(firstEditableContent, 0u);
+}
+
+// static
+size_t HTMLEditUtils::CollectChildren(
+    nsINode& aNode, nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+    size_t aIndexToInsertChildren, const CollectChildrenOptions& aOptions) {
+  // FYI: This was moved from
+  // https://searchfox.org/mozilla-central/rev/4bce7d85ba4796dd03c5dcc7cfe8eee0e4c07b3b/editor/libeditor/HTMLEditSubActionHandler.cpp#6261
+
+  size_t numberOfFoundChildren = 0;
+  for (nsIContent* content =
+           GetFirstChild(aNode, {WalkTreeOption::IgnoreNonEditableNode});
+       content; content = content->GetNextSibling()) {
+    if ((aOptions.contains(CollectChildrenOption::CollectListChildren) &&
+         (HTMLEditUtils::IsAnyListElement(content) ||
+          HTMLEditUtils::IsListItem(content))) ||
+        (aOptions.contains(CollectChildrenOption::CollectTableChildren) &&
+         HTMLEditUtils::IsAnyTableElement(content))) {
+      numberOfFoundChildren += HTMLEditUtils::CollectChildren(
+          *content, aOutArrayOfContents,
+          aIndexToInsertChildren + numberOfFoundChildren, aOptions);
+    } else if (!aOptions.contains(
+                   CollectChildrenOption::IgnoreNonEditableChildren) ||
+               EditorUtils::IsEditableContent(*content, EditorType::HTML)) {
+      aOutArrayOfContents.InsertElementAt(
+          aIndexToInsertChildren + numberOfFoundChildren++, *content);
+    }
+  }
+  return numberOfFoundChildren;
+}
+
+// static
+size_t HTMLEditUtils::CollectEmptyInlineContainerDescendants(
+    const nsINode& aNode,
+    nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+    const EmptyCheckOptions& aOptions) {
+  size_t numberOfFoundElements = 0;
+  for (Element* element = aNode.GetFirstElementChild(); element;) {
+    if (HTMLEditUtils::IsEmptyInlineContainer(*element, aOptions)) {
+      aOutArrayOfContents.AppendElement(*element);
+      numberOfFoundElements++;
+      nsIContent* nextContent = element->GetNextNonChildNode(&aNode);
+      element = nullptr;
+      for (; nextContent; nextContent = nextContent->GetNextNode(&aNode)) {
+        if (nextContent->IsElement()) {
+          element = nextContent->AsElement();
+          break;
+        }
+      }
+      continue;
+    }
+
+    nsIContent* nextContent = element->GetNextNode(&aNode);
+    element = nullptr;
+    for (; nextContent; nextContent = nextContent->GetNextNode(&aNode)) {
+      if (nextContent->IsElement()) {
+        element = nextContent->AsElement();
+        break;
+      }
+    }
+  }
+  return numberOfFoundElements;
+}
+
+/******************************************************************************
+ * SelectedTableCellScanner
+ ******************************************************************************/
+
+SelectedTableCellScanner::SelectedTableCellScanner(
+    const AutoRangeArray& aRanges) {
+  if (aRanges.Ranges().IsEmpty()) {
+    return;
+  }
+  Element* firstSelectedCellElement =
+      HTMLEditUtils::GetTableCellElementIfOnlyOneSelected(
+          aRanges.FirstRangeRef());
+  if (!firstSelectedCellElement) {
+    return;  // We're not in table cell selection mode.
+  }
+  mSelectedCellElements.SetCapacity(aRanges.Ranges().Length());
+  mSelectedCellElements.AppendElement(*firstSelectedCellElement);
+  for (uint32_t i = 1; i < aRanges.Ranges().Length(); i++) {
+    nsRange* range = aRanges.Ranges()[i];
+    if (NS_WARN_IF(!range) || NS_WARN_IF(!range->IsPositioned())) {
+      continue;  // Shouldn't occur in normal conditions.
+    }
+    // Just ignore selection ranges which do not select only one table
+    // cell element.  This is possible case if web apps sets multiple
+    // selections and first range selects a table cell element.
+    if (Element* selectedCellElement =
+            HTMLEditUtils::GetTableCellElementIfOnlyOneSelected(*range)) {
+      mSelectedCellElements.AppendElement(*selectedCellElement);
+    }
+  }
 }
 
 }  // namespace mozilla

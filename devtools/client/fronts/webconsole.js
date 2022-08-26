@@ -24,7 +24,6 @@ class WebConsoleFront extends FrontClassWithSpec(webconsoleSpec) {
   constructor(client, targetFront, parentFront) {
     super(client, targetFront, parentFront);
     this._client = client;
-    this.traits = {};
     this.events = [];
 
     // Attribute name from which to retrieve the actorID out of the target actor's form
@@ -290,24 +289,6 @@ class WebConsoleFront extends FrontClassWithSpec(webconsoleSpec) {
       type: "getStackTrace",
     };
     return this._client.request(packet, onResponse);
-  }
-
-  /**
-   * Start the given Web Console listeners.
-   * TODO: remove once the front is retrieved via getFront, and we use form()
-   *
-   * @see this.LISTENERS
-   * @param array listeners
-   *        Array of listeners you want to start. See this.LISTENERS for
-   *        known listeners.
-   * @return request
-   *         Request object that implements both Promise and EventEmitter interfaces
-   */
-  async startListeners(listeners) {
-    const response = await super.startListeners(listeners);
-    this.hasNativeConsoleAPI = response.nativeConsoleAPI;
-    this.traits = response.traits;
-    return response;
   }
 
   /**

@@ -30,8 +30,14 @@
 #include "nsURLHelper.h"
 #include "prio.h"
 #include "SimpleChannel.h"
+#include "nsICancelable.h"
+
+#ifdef MOZ_PLACES
+#  include "nsIPlacesPreviewsHelperService.h"
+#endif
 
 #define PAGE_THUMB_HOST "thumbnails"
+#define PLACES_PREVIEWS_HOST "places-previews"
 #define PAGE_THUMB_SCHEME "moz-page-thumb"
 
 namespace mozilla {
@@ -44,119 +50,6 @@ LazyLogModule gPageThumbProtocolLog("PageThumbProtocol");
   MOZ_LOG(gPageThumbProtocolLog, LogLevel::level, (__VA_ARGS__))
 
 StaticRefPtr<PageThumbProtocolHandler> PageThumbProtocolHandler::sSingleton;
-
-/**
- * Helper class used with SimpleChannel to asynchronously obtain an input
- * stream from the parent for a remote moz-page-thumb load from the child.
- */
-class PageThumbStreamGetter : public RefCounted<PageThumbStreamGetter> {
- public:
-  PageThumbStreamGetter(nsIURI* aURI, nsILoadInfo* aLoadInfo)
-      : mURI(aURI), mLoadInfo(aLoadInfo) {
-    MOZ_ASSERT(aURI);
-    MOZ_ASSERT(aLoadInfo);
-
-    SetupEventTarget();
-  }
-
-  ~PageThumbStreamGetter() = default;
-
-  void SetupEventTarget() {
-    mMainThreadEventTarget = nsContentUtils::GetEventTargetByLoadInfo(
-        mLoadInfo, TaskCategory::Other);
-    if (!mMainThreadEventTarget) {
-      mMainThreadEventTarget = GetMainThreadSerialEventTarget();
-    }
-  }
-
-  // Get an input stream from the parent asynchronously.
-  Result<Ok, nsresult> GetAsync(nsIStreamListener* aListener,
-                                nsIChannel* aChannel);
-
-  // Handle an input stream being returned from the parent
-  void OnStream(already_AddRefed<nsIInputStream> aStream);
-
-  static void CancelRequest(nsIStreamListener* aListener, nsIChannel* aChannel,
-                            nsresult aResult);
-
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(PageThumbStreamGetter)
-
- private:
-  nsCOMPtr<nsIURI> mURI;
-  nsCOMPtr<nsILoadInfo> mLoadInfo;
-  nsCOMPtr<nsIStreamListener> mListener;
-  nsCOMPtr<nsIChannel> mChannel;
-  nsCOMPtr<nsISerialEventTarget> mMainThreadEventTarget;
-};
-
-// Request an input stream from the parent.
-Result<Ok, nsresult> PageThumbStreamGetter::GetAsync(
-    nsIStreamListener* aListener, nsIChannel* aChannel) {
-  MOZ_ASSERT(IsNeckoChild());
-  MOZ_ASSERT(mMainThreadEventTarget);
-
-  mListener = aListener;
-  mChannel = aChannel;
-
-  RefPtr<PageThumbStreamGetter> self = this;
-
-  // Request an input stream for this moz-page-thumb URI.
-  gNeckoChild->SendGetPageThumbStream(mURI)->Then(
-      mMainThreadEventTarget, __func__,
-      [self](const RefPtr<nsIInputStream>& stream) {
-        self->OnStream(do_AddRef(stream));
-      },
-      [self](const mozilla::ipc::ResponseRejectReason) {
-        self->OnStream(nullptr);
-      });
-  return Ok();
-}
-
-// static
-void PageThumbStreamGetter::CancelRequest(nsIStreamListener* aListener,
-                                          nsIChannel* aChannel,
-                                          nsresult aResult) {
-  MOZ_ASSERT(aListener);
-  MOZ_ASSERT(aChannel);
-
-  aListener->OnStartRequest(aChannel);
-  aListener->OnStopRequest(aChannel, aResult);
-  aChannel->Cancel(NS_BINDING_ABORTED);
-}
-
-// Handle an input stream sent from the parent.
-void PageThumbStreamGetter::OnStream(already_AddRefed<nsIInputStream> aStream) {
-  MOZ_ASSERT(IsNeckoChild());
-  MOZ_ASSERT(mListener);
-  MOZ_ASSERT(mMainThreadEventTarget);
-
-  nsCOMPtr<nsIInputStream> stream = std::move(aStream);
-
-  // We must keep an owning reference to the listener until we pass it on
-  // to AsyncRead.
-  nsCOMPtr<nsIStreamListener> listener = mListener.forget();
-
-  MOZ_ASSERT(mChannel);
-
-  if (!stream) {
-    // The parent didn't send us back a stream.
-    CancelRequest(listener, mChannel, NS_ERROR_FILE_ACCESS_DENIED);
-    return;
-  }
-
-  nsCOMPtr<nsIInputStreamPump> pump;
-  nsresult rv = NS_NewInputStreamPump(getter_AddRefs(pump), stream.forget(), 0,
-                                      0, false, mMainThreadEventTarget);
-  if (NS_FAILED(rv)) {
-    CancelRequest(listener, mChannel, rv);
-    return;
-  }
-
-  rv = pump->AsyncRead(listener);
-  if (NS_FAILED(rv)) {
-    CancelRequest(listener, mChannel, rv);
-  }
-}
 
 NS_IMPL_QUERY_INTERFACE(PageThumbProtocolHandler,
                         nsISubstitutingProtocolHandler, nsIProtocolHandler,
@@ -185,18 +78,16 @@ nsresult PageThumbProtocolHandler::GetFlagsForURI(nsIURI* aURI,
   // process.
   *aFlags = URI_STD | URI_IS_UI_RESOURCE | URI_IS_LOCAL_RESOURCE |
             URI_NORELATIVE | URI_NOAUTH;
-
   return NS_OK;
 }
 
-RefPtr<PageThumbStreamPromise> PageThumbProtocolHandler::NewStream(
+RefPtr<RemoteStreamPromise> PageThumbProtocolHandler::NewStream(
     nsIURI* aChildURI, bool* aTerminateSender) {
   MOZ_ASSERT(!IsNeckoChild());
   MOZ_ASSERT(NS_IsMainThread());
 
   if (!aChildURI || !aTerminateSender) {
-    return PageThumbStreamPromise::CreateAndReject(NS_ERROR_INVALID_ARG,
-                                                   __func__);
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
 
   *aTerminateSender = true;
@@ -209,16 +100,16 @@ RefPtr<PageThumbStreamPromise> PageThumbProtocolHandler::NewStream(
   bool isPageThumbScheme = false;
   if (NS_FAILED(aChildURI->SchemeIs(PAGE_THUMB_SCHEME, &isPageThumbScheme)) ||
       !isPageThumbScheme) {
-    return PageThumbStreamPromise::CreateAndReject(NS_ERROR_UNKNOWN_PROTOCOL,
-                                                   __func__);
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_UNKNOWN_PROTOCOL,
+                                                __func__);
   }
 
   // We should never receive a URI that does not have "thumbnails" as the host.
   nsAutoCString host;
   if (NS_FAILED(aChildURI->GetAsciiHost(host)) ||
-      !host.EqualsLiteral(PAGE_THUMB_HOST)) {
-    return PageThumbStreamPromise::CreateAndReject(NS_ERROR_UNEXPECTED,
-                                                   __func__);
+      !(host.EqualsLiteral(PAGE_THUMB_HOST) ||
+        host.EqualsLiteral(PLACES_PREVIEWS_HOST))) {
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
   }
 
   // For errors after this point, we want to propagate the error to
@@ -232,26 +123,25 @@ RefPtr<PageThumbStreamPromise> PageThumbProtocolHandler::NewStream(
   nsAutoCString resolvedSpec;
   rv = ResolveURI(aChildURI, resolvedSpec);
   if (NS_FAILED(rv)) {
-    return PageThumbStreamPromise::CreateAndReject(rv, __func__);
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
   nsAutoCString resolvedScheme;
   rv = net_ExtractURLScheme(resolvedSpec, resolvedScheme);
   if (NS_FAILED(rv) || !resolvedScheme.EqualsLiteral("file")) {
-    return PageThumbStreamPromise::CreateAndReject(NS_ERROR_UNEXPECTED,
-                                                   __func__);
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
   }
 
   nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
   if (NS_FAILED(rv)) {
-    return PageThumbStreamPromise::CreateAndReject(rv, __func__);
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
   nsCOMPtr<nsIURI> resolvedURI;
   rv = ioService->NewURI(resolvedSpec, nullptr, nullptr,
                          getter_AddRefs(resolvedURI));
   if (NS_FAILED(rv)) {
-    return PageThumbStreamPromise::CreateAndReject(rv, __func__);
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
   // We use the system principal to get a file channel for the request,
@@ -263,22 +153,34 @@ RefPtr<PageThumbStreamPromise> PageThumbProtocolHandler::NewStream(
                      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                      nsIContentPolicy::TYPE_OTHER);
   if (NS_FAILED(rv)) {
-    return PageThumbStreamPromise::CreateAndReject(rv, __func__);
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
-  auto promiseHolder = MakeUnique<MozPromiseHolder<PageThumbStreamPromise>>();
-  RefPtr<PageThumbStreamPromise> promise = promiseHolder->Ensure(__func__);
+  auto promiseHolder = MakeUnique<MozPromiseHolder<RemoteStreamPromise>>();
+  RefPtr<RemoteStreamPromise> promise = promiseHolder->Ensure(__func__);
+
+  nsCOMPtr<nsIMIMEService> mime = do_GetService("@mozilla.org/mime;1", &rv);
+  if (NS_FAILED(rv)) {
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
+  }
+
+  nsAutoCString contentType;
+  rv = mime->GetTypeFromURI(aChildURI, contentType);
+  if (NS_FAILED(rv)) {
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
+  }
 
   rv = NS_DispatchBackgroundTask(
       NS_NewRunnableFunction(
           "PageThumbProtocolHandler::NewStream",
-          [channel, holder = std::move(promiseHolder)]() {
+          [contentType, channel, holder = std::move(promiseHolder)]() {
             nsresult rv;
 
             nsCOMPtr<nsIFileChannel> fileChannel =
                 do_QueryInterface(channel, &rv);
             if (NS_FAILED(rv)) {
               holder->Reject(rv, __func__);
+              return;
             }
 
             nsCOMPtr<nsIFile> requestedFile;
@@ -296,12 +198,14 @@ RefPtr<PageThumbStreamPromise> PageThumbProtocolHandler::NewStream(
               return;
             }
 
-            holder->Resolve(inputStream, __func__);
+            RemoteStreamInfo info(inputStream, contentType, -1);
+
+            holder->Resolve(std::move(info), __func__);
           }),
       NS_DISPATCH_EVENT_MAY_BLOCK);
 
   if (NS_FAILED(rv)) {
-    return PageThumbStreamPromise::CreateAndReject(rv, __func__);
+    return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
   return promise;
@@ -313,7 +217,8 @@ bool PageThumbProtocolHandler::ResolveSpecialCases(const nsACString& aHost,
                                                    nsACString& aResult) {
   // This should match the scheme in PageThumbs.jsm. We will only resolve
   // URIs for thumbnails generated by PageThumbs here.
-  if (!aHost.EqualsLiteral(PAGE_THUMB_HOST)) {
+  if (!aHost.EqualsLiteral(PAGE_THUMB_HOST) &&
+      !aHost.EqualsLiteral(PLACES_PREVIEWS_HOST)) {
     // moz-page-thumb should always have a "thumbnails" host. We do not intend
     // to allow substitution rules to be created for moz-page-thumb.
     return false;
@@ -337,7 +242,7 @@ bool PageThumbProtocolHandler::ResolveSpecialCases(const nsACString& aHost,
     // Resolve the URI in the parent to the thumbnail file URI since we will
     // attempt to open the channel to load the file after this.
     nsAutoString thumbnailUrl;
-    nsresult rv = GetThumbnailPath(aPath, thumbnailUrl);
+    nsresult rv = GetThumbnailPath(aPath, aHost, thumbnailUrl);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return false;
     }
@@ -387,14 +292,15 @@ Result<Ok, nsresult> PageThumbProtocolHandler::SubstituteRemoteChannel(
   MOZ_ASSERT(scheme.EqualsLiteral("file"));
 #endif /* DEBUG */
 
-  RefPtr<PageThumbStreamGetter> streamGetter =
-      new PageThumbStreamGetter(aURI, aLoadInfo);
+  RefPtr<RemoteStreamGetter> streamGetter =
+      new RemoteStreamGetter(aURI, aLoadInfo);
 
   NewSimpleChannel(aURI, aLoadInfo, streamGetter, aRetVal);
   return Ok();
 }
 
 nsresult PageThumbProtocolHandler::GetThumbnailPath(const nsACString& aPath,
+                                                    const nsACString& aHost,
                                                     nsString& aThumbnailPath) {
   MOZ_ASSERT(!IsNeckoChild());
 
@@ -405,14 +311,6 @@ nsresult PageThumbProtocolHandler::GetThumbnailPath(const nsACString& aPath,
     return NS_ERROR_MALFORMED_URI;
   }
 
-  nsresult rv;
-
-  nsCOMPtr<nsIPageThumbsStorageService> pageThumbsStorage =
-      do_GetService("@mozilla.org/thumbnails/pagethumbs-service;1", &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
   // Extract URL from query string.
   nsAutoString url;
   bool found =
@@ -421,44 +319,47 @@ nsresult PageThumbProtocolHandler::GetThumbnailPath(const nsACString& aPath,
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  // Use PageThumbsStorageService to get the local file path of the screenshot
-  // for the given URL.
-  rv = pageThumbsStorage->GetFilePathForURL(url, aThumbnailPath);
-
+  nsresult rv;
+  if (aHost.EqualsLiteral(PAGE_THUMB_HOST)) {
+    nsCOMPtr<nsIPageThumbsStorageService> pageThumbsStorage =
+        do_GetService("@mozilla.org/thumbnails/pagethumbs-service;1", &rv);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+    // Use PageThumbsStorageService to get the local file path of the screenshot
+    // for the given URL.
+    rv = pageThumbsStorage->GetFilePathForURL(url, aThumbnailPath);
+#ifdef MOZ_PLACES
+  } else if (aHost.EqualsLiteral(PLACES_PREVIEWS_HOST)) {
+    nsCOMPtr<nsIPlacesPreviewsHelperService> helper =
+        do_GetService("@mozilla.org/places/previews-helper;1", &rv);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+    rv = helper->GetFilePathForURL(url, aThumbnailPath);
+#endif
+  } else {
+    MOZ_ASSERT_UNREACHABLE("Unknown thumbnail host");
+    return NS_ERROR_UNEXPECTED;
+  }
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-
   return NS_OK;
 }
 
 // static
-void PageThumbProtocolHandler::SetContentType(nsIURI* aURI,
-                                              nsIChannel* aChannel) {
-  nsresult rv;
-  nsCOMPtr<nsIMIMEService> mime = do_GetService("@mozilla.org/mime;1", &rv);
-  if (NS_SUCCEEDED(rv)) {
-    nsAutoCString contentType;
-    rv = mime->GetTypeFromURI(aURI, contentType);
-    if (NS_SUCCEEDED(rv)) {
-      Unused << aChannel->SetContentType(contentType);
-    }
-  }
-}
-
-// static
 void PageThumbProtocolHandler::NewSimpleChannel(
-    nsIURI* aURI, nsILoadInfo* aLoadinfo, PageThumbStreamGetter* aStreamGetter,
+    nsIURI* aURI, nsILoadInfo* aLoadinfo, RemoteStreamGetter* aStreamGetter,
     nsIChannel** aRetVal) {
   nsCOMPtr<nsIChannel> channel = NS_NewSimpleChannel(
       aURI, aLoadinfo, aStreamGetter,
       [](nsIStreamListener* listener, nsIChannel* simpleChannel,
-         PageThumbStreamGetter* getter) -> RequestOrReason {
-        MOZ_TRY(getter->GetAsync(listener, simpleChannel));
-        return RequestOrReason(nullptr);
+         RemoteStreamGetter* getter) -> RequestOrReason {
+        return getter->GetAsync(listener, simpleChannel,
+                                &NeckoChild::SendGetPageThumbStream);
       });
 
-  SetContentType(aURI, channel);
   channel.swap(*aRetVal);
 }
 

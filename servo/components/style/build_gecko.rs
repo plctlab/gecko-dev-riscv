@@ -42,14 +42,12 @@ fn read_config(path: &PathBuf) -> Table {
 lazy_static! {
     static ref CONFIG: Table = {
         // Load Gecko's binding generator config from the source tree.
-        let path = PathBuf::from(env::var_os("MOZ_SRC").unwrap())
-            .join("layout/style/ServoBindings.toml");
+        let path = mozbuild::TOPSRCDIR.join("layout/style/ServoBindings.toml");
         read_config(&path)
     };
     static ref BINDGEN_FLAGS: Vec<String> = {
         // Load build-specific config overrides.
-        let path = PathBuf::from(env::var_os("MOZ_TOPOBJDIR").unwrap())
-            .join("layout/style/extra-bindgen-flags");
+        let path = mozbuild::TOPOBJDIR.join("layout/style/extra-bindgen-flags");
         println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
         fs::read_to_string(path).expect("Failed to read extra-bindgen-flags file")
             .split_whitespace()
@@ -57,13 +55,7 @@ lazy_static! {
             .collect()
     };
     static ref INCLUDE_RE: Regex = Regex::new(r#"#include\s*"(.+?)""#).unwrap();
-    static ref DISTDIR_PATH: PathBuf = {
-        let path = PathBuf::from(env::var_os("MOZ_DIST").unwrap());
-        if !path.is_absolute() || !path.is_dir() {
-            panic!("MOZ_DIST must be an absolute directory, was: {}", path.display());
-        }
-        path
-    };
+    static ref DISTDIR_PATH: PathBuf = mozbuild::TOPOBJDIR.join("dist");
     static ref SEARCH_PATHS: Vec<PathBuf> = vec![
         DISTDIR_PATH.join("include"),
         DISTDIR_PATH.join("include/nspr"),
@@ -266,7 +258,7 @@ impl<'a> BuilderWithConfig<'a> {
     fn handle_common(self, fixups: &mut Vec<Fixup>) -> BuilderWithConfig<'a> {
         self.handle_str_items("headers", |b, item| b.header(add_include(item)))
             .handle_str_items("raw-lines", |b, item| b.raw_line(item))
-            .handle_str_items("hide-types", |b, item| b.blacklist_type(item))
+            .handle_str_items("hide-types", |b, item| b.blocklist_type(item))
             .handle_table_items("fixups", |builder, item| {
                 fixups.push(Fixup {
                     pat: item["pat"].as_str().unwrap().into(),
@@ -293,16 +285,16 @@ fn generate_structs() {
     let mut fixups = vec![];
     let builder = BuilderWithConfig::new(builder, CONFIG["structs"].as_table().unwrap())
         .handle_common(&mut fixups)
-        .handle_str_items("whitelist-functions", |b, item| b.whitelist_function(item))
+        .handle_str_items("allowlist-functions", |b, item| b.allowlist_function(item))
         .handle_str_items("bitfield-enums", |b, item| b.bitfield_enum(item))
         .handle_str_items("rusty-enums", |b, item| b.rustified_enum(item))
-        .handle_str_items("whitelist-vars", |b, item| b.whitelist_var(item))
-        .handle_str_items("whitelist-types", |b, item| b.whitelist_type(item))
+        .handle_str_items("allowlist-vars", |b, item| b.allowlist_var(item))
+        .handle_str_items("allowlist-types", |b, item| b.allowlist_type(item))
         .handle_str_items("opaque-types", |b, item| b.opaque_type(item))
         .handle_table_items("cbindgen-types", |b, item| {
             let gecko = item["gecko"].as_str().unwrap();
             let servo = item["servo"].as_str().unwrap();
-            b.blacklist_type(format!("mozilla::{}", gecko))
+            b.blocklist_type(format!("mozilla::{}", gecko))
                 .module_raw_line("root::mozilla", format!("pub use {} as {};", servo, gecko))
         })
         .handle_table_items("mapped-generic-types", |builder, item| {
@@ -320,7 +312,7 @@ fn generate_structs() {
                 pat: format!("\\broot\\s*::\\s*{}\\b", gecko),
                 rep: format!("crate::gecko_bindings::structs::{}", gecko_name),
             });
-            builder.blacklist_type(gecko).raw_line(format!(
+            builder.blocklist_type(gecko).raw_line(format!(
                 "pub type {0}{2} = {1}{2};",
                 gecko_name,
                 servo,

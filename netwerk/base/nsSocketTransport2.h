@@ -303,6 +303,9 @@ class nsSocketTransport final : public nsASocketHandler,
     return (!mProxyHost.IsEmpty() && !mProxyTransparent) ? mProxyHost : mHost;
   }
 
+  Atomic<bool> mInputClosed{true};
+  Atomic<bool> mOutputClosed{true};
+
   //-------------------------------------------------------------------------
   // members accessible only on the socket transport thread:
   //  (the exception being initialization/shutdown time)
@@ -311,8 +314,6 @@ class nsSocketTransport final : public nsASocketHandler,
   // socket state vars:
   uint32_t mState{STATE_CLOSED};  // STATE_??? flags
   bool mAttached{false};
-  bool mInputClosed{true};
-  bool mOutputClosed{true};
 
   // this flag is used to determine if the results of a host lookup arrive
   // recursively or not.  this flag is not protected by any lock.
@@ -344,11 +345,13 @@ class nsSocketTransport final : public nsASocketHandler,
   bool RecoverFromError();
 
   void OnMsgInputPending() {
+    MOZ_ASSERT(OnSocketThread(), "not on socket thread");
     if (mState == STATE_TRANSFERRING) {
       mPollFlags |= (PR_POLL_READ | PR_POLL_EXCEPT);
     }
   }
   void OnMsgOutputPending() {
+    MOZ_ASSERT(OnSocketThread(), "not on socket thread");
     if (mState == STATE_TRANSFERRING) {
       mPollFlags |= (PR_POLL_WRITE | PR_POLL_EXCEPT);
     }
@@ -364,7 +367,7 @@ class nsSocketTransport final : public nsASocketHandler,
   // the exception of some specific methods (XXX).
 
   // protects members in this section.
-  Mutex mLock{"nsSocketTransport.mLock"};
+  Mutex mLock MOZ_UNANNOTATED{"nsSocketTransport.mLock"};
   LockedPRFileDesc mFD;
   nsrefcnt mFDref{0};        // mFD is closed when mFDref goes to zero.
   bool mFDconnected{false};  // mFD is available to consumer when TRUE.
@@ -456,7 +459,7 @@ class nsSocketTransport final : public nsASocketHandler,
   int32_t mKeepaliveRetryIntervalS{-1};
   int32_t mKeepaliveProbeCount{-1};
 
-  bool mDoNotRetryToConnect{false};
+  Atomic<bool> mDoNotRetryToConnect{false};
 
   // Whether the port remapping has already been applied.  We definitely want to
   // prevent duplicate calls in case of chaining remapping.

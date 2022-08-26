@@ -221,6 +221,19 @@ describe("ASRouter", () => {
       combineContexts: sandbox.stub(),
       evalWithDefault: sandbox.stub().resolves(),
     };
+    let fakeNimbusFeatures = [
+      "cfr",
+      "infobar",
+      "spotlight",
+      "moments-page",
+      "pbNewtab",
+    ].reduce((features, featureId) => {
+      features[featureId] = {
+        getAllVariables: sandbox.stub().returns(null),
+        recordExposureEvent: sandbox.stub(),
+      };
+      return features;
+    }, {});
     globals.set({
       // Testing framework doesn't know how to `defineLazyModuleGetter` so we're
       // importing these modules into the global scope ourselves.
@@ -255,30 +268,23 @@ describe("ASRouter", () => {
           return Promise.resolve("/path/to/download");
         }
       },
+      NimbusFeatures: fakeNimbusFeatures,
       ExperimentAPI: {
+        getExperimentMetaData: sandbox.stub().returns({
+          slug: "experiment-slug",
+          active: true,
+          branch: { slug: "experiment-branch-slug" },
+        }),
         getExperiment: sandbox.stub().returns({
           branch: {
             slug: "unit-slug",
             feature: {
               featureId: "foo",
-              enabled: true,
               value: { id: "test-message" },
             },
           },
         }),
-        recordExposureEvent: sandbox.stub(),
-        getAllBranches: sandbox.stub().resolves([
-          {
-            branch: {
-              slug: "unit-slug",
-              feature: {
-                featureId: "bar",
-                enabled: true,
-                value: { id: "test-message" },
-              },
-            },
-          },
-        ]),
+        getAllBranches: sandbox.stub().resolves([]),
         ready: sandbox.stub().resolves(),
       },
       SpecialMessageActions: {
@@ -294,7 +300,9 @@ describe("ASRouter", () => {
         }
       },
       RemoteL10n: {
-        isLocaleSupported: () => true,
+        // This is just a subset of supported locales that happen to be used in
+        // the test.
+        isLocaleSupported: locale => ["en-US", "ja-JP-mac"].includes(locale),
       },
     });
     await createRouterAndInit();
@@ -496,9 +504,9 @@ describe("ASRouter", () => {
       sandbox.spy(global.Services.obs, "addObserver");
       await createRouterAndInit();
 
-      assert.calledOnce(global.Services.obs.addObserver);
-      assert.equal(
-        global.Services.obs.addObserver.args[0][1],
+      assert.calledWithExactly(
+        global.Services.obs.addObserver,
+        Router._onLocaleChanged,
         "intl:app-locales-changed"
       );
     });
@@ -969,7 +977,7 @@ describe("ASRouter", () => {
         .stub(MessageLoaderUtils, "_getRemoteSettingsMessages")
         .resolves([{ id: "message_1" }]);
       const spy = sandbox.spy();
-      global.Downloader.prototype.download = spy;
+      global.Downloader.prototype.downloadToDisk = spy;
       const provider = {
         id: "cfr",
         enabled: true,
@@ -1410,9 +1418,9 @@ describe("ASRouter", () => {
       sandbox.spy(global.Services.obs, "removeObserver");
       Router.uninit();
 
-      assert.calledOnce(global.Services.obs.removeObserver);
-      assert.equal(
-        global.Services.obs.removeObserver.args[0][1],
+      assert.calledWithExactly(
+        global.Services.obs.removeObserver,
+        Router._onLocaleChanged,
         "intl:app-locales-changed"
       );
     });
@@ -1727,6 +1735,55 @@ describe("ASRouter", () => {
     });
   });
 
+  describe("#reachEvent", () => {
+    let experimentAPIStub;
+    let featureIds = ["cfr", "moments-page", "infobar", "spotlight"];
+    beforeEach(() => {
+      let getExperimentMetaDataStub = sandbox.stub();
+      let getAllBranchesStub = sandbox.stub();
+      featureIds.forEach(feature => {
+        global.NimbusFeatures[feature].getAllVariables.returns({
+          id: `message-${feature}`,
+        });
+        getExperimentMetaDataStub.withArgs({ featureId: feature }).returns({
+          slug: `slug-${feature}`,
+          branch: {
+            slug: `branch-${feature}`,
+          },
+        });
+        getAllBranchesStub.withArgs(`slug-${feature}`).resolves([
+          {
+            slug: `other-branch-${feature}`,
+            [feature]: { value: { trigger: "unit-test" } },
+          },
+        ]);
+      });
+      experimentAPIStub = {
+        getExperimentMetaData: getExperimentMetaDataStub,
+        getAllBranches: getAllBranchesStub,
+      };
+      globals.set("ExperimentAPI", experimentAPIStub);
+    });
+    afterEach(() => {
+      sandbox.restore();
+    });
+    it("should tag `forReachEvent` for all the expected message types", async () => {
+      // This should match the `providers.messaging-experiments`
+      let response = await MessageLoaderUtils.loadMessagesForProvider({
+        type: "remote-experiments",
+        featureIds,
+      });
+
+      // 1 message for reach 1 for expose
+      assert.property(response, "messages");
+      assert.lengthOf(response.messages, featureIds.length * 2);
+      assert.lengthOf(
+        response.messages.filter(m => m.forReachEvent),
+        featureIds.length
+      );
+    });
+  });
+
   describe("#sendTriggerMessage", () => {
     it("should pass the trigger to ASRouterTargeting when sending trigger message", async () => {
       await Router.setState({
@@ -1861,36 +1918,40 @@ describe("ASRouter", () => {
       });
       assert.notCalled(Services.telemetry.recordEvent);
     });
-    it("should record the Exposure event if found any", async () => {
-      let messages = [
-        {
-          id: "foo1",
-          forExposureEvent: {
-            sent: false,
-            experimentSlug: "foo",
-            branchSlug: "bar",
-          },
-          experimentSlug: "exp01",
-          branchSlug: "branch01",
-          template: "simple_template",
-          trigger: { id: "foo" },
-          content: { title: "Foo1", body: "Foo123-1" },
-        },
-      ];
-      sandbox.stub(Router, "handleMessageRequest").resolves(messages);
-      sandbox.spy(Services.telemetry, "recordEvent");
+    it("should record the Exposure event for each valid feature", async () => {
+      ["cfr_doorhanger", "update_action", "infobar", "spotlight"].forEach(
+        async template => {
+          let featureMap = {
+            cfr_doorhanger: "cfr",
+            spotlight: "spotlight",
+            infobar: "infobar",
+            update_action: "moments-page",
+          };
+          assert.notCalled(
+            global.NimbusFeatures[featureMap[template]].recordExposureEvent
+          );
 
-      await Router.sendTriggerMessage({
-        tabId: 0,
-        browser: {},
-        id: "foo",
-      });
+          let messages = [
+            {
+              id: "foo1",
+              template,
+              trigger: { id: "foo" },
+              content: { title: "Foo1", body: "Foo123-1" },
+            },
+          ];
+          sandbox.stub(Router, "handleMessageRequest").resolves(messages);
 
-      assert.calledOnce(global.ExperimentAPI.recordExposureEvent);
-      assert.calledWithExactly(global.ExperimentAPI.recordExposureEvent, {
-        featureId: "cfr",
-        ...messages[0].forExposureEvent,
-      });
+          await Router.sendTriggerMessage({
+            tabId: 0,
+            browser: {},
+            id: "foo",
+          });
+
+          assert.calledOnce(
+            global.NimbusFeatures[featureMap[template]].recordExposureEvent
+          );
+        }
+      );
     });
   });
 
@@ -1996,29 +2057,6 @@ describe("ASRouter", () => {
   });
 
   describe("impressions", () => {
-    describe("frequency normalisation", () => {
-      beforeEach(async () => {
-        const messages = [
-          { frequency: { custom: [{ period: "daily", cap: 10 }] } },
-        ];
-        const provider = {
-          id: "foo",
-          frequency: { custom: [{ period: "daily", cap: 100 }] },
-          messages,
-          enabled: true,
-        };
-        await createRouterAndInit([provider]);
-      });
-      it("period aliases in provider frequency caps should be normalised", () => {
-        const [provider] = Router.state.providers;
-        assert.equal(provider.frequency.custom[0].period, "daily");
-      });
-      it("period aliases in message frequency caps should be normalised", async () => {
-        const [message] = Router.state.messages;
-        assert.equal(message.frequency.custom[0].period, "daily");
-      });
-    });
-
     describe("#isBelowFrequencyCaps", () => {
       it("should call #_isBelowItemFrequencyCap for the message and for the provider with the correct impressions and arguments", async () => {
         sinon.spy(Router, "_isBelowItemFrequencyCap");
@@ -2561,20 +2599,21 @@ describe("ASRouter", () => {
     it("should fetch messages from the ExperimentAPI", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["asrouter"],
+        featureIds: ["spotlight"],
       };
 
       await MessageLoaderUtils.loadMessagesForProvider(args);
 
-      assert.calledOnce(global.ExperimentAPI.getExperiment);
-      assert.calledWithExactly(global.ExperimentAPI.getExperiment, {
-        featureId: "asrouter",
+      assert.calledOnce(global.NimbusFeatures.spotlight.getAllVariables);
+      assert.calledOnce(global.ExperimentAPI.getExperimentMetaData);
+      assert.calledWithExactly(global.ExperimentAPI.getExperimentMetaData, {
+        featureId: "spotlight",
       });
     });
     it("should handle the case of no experiments in the ExperimentAPI", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["asrouter"],
+        featureIds: ["infobar"],
       };
 
       global.ExperimentAPI.getExperiment.returns(null);
@@ -2586,20 +2625,34 @@ describe("ASRouter", () => {
     it("should normally load ExperimentAPI messages", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["asrouter"],
+        featureIds: ["infobar"],
       };
       const enrollment = {
         branch: {
           slug: "branch01",
-          feature: {
-            featureId: "asrouter",
-            enabled: true,
+          infobar: {
+            featureId: "infobar",
             value: { id: "id01", trigger: { id: "openURL" } },
           },
         },
       };
 
-      global.ExperimentAPI.getExperiment.returns(enrollment);
+      global.NimbusFeatures.infobar.getAllVariables.returns(
+        enrollment.branch.infobar.value
+      );
+      global.ExperimentAPI.getExperimentMetaData.returns({
+        branch: { slug: enrollment.branch.slug },
+      });
+      global.ExperimentAPI.getAllBranches.returns([
+        enrollment.branch,
+        {
+          slug: "control",
+          infobar: {
+            featureId: "infobar",
+            value: null,
+          },
+        },
+      ]);
 
       const result = await MessageLoaderUtils.loadMessagesForProvider(args);
 
@@ -2608,20 +2661,10 @@ describe("ASRouter", () => {
     it("should skip disabled features and not load the messages", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["asrouter"],
-      };
-      const enrollment = {
-        branch: {
-          slug: "branch01",
-          feature: {
-            featureId: "asrouter",
-            enabled: false,
-            value: { id: "id01", trigger: { id: "openURL" } },
-          },
-        },
+        featureIds: ["cfr"],
       };
 
-      global.ExperimentAPI.getExperiment.returns(enrollment);
+      global.NimbusFeatures.cfr.getAllVariables.returns(null);
 
       const result = await MessageLoaderUtils.loadMessagesForProvider(args);
 
@@ -2630,37 +2673,41 @@ describe("ASRouter", () => {
     it("should fetch branches with trigger", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["cfr"],
+        featureIds: ["cfr"],
       };
       const enrollment = {
         slug: "exp01",
         branch: {
           slug: "branch01",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: true,
             value: { id: "id01", trigger: { id: "openURL" } },
           },
         },
       };
 
-      global.ExperimentAPI.getExperiment.returns(enrollment);
+      global.NimbusFeatures.cfr.getAllVariables.returns(
+        enrollment.branch.cfr.value
+      );
+      global.ExperimentAPI.getExperimentMetaData.returns({
+        slug: enrollment.slug,
+        active: true,
+        branch: { slug: enrollment.branch.slug },
+      });
       global.ExperimentAPI.getAllBranches.resolves([
         enrollment.branch,
         {
           slug: "branch02",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: true,
             value: { id: "id02", trigger: { id: "openURL" } },
           },
         },
         {
           // This branch should not be loaded as it doesn't have the trigger
           slug: "branch03",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: true,
             value: { id: "id03" },
           },
         },
@@ -2681,37 +2728,43 @@ describe("ASRouter", () => {
     it("should fetch branches with trigger even if enrolled branch is disabled", async () => {
       const args = {
         type: "remote-experiments",
-        messageGroups: ["cfr"],
+        featureIds: ["cfr"],
       };
       const enrollment = {
         slug: "exp01",
         branch: {
           slug: "branch01",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: false,
-            value: { id: "id01", trigger: { id: "openURL" } },
+            value: {},
           },
         },
       };
 
-      global.ExperimentAPI.getExperiment.returns(enrollment);
+      // Nedds to match the `featureIds` value to return an enrollment
+      // for that feature
+      global.NimbusFeatures.cfr.getAllVariables.returns(
+        enrollment.branch.cfr.value
+      );
+      global.ExperimentAPI.getExperimentMetaData.returns({
+        slug: enrollment.slug,
+        active: true,
+        branch: { slug: enrollment.branch.slug },
+      });
       global.ExperimentAPI.getAllBranches.resolves([
         enrollment.branch,
         {
           slug: "branch02",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: true,
             value: { id: "id02", trigger: { id: "openURL" } },
           },
         },
         {
           // This branch should not be loaded as it doesn't have the trigger
           slug: "branch03",
-          feature: {
+          cfr: {
             featureId: "cfr",
-            enabled: true,
             value: { id: "id03" },
           },
         },
@@ -2741,7 +2794,7 @@ describe("ASRouter", () => {
         .stub(MessageLoaderUtils, "_getRemoteSettingsMessages")
         .resolves([{ id: "message_1" }]);
       spy = sandbox.spy();
-      global.Downloader.prototype.download = spy;
+      global.Downloader.prototype.downloadToDisk = spy;
     });
     it("should be called with the expected dir path", async () => {
       const dlSpy = sandbox.spy(global, "Downloader");
@@ -2749,7 +2802,6 @@ describe("ASRouter", () => {
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
-      sandbox.stub(global.RemoteL10n, "isLocaleSupported").returns(true);
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
@@ -2765,7 +2817,6 @@ describe("ASRouter", () => {
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
-      sandbox.stub(global.RemoteL10n, "isLocaleSupported").returns(true);
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
@@ -2773,7 +2824,6 @@ describe("ASRouter", () => {
     });
     it("should fallback to 'en-US' for locale 'und' ", async () => {
       sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "und");
-      sandbox.stub(global.RemoteL10n, "isLocaleSupported").returns(false);
       const getRecordSpy = sandbox.spy(
         global.KintoHttpClient.prototype,
         "getRecord"
@@ -2784,15 +2834,70 @@ describe("ASRouter", () => {
       assert.ok(getRecordSpy.args[0][0].includes("en-US"));
       assert.calledOnce(spy);
     });
+    it("should fallback to 'ja-JP-mac' for locale 'ja-JP-macos'", async () => {
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "ja-JP-macos");
+      const getRecordSpy = sandbox.spy(
+        global.KintoHttpClient.prototype,
+        "getRecord"
+      );
+
+      await MessageLoaderUtils._remoteSettingsLoader(provider, {});
+
+      assert.ok(getRecordSpy.args[0][0].includes("ja-JP-mac"));
+      assert.calledOnce(spy);
+    });
     it("should not allow fetch for unsupported locales", async () => {
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "unkown");
-      sandbox.stub(global.RemoteL10n, "isLocaleSupported").returns(false);
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
       assert.notCalled(spy);
+    });
+  });
+  describe("#resetMessageState", () => {
+    it("should reset all message impressions", async () => {
+      await Router.setState({
+        messages: [{ id: "1" }, { id: "2" }],
+      });
+      await Router.setState({
+        messageImpressions: { "1": [0, 1, 2], "2": [0, 1, 2] },
+      }); // Add impressions for test messages
+      let impressions = Object.values(Router.state.messageImpressions);
+      assert.equal(impressions.filter(i => i.length).length, 2); // Both messages have impressions
+
+      Router.resetMessageState();
+      impressions = Object.values(Router.state.messageImpressions);
+
+      assert.isEmpty(impressions.filter(i => i.length)); // Both messages now have zero impressions
+      assert.calledWithExactly(Router._storage.set, "messageImpressions", {
+        "1": [],
+        "2": [],
+      });
+    });
+  });
+  describe("#resetGroupsState", () => {
+    it("should reset all group impressions", async () => {
+      await Router.setState({
+        groups: [{ id: "1" }, { id: "2" }],
+      });
+      await Router.setState({
+        groupImpressions: { "1": [0, 1, 2], "2": [0, 1, 2] },
+      }); // Add impressions for test groups
+      let impressions = Object.values(Router.state.groupImpressions);
+      assert.equal(impressions.filter(i => i.length).length, 2); // Both groups have impressions
+
+      Router.resetGroupsState();
+      impressions = Object.values(Router.state.groupImpressions);
+
+      assert.isEmpty(impressions.filter(i => i.length)); // Both groups now have zero impressions
+      assert.calledWithExactly(Router._storage.set, "groupImpressions", {
+        "1": [],
+        "2": [],
+      });
     });
   });
 });

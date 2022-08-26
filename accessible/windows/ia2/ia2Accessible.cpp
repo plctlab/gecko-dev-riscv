@@ -29,9 +29,6 @@
 using namespace mozilla;
 using namespace mozilla::a11y;
 
-template <typename String>
-static void EscapeAttributeChars(String& aStr);
-
 ////////////////////////////////////////////////////////////////////////////////
 // ia2Accessible
 ////////////////////////////////////////////////////////////////////////////////
@@ -77,12 +74,9 @@ ia2Accessible::get_nRelations(long* aNRelations) {
   if (!aNRelations) return E_INVALIDARG;
   *aNRelations = 0;
 
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
+  Accessible* acc = Acc();
   if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+    return CO_E_OBJNOTCONNECTED;
   }
 
   for (uint32_t idx = 0; idx < ArrayLength(sRelationTypePairs); idx++) {
@@ -100,12 +94,9 @@ ia2Accessible::get_relation(long aRelationIndex,
   if (!aRelation || aRelationIndex < 0) return E_INVALIDARG;
   *aRelation = nullptr;
 
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
+  Accessible* acc = Acc();
   if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+    return CO_E_OBJNOTCONNECTED;
   }
 
   long relIdx = 0;
@@ -138,12 +129,9 @@ ia2Accessible::get_relations(long aMaxRelations,
   if (!aRelation || !aNRelations || aMaxRelations <= 0) return E_INVALIDARG;
   *aNRelations = 0;
 
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
+  Accessible* acc = Acc();
   if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+    return CO_E_OBJNOTCONNECTED;
   }
 
   for (uint32_t idx = 0;
@@ -203,18 +191,12 @@ ia2Accessible::role(long* aRole) {
 // XXX Use MOZ_CAN_RUN_SCRIPT_BOUNDARY for now due to bug 1543294.
 MOZ_CAN_RUN_SCRIPT_BOUNDARY STDMETHODIMP
 ia2Accessible::scrollTo(enum IA2ScrollType aScrollType) {
-  if (!Acc()) {
+  Accessible* acc = Acc();
+  if (!acc) {
     return CO_E_OBJNOTCONNECTED;
   }
-  AccessibleWrap* acc = LocalAcc();
-  if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
-  RefPtr<PresShell> presShell = acc->Document()->PresShellPtr();
-  nsCOMPtr<nsIContent> content = acc->GetContent();
-  nsCoreUtils::ScrollTo(presShell, content, aScrollType);
-
+  acc->ScrollTo(aScrollType);
   return S_OK;
 }
 
@@ -249,12 +231,9 @@ ia2Accessible::get_groupPosition(long* aGroupLevel, long* aSimilarItemsInGroup,
   *aSimilarItemsInGroup = 0;
   *aPositionInGroup = 0;
 
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
+  Accessible* acc = Acc();
   if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+    return CO_E_OBJNOTCONNECTED;
   }
 
   GroupPos groupPos = acc->GroupPosition();
@@ -278,13 +257,10 @@ ia2Accessible::get_states(AccessibleStates* aStates) {
 
   // XXX: bug 344674 should come with better approach that we have here.
 
-  if (!Acc()) {
+  Accessible* acc = Acc();
+  if (!acc) {
     *aStates = IA2_STATE_DEFUNCT;
     return S_OK;
-  }
-  AccessibleWrap* acc = LocalAcc();
-  if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
   }
 
   uint64_t state;
@@ -456,12 +432,9 @@ ia2Accessible::get_attributes(BSTR* aAttributes) {
   if (!aAttributes) return E_INVALIDARG;
   *aAttributes = nullptr;
 
-  if (!Acc()) {
-    return CO_E_OBJNOTCONNECTED;
-  }
-  AccessibleWrap* acc = LocalAcc();
+  Accessible* acc = Acc();
   if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+    return CO_E_OBJNOTCONNECTED;
   }
 
   // The format is name:value;name:value; with \ for escaping these
@@ -530,17 +503,14 @@ ia2Accessible::get_relationTargetsOfType(BSTR aType, long aMaxTargets,
   }
   if (!relationType) return E_INVALIDARG;
 
-  if (!Acc()) {
+  Accessible* acc = Acc();
+  if (!acc) {
     return CO_E_OBJNOTCONNECTED;
   }
-  AccessibleWrap* acc = LocalAcc();
-  if (!acc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
-  nsTArray<LocalAccessible*> targets;
+  nsTArray<Accessible*> targets;
   Relation rel = acc->RelationByType(*relationType);
-  LocalAccessible* target = nullptr;
+  Accessible* target = nullptr;
   while (
       (target = rel.Next()) &&
       (aMaxTargets == 0 || static_cast<long>(targets.Length()) < aMaxTargets)) {
@@ -553,9 +523,7 @@ ia2Accessible::get_relationTargetsOfType(BSTR aType, long aMaxTargets,
   if (!*aTargets) return E_OUTOFMEMORY;
 
   for (int32_t i = 0; i < *aNTargets; i++) {
-    RefPtr<IAccessible2> target;
-    targets[i]->GetNativeInterface(getter_AddRefs(target));
-    target.forget(&(*aTargets)[i]);
+    (*aTargets)[i] = MsaaAccessible::NativeAccessible(targets[i]);
   }
 
   return S_OK;
@@ -585,14 +553,14 @@ ia2Accessible::get_selectionRanges(IA2Range** aRanges, long* aNRanges) {
   if (!*aRanges) return E_OUTOFMEMORY;
 
   for (uint32_t idx = 0; idx < static_cast<uint32_t>(*aNRanges); idx++) {
-    RefPtr<IAccessible2> anchor;
-    ranges[idx].StartContainer()->GetNativeInterface(getter_AddRefs(anchor));
+    RefPtr<IAccessible2> anchor =
+        MsaaAccessible::GetFrom(ranges[idx].StartContainer());
     anchor.forget(&(*aRanges)[idx].anchor);
 
     (*aRanges)[idx].anchorOffset = ranges[idx].StartOffset();
 
-    RefPtr<IAccessible2> active;
-    ranges[idx].EndContainer()->GetNativeInterface(getter_AddRefs(active));
+    RefPtr<IAccessible2> active =
+        MsaaAccessible::GetFrom(ranges[idx].EndContainer());
     active.forget(&(*aRanges)[idx].active);
 
     (*aRanges)[idx].activeOffset = ranges[idx].EndOffset();
@@ -604,10 +572,9 @@ ia2Accessible::get_selectionRanges(IA2Range** aRanges, long* aNRanges) {
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
 
-template <typename String>
-static inline void EscapeAttributeChars(String& aStr) {
+static inline void EscapeAttributeChars(nsString& aStr) {
   int32_t offset = 0;
-  static const char kCharsToEscape[] = ":;=,\\";
+  static const char16_t kCharsToEscape[] = u":;=,\\";
   while ((offset = aStr.FindCharInSet(kCharsToEscape, offset)) != kNotFound) {
     aStr.Insert('\\', offset);
     offset += 2;

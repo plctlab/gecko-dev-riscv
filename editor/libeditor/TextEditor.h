@@ -7,6 +7,7 @@
 #define mozilla_TextEditor_h
 
 #include "mozilla/EditorBase.h"
+#include "mozilla/EditorForwards.h"
 #include "mozilla/TextControlState.h"
 #include "mozilla/UniquePtr.h"
 
@@ -25,10 +26,6 @@ class nsISelectionController;
 class nsITransferable;
 
 namespace mozilla {
-class DeleteNodeTransaction;
-class InsertNodeTransaction;
-enum class EditSubAction : int32_t;
-
 namespace dom {
 class Selection;
 }  // namespace dom
@@ -84,6 +81,14 @@ class TextEditor final : public EditorBase,
    * synchronously. So, `MOZ_CAN_RUN_SCRIPT_BOUNDARY` is safe here.
    */
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult PostCreate();
+
+  /**
+   * This method re-initializes the selection and caret state that are for
+   * current editor state. When editor session is destroyed, it always reset
+   * selection state even if this has no focus.  So if destroying editor,
+   * we have to call this method for focused editor to set selection state.
+   */
+  MOZ_CAN_RUN_SCRIPT void ReinitializeSelection(Element& aElement);
 
   /**
    * PreDestroy() is called before the editor goes away, and gives the editor a
@@ -142,6 +147,11 @@ class TextEditor final : public EditorBase,
   MOZ_CAN_RUN_SCRIPT nsresult
   PasteAsQuotationAsAction(int32_t aClipboardType, bool aDispatchPasteEvent,
                            nsIPrincipal* aPrincipal = nullptr) final;
+
+  MOZ_CAN_RUN_SCRIPT nsresult
+  OnFocus(const nsINode& aOriginalEventTargetNode) final;
+
+  nsresult OnBlur(const dom::EventTarget* aEventTarget) final;
 
   /**
    * The maximum number of characters allowed.
@@ -245,6 +255,19 @@ class TextEditor final : public EditorBase,
     if (mPasswordMaskData) {
       mPasswordMaskData->mEchoingPasswordPrevented = false;
     }
+  }
+
+  dom::Text* GetTextNode() {
+    MOZ_DIAGNOSTIC_ASSERT(GetRoot());
+    MOZ_DIAGNOSTIC_ASSERT(GetRoot()->GetFirstChild());
+    MOZ_DIAGNOSTIC_ASSERT(GetRoot()->GetFirstChild()->IsText());
+    if (MOZ_UNLIKELY(!GetRoot() || !GetRoot()->GetFirstChild())) {
+      return nullptr;
+    }
+    return GetRoot()->GetFirstChild()->GetAsText();
+  }
+  const dom::Text* GetTextNode() const {
+    return const_cast<TextEditor*>(this)->GetTextNode();
   }
 
  protected:  // May be called by friends.

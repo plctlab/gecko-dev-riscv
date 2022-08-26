@@ -152,7 +152,7 @@ class SVGIntegrationUtils final {
     nsDisplayListBuilder* builder;
     bool handleOpacity;  // If true, PaintMaskAndClipPath/ PaintFilter should
                          // apply css opacity.
-    Maybe<gfx::Rect> maskRect;
+    Maybe<LayoutDeviceRect> maskRect;
     imgDrawingParams& imgParams;
 
     explicit PaintFramesParams(gfxContext& aCtx, nsIFrame* aFrame,
@@ -206,6 +206,7 @@ class SVGIntegrationUtils final {
    * Paint non-SVG frame with filter and opacity effect.
    */
   static void PaintFilter(const PaintFramesParams& aParams,
+                          Span<const StyleFilter> aFilters,
                           const SVGFilterPaintCallback& aCallback);
 
   /**
@@ -222,7 +223,8 @@ class SVGIntegrationUtils final {
   static bool BuildWebRenderFilters(nsIFrame* aFilteredFrame,
                                     Span<const StyleFilter> aFilters,
                                     WrFiltersHolder& aWrFilters,
-                                    Maybe<nsRect>& aPostFilterClip);
+                                    Maybe<nsRect>& aPostFilterClip,
+                                    bool& aInitialized);
 
   /**
    * Check if the filters present on |aFrame| are supported by WebRender.

@@ -55,7 +55,7 @@
     static get inheritedAttributes() {
       return {
         input:
-          "value,maxlength,disabled,size,readonly,placeholder,tabindex,accesskey,mozactionhint,spellcheck",
+          "value,maxlength,disabled,size,readonly,placeholder,tabindex,accesskey,inputmode,spellcheck",
         ".textbox-search-icon": "label=searchbuttonlabel,disabled",
         ".textbox-search-clear": "disabled",
       };
@@ -80,7 +80,8 @@
       textboxSign.part = "search-sign";
 
       const input = this.inputField;
-      input.setAttribute("mozactionhint", "search");
+      input.setAttribute("inputmode", "search");
+      input.autocomplete = "off"; // not applicable in XUL docs and confuses aria.
       input.addEventListener("focus", this);
       input.addEventListener("blur", this);
 
@@ -90,9 +91,9 @@
       searchBtn.className = "textbox-search-icon";
       searchBtn.addEventListener("click", e => this._iconClick(e));
 
-      const clearBtn = document.createElement("img");
+      const clearBtn = document.createXULElement("image");
       clearBtn.className = "textbox-search-clear";
-      clearBtn.src = "resource://gre-resources/searchfield-cancel.svg";
+      clearBtn.part = "clear-icon";
       clearBtn.setAttribute("role", "button");
       document.l10n.setAttributes(
         clearBtn,
@@ -129,11 +130,11 @@
     set searchButton(val) {
       if (val) {
         this.setAttribute("searchbutton", "true");
-        this.removeAttribute("aria-autocomplete");
+        this.inputField.removeAttribute("aria-autocomplete");
         this._searchButtonIcon.setAttribute("role", "button");
       } else {
         this.removeAttribute("searchbutton");
-        this.setAttribute("aria-autocomplete", "list");
+        this.inputField.setAttribute("aria-autocomplete", "list");
         this._searchButtonIcon.setAttribute("role", "none");
       }
     }

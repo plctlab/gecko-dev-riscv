@@ -253,6 +253,11 @@ pub trait Parser<'i> {
         false
     }
 
+    /// Whether to parse the :has pseudo-class.
+    fn parse_has(&self) -> bool {
+        false
+    }
+
     /// Whether the given function name is an alias for the `:is()` function.
     fn is_is_alias(&self, _name: &str) -> bool {
         false
@@ -1006,17 +1011,6 @@ impl Combinator {
 #[derive(Clone, Eq, PartialEq, ToShmem)]
 #[shmem(no_bounds)]
 pub enum Component<Impl: SelectorImpl> {
-    Combinator(Combinator),
-
-    ExplicitAnyNamespace,
-    ExplicitNoNamespace,
-    DefaultNamespace(#[shmem(field_bound)] Impl::NamespaceUrl),
-    Namespace(
-        #[shmem(field_bound)] Impl::NamespacePrefix,
-        #[shmem(field_bound)] Impl::NamespaceUrl,
-    ),
-
-    ExplicitUniversalType,
     LocalName(LocalName<Impl>),
 
     ID(#[shmem(field_bound)] Impl::Identifier),
@@ -1038,6 +1032,16 @@ pub enum Component<Impl: SelectorImpl> {
     },
     // Use a Box in the less common cases with more data to keep size_of::<Component>() small.
     AttributeOther(Box<AttrSelectorWithOptionalNamespace<Impl>>),
+
+    ExplicitUniversalType,
+    ExplicitAnyNamespace,
+
+    ExplicitNoNamespace,
+    DefaultNamespace(#[shmem(field_bound)] Impl::NamespaceUrl),
+    Namespace(
+        #[shmem(field_bound)] Impl::NamespacePrefix,
+        #[shmem(field_bound)] Impl::NamespaceUrl,
+    ),
 
     /// Pseudo-classes
     Negation(Box<[Selector<Impl>]>),
@@ -1093,8 +1097,16 @@ pub enum Component<Impl: SelectorImpl> {
     ///
     /// Same comment as above re. the argument.
     Is(Box<[Selector<Impl>]>),
+    /// The `:has` pseudo-class.
+    ///
+    /// https://drafts.csswg.org/selectors/#has-pseudo
+    ///
+    /// Same comment as above re. the argument.
+    Has(Box<[Selector<Impl>]>),
     /// An implementation-dependent pseudo-element selector.
     PseudoElement(#[shmem(field_bound)] Impl::PseudoElement),
+
+    Combinator(Combinator),
 }
 
 impl<Impl: SelectorImpl> Component<Impl> {
@@ -1563,11 +1575,12 @@ impl<Impl: SelectorImpl> ToCss for Component<Impl> {
                 write_affine(dest, a, b)?;
                 dest.write_char(')')
             },
-            Is(ref list) | Where(ref list) | Negation(ref list) => {
+            Is(ref list) | Where(ref list) | Negation(ref list) | Has(ref list) => {
                 match *self {
                     Where(..) => dest.write_str(":where(")?,
                     Is(..) => dest.write_str(":is(")?,
                     Negation(..) => dest.write_str(":not(")?,
+                    Has(..) => dest.write_str(":has(")?,
                     _ => unreachable!(),
                 }
                 serialize_selector_list(list.iter(), dest)?;
@@ -2227,7 +2240,7 @@ where
     Ok(empty)
 }
 
-fn parse_is_or_where<'i, 't, P, Impl>(
+fn parse_is_where_has<'i, 't, P, Impl>(
     parser: &P,
     input: &mut CssParser<'i, 't>,
     state: SelectorParsingState,
@@ -2269,8 +2282,9 @@ where
         "nth-of-type" => return parse_nth_pseudo_class(parser, input, state, Component::NthOfType),
         "nth-last-child" => return parse_nth_pseudo_class(parser, input, state, Component::NthLastChild),
         "nth-last-of-type" => return parse_nth_pseudo_class(parser, input, state, Component::NthLastOfType),
-        "is" if parser.parse_is_and_where() => return parse_is_or_where(parser, input, state, Component::Is),
-        "where" if parser.parse_is_and_where() => return parse_is_or_where(parser, input, state, Component::Where),
+        "is" if parser.parse_is_and_where() => return parse_is_where_has(parser, input, state, Component::Is),
+        "where" if parser.parse_is_and_where() => return parse_is_where_has(parser, input, state, Component::Where),
+        "has" if parser.parse_has() => return parse_is_where_has(parser, input, state, Component::Has),
         "host" => {
             if !state.allows_tree_structural_pseudo_classes() {
                 return Err(input.new_custom_error(SelectorParseErrorKind::InvalidState));
@@ -2284,7 +2298,7 @@ where
     }
 
     if parser.parse_is_and_where() && parser.is_is_alias(&name) {
-        return parse_is_or_where(parser, input, state, Component::Is);
+        return parse_is_where_has(parser, input, state, Component::Is);
     }
 
     if !state.allows_custom_functional_pseudo_classes() {
@@ -2655,6 +2669,10 @@ pub mod tests {
         }
 
         fn parse_is_and_where(&self) -> bool {
+            true
+        }
+
+        fn parse_has(&self) -> bool {
             true
         }
 

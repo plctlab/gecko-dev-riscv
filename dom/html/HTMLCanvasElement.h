@@ -7,6 +7,7 @@
 #  define mozilla_dom_HTMLCanvasElement_h
 
 #  include "mozilla/Attributes.h"
+#  include "mozilla/StateWatching.h"
 #  include "mozilla/WeakPtr.h"
 #  include "nsIDOMEventListener.h"
 #  include "nsIObserver.h"
@@ -23,6 +24,7 @@ class nsICanvasRenderingContextInternal;
 class nsIInputStream;
 class nsITimerCallback;
 enum class gfxAlphaType;
+enum class FrameCaptureState : uint8_t;
 
 namespace mozilla {
 
@@ -32,6 +34,7 @@ class ClientWebGLContext;
 namespace layers {
 class CanvasRenderer;
 class Image;
+class ImageContainer;
 class Layer;
 class LayerManager;
 class OOPCanvasRenderer;
@@ -52,24 +55,20 @@ class CanvasCaptureMediaStream;
 class File;
 class HTMLCanvasPrintState;
 class OffscreenCanvas;
+class OffscreenCanvasDisplayHelper;
 class PrintCallback;
 class PWebGLChild;
 class RequestedFrameRefreshObserver;
 
 // Listen visibilitychange and memory-pressure event and inform
 // context when event is fired.
-class HTMLCanvasElementObserver final : public nsIObserver,
-                                        public nsIDOMEventListener {
+class HTMLCanvasElementObserver final : public nsIObserver {
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
-  NS_DECL_NSIDOMEVENTLISTENER
 
   explicit HTMLCanvasElementObserver(HTMLCanvasElement* aElement);
   void Destroy();
-
-  void RegisterVisibilityChangeEvent();
-  void UnregisterVisibilityChangeEvent();
 
   void RegisterObserverEvents();
   void UnregisterObserverEvents();
@@ -84,23 +83,18 @@ class HTMLCanvasElementObserver final : public nsIObserver,
  * FrameCaptureListener is used by captureStream() as a way of getting video
  * frames from the canvas. On a refresh driver tick after something has been
  * drawn to the canvas since the last such tick, all registered
- * FrameCaptureListeners whose `mFrameCaptureRequested` equals `true`,
- * will be given a copy of the just-painted canvas.
+ * FrameCaptureListeners that report true for FrameCaptureRequested() will be
+ * given a copy of the just-painted canvas.
  * All FrameCaptureListeners get the same copy.
  */
 class FrameCaptureListener : public SupportsWeakPtr {
  public:
-  FrameCaptureListener() : mFrameCaptureRequested(false) {}
-
-  /*
-   * Called when a frame capture is desired on next paint.
-   */
-  void RequestFrameCapture() { mFrameCaptureRequested = true; }
+  FrameCaptureListener() = default;
 
   /*
    * Indicates to the canvas whether or not this listener has requested a frame.
    */
-  bool FrameCaptureRequested() const { return mFrameCaptureRequested; }
+  virtual bool FrameCaptureRequested(const TimeStamp& aTime) const = 0;
 
   /*
    * Interface through which new video frames will be provided while
@@ -111,8 +105,6 @@ class FrameCaptureListener : public SupportsWeakPtr {
 
  protected:
   virtual ~FrameCaptureListener() = default;
-
-  bool mFrameCaptureRequested;
 };
 
 class HTMLCanvasElement final : public nsGenericHTMLElement,
@@ -142,29 +134,15 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   uint32_t Height() {
     return GetUnsignedIntAttr(nsGkAtoms::height, DEFAULT_CANVAS_HEIGHT);
   }
-  void SetHeight(uint32_t aHeight, ErrorResult& aRv) {
-    if (mOffscreenCanvas) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return;
-    }
-
-    SetUnsignedIntAttr(nsGkAtoms::height, aHeight, DEFAULT_CANVAS_HEIGHT, aRv);
-  }
   uint32_t Width() {
     return GetUnsignedIntAttr(nsGkAtoms::width, DEFAULT_CANVAS_WIDTH);
   }
-  void SetWidth(uint32_t aWidth, ErrorResult& aRv) {
-    if (mOffscreenCanvas) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return;
-    }
+  void SetHeight(uint32_t aHeight, ErrorResult& aRv);
+  void SetWidth(uint32_t aWidth, ErrorResult& aRv);
 
-    SetUnsignedIntAttr(nsGkAtoms::width, aWidth, DEFAULT_CANVAS_WIDTH, aRv);
-  }
-
-  virtual already_AddRefed<nsISupports> GetContext(
+  already_AddRefed<nsISupports> GetContext(
       JSContext* aCx, const nsAString& aContextId,
-      JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv) override;
+      JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv);
 
   void ToDataURL(JSContext* aCx, const nsAString& aType,
                  JS::Handle<JS::Value> aParams, nsAString& aDataURL,
@@ -185,10 +163,6 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
     SetHTMLBoolAttr(nsGkAtoms::moz_opaque, aValue, aRv);
   }
-  already_AddRefed<File> MozGetAsFile(const nsAString& aName,
-                                      const nsAString& aType,
-                                      nsIPrincipal& aSubjectPrincipal,
-                                      ErrorResult& aRv);
   already_AddRefed<nsISupports> MozGetIPCContext(const nsAString& aContextId,
                                                  ErrorResult& aRv);
   PrintCallback* GetMozPrintCallback() const;
@@ -209,15 +183,16 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   bool IsWriteOnly() const;
 
   /**
-   * Force the canvas to be write-only.
+   * Force the canvas to be write-only, except for readers from
+   * a specific extension's content script expanded principal, if
+   * available.
    */
-  void SetWriteOnly();
+  void SetWriteOnly(nsIPrincipal* aExpandedReader = nullptr);
 
   /**
-   * Force the canvas to be write-only, except for readers from
-   * a specific extension's content script expanded principal.
+   * Notify the placeholder offscreen canvas of an updated size.
    */
-  void SetWriteOnly(nsIPrincipal* aExpandedReader);
+  void InvalidateCanvasPlaceholder(uint32_t aWidth, uint32_t aHeight);
 
   /**
    * Notify that some canvas content has changed and the window may
@@ -259,7 +234,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
    * Returns true when there is at least one registered FrameCaptureListener
    * that has requested a frame capture.
    */
-  bool IsFrameCaptureRequested() const;
+  bool IsFrameCaptureRequested(const TimeStamp& aTime) const;
 
   /*
    * Processes destroyed FrameCaptureListeners and removes them if necessary.
@@ -287,8 +262,6 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
   nsresult CopyInnerTo(HTMLCanvasElement* aDest);
 
-  void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
-
   static void MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
                                     MappedDeclarations&);
 
@@ -312,14 +285,14 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   // copies for future frames when no drawing has occurred.
   void MarkContextCleanForFrameCapture();
 
-  // Starts returning false when something is drawn.
-  bool IsContextCleanForFrameCapture();
+  // Returns non-null when the current context supports captureStream().
+  // The FrameCaptureState gets set to DIRTY when something is drawn.
+  Watchable<FrameCaptureState>* GetFrameCaptureState();
 
   nsresult GetContext(const nsAString& aContextId, nsISupports** aContext);
 
   layers::LayersBackend GetCompositorBackendType() const;
 
-  void OnVisibilityChange();
   void OnMemoryPressure();
   void OnDeviceReset();
 
@@ -330,6 +303,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
  protected:
   virtual ~HTMLCanvasElement();
+  void Destroy();
 
   virtual JSObject* WrapNode(JSContext* aCx,
                              JS::Handle<JSObject*> aGivenProto) override;
@@ -345,9 +319,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   nsresult ToDataURLImpl(JSContext* aCx, nsIPrincipal& aSubjectPrincipal,
                          const nsAString& aMimeType,
                          const JS::Value& aEncoderOptions, nsAString& aDataURL);
-  nsresult MozGetAsFileImpl(const nsAString& aName, const nsAString& aType,
-                            nsIPrincipal& aSubjectPrincipal, File** aResult);
-  void CallPrintCallback();
+  MOZ_CAN_RUN_SCRIPT void CallPrintCallback();
 
   virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
                                 const nsAttrValue* aValue,
@@ -362,6 +334,13 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   ClientWebGLContext* GetWebGLContext();
   webgpu::CanvasContext* GetWebGPUContext();
 
+  bool IsOffscreen() const { return !!mOffscreenCanvas; }
+  OffscreenCanvas* GetOffscreenCanvas() const { return mOffscreenCanvas; }
+
+  layers::ImageContainer* GetImageContainer() const { return mImageContainer; }
+
+  layers::CompositableHandle GetCompositableHandle() const;
+
  protected:
   bool mResetLayer;
   bool mMaybeModified;  // we fetched the context, so we may have written to the
@@ -373,6 +352,8 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   RefPtr<RequestedFrameRefreshObserver> mRequestedFrameRefreshObserver;
   RefPtr<CanvasRenderer> mCanvasRenderer;
   RefPtr<OffscreenCanvas> mOffscreenCanvas;
+  RefPtr<OffscreenCanvasDisplayHelper> mOffscreenDisplay;
+  RefPtr<layers::ImageContainer> mImageContainer;
   RefPtr<HTMLCanvasElementObserver> mContextObserver;
 
  public:
@@ -387,7 +368,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   RefPtr<nsIPrincipal> mExpandedReader;
 
   // Determines if the caller should be able to read the content.
-  bool CallerCanRead(JSContext* aCx);
+  bool CallerCanRead(JSContext* aCx) const;
 
   bool IsPrintCallbackDone();
 

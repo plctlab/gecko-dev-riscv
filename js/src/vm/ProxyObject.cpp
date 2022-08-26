@@ -19,7 +19,8 @@ using namespace js;
 
 static gc::AllocKind GetProxyGCObjectKind(const JSClass* clasp,
                                           const BaseProxyHandler* handler,
-                                          const Value& priv) {
+                                          const Value& priv,
+                                          bool withInlineValues) {
   MOZ_ASSERT(clasp->isProxyObject());
 
   uint32_t nreserved = JSCLASS_RESERVED_SLOTS(clasp);
@@ -29,14 +30,12 @@ static gc::AllocKind GetProxyGCObjectKind(const JSClass* clasp,
   // JSCLASS_HAS_RESERVED_SLOTS since bug 1360523.
   MOZ_ASSERT(nreserved > 0);
 
-  MOZ_ASSERT(
-      js::detail::ProxyValueArray::sizeOf(nreserved) % sizeof(Value) == 0,
-      "ProxyValueArray must be a multiple of Value");
+  uint32_t nslots = 0;
+  if (withInlineValues) {
+    nslots = detail::ProxyValueArray::allocCount(nreserved);
+  }
 
-  uint32_t nslots =
-      js::detail::ProxyValueArray::sizeOf(nreserved) / sizeof(Value);
   MOZ_ASSERT(nslots <= NativeObject::MAX_FIXED_SLOTS);
-
   gc::AllocKind kind = gc::GetGCObjectKind(nslots);
   if (handler->finalizeInBackground(priv)) {
     kind = ForegroundToBackgroundAllocKind(kind);
@@ -86,13 +85,14 @@ ProxyObject* ProxyObject::New(JSContext* cx, const BaseProxyHandler* handler,
   }
 #endif
 
-  gc::AllocKind allocKind = GetProxyGCObjectKind(clasp, handler, priv);
+  gc::AllocKind allocKind = GetProxyGCObjectKind(clasp, handler, priv,
+                                                 /* withInlineValues = */ true);
 
   Realm* realm = cx->realm();
 
   AutoSetNewObjectMetadata metadata(cx);
   // Try to look up the shape in the NewProxyCache.
-  RootedShape shape(cx);
+  Rooted<Shape*> shape(cx);
   if (!realm->newProxyCache.lookup(clasp, proto, shape.address())) {
     shape = SharedShape::getInitialShape(cx, clasp, realm, proto,
                                          /* nfixed = */ 0);
@@ -104,7 +104,7 @@ ProxyObject* ProxyObject::New(JSContext* cx, const BaseProxyHandler* handler,
   }
 
   MOZ_ASSERT(shape->realm() == realm);
-  MOZ_ASSERT(!IsAboutToBeFinalizedUnbarriered(shape.address()));
+  MOZ_ASSERT(!IsAboutToBeFinalizedUnbarriered(shape.get()));
 
   // Ensure that the wrapper has the same lifetime assumptions as the
   // wrappee. Prefer to allocate in the nursery, when possible.
@@ -138,9 +138,9 @@ ProxyObject* ProxyObject::New(JSContext* cx, const BaseProxyHandler* handler,
 }
 
 gc::AllocKind ProxyObject::allocKindForTenure() const {
-  MOZ_ASSERT(usingInlineValueArray());
   Value priv = private_();
-  return GetProxyGCObjectKind(getClass(), data.handler, priv);
+  return GetProxyGCObjectKind(getClass(), data.handler, priv,
+                              usingInlineValueArray());
 }
 
 void ProxyObject::setCrossCompartmentPrivate(const Value& priv) {
@@ -153,20 +153,21 @@ void ProxyObject::setSameCompartmentPrivate(const Value& priv) {
 }
 
 inline void ProxyObject::setPrivate(const Value& priv) {
-  MOZ_ASSERT_IF(IsMarkedBlack(this) && priv.isGCThing(),
+  MOZ_ASSERT_IF(!zone()->isGCPreparing() && isMarkedBlack() && priv.isGCThing(),
                 !JS::GCThingIsMarkedGray(priv.toGCCellPtr()));
   *slotOfPrivate() = priv;
 }
 
 void ProxyObject::setExpando(JSObject* expando) {
-  // Ensure that we don't accidentally end up pointing to a
-  // grey object, which would violate GC invariants.
-  MOZ_ASSERT_IF(IsMarkedBlack(this) && expando,
-                !JS::GCThingIsMarkedGray(JS::GCCellPtr(expando)));
-
   // Ensure we're in the same compartment as the proxy object: Don't want the
   // expando to end up as a CCW.
   MOZ_ASSERT_IF(expando, expando->compartment() == compartment());
+
+  // Ensure that we don't accidentally end up pointing to a
+  // grey object, which would violate GC invariants.
+  MOZ_ASSERT_IF(!zone()->isGCPreparing() && isMarkedBlack() && expando,
+                !JS::GCThingIsMarkedGray(JS::GCCellPtr(expando)));
+
   *slotOfExpando() = ObjectOrNullValue(expando);
 }
 
@@ -200,7 +201,7 @@ void ProxyObject::nuke() {
 
 JS_PUBLIC_API void js::detail::SetValueInProxy(Value* slot,
                                                const Value& value) {
-  // Slots in proxies are not GCPtrValues, so do a cast whenever assigning
+  // Slots in proxies are not GCPtr<Value>s, so do a cast whenever assigning
   // values to them which might trigger a barrier.
-  *reinterpret_cast<GCPtrValue*>(slot) = value;
+  *reinterpret_cast<GCPtr<Value>*>(slot) = value;
 }

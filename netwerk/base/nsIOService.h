@@ -146,6 +146,9 @@ class nsIOService final : public nsIIOService,
 
   nsresult LaunchSocketProcess();
 
+  static bool TooManySocketProcessCrash();
+  static void IncreaseSocketProcessCrashCount();
+
  private:
   // These shouldn't be called directly:
   // - construct using GetInstance
@@ -185,7 +188,8 @@ class nsIOService final : public nsIIOService,
       const mozilla::Maybe<mozilla::dom::ClientInfo>& aLoadingClientInfo,
       const mozilla::Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController,
       uint32_t aSecurityFlags, nsContentPolicyType aContentPolicyType,
-      uint32_t aSandboxFlags, nsIChannel** result);
+      uint32_t aSandboxFlags, bool aSkipCheckForBrokenURLOrZeroSized,
+      nsIChannel** result);
 
   nsresult NewChannelFromURIWithProxyFlagsInternal(nsIURI* aURI,
                                                    nsIURI* aProxyURI,
@@ -198,6 +202,8 @@ class nsIOService final : public nsIIOService,
                                       bool aAnonymous);
 
   void DestroySocketProcess();
+
+  nsresult SetOfflineInternal(bool offline, bool notifySocketProcess = true);
 
  private:
   mozilla::Atomic<bool, mozilla::Relaxed> mOffline{true};
@@ -228,11 +234,12 @@ class nsIOService final : public nsIIOService,
       NS_CHANNEL_EVENT_SINK_CATEGORY};
 
   Mutex mMutex{"nsIOService::mMutex"};
-  nsTArray<int32_t> mRestrictedPortList;
+  nsTArray<int32_t> mRestrictedPortList MOZ_GUARDED_BY(mMutex);
 
   uint32_t mTotalRequests{0};
   uint32_t mCacheWon{0};
   uint32_t mNetWon{0};
+  static uint32_t sSocketProcessCrashedCount;
 
   // These timestamps are needed for collecting telemetry on PR_Connect,
   // PR_ConnectContinue and PR_Close blocking time.  If we spend very long
@@ -256,7 +263,9 @@ class nsIOService final : public nsIIOService,
   nsTHashSet<nsCString> mObserverTopicForSocketProcess;
   // Some noticications (e.g., NS_XPCOM_SHUTDOWN_OBSERVER_ID) are triggered in
   // socket process, so we should not send the notifications again.
-  nsTHashSet<nsCString> mSocketProcessTopicBlackList;
+  nsTHashSet<nsCString> mSocketProcessTopicBlockedList;
+  // Used to store the topics that are already observed by IOService.
+  nsTHashSet<nsCString> mIOServiceTopicList;
 
   nsCOMPtr<nsIObserverService> mObserverService;
 

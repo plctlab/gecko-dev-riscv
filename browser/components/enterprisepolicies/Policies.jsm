@@ -2,17 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* globals log */
+
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyServiceGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyServiceGetters(lazy, {
   gCertDB: ["@mozilla.org/security/x509certdb;1", "nsIX509CertDB"],
   gExternalProtocolService: [
     "@mozilla.org/uriloader/external-protocol-service;1",
@@ -26,7 +29,7 @@ XPCOMUtils.defineLazyServiceGetters(this, {
   gXulStore: ["@mozilla.org/xul/xulstore;1", "nsIXULStore"],
 });
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   BookmarksPolicies: "resource:///modules/policies/BookmarksPolicies.jsm",
   CustomizableUI: "resource:///modules/CustomizableUI.jsm",
@@ -34,8 +37,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   ProxyPolicies: "resource:///modules/policies/ProxyPolicies.jsm",
   WebsiteFilter: "resource:///modules/policies/WebsiteFilter.jsm",
 });
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["File", "FileReader"]);
 
 const PREF_LOGLEVEL = "browser.policies.loglevel";
 const BROWSER_DOCUMENT_URL = AppConstants.BROWSER_CHROME_URL;
@@ -46,7 +47,7 @@ let env = Cc["@mozilla.org/process/environment;1"].getService(
 );
 const isXpcshell = env.exists("XPCSHELL_TEST_PROFILE_DIR");
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     prefix: "Policies.jsm",
@@ -57,7 +58,12 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   });
 });
 
-var EXPORTED_SYMBOLS = ["Policies"];
+var EXPORTED_SYMBOLS = [
+  "Policies",
+  "setAndLockPref",
+  "PoliciesUtils",
+  "runOnce",
+];
 
 /*
  * ============================
@@ -141,6 +147,100 @@ var Policies = {
     },
   },
 
+  AppUpdatePin: {
+    validate(param) {
+      // This is the version when pinning was introduced. Attempting to set a
+      // pin before this will not work, because Balrog's pinning table will
+      // never have the necessary entry.
+      const earliestPinMajorVersion = 102;
+      const earliestPinMinorVersion = 0;
+
+      let pinParts = param.split(".");
+
+      if (pinParts.length < 2) {
+        lazy.log.error("AppUpdatePin has too few dots.");
+        return false;
+      }
+      if (pinParts.length > 3) {
+        lazy.log.error("AppUpdatePin has too many dots.");
+        return false;
+      }
+
+      const trailingPinPart = pinParts.pop();
+      if (trailingPinPart != "") {
+        lazy.log.error("AppUpdatePin does not end with a trailing dot.");
+        return false;
+      }
+
+      const pinMajorVersionStr = pinParts.shift();
+      if (!pinMajorVersionStr.length) {
+        lazy.log.error("AppUpdatePin's major version is empty.");
+        return false;
+      }
+      if (!/^\d+$/.test(pinMajorVersionStr)) {
+        lazy.log.error(
+          "AppUpdatePin's major version contains a non-numeric character."
+        );
+        return false;
+      }
+      if (/^0/.test(pinMajorVersionStr)) {
+        lazy.log.error("AppUpdatePin's major version contains a leading 0.");
+        return false;
+      }
+      const pinMajorVersionInt = parseInt(pinMajorVersionStr, 10);
+      if (isNaN(pinMajorVersionInt)) {
+        lazy.log.error(
+          "AppUpdatePin's major version could not be parsed to an integer."
+        );
+        return false;
+      }
+      if (pinMajorVersionInt < earliestPinMajorVersion) {
+        lazy.log.error(
+          `AppUpdatePin must not be earlier than '${earliestPinMajorVersion}.${earliestPinMinorVersion}.'.`
+        );
+        return false;
+      }
+
+      if (pinParts.length) {
+        const pinMinorVersionStr = pinParts.shift();
+        if (!pinMinorVersionStr.length) {
+          lazy.log.error("AppUpdatePin's minor version is empty.");
+          return false;
+        }
+        if (!/^\d+$/.test(pinMinorVersionStr)) {
+          lazy.log.error(
+            "AppUpdatePin's minor version contains a non-numeric character."
+          );
+          return false;
+        }
+        if (/^0\d/.test(pinMinorVersionStr)) {
+          lazy.log.error("AppUpdatePin's minor version contains a leading 0.");
+          return false;
+        }
+        const pinMinorVersionInt = parseInt(pinMinorVersionStr, 10);
+        if (isNaN(pinMinorVersionInt)) {
+          lazy.log.error(
+            "AppUpdatePin's minor version could not be parsed to an integer."
+          );
+          return false;
+        }
+        if (
+          pinMajorVersionInt == earliestPinMajorVersion &&
+          pinMinorVersionInt < earliestPinMinorVersion
+        ) {
+          lazy.log.error(
+            `AppUpdatePin must not be earlier than '${earliestPinMajorVersion}.${earliestPinMinorVersion}.'.`
+          );
+          return false;
+        }
+      }
+
+      return true;
+    },
+    // No additional implementation needed here. UpdateService.jsm will check
+    // for this policy directly when determining the update URL.
+  },
+
   AppUpdateURL: {
     // No implementation needed here. UpdateService.jsm will check for this
     // policy directly when determining the update URL.
@@ -154,21 +254,21 @@ var Policies = {
       }
 
       if ("SPNEGO" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "network.negotiate-auth.trusted-uris",
           param.SPNEGO.join(", "),
           locked
         );
       }
       if ("Delegated" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "network.negotiate-auth.delegation-uris",
           param.Delegated.join(", "),
           locked
         );
       }
       if ("NTLM" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "network.automatic-ntlm-auth.trusted-uris",
           param.NTLM.join(", "),
           locked
@@ -176,14 +276,14 @@ var Policies = {
       }
       if ("AllowNonFQDN" in param) {
         if ("NTLM" in param.AllowNonFQDN) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "network.automatic-ntlm-auth.allow-non-fqdn",
             param.AllowNonFQDN.NTLM,
             locked
           );
         }
         if ("SPNEGO" in param.AllowNonFQDN) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "network.negotiate-auth.allow-non-fqdn",
             param.AllowNonFQDN.SPNEGO,
             locked
@@ -192,14 +292,14 @@ var Policies = {
       }
       if ("AllowProxies" in param) {
         if ("NTLM" in param.AllowProxies) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "network.automatic-ntlm-auth.allow-proxies",
             param.AllowProxies.NTLM,
             locked
           );
         }
         if ("SPNEGO" in param.AllowProxies) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "network.negotiate-auth.allow-proxies",
             param.AllowProxies.SPNEGO,
             locked
@@ -207,7 +307,7 @@ var Policies = {
         }
       }
       if ("PrivateBrowsing" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "network.auth.private-browsing-sso",
           param.PrivateBrowsing,
           locked
@@ -272,7 +372,7 @@ var Policies = {
 
   Bookmarks: {
     onAllWindowsRestored(manager, param) {
-      BookmarksPolicies.processBookmarks(param);
+      lazy.BookmarksPolicies.processBookmarks(param);
     },
   },
 
@@ -332,13 +432,13 @@ var Policies = {
             try {
               file = await File.createFromNsIFile(certfile);
             } catch (e) {
-              log.error(`Unable to find certificate - ${certfilename}`);
+              lazy.log.error(`Unable to find certificate - ${certfilename}`);
               continue;
             }
             let reader = new FileReader();
             reader.onloadend = function() {
               if (reader.readyState != reader.DONE) {
-                log.error(`Unable to read certificate - ${certfile.path}`);
+                lazy.log.error(`Unable to read certificate - ${certfile.path}`);
                 return;
               }
               let certFile = reader.result;
@@ -348,21 +448,26 @@ var Policies = {
               }
               let cert;
               try {
-                cert = gCertDB.constructX509(certFileArray);
+                cert = lazy.gCertDB.constructX509(certFileArray);
               } catch (e) {
-                log.debug(
+                lazy.log.debug(
                   `constructX509 failed with error '${e}' - trying constructX509FromBase64.`
                 );
                 try {
                   // It might be PEM instead of DER.
-                  cert = gCertDB.constructX509FromBase64(pemToBase64(certFile));
+                  cert = lazy.gCertDB.constructX509FromBase64(
+                    pemToBase64(certFile)
+                  );
                 } catch (ex) {
-                  log.error(`Unable to add certificate - ${certfile.path}`, ex);
+                  lazy.log.error(
+                    `Unable to add certificate - ${certfile.path}`,
+                    ex
+                  );
                 }
               }
               if (cert) {
                 if (
-                  gCertDB.isCertTrusted(
+                  lazy.gCertDB.isCertTrusted(
                     cert,
                     Ci.nsIX509Cert.CA_CERT,
                     Ci.nsIX509CertDB.TRUSTED_SSL
@@ -372,10 +477,13 @@ var Policies = {
                   return;
                 }
                 try {
-                  gCertDB.addCert(certFile, "CT,CT,");
+                  lazy.gCertDB.addCert(certFile, "CT,CT,");
                 } catch (e) {
                   // It might be PEM instead of DER.
-                  gCertDB.addCertFromBase64(pemToBase64(certFile), "CT,CT,");
+                  lazy.gCertDB.addCertFromBase64(
+                    pemToBase64(certFile),
+                    "CT,CT,"
+                  );
                 }
               }
             };
@@ -402,7 +510,7 @@ var Policies = {
               Ci.nsIPermissionManager.EXPIRE_POLICY
             );
           } catch (ex) {
-            log.error(
+            lazy.log.error(
               `Unable to add cookie session permission - ${origin.href}`
             );
           }
@@ -423,64 +531,82 @@ var Policies = {
         });
       }
 
-      if (
-        param.Default !== undefined ||
-        param.AcceptThirdParty !== undefined ||
-        param.RejectTracker !== undefined ||
-        param.Locked
-      ) {
-        const ACCEPT_COOKIES = 0;
-        const REJECT_THIRD_PARTY_COOKIES = 1;
-        const REJECT_ALL_COOKIES = 2;
-        const REJECT_UNVISITED_THIRD_PARTY = 3;
-        const REJECT_TRACKER = 4;
+      if (param.ExpireAtSessionEnd != undefined) {
+        log.error(
+          "'ExpireAtSessionEnd' has been deprecated and it has no effect anymore."
+        );
+      }
 
-        let newCookieBehavior = ACCEPT_COOKIES;
-        if (param.Default !== undefined && !param.Default) {
-          newCookieBehavior = REJECT_ALL_COOKIES;
-        } else if (param.AcceptThirdParty) {
-          if (param.AcceptThirdParty == "never") {
-            newCookieBehavior = REJECT_THIRD_PARTY_COOKIES;
-          } else if (param.AcceptThirdParty == "from-visited") {
-            newCookieBehavior = REJECT_UNVISITED_THIRD_PARTY;
+      // New Cookie Behavior option takes precendence
+      let defaultPref = Services.prefs.getDefaultBranch("");
+      let newCookieBehavior = defaultPref.getIntPref(
+        "network.cookie.cookieBehavior"
+      );
+      let newCookieBehaviorPB = defaultPref.getIntPref(
+        "network.cookie.cookieBehavior.pbmode"
+      );
+      if ("Behavior" in param || "BehaviorPrivateBrowsing" in param) {
+        let behaviors = {
+          accept: Ci.nsICookieService.BEHAVIOR_ACCEPT,
+          "reject-foreign": Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN,
+          reject: Ci.nsICookieService.BEHAVIOR_REJECT,
+          "limit-foreign": Ci.nsICookieService.BEHAVIOR_LIMIT_FOREIGN,
+          "reject-tracker": Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+          "reject-tracker-and-partition-foreign":
+            Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        };
+        if ("Behavior" in param) {
+          newCookieBehavior = behaviors[param.Behavior];
+        }
+        if ("BehaviorPrivateBrowsing" in param) {
+          newCookieBehaviorPB = behaviors[param.BehaviorPrivateBrowsing];
+        }
+      } else {
+        // Default, AcceptThirdParty, and RejectTracker are being
+        // deprecated in favor of Behavior. They will continue
+        // to be supported, though.
+        if (
+          param.Default !== undefined ||
+          param.AcceptThirdParty !== undefined ||
+          param.RejectTracker !== undefined ||
+          param.Locked
+        ) {
+          newCookieBehavior = Ci.nsICookieService.BEHAVIOR_ACCEPT;
+          if (param.Default !== undefined && !param.Default) {
+            newCookieBehavior = Ci.nsICookieService.BEHAVIOR_REJECT;
+          } else if (param.AcceptThirdParty) {
+            if (param.AcceptThirdParty == "never") {
+              newCookieBehavior = Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN;
+            } else if (param.AcceptThirdParty == "from-visited") {
+              newCookieBehavior = Ci.nsICookieService.BEHAVIOR_LIMIT_FOREIGN;
+            }
+          } else if (param.RejectTracker) {
+            newCookieBehavior = Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER;
           }
-        } else if (param.RejectTracker !== undefined && param.RejectTracker) {
-          newCookieBehavior = REJECT_TRACKER;
         }
-
-        setDefaultPref(
-          "network.cookie.cookieBehavior",
-          newCookieBehavior,
-          param.Locked
-        );
-        setDefaultPref(
-          "network.cookie.cookieBehavior.pbmode",
-          newCookieBehavior,
-          param.Locked
-        );
+        // With the old cookie policy, we made private browsing the same.
+        newCookieBehaviorPB = newCookieBehavior;
       }
-
-      const KEEP_COOKIES_UNTIL_EXPIRATION = 0;
-      const KEEP_COOKIES_UNTIL_END_OF_SESSION = 2;
-
-      if (param.ExpireAtSessionEnd !== undefined || param.Locked) {
-        let newLifetimePolicy = KEEP_COOKIES_UNTIL_EXPIRATION;
-        if (param.ExpireAtSessionEnd) {
-          newLifetimePolicy = KEEP_COOKIES_UNTIL_END_OF_SESSION;
-        }
-
-        setDefaultPref(
-          "network.cookie.lifetimePolicy",
-          newLifetimePolicy,
-          param.Locked
-        );
-      }
+      // We set the values no matter what just in case the policy was only used to lock.
+      PoliciesUtils.setDefaultPref(
+        "network.cookie.cookieBehavior",
+        newCookieBehavior,
+        param.Locked
+      );
+      PoliciesUtils.setDefaultPref(
+        "network.cookie.cookieBehavior.pbmode",
+        newCookieBehaviorPB,
+        param.Locked
+      );
     },
   },
 
   DefaultDownloadDirectory: {
     onBeforeAddons(manager, param) {
-      setDefaultPref("browser.download.dir", replacePathVariables(param));
+      PoliciesUtils.setDefaultPref(
+        "browser.download.dir",
+        replacePathVariables(param)
+      );
       // If a custom download directory is being used, just lock folder list to 2.
       setAndLockPref("browser.download.folderList", 2);
     },
@@ -504,71 +630,39 @@ var Policies = {
 
   DisabledCiphers: {
     onBeforeAddons(manager, param) {
-      if ("TLS_DHE_RSA_WITH_AES_128_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.dhe_rsa_aes_128_sha",
-          !param.TLS_DHE_RSA_WITH_AES_128_CBC_SHA
-        );
-      }
-      if ("TLS_DHE_RSA_WITH_AES_256_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.dhe_rsa_aes_256_sha",
-          !param.TLS_DHE_RSA_WITH_AES_256_CBC_SHA
-        );
-      }
-      if ("TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.ecdhe_rsa_aes_128_sha",
-          !param.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-        );
-      }
-      if ("TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.ecdhe_rsa_aes_256_sha",
-          !param.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-        );
-      }
-      if ("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256" in param) {
-        setAndLockPref(
+      let cipherPrefs = {
+        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
           "security.ssl3.ecdhe_rsa_aes_128_gcm_sha256",
-          !param.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-        );
-      }
-      if ("TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256" in param) {
-        setAndLockPref(
+        TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
           "security.ssl3.ecdhe_ecdsa_aes_128_gcm_sha256",
-          !param.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-        );
-      }
-      if ("TLS_RSA_WITH_AES_128_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.rsa_aes_128_sha",
-          !param.TLS_RSA_WITH_AES_128_CBC_SHA
-        );
-      }
-      if ("TLS_RSA_WITH_AES_256_CBC_SHA" in param) {
-        setAndLockPref(
-          "security.ssl3.rsa_aes_256_sha",
-          !param.TLS_RSA_WITH_AES_256_CBC_SHA
-        );
-      }
-      if ("TLS_RSA_WITH_3DES_EDE_CBC_SHA" in param) {
-        setAndLockPref(
+        TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+          "security.ssl3.ecdhe_ecdsa_chacha20_poly1305_sha256",
+        TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+          "security.ssl3.ecdhe_rsa_chacha20_poly1305_sha256",
+        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+          "security.ssl3.ecdhe_ecdsa_aes_256_gcm_sha384",
+        TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
+          "security.ssl3.ecdhe_rsa_aes_256_gcm_sha384",
+        TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:
+          "security.ssl3.ecdhe_rsa_aes_128_sha",
+        TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:
+          "security.ssl3.ecdhe_ecdsa_aes_128_sha",
+        TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:
+          "security.ssl3.ecdhe_rsa_aes_256_sha",
+        TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:
+          "security.ssl3.ecdhe_ecdsa_aes_256_sha",
+        TLS_DHE_RSA_WITH_AES_128_CBC_SHA: "security.ssl3.dhe_rsa_aes_128_sha",
+        TLS_DHE_RSA_WITH_AES_256_CBC_SHA: "security.ssl3.dhe_rsa_aes_256_sha",
+        TLS_RSA_WITH_AES_128_GCM_SHA256: "security.ssl3.rsa_aes_128_gcm_sha256",
+        TLS_RSA_WITH_AES_256_GCM_SHA384: "security.ssl3.rsa_aes_256_gcm_sha384",
+        TLS_RSA_WITH_AES_128_CBC_SHA: "security.ssl3.rsa_aes_128_sha",
+        TLS_RSA_WITH_AES_256_CBC_SHA: "security.ssl3.rsa_aes_256_sha",
+        TLS_RSA_WITH_3DES_EDE_CBC_SHA:
           "security.ssl3.deprecated.rsa_des_ede3_sha",
-          !param.TLS_RSA_WITH_3DES_EDE_CBC_SHA
-        );
-      }
-      if ("TLS_RSA_WITH_AES_128_GCM_SHA256" in param) {
-        setAndLockPref(
-          "security.ssl3.rsa_aes_128_gcm_sha256",
-          !param.TLS_RSA_WITH_AES_128_GCM_SHA256
-        );
-      }
-      if ("TLS_RSA_WITH_AES_256_GCM_SHA384" in param) {
-        setAndLockPref(
-          "security.ssl3.rsa_aes_256_gcm_sha384",
-          !param.TLS_RSA_WITH_AES_256_GCM_SHA384
-        );
+      };
+
+      for (let cipher in param) {
+        setAndLockPref(cipherPrefs[cipher], !param[cipher]);
       }
     },
   },
@@ -586,7 +680,6 @@ var Policies = {
         setAndLockPref("devtools.chrome.enabled", false);
 
         manager.disallowFeature("devtools");
-        blockAboutPage(manager, "about:devtools");
         blockAboutPage(manager, "about:debugging");
         blockAboutPage(manager, "about:devtools-toolbox");
         blockAboutPage(manager, "about:profiling");
@@ -770,13 +863,9 @@ var Policies = {
         // declaratively open the bookmarks toolbar. Otherwise, default
         // to showing it on the New Tab Page.
         let visibilityPref = "browser.toolbars.bookmarks.visibility";
-        let bookmarksFeaturePref = "browser.toolbars.bookmarks.2h2020";
-        let visibility = param ? "always" : "never";
-        if (Services.prefs.getBoolPref(bookmarksFeaturePref, false)) {
-          visibility = param ? "always" : "newtab";
-        }
+        let visibility = param ? "always" : "newtab";
         Services.prefs.setCharPref(visibilityPref, visibility);
-        gXulStore.setValue(
+        lazy.gXulStore.setValue(
           BROWSER_DOCUMENT_URL,
           "PersonalToolbar",
           "collapsed",
@@ -809,7 +898,7 @@ var Policies = {
         // If this policy was already applied and the user chose to re-hide the
         // menu bar, do not show it again.
         runOncePerModification("displayMenuBar", value, () => {
-          gXulStore.setValue(
+          lazy.gXulStore.setValue(
             BROWSER_DOCUMENT_URL,
             "toolbar-menubar",
             "autohide",
@@ -827,7 +916,7 @@ var Policies = {
             value = "true";
             break;
         }
-        gXulStore.setValue(
+        lazy.gXulStore.setValue(
           BROWSER_DOCUMENT_URL,
           "toolbar-menubar",
           "autohide",
@@ -846,13 +935,17 @@ var Policies = {
       }
       if ("Enabled" in param) {
         let mode = param.Enabled ? 2 : 5;
-        setDefaultPref("network.trr.mode", mode, locked);
+        PoliciesUtils.setDefaultPref("network.trr.mode", mode, locked);
       }
       if ("ProviderURL" in param) {
-        setDefaultPref("network.trr.uri", param.ProviderURL.href, locked);
+        PoliciesUtils.setDefaultPref(
+          "network.trr.uri",
+          param.ProviderURL.href,
+          locked
+        );
       }
       if ("ExcludedDomains" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "network.trr.excluded-domains",
           param.ExcludedDomains.join(","),
           locked
@@ -881,12 +974,12 @@ var Policies = {
   EnableTrackingProtection: {
     onBeforeUIStartup(manager, param) {
       if (param.Value) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "privacy.trackingprotection.enabled",
           true,
           param.Locked
         );
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "privacy.trackingprotection.pbmode.enabled",
           true,
           param.Locked
@@ -896,14 +989,14 @@ var Policies = {
         setAndLockPref("privacy.trackingprotection.pbmode.enabled", false);
       }
       if ("Cryptomining" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "privacy.trackingprotection.cryptomining.enabled",
           param.Cryptomining,
           param.Locked
         );
       }
       if ("Fingerprinting" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "privacy.trackingprotection.fingerprinting.enabled",
           param.Fingerprinting,
           param.Locked
@@ -922,9 +1015,18 @@ var Policies = {
         locked = param.Locked;
       }
       if ("Enabled" in param) {
-        setDefaultPref("media.eme.enabled", param.Enabled, locked);
+        PoliciesUtils.setDefaultPref(
+          "media.eme.enabled",
+          param.Enabled,
+          locked
+        );
       }
     },
+  },
+
+  ExemptDomainFileTypePairsFromFileTypeDownloadWarnings: {
+    // This policy is handled directly in EnterprisePoliciesParent.jsm
+    // and requires no validation (It's done by the schema).
   },
 
   Extensions: {
@@ -940,14 +1042,18 @@ var Policies = {
             Services.prefs.clearUserPref(
               "browser.policies.runOncePerModification.extensionsInstall"
             );
-            let addons = await AddonManager.getAddonsByIDs(param.Uninstall);
+            let addons = await lazy.AddonManager.getAddonsByIDs(
+              param.Uninstall
+            );
             for (let addon of addons) {
               if (addon) {
                 try {
                   await addon.uninstall();
                 } catch (e) {
                   // This can fail for add-ons that can't be uninstalled.
-                  log.debug(`Add-on ID (${addon.id}) couldn't be uninstalled.`);
+                  lazy.log.debug(
+                    `Add-on ID (${addon.id}) couldn't be uninstalled.`
+                  );
                 }
               }
             }
@@ -966,7 +1072,7 @@ var Policies = {
                 // We need to try as a file first because
                 // Windows paths are valid URIs.
                 // This is done for legacy support (old API)
-                let xpiFile = new FileUtils.File(location);
+                let xpiFile = new lazy.FileUtils.File(location);
                 uri = Services.io.newFileURI(xpiFile);
               } catch (e) {
                 uri = Services.io.newURI(location);
@@ -990,7 +1096,7 @@ var Policies = {
       try {
         manager.setExtensionSettings(param);
       } catch (e) {
-        log.error("Invalid ExtensionSettings");
+        lazy.log.error("Invalid ExtensionSettings");
       }
     },
     async onBeforeUIStartup(manager, param) {
@@ -1024,7 +1130,7 @@ var Policies = {
           );
         }
       }
-      let addons = await AddonManager.getAllAddons();
+      let addons = await lazy.AddonManager.getAllAddons();
       let allowedExtensions = [];
       for (let extensionID in extensionSettings) {
         if (extensionID == "*") {
@@ -1063,12 +1169,14 @@ var Policies = {
           ) {
             if (addons.find(addon => addon.id == extensionID)) {
               // Can't use the addon from getActiveAddons since it doesn't have uninstall.
-              let addon = await AddonManager.getAddonByID(extensionID);
+              let addon = await lazy.AddonManager.getAddonByID(extensionID);
               try {
                 await addon.uninstall();
               } catch (e) {
                 // This can fail for add-ons that can't be uninstalled.
-                log.debug(`Add-on ID (${addon.id}) couldn't be uninstalled.`);
+                lazy.log.debug(
+                  `Add-on ID (${addon.id}) couldn't be uninstalled.`
+                );
               }
             }
           }
@@ -1079,18 +1187,22 @@ var Policies = {
           if (
             addon.isSystem ||
             addon.isBuiltin ||
-            !(addon.scope & AddonManager.SCOPE_PROFILE)
+            !(addon.scope & lazy.AddonManager.SCOPE_PROFILE)
           ) {
             continue;
           }
           if (!allowedExtensions.includes(addon.id)) {
             try {
               // Can't use the addon from getActiveAddons since it doesn't have uninstall.
-              let addonToUninstall = await AddonManager.getAddonByID(addon.id);
+              let addonToUninstall = await lazy.AddonManager.getAddonByID(
+                addon.id
+              );
               await addonToUninstall.uninstall();
             } catch (e) {
               // This can fail for add-ons that can't be uninstalled.
-              log.debug(`Add-on ID (${addon.id}) couldn't be uninstalled.`);
+              lazy.log.debug(
+                `Add-on ID (${addon.id}) couldn't be uninstalled.`
+              );
             }
           }
         }
@@ -1110,40 +1222,54 @@ var Policies = {
     onBeforeAddons(manager, param) {
       let locked = param.Locked || false;
       if ("Search" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.showSearch",
           param.Search,
           locked
         );
       }
       if ("TopSites" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.feeds.topsites",
           param.TopSites,
           locked
         );
       }
+      if ("SponsoredTopSites" in param) {
+        PoliciesUtils.setDefaultPref(
+          "browser.newtabpage.activity-stream.showSponsoredTopSites",
+          param.SponsoredTopSites,
+          locked
+        );
+      }
       if ("Highlights" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.feeds.section.highlights",
           param.Highlights,
           locked
         );
       }
       if ("Pocket" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.feeds.system.topstories",
           param.Pocket,
           locked
         );
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.feeds.section.topstories",
           param.Pocket,
           locked
         );
       }
+      if ("SponsoredPocket" in param) {
+        PoliciesUtils.setDefaultPref(
+          "browser.newtabpage.activity-stream.showSponsored",
+          param.SponsoredPocket,
+          locked
+        );
+      }
       if ("Snippets" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.feeds.snippets",
           param.Snippets,
           locked
@@ -1168,8 +1294,14 @@ var Policies = {
       if (param.Locked) {
         setAndLockPref("plugin.state.flash", flashPrefVal);
       } else if (param.Default !== undefined) {
-        setDefaultPref("plugin.state.flash", flashPrefVal);
+        PoliciesUtils.setDefaultPref("plugin.state.flash", flashPrefVal);
       }
+    },
+  },
+
+  GoToIntranetSiteForSingleWordEntryInAddressBar: {
+    onBeforeAddons(manager, param) {
+      setAndLockPref("browser.fixup.dns_first_for_single_words", param);
     },
   },
 
@@ -1178,7 +1310,10 @@ var Policies = {
       if ("mimeTypes" in param) {
         for (let mimeType in param.mimeTypes) {
           let mimeInfo = param.mimeTypes[mimeType];
-          let realMIMEInfo = gMIMEService.getFromTypeAndExtension(mimeType, "");
+          let realMIMEInfo = lazy.gMIMEService.getFromTypeAndExtension(
+            mimeType,
+            ""
+          );
           processMIMEInfo(mimeInfo, realMIMEInfo);
         }
       }
@@ -1186,20 +1321,20 @@ var Policies = {
         for (let extension in param.extensions) {
           let mimeInfo = param.extensions[extension];
           try {
-            let realMIMEInfo = gMIMEService.getFromTypeAndExtension(
+            let realMIMEInfo = lazy.gMIMEService.getFromTypeAndExtension(
               "",
               extension
             );
             processMIMEInfo(mimeInfo, realMIMEInfo);
           } catch (e) {
-            log.error(`Invalid file extension (${extension})`);
+            lazy.log.error(`Invalid file extension (${extension})`);
           }
         }
       }
       if ("schemes" in param) {
         for (let scheme in param.schemes) {
           let handlerInfo = param.schemes[scheme];
-          let realHandlerInfo = gExternalProtocolService.getProtocolHandlerInfo(
+          let realHandlerInfo = lazy.gExternalProtocolService.getProtocolHandlerInfo(
             scheme
           );
           processMIMEInfo(handlerInfo, realHandlerInfo);
@@ -1231,7 +1366,11 @@ var Policies = {
         if (param.Additional && param.Additional.length) {
           homepages += "|" + param.Additional.map(url => url.href).join("|");
         }
-        setDefaultPref("browser.startup.homepage", homepages, param.Locked);
+        PoliciesUtils.setDefaultPref(
+          "browser.startup.homepage",
+          homepages,
+          param.Locked
+        );
         if (param.Locked) {
           setAndLockPref(
             "pref.browser.homepage.disable_button.current_page",
@@ -1266,7 +1405,7 @@ var Policies = {
             prefValue = 3;
             break;
         }
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.startup.page",
           prefValue,
           param.StartPage == "homepage-locked"
@@ -1304,13 +1443,16 @@ var Policies = {
 
   LegacySameSiteCookieBehaviorEnabled: {
     onBeforeAddons(manager, param) {
-      setDefaultPref("network.cookie.sameSite.laxByDefault", !param);
+      PoliciesUtils.setDefaultPref(
+        "network.cookie.sameSite.laxByDefault",
+        !param
+      );
     },
   },
 
   LegacySameSiteCookieBehaviorEnabledForDomainList: {
     onBeforeAddons(manager, param) {
-      setDefaultPref(
+      PoliciesUtils.setDefaultPref(
         "network.cookie.sameSite.laxByDefault.disabledHosts",
         param.join(",")
       );
@@ -1378,11 +1520,11 @@ var Policies = {
     onBeforeUIStartup(manager, param) {
       let policies = Services.policies.getActivePolicies();
       if ("OfferToSaveLogins" in policies) {
-        log.error(
+        lazy.log.error(
           `OfferToSaveLoginsDefault ignored because OfferToSaveLogins is present.`
         );
       } else {
-        setDefaultPref("signon.rememberSignons", param);
+        PoliciesUtils.setDefaultPref("signon.rememberSignons", param);
       }
     },
   },
@@ -1416,13 +1558,19 @@ var Policies = {
     },
   },
 
+  PasswordManagerExceptions: {
+    onBeforeUIStartup(manager, param) {
+      addAllowDenyPermissions("login-saving", null, param);
+    },
+  },
+
   PDFjs: {
     onBeforeAddons(manager, param) {
       if ("Enabled" in param) {
         setAndLockPref("pdfjs.disabled", !param.Enabled);
       }
       if ("EnablePermissions" in param) {
-        setAndLockPref("pdfjs.enablePermissions", !param.Enabled);
+        setAndLockPref("pdfjs.enablePermissions", param.EnablePermissions);
       }
     },
   },
@@ -1466,7 +1614,7 @@ var Policies = {
               prefValue = 5;
               break;
           }
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "media.autoplay.default",
             prefValue,
             param.Autoplay.Locked
@@ -1506,7 +1654,7 @@ var Policies = {
   PictureInPicture: {
     onBeforeAddons(manager, param) {
       if ("Enabled" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "media.videocontrols.picture-in-picture.video-toggle.enabled",
           param.Enabled
         );
@@ -1530,7 +1678,10 @@ var Policies = {
         }
         setAndLockPref("dom.disable_open_during_load", blockValue);
       } else if (param.Default !== undefined) {
-        setDefaultPref("dom.disable_open_during_load", !!param.Default);
+        PoliciesUtils.setDefaultPref(
+          "dom.disable_open_during_load",
+          !!param.Default
+        );
       }
     },
   },
@@ -1549,6 +1700,7 @@ var Policies = {
         "geo.",
         "gfx.",
         "intl.",
+        "keyword.enabled",
         "layers.",
         "layout.",
         "media.",
@@ -1558,14 +1710,15 @@ var Policies = {
         "print.",
         "signon.",
         "spellchecker.",
+        "toolkit.legacyUserProfileCustomizations.stylesheets",
         "ui.",
         "widget.",
       ];
       const allowedSecurityPrefs = [
+        "security.block_fileuri_script_with_wrong_mime",
         "security.default_personal_cert",
         "security.insecure_connection_text.enabled",
         "security.insecure_connection_text.pbmode.enabled",
-        "security.insecure_field_warning.contextual.enabled",
         "security.mixed_content.block_active_content",
         "security.osclientcerts.autoload",
         "security.ssl.errorReporting.enabled",
@@ -1578,18 +1731,19 @@ var Policies = {
         "app.update.channel",
         "app.update.lastUpdateTime",
         "app.update.migrated",
+        "browser.vpn_promo.disallowed_regions",
       ];
 
       for (let preference in param) {
         if (blockedPrefs.includes(preference)) {
-          log.error(
+          lazy.log.error(
             `Unable to set preference ${preference}. Preference not allowed for security reasons.`
           );
           continue;
         }
         if (preference.startsWith("security.")) {
           if (!allowedSecurityPrefs.includes(preference)) {
-            log.error(
+            lazy.log.error(
               `Unable to set preference ${preference}. Preference not allowed for security reasons.`
             );
             continue;
@@ -1597,7 +1751,7 @@ var Policies = {
         } else if (
           !allowedPrefixes.some(prefix => preference.startsWith(prefix))
         ) {
-          log.error(
+          lazy.log.error(
             `Unable to set preference ${preference}. Preference not allowed for stability reasons.`
           );
           continue;
@@ -1649,7 +1803,7 @@ var Policies = {
                 break;
             }
           } catch (e) {
-            log.error(
+            lazy.log.error(
               `Unable to set preference ${preference}. Probable type mismatch.`
             );
           }
@@ -1682,9 +1836,12 @@ var Policies = {
     onBeforeAddons(manager, param) {
       if (param.Locked) {
         manager.disallowFeature("changeProxySettings");
-        ProxyPolicies.configureProxySettings(param, setAndLockPref);
+        lazy.ProxyPolicies.configureProxySettings(param, setAndLockPref);
       } else {
-        ProxyPolicies.configureProxySettings(param, setDefaultPref);
+        lazy.ProxyPolicies.configureProxySettings(
+          param,
+          PoliciesUtils.setDefaultPref
+        );
       }
     },
   },
@@ -1729,90 +1886,98 @@ var Policies = {
           locked = param.Locked;
           lockDefaultPrefs = false;
         }
-        setDefaultPref("privacy.sanitize.sanitizeOnShutdown", true, locked);
+        PoliciesUtils.setDefaultPref(
+          "privacy.sanitize.sanitizeOnShutdown",
+          true,
+          locked
+        );
         if ("Cache" in param) {
-          setDefaultPref("privacy.clearOnShutdown.cache", param.Cache, locked);
+          PoliciesUtils.setDefaultPref(
+            "privacy.clearOnShutdown.cache",
+            param.Cache,
+            locked
+          );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.cache",
             false,
             lockDefaultPrefs
           );
         }
         if ("Cookies" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.cookies",
             param.Cookies,
             locked
           );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.cookies",
             false,
             lockDefaultPrefs
           );
         }
         if ("Downloads" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.downloads",
             param.Downloads,
             locked
           );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.downloads",
             false,
             lockDefaultPrefs
           );
         }
         if ("FormData" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.formdata",
             param.FormData,
             locked
           );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.formdata",
             false,
             lockDefaultPrefs
           );
         }
         if ("History" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.history",
             param.History,
             locked
           );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.history",
             false,
             lockDefaultPrefs
           );
         }
         if ("Sessions" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.sessions",
             param.Sessions,
             locked
           );
         } else {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.sessions",
             false,
             lockDefaultPrefs
           );
         }
         if ("SiteSettings" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.siteSettings",
             param.SiteSettings,
             locked
           );
         }
         if ("OfflineApps" in param) {
-          setDefaultPref(
+          PoliciesUtils.setDefaultPref(
             "privacy.clearOnShutdown.offlineApps",
             param.OfflineApps,
             locked
@@ -1829,13 +1994,14 @@ var Policies = {
       // bar, don't move it again.
       runOncePerModification("searchInNavBar", param, () => {
         if (param == "separate") {
-          CustomizableUI.addWidgetToArea(
+          lazy.CustomizableUI.addWidgetToArea(
             "search-container",
-            CustomizableUI.AREA_NAVBAR,
-            CustomizableUI.getPlacementOfWidget("urlbar-container").position + 1
+            lazy.CustomizableUI.AREA_NAVBAR,
+            lazy.CustomizableUI.getPlacementOfWidget("urlbar-container")
+              .position + 1
           );
         } else if (param == "unified") {
-          CustomizableUI.removeWidgetFromArea("search-container");
+          lazy.CustomizableUI.removeWidgetFromArea("search-container");
         }
       });
     },
@@ -1861,7 +2027,7 @@ var Policies = {
                   try {
                     await Services.search.removeEngine(engine);
                   } catch (ex) {
-                    log.error("Unable to remove the search engine", ex);
+                    lazy.log.error("Unable to remove the search engine", ex);
                   }
                 }
               }
@@ -1869,36 +2035,40 @@ var Policies = {
           );
         }
         if (param.Add) {
-          // Only rerun if the list of engine names has changed.
-          let engineNameList = param.Add.map(engine => engine.Name);
+          // Rerun if any engine info has changed.
+          let engineInfoHash = md5Hash(JSON.stringify(param.Add));
           await runOncePerModification(
             "addSearchEngines",
-            JSON.stringify(engineNameList),
+            engineInfoHash,
             async function() {
               for (let newEngine of param.Add) {
                 let manifest = {
                   description: newEngine.Description,
                   iconURL: newEngine.IconURL ? newEngine.IconURL.href : null,
-                  chrome_settings_overrides: {
-                    search_provider: {
-                      name: newEngine.Name,
-                      // If the encoding is not specified or is falsy, the
-                      // search service will fall back to the default encoding.
-                      encoding: newEngine.Encoding,
-                      search_url: encodeURI(newEngine.URLTemplate),
-                      keyword: newEngine.Alias,
-                      search_url_post_params:
-                        newEngine.Method == "POST"
-                          ? newEngine.PostData
-                          : undefined,
-                      suggestUrlGetParams: newEngine.SuggestURLTemplate,
-                    },
-                  },
+                  name: newEngine.Name,
+                  // If the encoding is not specified or is falsy, the
+                  // search service will fall back to the default encoding.
+                  encoding: newEngine.Encoding,
+                  search_url: encodeURI(newEngine.URLTemplate),
+                  keyword: newEngine.Alias,
+                  search_url_post_params:
+                    newEngine.Method == "POST" ? newEngine.PostData : undefined,
+                  suggest_url: newEngine.SuggestURLTemplate,
                 };
-                try {
-                  await Services.search.addPolicyEngine(manifest);
-                } catch (ex) {
-                  log.error("Unable to add search engine", ex);
+
+                let engine = Services.search.getEngineByName(newEngine.Name);
+                if (engine) {
+                  try {
+                    await Services.search.updatePolicyEngine(manifest);
+                  } catch (ex) {
+                    lazy.log.error("Unable to update the search engine", ex);
+                  }
+                } else {
+                  try {
+                    await Services.search.addPolicyEngine(manifest);
+                  } catch (ex) {
+                    lazy.log.error("Unable to add search engine", ex);
+                  }
                 }
               }
             }
@@ -1916,7 +2086,7 @@ var Policies = {
                   throw new Error("No engine by that name could be found");
                 }
               } catch (ex) {
-                log.error(
+                lazy.log.error(
                   `Search engine lookup failed when attempting to set ` +
                     `the default engine. Requested engine was ` +
                     `"${param.Default}".`,
@@ -1927,7 +2097,7 @@ var Policies = {
                 try {
                   await Services.search.setDefault(defaultEngine);
                 } catch (ex) {
-                  log.error("Unable to set the default search engine", ex);
+                  lazy.log.error("Unable to set the default search engine", ex);
                 }
               }
             }
@@ -1947,7 +2117,7 @@ var Policies = {
                   throw new Error("No engine by that name could be found");
                 }
               } catch (ex) {
-                log.error(
+                lazy.log.error(
                   `Search engine lookup failed when attempting to set ` +
                     `the default private engine. Requested engine was ` +
                     `"${param.DefaultPrivate}".`,
@@ -1958,7 +2128,7 @@ var Policies = {
                 try {
                   await Services.search.setDefaultPrivate(defaultPrivateEngine);
                 } catch (ex) {
-                  log.error(
+                  lazy.log.error(
                     "Unable to set the default private search engine",
                     ex
                   );
@@ -1999,8 +2169,8 @@ var Policies = {
         try {
           pkcs11db.addModule(deviceName, securityDevices[deviceName], 0, 0);
         } catch (ex) {
-          log.error(`Unable to add security device ${deviceName}`);
-          log.debug(ex);
+          lazy.log.error(`Unable to add security device ${deviceName}`);
+          lazy.log.debug(ex);
         }
       }
     },
@@ -2014,19 +2184,21 @@ var Policies = {
     },
     onAllWindowsRestored(manager, param) {
       if (param) {
-        let homeButtonPlacement = CustomizableUI.getPlacementOfWidget(
+        let homeButtonPlacement = lazy.CustomizableUI.getPlacementOfWidget(
           "home-button"
         );
         if (!homeButtonPlacement) {
-          let placement = CustomizableUI.getPlacementOfWidget("forward-button");
-          CustomizableUI.addWidgetToArea(
+          let placement = lazy.CustomizableUI.getPlacementOfWidget(
+            "forward-button"
+          );
+          lazy.CustomizableUI.addWidgetToArea(
             "home-button",
-            CustomizableUI.AREA_NAVBAR,
+            lazy.CustomizableUI.AREA_NAVBAR,
             placement.position + 2
           );
         }
       } else {
-        CustomizableUI.removeWidgetFromArea("home-button");
+        lazy.CustomizableUI.removeWidgetFromArea("home-button");
       }
     },
   },
@@ -2073,6 +2245,12 @@ var Policies = {
     },
   },
 
+  StartDownloadsInTempDirectory: {
+    onBeforeAddons(manager, param) {
+      setAndLockPref("browser.download.start_downloads_in_tmp_dir", param);
+    },
+  },
+
   SupportMenu: {
     onProfileAfterChange(manager, param) {
       manager.setSupportMenu(param);
@@ -2086,21 +2264,21 @@ var Policies = {
         locked = param.Locked;
       }
       if ("WhatsNew" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.messaging-system.whatsNewPanel.enabled",
           param.WhatsNew,
           locked
         );
       }
       if ("ExtensionRecommendations" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons",
           param.ExtensionRecommendations,
           locked
         );
       }
       if ("FeatureRecommendations" in param) {
-        setDefaultPref(
+        PoliciesUtils.setDefaultPref(
           "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features",
           param.FeatureRecommendations,
           locked
@@ -2109,19 +2287,32 @@ var Policies = {
       if ("UrlbarInterventions" in param && !param.UrlbarInterventions) {
         manager.disallowFeature("urlbarinterventions");
       }
-      if ("SkipOnboarding") {
-        setDefaultPref(
+      if ("SkipOnboarding" in param) {
+        PoliciesUtils.setDefaultPref(
           "browser.aboutwelcome.enabled",
           !param.SkipOnboarding,
+          locked
+        );
+      }
+      if ("MoreFromMozilla" in param) {
+        PoliciesUtils.setDefaultPref(
+          "browser.preferences.moreFromMozilla",
+          param.MoreFromMozilla,
           locked
         );
       }
     },
   },
 
+  UseSystemPrintDialog: {
+    onBeforeAddons(manager, param) {
+      setAndLockPref("print.prefer_system_dialog", param);
+    },
+  },
+
   WebsiteFilter: {
     onBeforeUIStartup(manager, param) {
-      WebsiteFilter.init(param.Block || [], param.Exceptions || []);
+      lazy.WebsiteFilter.init(param.Block || [], param.Exceptions || []);
     },
   },
 
@@ -2154,7 +2345,7 @@ var Policies = {
  *        The value to set and lock
  */
 function setAndLockPref(prefName, prefValue) {
-  setDefaultPref(prefName, prefValue, true);
+  PoliciesUtils.setDefaultPref(prefName, prefValue, true);
 }
 
 /**
@@ -2170,48 +2361,51 @@ function setAndLockPref(prefName, prefValue) {
  * @param {boolean} locked
  *        Optionally lock the pref
  */
-function setDefaultPref(prefName, prefValue, locked = false) {
-  if (Services.prefs.prefIsLocked(prefName)) {
-    Services.prefs.unlockPref(prefName);
-  }
 
-  let defaults = Services.prefs.getDefaultBranch("");
+var PoliciesUtils = {
+  setDefaultPref(prefName, prefValue, locked = false) {
+    if (Services.prefs.prefIsLocked(prefName)) {
+      Services.prefs.unlockPref(prefName);
+    }
 
-  switch (typeof prefValue) {
-    case "boolean":
-      defaults.setBoolPref(prefName, prefValue);
-      break;
+    let defaults = Services.prefs.getDefaultBranch("");
 
-    case "number":
-      if (!Number.isInteger(prefValue)) {
-        throw new Error(`Non-integer value for ${prefName}`);
-      }
+    switch (typeof prefValue) {
+      case "boolean":
+        defaults.setBoolPref(prefName, prefValue);
+        break;
 
-      // This is ugly, but necessary. On Windows GPO and macOS
-      // configs, booleans are converted to 0/1. In the previous
-      // Preferences implementation, the schema took care of
-      // automatically converting these values to booleans.
-      // Since we allow arbitrary prefs now, we have to do
-      // something different. See bug 1666836.
-      if (
-        defaults.getPrefType(prefName) == defaults.PREF_INT ||
-        ![0, 1].includes(prefValue)
-      ) {
-        defaults.setIntPref(prefName, prefValue);
-      } else {
-        defaults.setBoolPref(prefName, !!prefValue);
-      }
-      break;
+      case "number":
+        if (!Number.isInteger(prefValue)) {
+          throw new Error(`Non-integer value for ${prefName}`);
+        }
 
-    case "string":
-      defaults.setStringPref(prefName, prefValue);
-      break;
-  }
+        // This is ugly, but necessary. On Windows GPO and macOS
+        // configs, booleans are converted to 0/1. In the previous
+        // Preferences implementation, the schema took care of
+        // automatically converting these values to booleans.
+        // Since we allow arbitrary prefs now, we have to do
+        // something different. See bug 1666836.
+        if (
+          defaults.getPrefType(prefName) == defaults.PREF_INT ||
+          ![0, 1].includes(prefValue)
+        ) {
+          defaults.setIntPref(prefName, prefValue);
+        } else {
+          defaults.setBoolPref(prefName, !!prefValue);
+        }
+        break;
 
-  if (locked) {
-    Services.prefs.lockPref(prefName);
-  }
-}
+      case "string":
+        defaults.setStringPref(prefName, prefValue);
+        break;
+    }
+
+    if (locked) {
+      Services.prefs.lockPref(prefName);
+    }
+  },
+};
 
 /**
  * setDefaultPermission
@@ -2228,9 +2422,9 @@ function setDefaultPermission(policyName, policyParam) {
     let prefName = "permissions.default." + policyName;
 
     if (policyParam.BlockNewRequests) {
-      setDefaultPref(prefName, 2, policyParam.Locked);
+      PoliciesUtils.setDefaultPref(prefName, 2, policyParam.Locked);
     } else {
-      setDefaultPref(prefName, 0, policyParam.Locked);
+      PoliciesUtils.setDefaultPref(prefName, 0, policyParam.Locked);
     }
   }
 }
@@ -2261,8 +2455,11 @@ function addAllowDenyPermissions(permissionName, allowList, blockList) {
         Ci.nsIPermissionManager.EXPIRE_POLICY
       );
     } catch (ex) {
-      log.error(`Added by default for ${permissionName} permission in the permission
-      manager - ${origin.href}`);
+      // It's possible if the origin was invalid, we'll have a string instead of an origin.
+      lazy.log.error(
+        `Unable to add ${permissionName} permission for ${origin.href ||
+          origin}`
+      );
     }
   }
 
@@ -2290,7 +2487,7 @@ function addAllowDenyPermissions(permissionName, allowList, blockList) {
 function runOnce(actionName, callback) {
   let prefName = `browser.policies.runonce.${actionName}`;
   if (Services.prefs.getBoolPref(prefName, false)) {
-    log.debug(
+    lazy.log.debug(
       `Not running action ${actionName} again because it has already run.`
     );
     return;
@@ -2327,7 +2524,7 @@ async function runOncePerModification(actionName, policyValue, callback) {
   let prefName = `browser.policies.runOncePerModification.${actionName}`;
   let oldPolicyValue = Services.prefs.getStringPref(prefName, undefined);
   if (policyValue === oldPolicyValue) {
-    log.debug(
+    lazy.log.debug(
       `Not running action ${actionName} again because the policy's value is unchanged`
     );
     return Promise.resolve();
@@ -2348,7 +2545,10 @@ function clearRunOnceModification(actionName) {
 
 function replacePathVariables(path) {
   if (path.includes("${home}")) {
-    return path.replace("${home}", FileUtils.getFile("Home", []).path);
+    return path.replace(
+      "${home}",
+      Services.dirsvc.get("Home", Ci.nsIFile).path
+    );
   }
   return path;
 }
@@ -2369,26 +2569,30 @@ function installAddonFromURL(url, extensionID, addon) {
     // It's the same addon, don't reinstall.
     return;
   }
-  AddonManager.getInstallForURL(url, {
+  lazy.AddonManager.getInstallForURL(url, {
     telemetryInfo: { source: "enterprise-policy" },
   }).then(install => {
     if (install.addon && install.addon.appDisabled) {
-      log.error(`Incompatible add-on - ${location}`);
+      lazy.log.error(`Incompatible add-on - ${install.addon.id}`);
       install.cancel();
       return;
     }
     let listener = {
       /* eslint-disable-next-line no-shadow */
       onDownloadEnded: install => {
+        // Install failed, error will be reported elsewhere.
+        if (!install.addon) {
+          return;
+        }
         if (extensionID && install.addon.id != extensionID) {
-          log.error(
+          lazy.log.error(
             `Add-on downloaded from ${url} had unexpected id (got ${install.addon.id} expected ${extensionID})`
           );
           install.removeListener(listener);
           install.cancel();
         }
-        if (install.addon && install.addon.appDisabled) {
-          log.error(`Incompatible add-on - ${url}`);
+        if (install.addon.appDisabled) {
+          lazy.log.error(`Incompatible add-on - ${url}`);
           install.removeListener(listener);
           install.cancel();
         }
@@ -2396,15 +2600,17 @@ function installAddonFromURL(url, extensionID, addon) {
           addon &&
           Services.vc.compare(addon.version, install.addon.version) == 0
         ) {
-          log.debug("Installation cancelled because versions are the same");
+          lazy.log.debug(
+            "Installation cancelled because versions are the same"
+          );
           install.removeListener(listener);
           install.cancel();
         }
       },
       onDownloadFailed: () => {
         install.removeListener(listener);
-        log.error(
-          `Download failed - ${AddonManager.errorToString(
+        lazy.log.error(
+          `Download failed - ${lazy.AddonManager.errorToString(
             install.error
           )} - ${url}`
         );
@@ -2412,8 +2618,8 @@ function installAddonFromURL(url, extensionID, addon) {
       },
       onInstallFailed: () => {
         install.removeListener(listener);
-        log.error(
-          `Installation failed - ${AddonManager.errorToString(
+        lazy.log.error(
+          `Installation failed - ${lazy.AddonManager.errorToString(
             install.error
           )} - {url}`
         );
@@ -2424,14 +2630,14 @@ function installAddonFromURL(url, extensionID, addon) {
           addon.enable();
         }
         install.removeListener(listener);
-        log.debug(`Installation succeeded - ${url}`);
+        lazy.log.debug(`Installation succeeded - ${url}`);
       },
     };
     // If it's a local file install, onDownloadEnded is never called.
     // So we call it manually, to handle some error cases.
     if (url.startsWith("file:")) {
       listener.onDownloadEnded(install);
-      if (install.state == AddonManager.STATE_CANCELLED) {
+      if (install.state == lazy.AddonManager.STATE_CANCELLED) {
         return;
       }
     }
@@ -2472,9 +2678,10 @@ let ChromeURLBlockPolicy = {
     ) {
       return Ci.nsIContentPolicy.ACCEPT;
     }
+    let contentLocationSpec = contentLocation.spec.toLowerCase();
     if (
       gBlockedAboutPages.some(function(aboutPage) {
-        return contentLocation.spec.startsWith(aboutPage);
+        return contentLocationSpec.startsWith(aboutPage.toLowerCase());
       })
     ) {
       return Ci.nsIContentPolicy.REJECT_POLICY;
@@ -2488,7 +2695,7 @@ let ChromeURLBlockPolicy = {
   contractID: "@mozilla-org/policy-engine-content-policy-service;1",
   classID: Components.ID("{ba7b9118-cabc-4845-8b26-4215d2a59ed7}"),
   QueryInterface: ChromeUtils.generateQI(["nsIContentPolicy"]),
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };
@@ -2532,26 +2739,32 @@ function processMIMEInfo(mimeInfo, realMIMEInfo) {
         let handlerApp;
         if ("path" in handler) {
           try {
-            let file = new FileUtils.File(handler.path);
+            let file = new lazy.FileUtils.File(handler.path);
             handlerApp = Cc[
               "@mozilla.org/uriloader/local-handler-app;1"
             ].createInstance(Ci.nsILocalHandlerApp);
             handlerApp.executable = file;
           } catch (ex) {
-            log.error(`Unable to create handler executable (${handler.path})`);
+            lazy.log.error(
+              `Unable to create handler executable (${handler.path})`
+            );
             continue;
           }
         } else if ("uriTemplate" in handler) {
           let templateURL = new URL(handler.uriTemplate);
           if (templateURL.protocol != "https:") {
-            log.error(`Web handler must be https (${handler.uriTemplate})`);
+            lazy.log.error(
+              `Web handler must be https (${handler.uriTemplate})`
+            );
             continue;
           }
           if (
             !templateURL.pathname.includes("%s") &&
             !templateURL.search.includes("%s")
           ) {
-            log.error(`Web handler must contain %s (${handler.uriTemplate})`);
+            lazy.log.error(
+              `Web handler must contain %s (${handler.uriTemplate})`
+            );
             continue;
           }
           handlerApp = Cc[
@@ -2559,7 +2772,7 @@ function processMIMEInfo(mimeInfo, realMIMEInfo) {
           ].createInstance(Ci.nsIWebHandlerApp);
           handlerApp.uriTemplate = handler.uriTemplate;
         } else {
-          log.error("Invalid handler");
+          lazy.log.error("Invalid handler");
           continue;
         }
         if ("name" in handler) {
@@ -2579,7 +2792,7 @@ function processMIMEInfo(mimeInfo, realMIMEInfo) {
       action == realMIMEInfo.useHelperApp &&
       !realMIMEInfo.possibleApplicationHandlers.length
     ) {
-      log.error("useHelperApp requires a handler");
+      lazy.log.error("useHelperApp requires a handler");
       return;
     }
     realMIMEInfo.preferredAction = action;
@@ -2587,5 +2800,34 @@ function processMIMEInfo(mimeInfo, realMIMEInfo) {
   if ("ask" in mimeInfo) {
     realMIMEInfo.alwaysAskBeforeHandling = mimeInfo.ask;
   }
-  gHandlerService.store(realMIMEInfo);
+  lazy.gHandlerService.store(realMIMEInfo);
+}
+
+// Copied from PlacesUIUtils.jsm
+
+// Keep a hasher for repeated hashings
+let gCryptoHash = null;
+
+/**
+ * Run some text through md5 and return the base64 result.
+ * @param {string} data The string to hash.
+ * @returns {string} md5 hash of the input string.
+ */
+function md5Hash(data) {
+  // Lazily create a reusable hasher
+  if (gCryptoHash === null) {
+    gCryptoHash = Cc["@mozilla.org/security/hash;1"].createInstance(
+      Ci.nsICryptoHash
+    );
+  }
+
+  gCryptoHash.init(gCryptoHash.MD5);
+
+  // Convert the data to a byte array for hashing
+  gCryptoHash.update(
+    data.split("").map(c => c.charCodeAt(0)),
+    data.length
+  );
+  // Request the has result as ASCII base64
+  return gCryptoHash.finish(true);
 }

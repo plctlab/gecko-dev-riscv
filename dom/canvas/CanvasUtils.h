@@ -21,6 +21,7 @@ namespace mozilla {
 namespace dom {
 class Document;
 class HTMLCanvasElement;
+class OffscreenCanvas;
 }  // namespace dom
 
 namespace CanvasUtils {
@@ -48,12 +49,19 @@ void DoDrawImageSecurityCheck(dom::HTMLCanvasElement* aCanvasElement,
                               nsIPrincipal* aPrincipal, bool forceWriteOnly,
                               bool CORSUsed);
 
+void DoDrawImageSecurityCheck(dom::OffscreenCanvas* aOffscreenCanvas,
+                              nsIPrincipal* aPrincipal, bool forceWriteOnly,
+                              bool CORSUsed);
+
 // Check if the context is chrome or has the permission to drawWindow
 bool HasDrawWindowPrivilege(JSContext* aCx, JSObject* aObj);
 
+// Check if the context has permission to use OffscreenCanvas.
+bool IsOffscreenCanvasEnabled(JSContext* aCx, JSObject* aObj);
+
 // Check site-specific permission and display prompt if appropriate.
 bool IsImageExtractionAllowed(dom::Document* aDocument, JSContext* aCx,
-                              nsIPrincipal& aPrincipal);
+                              Maybe<nsIPrincipal*> aPrincipal);
 
 // Make a double out of |v|, treating undefined values as 0.0 (for
 // the sake of sparse arrays).  Return true iff coercion

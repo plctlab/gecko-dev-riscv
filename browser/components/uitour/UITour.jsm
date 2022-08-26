@@ -6,64 +6,34 @@
 
 var EXPORTED_SYMBOLS = ["UITour"];
 
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { TelemetryController } = ChromeUtils.import(
-  "resource://gre/modules/TelemetryController.jsm"
-);
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
+const lazy = {};
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "CustomizableUI",
-  "resource:///modules/CustomizableUI.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "fxAccounts",
-  "resource://gre/modules/FxAccounts.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FxAccounts",
-  "resource://gre/modules/FxAccounts.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ProfileAge",
-  "resource://gre/modules/ProfileAge.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "AboutReaderParent",
-  "resource:///actors/AboutReaderParent.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ResetProfile",
-  "resource://gre/modules/ResetProfile.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "UpdateUtils",
-  "resource://gre/modules/UpdateUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "BrowserUsageTelemetry",
-  "resource:///modules/BrowserUsageTelemetry.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PanelMultiView",
-  "resource:///modules/PanelMultiView.jsm"
-);
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  AboutReaderParent: "resource:///actors/AboutReaderParent.jsm",
+  AddonManager: "resource://gre/modules/AddonManager.jsm",
+  BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.jsm",
+  BuiltInThemes: "resource:///modules/BuiltInThemes.jsm",
+  CustomizableUI: "resource:///modules/CustomizableUI.jsm",
+  FxAccounts: "resource://gre/modules/FxAccounts.jsm",
+  PanelMultiView: "resource:///modules/PanelMultiView.jsm",
+  ProfileAge: "resource://gre/modules/ProfileAge.jsm",
+  ResetProfile: "resource://gre/modules/ResetProfile.jsm",
+  TelemetryController: "resource://gre/modules/TelemetryController.jsm",
+  UpdateUtils: "resource://gre/modules/UpdateUtils.jsm",
+});
+
+XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
+});
 
 // See LOG_LEVELS in Console.jsm. Common examples: "All", "Info", "Warn", & "Error".
 const PREF_LOG_LEVEL = "browser.uitour.loglevel";
@@ -82,13 +52,21 @@ const BACKGROUND_PAGE_ACTIONS_ALLOWED = new Set([
 ]);
 const MAX_BUTTONS = 4;
 
+// Array of which colorway/theme ids can be activated.
+XPCOMUtils.defineLazyGetter(lazy, "COLORWAY_IDS", () =>
+  [...lazy.BuiltInThemes.builtInThemeMap.keys()].filter(
+    id =>
+      id.endsWith("-colorway@mozilla.org") &&
+      !lazy.BuiltInThemes.themeIsExpired(id)
+  )
+);
+
 // Prefix for any target matching a search engine.
 const TARGET_SEARCHENGINE_PREFIX = "searchEngine-";
 
 // Create a new instance of the ConsoleAPI so we can control the maxLogLevel with a pref.
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  let ConsoleAPI = ChromeUtils.import("resource://gre/modules/Console.jsm", {})
-    .ConsoleAPI;
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   let consoleOptions = {
     maxLogLevelPref: PREF_LOG_LEVEL,
     prefix: "UITour",
@@ -151,14 +129,6 @@ var UITour = {
       },
     ],
     ["help", { query: "#appMenu-help-button2" }],
-    [
-      "history",
-      {
-        query: "#appMenu-history-button",
-        subItem: "restorePreviousSession",
-        level: "top",
-      },
-    ],
     ["home", { query: "#home-button" }],
     [
       "logins",
@@ -186,7 +156,6 @@ var UITour = {
       },
     ],
     ["readerMode-urlBar", { query: "#reader-mode-button" }],
-    ["restorePreviousSession", { query: "#appMenu-restoreSession" }],
     [
       "search",
       {
@@ -240,7 +209,7 @@ var UITour = {
   ]),
 
   init() {
-    log.debug("Initializing UITour");
+    lazy.log.debug("Initializing UITour");
     // Lazy getter is initialized here so it can be replicated any time
     // in a test.
     delete this.url;
@@ -256,7 +225,7 @@ var UITour = {
       "onWidgetReset",
       "onAreaReset",
     ];
-    CustomizableUI.addListener(
+    lazy.CustomizableUI.addListener(
       listenerMethods.reduce((listener, method) => {
         listener[method] = () => this.clearAvailableTargetsCache();
         return listener;
@@ -284,22 +253,22 @@ var UITour = {
       window = Services.wm.getMostRecentWindow("navigator:browser");
     }
 
-    log.debug("onPageEvent:", aEvent.detail);
+    lazy.log.debug("onPageEvent:", aEvent.detail);
 
     if (typeof aEvent.detail != "object") {
-      log.warn("Malformed event - detail not an object");
+      lazy.log.warn("Malformed event - detail not an object");
       return false;
     }
 
     let action = aEvent.detail.action;
     if (typeof action != "string" || !action) {
-      log.warn("Action not defined");
+      lazy.log.warn("Action not defined");
       return false;
     }
 
     let data = aEvent.detail.data;
     if (typeof data != "object") {
-      log.warn("Malformed event - data not an object");
+      lazy.log.warn("Malformed event - data not an object");
       return false;
     }
 
@@ -308,7 +277,7 @@ var UITour = {
         aEvent.pageVisibilityState == "unloaded") &&
       !BACKGROUND_PAGE_ACTIONS_ALLOWED.has(action)
     ) {
-      log.warn(
+      lazy.log.warn(
         "Ignoring disallowed action from a hidden page:",
         action,
         aEvent.pageVisibilityState
@@ -326,7 +295,9 @@ var UITour = {
         targetPromise
           .then(target => {
             if (!target.node) {
-              log.error("UITour: Target could not be resolved: " + data.target);
+              lazy.log.error(
+                "UITour: Target could not be resolved: " + data.target
+              );
               return;
             }
             let effect = undefined;
@@ -335,7 +306,7 @@ var UITour = {
             }
             this.showHighlight(window, target, effect);
           })
-          .catch(log.error);
+          .catch(lazy.log.error);
         break;
       }
 
@@ -349,7 +320,9 @@ var UITour = {
         targetPromise
           .then(target => {
             if (!target.node) {
-              log.error("UITour: Target could not be resolved: " + data.target);
+              lazy.log.error(
+                "UITour: Target could not be resolved: " + data.target
+              );
               return;
             }
 
@@ -385,7 +358,7 @@ var UITour = {
                   buttons.push(button);
 
                   if (buttons.length == MAX_BUTTONS) {
-                    log.warn(
+                    lazy.log.warn(
                       "showInfo: Reached limit of allowed number of buttons"
                     );
                     break;
@@ -416,7 +389,7 @@ var UITour = {
               infoOptions
             );
           })
-          .catch(log.error);
+          .catch(lazy.log.error);
         break;
       }
 
@@ -448,7 +421,7 @@ var UITour = {
 
       case "getConfiguration": {
         if (typeof data.configuration != "string") {
-          log.warn("getConfiguration: No configuration option specified");
+          lazy.log.warn("getConfiguration: No configuration option specified");
           return false;
         }
 
@@ -463,7 +436,7 @@ var UITour = {
 
       case "setConfiguration": {
         if (typeof data.configuration != "string") {
-          log.warn("setConfiguration: No configuration option specified");
+          lazy.log.warn("setConfiguration: No configuration option specified");
           return false;
         }
 
@@ -473,7 +446,7 @@ var UITour = {
 
       case "openPreferences": {
         if (typeof data.pane != "string" && typeof data.pane != "undefined") {
-          log.warn("openPreferences: Invalid pane specified");
+          lazy.log.warn("openPreferences: Invalid pane specified");
           return false;
         }
         window.openPreferences(data.pane);
@@ -484,11 +457,11 @@ var UITour = {
         Promise.resolve()
           .then(() => {
             return data.email
-              ? FxAccounts.config.promiseEmailURI(
+              ? lazy.FxAccounts.config.promiseEmailURI(
                   data.email,
                   data.entrypoint || "uitour"
                 )
-              : FxAccounts.config.promiseConnectAccountURI(
+              : lazy.FxAccounts.config.promiseConnectAccountURI(
                   data.entrypoint || "uitour"
                 );
           })
@@ -496,7 +469,9 @@ var UITour = {
             const url = new URL(uri);
             // Call our helper to validate extraURLParams and populate URLSearchParams
             if (!this._populateURLParams(url, data.extraURLParams)) {
-              log.warn("showFirefoxAccounts: invalid campaign args specified");
+              lazy.log.warn(
+                "showFirefoxAccounts: invalid campaign args specified"
+              );
               return;
             }
             // We want to replace the current tab.
@@ -510,13 +485,13 @@ var UITour = {
       }
 
       case "showConnectAnotherDevice": {
-        FxAccounts.config
+        lazy.FxAccounts.config
           .promiseConnectDeviceURI(data.entrypoint || "uitour")
           .then(uri => {
             const url = new URL(uri);
             // Call our helper to validate extraURLParams and populate URLSearchParams
             if (!this._populateURLParams(url, data.extraURLParams)) {
-              log.warn(
+              lazy.log.warn(
                 "showConnectAnotherDevice: invalid campaign args specified"
               );
               return;
@@ -534,8 +509,8 @@ var UITour = {
 
       case "resetFirefox": {
         // Open a reset profile dialog window.
-        if (ResetProfile.resetSupported()) {
-          ResetProfile.openConfirmationDialog(window);
+        if (lazy.ResetProfile.resetSupported()) {
+          lazy.ResetProfile.openConfirmationDialog(window);
         }
         break;
       }
@@ -547,7 +522,7 @@ var UITour = {
           .then(target => {
             this.addNavBarWidget(target, browser, data.callbackID);
           })
-          .catch(log.error);
+          .catch(lazy.log.error);
         break;
       }
 
@@ -626,14 +601,14 @@ var UITour = {
       }
 
       case "forceShowReaderIcon": {
-        AboutReaderParent.forceShowReaderIcon(browser);
+        lazy.AboutReaderParent.forceShowReaderIcon(browser);
         break;
       }
 
       case "toggleReaderMode": {
         let targetPromise = this.getTarget(window, "readerMode-urlBar");
         targetPromise.then(target => {
-          AboutReaderParent.toggleReaderMode({ target: target.node });
+          lazy.AboutReaderParent.toggleReaderMode({ target: target.node });
         });
         break;
       }
@@ -685,7 +660,7 @@ var UITour = {
   },
 
   handleEvent(aEvent) {
-    log.debug("handleEvent: type =", aEvent.type, "event =", aEvent);
+    lazy.log.debug("handleEvent: type =", aEvent.type, "event =", aEvent);
     switch (aEvent.type) {
       case "TabSelect": {
         let window = aEvent.target.ownerGlobal;
@@ -715,7 +690,7 @@ var UITour = {
   },
 
   observe(aSubject, aTopic, aData) {
-    log.debug("observe: aTopic =", aTopic);
+    lazy.log.debug("observe: aTopic =", aTopic);
     switch (aTopic) {
       // The browser message manager is disconnected when the <browser> is
       // destroyed and we want to teardown at that point.
@@ -757,7 +732,7 @@ var UITour = {
       return true;
     }
     if (typeof extraURLParams != "string") {
-      log.warn("_populateURLParams: extraURLParams is not a string");
+      lazy.log.warn("_populateURLParams: extraURLParams is not a string");
       return false;
     }
     let urlParams;
@@ -765,14 +740,14 @@ var UITour = {
       if (extraURLParams) {
         urlParams = JSON.parse(extraURLParams);
         if (typeof urlParams != "object") {
-          log.warn(
+          lazy.log.warn(
             "_populateURLParams: extraURLParams is not a stringified object"
           );
           return false;
         }
       }
     } catch (ex) {
-      log.warn("_populateURLParams: extraURLParams is not a JSON object");
+      lazy.log.warn("_populateURLParams: extraURLParams is not a JSON object");
       return false;
     }
     if (urlParams) {
@@ -787,7 +762,7 @@ var UITour = {
             FLOW_BEGIN_TIME_LENGTH) ||
         (urlParams.flow_id && urlParams.flow_id.length !== FLOW_ID_LENGTH)
       ) {
-        log.warn(
+        lazy.log.warn(
           "_populateURLParams: flow parameters are not properly structured"
         );
         return false;
@@ -810,7 +785,7 @@ var UITour = {
           !validName ||
           !reSimpleString.test(name)
         ) {
-          log.warn("_populateURLParams: invalid campaign param specified");
+          lazy.log.warn("_populateURLParams: invalid campaign param specified");
           return false;
         }
         url.searchParams.append(name, value);
@@ -822,7 +797,7 @@ var UITour = {
    * Tear down a tour from a tab e.g. upon switching/closing tabs.
    */
   async teardownTourForBrowser(aWindow, aBrowser, aTourPageClosing = false) {
-    log.debug(
+    lazy.log.debug(
       "teardownTourForBrowser: aBrowser = ",
       aBrowser,
       aTourPageClosing
@@ -836,7 +811,7 @@ var UITour = {
     this.hideHighlight(aWindow);
     this.hideInfo(aWindow);
 
-    await this.removePanelListeners(aWindow, true);
+    await this.removePanelListeners(aWindow);
 
     this.noautohideMenus.clear();
 
@@ -849,7 +824,7 @@ var UITour = {
   /**
    * Remove the listeners to a panel when tearing the tour down.
    */
-  async removePanelListeners(aWindow, aHidePanels = false) {
+  async removePanelListeners(aWindow) {
     let panels = [
       {
         name: "appMenu",
@@ -858,14 +833,12 @@ var UITour = {
           ["popuphidden", this.onPanelHidden],
           ["popuphiding", this.onAppMenuHiding],
           ["ViewShowing", this.onAppMenuSubviewShowing],
-          ["ViewShown", this.onAppMenuSubviewShown],
-          ["ViewHiding", this.onAppMenuSubviewHiding],
         ],
       },
     ];
     for (let panel of panels) {
       // Ensure the menu panel is hidden and clean up panel listeners after calling hideMenu.
-      if (aHidePanels && panel.node.state != "closed") {
+      if (panel.node.state != "closed") {
         await new Promise(resolve => {
           panel.node.addEventListener("popuphidden", resolve, { once: true });
           this.hideMenu(aWindow, panel.name);
@@ -881,7 +854,7 @@ var UITour = {
    * Tear down all tours for a ChromeWindow.
    */
   teardownTourForWindow(aWindow) {
-    log.debug("teardownTourForWindow");
+    lazy.log.debug("teardownTourForWindow");
     aWindow.gBrowser.tabContainer.removeEventListener("TabSelect", this);
     aWindow.removeEventListener("SSWindowClosing", this);
 
@@ -896,7 +869,7 @@ var UITour = {
     }
 
     if (!allowedSchemes.has(aURI.scheme)) {
-      log.error("Unsafe scheme:", aURI.scheme);
+      lazy.log.error("Unsafe scheme:", aURI.scheme);
       return false;
     }
 
@@ -919,7 +892,7 @@ var UITour = {
 
   sendPageCallback(aBrowser, aCallbackID, aData = {}) {
     let detail = { data: aData, callbackID: aCallbackID };
-    log.debug("sendPageCallback", detail);
+    lazy.log.debug("sendPageCallback", detail);
     let contextToVisit = aBrowser.browsingContext;
     let global = contextToVisit.currentWindowGlobal;
     let actor = global.getActor("UITour");
@@ -936,15 +909,15 @@ var UITour = {
   },
 
   getTarget(aWindow, aTargetName, aSticky = false) {
-    log.debug("getTarget:", aTargetName);
+    lazy.log.debug("getTarget:", aTargetName);
     if (typeof aTargetName != "string" || !aTargetName) {
-      log.warn("getTarget: Invalid target name specified");
+      lazy.log.warn("getTarget: Invalid target name specified");
       return Promise.reject("Invalid target name specified");
     }
 
     let targetObject = this.targets.get(aTargetName);
     if (!targetObject) {
-      log.warn(
+      lazy.log.warn(
         "getTarget: The specified target name is not in the allowed set"
       );
       return Promise.reject(
@@ -961,7 +934,7 @@ var UITour = {
             try {
               node = targetQuery(aWindow.document);
             } catch (ex) {
-              log.warn("getTarget: Error running target query:", ex);
+              lazy.log.warn("getTarget: Error running target query:", ex);
               node = null;
             }
           } else {
@@ -978,11 +951,9 @@ var UITour = {
             targetName: aTargetName,
             widgetName: targetObject.widgetName,
             allowAdd: targetObject.allowAdd,
-            level: targetObject.level,
-            subItem: targetObject.subItem,
           });
         })
-        .catch(log.error);
+        .catch(lazy.log.error);
     });
   },
 
@@ -993,7 +964,7 @@ var UITour = {
       let doc = aTarget.node.ownerGlobal.document;
       targetElement =
         doc.getElementById(aTarget.widgetName) ||
-        PanelMultiView.getViewNode(doc, aTarget.widgetName);
+        lazy.PanelMultiView.getViewNode(doc, aTarget.widgetName);
     }
 
     return targetElement.id.startsWith("appMenu-");
@@ -1008,7 +979,7 @@ var UITour = {
    * @param {Object} aOptions Extra config arguments, example `autohide: true`.
    */
   _setMenuStateForAnnotation(aWindow, aShouldOpen, aOptions = {}) {
-    log.debug(
+    lazy.log.debug(
       "_setMenuStateForAnnotation: Menu is expected to be:",
       aShouldOpen ? "open" : "closed"
     );
@@ -1017,14 +988,16 @@ var UITour = {
     // If the panel is in the desired state, we're done.
     let panelIsOpen = menu.state != "closed";
     if (aShouldOpen == panelIsOpen) {
-      log.debug("_setMenuStateForAnnotation: Menu already in expected state");
+      lazy.log.debug(
+        "_setMenuStateForAnnotation: Menu already in expected state"
+      );
       return Promise.resolve();
     }
 
     // Actually show or hide the menu
     let promise = null;
     if (aShouldOpen) {
-      log.debug("_setMenuStateForAnnotation: Opening the menu");
+      lazy.log.debug("_setMenuStateForAnnotation: Opening the menu");
       promise = new Promise(resolve => {
         this.showMenu(aWindow, "appMenu", resolve, aOptions);
       });
@@ -1032,7 +1005,7 @@ var UITour = {
       // If the menu was opened explictly by api user through `Mozilla.UITour.showMenu`,
       // it should be closed explictly by api user through `Mozilla.UITour.hideMenu`.
       // So we shouldn't get to here to close it for the highlight/info annotation.
-      log.debug("_setMenuStateForAnnotation: Closing the menu");
+      lazy.log.debug("_setMenuStateForAnnotation: Closing the menu");
       promise = new Promise(resolve => {
         menu.addEventListener("popuphidden", resolve, { once: true });
         this.hideMenu(aWindow, "appMenu");
@@ -1102,7 +1075,8 @@ var UITour = {
     let node = (aTarget.node = refreshedTarget.node);
     // If the target is in the overflow panel, just return the overflow button.
     if (node.closest("#widget-overflow-mainView")) {
-      return CustomizableUI.getWidget(node.id).forWindow(aChromeWindow).anchor;
+      return lazy.CustomizableUI.getWidget(node.id).forWindow(aChromeWindow)
+        .anchor;
     }
     return node;
   },
@@ -1137,16 +1111,6 @@ var UITour = {
       highlighter.parentElement.setAttribute("targetName", aTarget.targetName);
       highlighter.parentElement.hidden = false;
 
-      if (aTarget.subItem) {
-        // This is a subitem in the app menu, so mark it as one not to hide.
-        this.noautohideMenus.add("appMenu");
-        highlighter.parentElement.setAttribute("subitem", aTarget.subItem);
-      }
-
-      if (aTarget.level) {
-        highlighter.parentElement.setAttribute("level", aTarget.level);
-      }
-
       let highlightAnchor = aAnchorEl;
       let targetRect = highlightAnchor.getBoundingClientRect();
       let highlightHeight = targetRect.height;
@@ -1176,7 +1140,7 @@ var UITour = {
         highlighter.parentElement.state == "showing" ||
         highlighter.parentElement.state == "open"
       ) {
-        log.debug("showHighlight: Closing previous highlight first");
+        lazy.log.debug("showHighlight: Closing previous highlight first");
         highlighter.parentElement.hidePopup();
       }
       /* The "overlap" position anchors from the top-left but we want to centre highlights at their
@@ -1207,7 +1171,7 @@ var UITour = {
       let anchorEl = await this._correctAnchor(aChromeWindow, aTarget);
       showHighlightElement(anchorEl);
     } catch (e) {
-      log.warn(e);
+      lazy.log.warn(e);
     }
   },
 
@@ -1358,7 +1322,7 @@ var UITour = {
       let anchorEl = await this._correctAnchor(aChromeWindow, aAnchor);
       showInfoElement(anchorEl);
     } catch (e) {
-      log.warn(e);
+      lazy.log.warn(e);
     }
   },
 
@@ -1421,7 +1385,7 @@ var UITour = {
   },
 
   showMenu(aWindow, aMenuName, aOpenCallback = null, aOptions = {}) {
-    log.debug("showMenu:", aMenuName);
+    lazy.log.debug("showMenu:", aMenuName);
     function openMenuButton(aMenuBtn) {
       if (!aMenuBtn || !aMenuBtn.hasMenu() || aMenuBtn.open) {
         if (aOpenCallback) {
@@ -1442,8 +1406,6 @@ var UITour = {
       menu.node = aWindow.PanelUI.panel;
       menu.onPopupHiding = this.onAppMenuHiding;
       menu.onViewShowing = this.onAppMenuSubviewShowing;
-      menu.onViewShown = this.onAppMenuSubviewShown;
-      menu.onViewHiding = this.onAppMenuSubviewHiding;
       menu.show = () => aWindow.PanelUI.show();
 
       if (!aOptions.autohide) {
@@ -1459,8 +1421,6 @@ var UITour = {
       menu.node.addEventListener("popuphidden", menu.onPanelHidden);
       menu.node.addEventListener("popuphiding", menu.onPopupHiding);
       menu.node.addEventListener("ViewShowing", menu.onViewShowing);
-      menu.node.addEventListener("ViewShown", menu.onViewShown);
-      menu.node.addEventListener("ViewHiding", menu.onViewHiding);
       menu.show();
     } else if (aMenuName == "bookmarks") {
       let menuBtn = aWindow.document.getElementById("bookmarks-menu-button");
@@ -1468,7 +1428,7 @@ var UITour = {
     } else if (aMenuName == "pocket") {
       let button = aWindow.document.getElementById("save-to-pocket-button");
       if (!button) {
-        log.error("Can't open the pocket menu without a button");
+        lazy.log.error("Can't open the pocket menu without a button");
         return;
       }
       aWindow.document.addEventListener("ViewShown", aOpenCallback, {
@@ -1499,7 +1459,7 @@ var UITour = {
   },
 
   hideMenu(aWindow, aMenuName) {
-    log.debug("hideMenu:", aMenuName);
+    lazy.log.debug("hideMenu:", aMenuName);
     function closeMenuButton(aMenuBtn) {
       if (aMenuBtn && aMenuBtn.hasMenu()) {
         aMenuBtn.openMenu(false);
@@ -1576,7 +1536,7 @@ var UITour = {
             }
             hideMethod(win);
           })
-          .catch(log.error);
+          .catch(lazy.log.error);
       }
     });
   },
@@ -1589,78 +1549,10 @@ var UITour = {
     UITour._hideAnnotationsForPanel(aEvent, false, UITour.targetIsInAppMenu);
   },
 
-  onAppMenuSubviewShown(aEvent) {
-    let win = aEvent.target.ownerGlobal;
-    let subItemName = UITour.getSubItem(win);
-    if (
-      subItemName &&
-      UITour.isSubItemToHighlight(win, subItemName, aEvent.target.id)
-    ) {
-      let highlighter = UITour.getHighlightAndMaybeCreate(win.document);
-      UITour.recreatePopup(highlighter.parentElement);
-
-      UITour.getTarget(win, subItemName).then(subItem => {
-        if (!subItem.node.hidden) {
-          UITour.showHighlight(win, subItem, "focus-outline", {
-            autohide: true,
-          });
-        }
-      });
-    } else if (subItemName && aEvent.target.id != "appMenu-protonMainView") {
-      UITour.stopSubViewHandling(win);
-    }
-  },
-
-  onAppMenuSubviewHiding(aEvent) {
-    let win = aEvent.target.ownerGlobal;
-
-    let subItem = UITour.getSubItem(win);
-    if (subItem) {
-      if (UITour.isSubItemToHighlight(win, subItem, aEvent.target.id)) {
-        UITour.hideHighlight(win);
-        UITour.stopSubViewHandling(win);
-      }
-    }
-  },
-
   onPanelHidden(aEvent) {
-    if (UITour.getSubItem(aEvent.target.ownerGlobal)) {
-      UITour.stopSubViewHandling(aEvent.target.ownerGlobal);
-    }
-
     aEvent.target.removeAttribute("noautohide");
     UITour.recreatePopup(aEvent.target);
     UITour.clearAvailableTargetsCache();
-  },
-
-  getSubItem(aWindow) {
-    // Get the subitem that should be highlighted in the app menu's subview.
-    let highlighter = UITour.getHighlightContainerAndMaybeCreate(
-      aWindow.document
-    );
-    return highlighter.getAttribute("subitem");
-  },
-
-  isSubItemToHighlight(aWindow, aSubItem, aExpectedId) {
-    let targetObject = UITour.targets.get(aSubItem);
-    if (targetObject) {
-      let node = UITour.getNodeFromDocument(
-        aWindow.document,
-        targetObject.query
-      );
-      return aExpectedId == node?.closest("panelview")?.id;
-    }
-
-    return false;
-  },
-
-  stopSubViewHandling(aWindow) {
-    UITour.removePanelListeners(aWindow);
-    UITour.noautohideMenus.delete("appMenu");
-
-    let highlighter = UITour.getHighlightAndMaybeCreate(aWindow.document);
-    highlighter.parentElement.removeAttribute("level");
-    highlighter.parentElement.removeAttribute("subitem");
   },
 
   recreatePopup(aPanel) {
@@ -1684,6 +1576,9 @@ var UITour = {
         break;
       case "availableTargets":
         this.getAvailableTargets(aBrowser, aWindow, aCallbackID);
+        break;
+      case "colorway":
+        this.sendPageCallback(aBrowser, aCallbackID, lazy.COLORWAY_IDS);
         break;
       case "search":
       case "selectedSearchEngine":
@@ -1735,18 +1630,18 @@ var UITour = {
         this.sendPageCallback(
           aBrowser,
           aCallbackID,
-          ResetProfile.resetSupported()
+          lazy.ResetProfile.resetSupported()
         );
         break;
       default:
-        log.error(
+        lazy.log.error(
           "getConfiguration: Unknown configuration requested: " + aConfiguration
         );
         break;
     }
   },
 
-  setConfiguration(aWindow, aConfiguration, aValue) {
+  async setConfiguration(aWindow, aConfiguration, aValue) {
     switch (aConfiguration) {
       case "defaultBrowser":
         // Ignore aValue in this case because the default browser can only
@@ -1758,8 +1653,24 @@ var UITour = {
           }
         } catch (e) {}
         break;
+      case "colorway":
+        // Potentially revert to a previous theme.
+        let toEnable = this._prevTheme;
+
+        // Activate the allowed colorway.
+        if (lazy.COLORWAY_IDS.includes(aValue)) {
+          // Save the previous theme if this is the first activation.
+          if (!this._prevTheme) {
+            this._prevTheme = (
+              await lazy.AddonManager.getAddonsByTypes(["theme"])
+            ).find(theme => theme.isActive);
+          }
+          toEnable = await lazy.AddonManager.getAddonByID(aValue);
+        }
+        toEnable?.enable();
+        break;
       default:
-        log.error(
+        lazy.log.error(
           "setConfiguration: Unknown configuration requested: " + aConfiguration
         );
         break;
@@ -1771,7 +1682,7 @@ var UITour = {
   // remote servers. See also `getFxAConnections()`
   getFxA(aBrowser, aCallbackID) {
     (async () => {
-      let setup = !!(await fxAccounts.getSignedInUser());
+      let setup = !!(await lazy.fxAccounts.getSignedInUser());
       let result = { setup };
       if (!setup) {
         this.sendPageCallback(aBrowser, aCallbackID, result);
@@ -1800,10 +1711,10 @@ var UITour = {
         };
       }
       // And the account state.
-      result.accountStateOK = await fxAccounts.hasLocalSession();
+      result.accountStateOK = await lazy.fxAccounts.hasLocalSession();
       this.sendPageCallback(aBrowser, aCallbackID, result);
     })().catch(err => {
-      log.error(err);
+      lazy.log.error(err);
       this.sendPageCallback(aBrowser, aCallbackID, {});
     });
   },
@@ -1813,23 +1724,23 @@ var UITour = {
   // usually hit the FxA servers to obtain this info.
   getFxAConnections(aBrowser, aCallbackID) {
     (async () => {
-      let setup = !!(await fxAccounts.getSignedInUser());
+      let setup = !!(await lazy.fxAccounts.getSignedInUser());
       let result = { setup };
       if (!setup) {
         this.sendPageCallback(aBrowser, aCallbackID, result);
         return;
       }
       // We are signed in so need to build a richer result.
-      let devices = fxAccounts.device.recentDeviceList;
+      let devices = lazy.fxAccounts.device.recentDeviceList;
       // A recent device list is fine, but if we don't even have that we should
       // wait for it to be fetched.
       if (!devices) {
         try {
-          await fxAccounts.device.refreshDeviceList();
+          await lazy.fxAccounts.device.refreshDeviceList();
         } catch (ex) {
-          log.warn("failed to fetch device list", ex);
+          lazy.log.warn("failed to fetch device list", ex);
         }
-        devices = fxAccounts.device.recentDeviceList;
+        devices = lazy.fxAccounts.device.recentDeviceList;
       }
       if (devices) {
         // A falsey `devices` should be impossible, so we omit `devices` from
@@ -1847,7 +1758,7 @@ var UITour = {
 
       try {
         // Each of the "account services", which we turn into a map keyed by ID.
-        let attachedClients = await fxAccounts.listAttachedOAuthClients();
+        let attachedClients = await lazy.fxAccounts.listAttachedOAuthClients();
         result.accountServices = attachedClients
           .filter(c => !!c.id)
           .reduce((accum, c) => {
@@ -1860,11 +1771,11 @@ var UITour = {
             return accum;
           }, {});
       } catch (ex) {
-        log.warn("Failed to build the attached clients list", ex);
+        lazy.log.warn("Failed to build the attached clients list", ex);
       }
       this.sendPageCallback(aBrowser, aCallbackID, result);
     })().catch(err => {
-      log.error(err);
+      lazy.log.error(err);
       this.sendPageCallback(aBrowser, aCallbackID, {});
     });
   },
@@ -1882,7 +1793,7 @@ var UITour = {
       appinfo.distribution = distribution;
 
       // Update channel, in a way that preserves 'beta' for RC beta builds:
-      appinfo.defaultUpdateChannel = UpdateUtils.getUpdateChannel(
+      appinfo.defaultUpdateChannel = lazy.UpdateUtils.getUpdateChannel(
         false /* no partner ID */
       );
 
@@ -1914,7 +1825,7 @@ var UITour = {
 
       // Expose Profile creation and last reset dates in weeks.
       const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-      let profileAge = await ProfileAge();
+      let profileAge = await lazy.ProfileAge();
       let createdDate = await profileAge.created;
       let resetDate = await profileAge.reset;
       let createdWeeksAgo = Math.floor((Date.now() - createdDate) / ONE_WEEK);
@@ -1927,7 +1838,7 @@ var UITour = {
 
       this.sendPageCallback(aBrowser, aCallbackID, appinfo);
     })().catch(err => {
-      log.error(err);
+      lazy.log.error(err);
       this.sendPageCallback(aBrowser, aCallbackID, {});
     });
   },
@@ -1937,7 +1848,7 @@ var UITour = {
       let window = aChromeWindow;
       let data = this.availableTargetsCache.get(window);
       if (data) {
-        log.debug(
+        lazy.log.debug(
           "getAvailableTargets: Using cached targets list",
           data.targets.join(",")
         );
@@ -1964,7 +1875,7 @@ var UITour = {
       this.availableTargetsCache.set(window, data);
       this.sendPageCallback(aBrowser, aCallbackID, data);
     })().catch(err => {
-      log.error(err);
+      lazy.log.error(err);
       this.sendPageCallback(aBrowser, aCallbackID, {
         targets: [],
       });
@@ -1973,31 +1884,34 @@ var UITour = {
 
   addNavBarWidget(aTarget, aBrowser, aCallbackID) {
     if (aTarget.node) {
-      log.error(
+      lazy.log.error(
         "addNavBarWidget: can't add a widget already present:",
         aTarget
       );
       return;
     }
     if (!aTarget.allowAdd) {
-      log.error("addNavBarWidget: not allowed to add this widget:", aTarget);
+      lazy.log.error(
+        "addNavBarWidget: not allowed to add this widget:",
+        aTarget
+      );
       return;
     }
     if (!aTarget.widgetName) {
-      log.error(
+      lazy.log.error(
         "addNavBarWidget: can't add a widget without a widgetName property:",
         aTarget
       );
       return;
     }
 
-    CustomizableUI.addWidgetToArea(
+    lazy.CustomizableUI.addWidgetToArea(
       aTarget.widgetName,
-      CustomizableUI.AREA_NAVBAR
+      lazy.CustomizableUI.AREA_NAVBAR
     );
-    BrowserUsageTelemetry.recordWidgetChange(
+    lazy.BrowserUsageTelemetry.recordWidgetChange(
       aTarget.widgetName,
-      CustomizableUI.AREA_NAVBAR,
+      lazy.CustomizableUI.AREA_NAVBAR,
       "uitour"
     );
     this.sendPageCallback(aBrowser, aCallbackID);
@@ -2093,7 +2007,7 @@ UITour.init();
  */
 const UITourHealthReport = {
   recordTreatmentTag(tag, value) {
-    return TelemetryController.submitExternalPing(
+    return lazy.TelemetryController.submitExternalPing(
       "uitour-tag",
       {
         version: 1,

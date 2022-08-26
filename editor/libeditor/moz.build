@@ -21,8 +21,10 @@ EXPORTS.mozilla += [
     "EditorCommands.h",
     "EditorController.h",
     "EditorDOMPoint.h",
+    "EditorForwards.h",
     "EditorUtils.h",
     "EditTransactionBase.h",
+    "HTMLEditHelpers.h",
     "HTMLEditor.h",
     "HTMLEditorController.h",
     "HTMLEditUtils.h",
@@ -33,10 +35,10 @@ EXPORTS.mozilla += [
 ]
 
 UNIFIED_SOURCES += [
+    "AutoRangeArray.cpp",
     "ChangeAttributeTransaction.cpp",
     "ChangeStyleTransaction.cpp",
     "CompositionTransaction.cpp",
-    "CreateElementTransaction.cpp",
     "CSSEditUtils.cpp",
     "DeleteNodeTransaction.cpp",
     "DeleteRangeTransaction.cpp",
@@ -50,6 +52,7 @@ UNIFIED_SOURCES += [
     "EditTransactionBase.cpp",
     "HTMLAbsPositionEditor.cpp",
     "HTMLAnonymousNodeEditor.cpp",
+    "HTMLEditHelpers.cpp",
     "HTMLEditor.cpp",
     "HTMLEditorCommands.cpp",
     "HTMLEditorController.cpp",
@@ -67,7 +70,8 @@ UNIFIED_SOURCES += [
     "InsertNodeTransaction.cpp",
     "InsertTextTransaction.cpp",
     "InternetCiter.cpp",
-    "JoinNodeTransaction.cpp",
+    "JoinNodesTransaction.cpp",
+    "MoveNodeTransaction.cpp",
     "PlaceholderTransaction.cpp",
     "ReplaceTextTransaction.cpp",
     "SelectionState.cpp",
@@ -92,9 +96,6 @@ LOCAL_INCLUDES += [
 include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]
 
 with Files("tests/*1151186*"):
     BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")

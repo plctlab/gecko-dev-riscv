@@ -31,8 +31,7 @@ function trr_test_setup() {
   // Set to allow the cert presented by our H2 server
   do_get_profile();
 
-  Services.prefs.setBoolPref("network.http.spdy.enabled", true);
-  Services.prefs.setBoolPref("network.http.spdy.enabled.http2", true);
+  Services.prefs.setBoolPref("network.http.http2.enabled", true);
   // the TRR server is on 127.0.0.1
   if (AppConstants.platform == "android") {
     Services.prefs.setCharPref("network.trr.bootstrapAddr", "10.0.2.2");
@@ -44,8 +43,6 @@ function trr_test_setup() {
   Services.prefs.setBoolPref("network.dns.native-is-localhost", true);
 
   Services.prefs.setBoolPref("network.trr.wait-for-portal", false);
-  // By default wait for all responses before notifying the listeners.
-  Services.prefs.setBoolPref("network.trr.wait-for-A-and-AAAA", true);
   // don't confirm that TRR is working, just go!
   Services.prefs.setCharPref("network.trr.confirmationNS", "skip");
   // some tests rely on the cache not being cleared on pref change.
@@ -58,6 +55,16 @@ function trr_test_setup() {
     Ci.nsIX509CertDB
   );
   addCertFromFile(certdb, "http2-ca.pem", "CTu,u,u");
+
+  // Turn off strict fallback mode and TRR retry for most tests,
+  // it is tested specifically.
+  Services.prefs.setBoolPref("network.trr.strict_native_fallback", false);
+  Services.prefs.setBoolPref("network.trr.retry_on_recoverable_errors", false);
+
+  // Turn off temp blocklist feature in tests. When enabled we may issue a
+  // lookup to resolve a parent name when blocklisting, which may bleed into
+  // and interfere with subsequent tasks.
+  Services.prefs.setBoolPref("network.trr.temp_blocklist", false);
 
   // We intentionally don't set the TRR mode. Each test should set it
   // after setup in the first test.
@@ -75,26 +82,25 @@ function trr_clear_prefs() {
   Services.prefs.clearUserPref("network.trr.useGET");
   Services.prefs.clearUserPref("network.trr.confirmationNS");
   Services.prefs.clearUserPref("network.trr.bootstrapAddr");
-  Services.prefs.clearUserPref("network.trr.blacklist-duration");
+  Services.prefs.clearUserPref("network.trr.temp_blocklist_duration_sec");
   Services.prefs.clearUserPref("network.trr.request_timeout_ms");
   Services.prefs.clearUserPref("network.trr.request_timeout_mode_trronly_ms");
   Services.prefs.clearUserPref("network.trr.disable-ECS");
   Services.prefs.clearUserPref("network.trr.early-AAAA");
-  Services.prefs.clearUserPref("network.trr.skip-AAAA-when-not-supported");
-  Services.prefs.clearUserPref("network.trr.wait-for-A-and-AAAA");
   Services.prefs.clearUserPref("network.trr.excluded-domains");
   Services.prefs.clearUserPref("network.trr.builtin-excluded-domains");
   Services.prefs.clearUserPref("network.trr.clear-cache-on-pref-change");
   Services.prefs.clearUserPref("network.trr.fetch_off_main_thread");
   Services.prefs.clearUserPref("captivedetect.canonicalURL");
 
-  Services.prefs.clearUserPref("network.http.spdy.enabled");
-  Services.prefs.clearUserPref("network.http.spdy.enabled.http2");
+  Services.prefs.clearUserPref("network.http.http2.enabled");
   Services.prefs.clearUserPref("network.dns.localDomains");
   Services.prefs.clearUserPref("network.dns.native-is-localhost");
   Services.prefs.clearUserPref(
     "network.trr.send_empty_accept-encoding_headers"
   );
+  Services.prefs.clearUserPref("network.trr.strict_native_fallback");
+  Services.prefs.clearUserPref("network.trr.temp_blocklist");
 }
 
 /// This class sends a DNS query and can be awaited as a promise to get the
@@ -116,6 +122,7 @@ class TRRDNSListener {
         expectEarlyFail: args[5] ?? "",
         flags: args[6] ?? 0,
         type: args[7] ?? Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT,
+        port: args[8] ?? -1,
       };
     }
     this.expectedAnswer = this.options.expectedAnswer ?? undefined;
@@ -126,7 +133,10 @@ class TRRDNSListener {
     });
     this.type = this.options.type ?? Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT;
     let trrServer = this.options.trrServer || "";
+    let port = this.options.port || -1;
 
+    // This may be called in a child process that doesn't have Services available.
+    // eslint-disable-next-line mozilla/use-services
     const threadManager = Cc["@mozilla.org/thread-manager;1"].getService(
       Ci.nsIThreadManager
     );
@@ -138,22 +148,24 @@ class TRRDNSListener {
       );
     }
 
-    this.resolverInfo =
-      trrServer == "" ? null : gDNS.newTRRResolverInfo(trrServer);
+    this.additionalInfo =
+      trrServer == "" && port == -1
+        ? null
+        : gDNS.newAdditionalInfo(trrServer, port);
     try {
       this.request = gDNS.asyncResolve(
         this.name,
         this.type,
         this.options.flags || 0,
-        this.resolverInfo,
+        this.additionalInfo,
         this,
         currentThread,
         {} // defaultOriginAttributes
       );
-      Assert.ok(!this.options.expectEarlyFail);
+      Assert.ok(!this.options.expectEarlyFail, "asyncResolve ok");
     } catch (e) {
-      Assert.ok(this.options.expectEarlyFail);
-      this.resolve([e]);
+      Assert.ok(this.options.expectEarlyFail, "asyncResolve fail");
+      this.resolve({ error: e });
     }
   }
 
@@ -166,14 +178,14 @@ class TRRDNSListener {
     // If we don't expect success here, just resolve and the caller will
     // decide what to do with the results.
     if (!this.expectedSuccess) {
-      this.resolve([inRequest, inRecord, inStatus]);
+      this.resolve({ inRequest, inRecord, inStatus });
       return;
     }
 
     Assert.equal(inStatus, Cr.NS_OK, "Checking status");
 
     if (this.type != Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT) {
-      this.resolve([inRequest, inRecord, inStatus]);
+      this.resolve({ inRequest, inRecord, inStatus });
       return;
     }
 
@@ -215,7 +227,7 @@ class TRRDNSListener {
       }
     }
 
-    this.resolve([inRequest, inRecord, inStatus]);
+    this.resolve({ inRequest, inRecord, inStatus });
   }
 
   QueryInterface(aIID) {
@@ -259,7 +271,8 @@ class TRRServerCode {
       let u = url.parse(req.url, true);
       let handler = global.path_handlers[u.pathname];
       if (handler) {
-        return handler(req, resp, u);
+        handler(req, resp, u);
+        return;
       }
 
       // Didn't find a handler for this path.
@@ -338,7 +351,7 @@ function trrQueryHandler(req, resp, url) {
     req.on("data", chunk => {
       requestBody = Buffer.concat([requestBody, chunk]);
       if (requestBody.length == contentLength) {
-        return processRequest(req, resp, requestBody);
+        processRequest(req, resp, requestBody);
       }
     });
   } else if (method == "GET") {
@@ -349,7 +362,7 @@ function trrQueryHandler(req, resp, url) {
     }
 
     requestBody = Buffer.from(url.query.dns, "base64");
-    return processRequest(req, resp, requestBody);
+    processRequest(req, resp, requestBody);
   } else {
     // unexpected method.
     resp.writeHead(405);
@@ -404,6 +417,9 @@ function trrQueryHandler(req, resp, url) {
     };
 
     if (response.delay) {
+      // This function is handled within the httpserver where setTimeout is
+      // available.
+      // eslint-disable-next-line no-undef
       setTimeout(
         arg => {
           writeResponse(arg[0], arg[1], arg[2]);
@@ -479,5 +495,127 @@ class TRRServer {
     return this.execute(
       `TRRServerCode.getRequestCount("${domain}", "${type}")`
     );
+  }
+}
+
+// Implements a basic HTTP2 proxy server
+class TRRProxyCode {
+  static async startServer(endServerPort) {
+    const fs = require("fs");
+    const options = {
+      key: fs.readFileSync(__dirname + "/http2-cert.key"),
+      cert: fs.readFileSync(__dirname + "/http2-cert.pem"),
+    };
+
+    const http2 = require("http2");
+    global.proxy = http2.createSecureServer(options);
+    this.setupProxy();
+    global.endServerPort = endServerPort;
+
+    await global.proxy.listen(0);
+
+    let serverPort = global.proxy.address().port;
+    return serverPort;
+  }
+
+  static closeProxy() {
+    global.proxy.closeSockets();
+    return new Promise(resolve => {
+      global.proxy.close(resolve);
+    });
+  }
+
+  static proxySessionCount() {
+    if (!global.proxy) {
+      return 0;
+    }
+    return global.proxy.proxy_session_count;
+  }
+
+  static setupProxy() {
+    if (!global.proxy) {
+      throw new Error("proxy is null");
+    }
+    global.proxy.proxy_session_count = 0;
+    global.proxy.on("session", () => {
+      ++global.proxy.proxy_session_count;
+    });
+
+    // We need to track active connections so we can forcefully close keep-alive
+    // connections when shutting down the proxy.
+    global.proxy.socketIndex = 0;
+    global.proxy.socketMap = {};
+    global.proxy.on("connection", function(socket) {
+      let index = global.proxy.socketIndex++;
+      global.proxy.socketMap[index] = socket;
+      socket.on("close", function() {
+        delete global.proxy.socketMap[index];
+      });
+    });
+    global.proxy.closeSockets = function() {
+      for (let i in global.proxy.socketMap) {
+        global.proxy.socketMap[i].destroy();
+      }
+    };
+
+    global.proxy.on("stream", (stream, headers) => {
+      if (headers[":method"] !== "CONNECT") {
+        // Only accept CONNECT requests
+        stream.respond({ ":status": 405 });
+        stream.end();
+        return;
+      }
+
+      const net = require("net");
+      const socket = net.connect(global.endServerPort, "127.0.0.1", () => {
+        try {
+          stream.respond({ ":status": 200 });
+          socket.pipe(stream);
+          stream.pipe(socket);
+        } catch (exception) {
+          console.log(exception);
+          stream.close();
+        }
+      });
+      socket.on("error", error => {
+        throw new Error(
+          `Unxpected error when conneting the HTTP/2 server from the HTTP/2 proxy during CONNECT handling: '${error}'`
+        );
+      });
+    });
+  }
+}
+
+class TRRProxy {
+  // Starts the proxy
+  async start(port) {
+    info("TRRProxy start!");
+    this.processId = await NodeServer.fork();
+    info("processid=" + this.processId);
+    await this.execute(TRRProxyCode);
+    this.port = await this.execute(`TRRProxyCode.startServer(${port})`);
+    Assert.notEqual(this.port, null);
+    this.initial_session_count = 0;
+  }
+
+  // Executes a command in the context of the node server
+  async execute(command) {
+    return NodeServer.execute(this.processId, command);
+  }
+
+  // Stops the server
+  async stop() {
+    if (this.processId) {
+      await NodeServer.execute(this.processId, `TRRProxyCode.closeProxy()`);
+      await NodeServer.kill(this.processId);
+    }
+  }
+
+  async proxy_session_counter() {
+    let data = await NodeServer.execute(
+      this.processId,
+      `TRRProxyCode.proxySessionCount()`
+    );
+    return parseInt(data) - this.initial_session_count;
   }
 }

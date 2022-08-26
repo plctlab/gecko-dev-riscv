@@ -6,11 +6,15 @@
 
 var EXPORTED_SYMBOLS = ["MessageHandlerFrameChild"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  isBrowsingContextCompatible:
+    "chrome://remote/content/shared/messagehandler/transports/FrameContextUtils.jsm",
   MessageHandlerRegistry:
     "chrome://remote/content/shared/messagehandler/MessageHandlerRegistry.jsm",
   WindowGlobalMessageHandler:
@@ -24,10 +28,10 @@ XPCOMUtils.defineLazyModuleGetters(this, {
  */
 class MessageHandlerFrameChild extends JSWindowActorChild {
   actorCreated() {
-    this.type = WindowGlobalMessageHandler.type;
+    this.type = lazy.WindowGlobalMessageHandler.type;
     this.context = this.manager.browsingContext;
 
-    this._registry = new MessageHandlerRegistry(this.type, this.context);
+    this._registry = new lazy.MessageHandlerRegistry(this.type, this.context);
     this._onRegistryEvent = this._onRegistryEvent.bind(this);
 
     // MessageHandlerFrameChild is responsible for forwarding events from
@@ -37,13 +41,31 @@ class MessageHandlerFrameChild extends JSWindowActorChild {
     this._registry.on("message-handler-registry-event", this._onRegistryEvent);
   }
 
-  receiveMessage(message) {
+  handleEvent({ type }) {
+    if (type == "DOMWindowCreated") {
+      if (lazy.isBrowsingContextCompatible(this.manager.browsingContext)) {
+        this._registry.createAllMessageHandlers();
+      }
+    }
+  }
+
+  async receiveMessage(message) {
     if (message.name === "MessageHandlerFrameParent:sendCommand") {
       const { sessionId, command } = message.data;
       const messageHandler = this._registry.getOrCreateMessageHandler(
         sessionId
       );
-      return messageHandler.handleCommand(command);
+      try {
+        return await messageHandler.handleCommand(command);
+      } catch (e) {
+        if (e?.isRemoteError) {
+          return {
+            error: e.toJSON(),
+            isMessageHandlerError: e.isMessageHandlerError,
+          };
+        }
+        throw e;
+      }
     }
 
     return null;

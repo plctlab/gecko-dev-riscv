@@ -19,11 +19,12 @@
 use std::mem;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use euclid::{Transform3D, point2};
 use time::precise_time_ns;
 use malloc_size_of::MallocSizeOfOps;
 use api::units::*;
-use api::{ExternalImageSource, PremultipliedColorF, ImageBufferKind, ImageRendering, ImageFormat};
+use api::{ExternalImageSource, ImageBufferKind, ImageRendering, ImageFormat};
 use crate::renderer::{
     Renderer, VertexArrayKind, RendererStats, TextureSampler, TEXTURE_CACHE_DBG_CLEAR_COLOR
 };
@@ -35,10 +36,9 @@ use crate::device::{
     Device, UploadMethod, Texture, DrawTarget, UploadStagingBuffer, TextureFlags, TextureUploader,
     TextureFilter,
 };
-use crate::gpu_types::{ZBufferId, CompositeInstance, CompositorTransform};
+use crate::gpu_types::CopyInstance;
 use crate::batch::BatchTextures;
 use crate::texture_pack::{GuillotineAllocator, FreeRectSlice};
-use crate::composite::{CompositeFeatures, CompositeSurfaceFormat};
 use crate::profiler;
 use crate::render_api::MemoryReport;
 
@@ -61,6 +61,7 @@ pub fn upload_to_texture_cache(
         cpu_copy_time: 0,
         gpu_copy_commands_time: 0,
         bytes_uploaded: 0,
+        items_uploaded: 0,
     };
 
     let upload_total_start = precise_time_ns();
@@ -133,10 +134,13 @@ pub fn upload_to_texture_cache(
                 }
             };
 
+            stats.items_uploaded += 1;
+
             let use_batch_upload = renderer.device.use_batched_texture_uploads() &&
                 texture.flags().contains(TextureFlags::IS_SHARED_TEXTURE_CACHE) &&
                 rect.width() <= BATCH_UPLOAD_TEXTURE_SIZE.width &&
-                rect.height() <= BATCH_UPLOAD_TEXTURE_SIZE.height;
+                rect.height() <= BATCH_UPLOAD_TEXTURE_SIZE.height &&
+                rect.area() < renderer.device.batched_upload_threshold();
 
             if use_batch_upload
                 && arc_data.is_some()
@@ -251,7 +255,7 @@ pub fn upload_to_texture_cache(
         let gpu_copy_start = precise_time_ns();
 
         if renderer.device.use_draw_calls_for_texture_copy() {
-            // Some drivers are very have a very high CPU overhead when submitting hundreds of small blit
+            // Some drivers have a very high CPU overhead when submitting hundreds of small blit
             // commands (low end intel drivers on Windows for example can take take 100+ ms submitting a
             // few hundred blits). In this case we do the copy with batched draw calls.
             copy_from_staging_to_cache_using_draw_calls(
@@ -334,6 +338,12 @@ pub fn upload_to_texture_cache(
             profiler::UPLOAD_GPU_COPY_TIME,
             profiler::ns_to_ms(stats.gpu_copy_commands_time)
         );
+    }
+
+    let add_markers = profiler::thread_is_being_profiled();
+    if add_markers && stats.bytes_uploaded > 0 {
+    	let details = format!("{} bytes uploaded, {} items", stats.bytes_uploaded, stats.items_uploaded);
+    	profiler::add_text_marker(&"Texture uploads", &details, Duration::from_nanos(upload_total));
     }
 }
 
@@ -527,24 +537,10 @@ fn copy_from_staging_to_cache_using_draw_calls(
     batch_upload_textures: &[Texture],
     batch_upload_copies: Vec<BatchUploadCopy>,
 ) {
-    let mut dummy_stats = RendererStats {
-        total_draw_calls: 0,
-        alpha_target_count: 0,
-        color_target_count: 0,
-        texture_upload_mb: 0.0,
-        resource_upload_time: 0.0,
-        gpu_cache_upload_time: 0.0,
-        gecko_display_list_time: 0.0,
-        wr_display_list_time: 0.0,
-        scene_build_time: 0.0,
-        frame_build_time: 0.0,
-        full_display_list: false,
-        full_paint: false,
-    };
-
     let mut copy_instances = Vec::new();
     let mut prev_src = None;
     let mut prev_dst = None;
+    let mut dst_texture_size = DeviceSize::new(0.0, 0.0);
 
     for copy in batch_upload_copies {
 
@@ -552,14 +548,13 @@ fn copy_from_staging_to_cache_using_draw_calls(
         let dst_changed = prev_dst != Some(copy.dest_texture_id);
 
         if (src_changed || dst_changed) && !copy_instances.is_empty() {
-
             renderer.draw_instanced_batch(
                 &copy_instances,
-                VertexArrayKind::Composite,
+                VertexArrayKind::Copy,
                 // We bind the staging texture manually because it isn't known
                 // to the texture resolver.
                 &BatchTextures::empty(),
-                &mut dummy_stats,
+                &mut RendererStats::default(),
             );
 
             stats.num_draw_calls += 1;
@@ -568,32 +563,17 @@ fn copy_from_staging_to_cache_using_draw_calls(
 
         if dst_changed {
             let dest_texture = &renderer.texture_resolver.texture_cache_map[&copy.dest_texture_id].texture;
-            let target_size = dest_texture.get_dimensions();
+            dst_texture_size = dest_texture.get_dimensions().to_f32();
 
-            let draw_target = DrawTarget::from_texture(
-                dest_texture,
-                false,
-            );
+            let draw_target = DrawTarget::from_texture(dest_texture, false);
             renderer.device.bind_draw_target(draw_target);
-
-            let projection = Transform3D::ortho(
-                0.0,
-                target_size.width as f32,
-                0.0,
-                target_size.height as f32,
-                renderer.device.ortho_near_plane(),
-                renderer.device.ortho_far_plane(),
-            );
 
             renderer.shaders
                 .borrow_mut()
-                .get_composite_shader(
-                    CompositeSurfaceFormat::Rgba,
-                    ImageBufferKind::Texture2D,
-                    CompositeFeatures::empty(),
-                ).bind(
+                .ps_copy
+                .bind(
                     &mut renderer.device,
-                    &projection,
+                    &Transform3D::identity(),
                     None,
                     &mut renderer.renderer_errors,
                     &mut renderer.profile,
@@ -612,36 +592,29 @@ fn copy_from_staging_to_cache_using_draw_calls(
             prev_src = Some(copy.src_texture_index)
         }
 
-        let dest_rect = DeviceRect::from_origin_and_size(
+        let src_rect = DeviceRect::from_origin_and_size(
+            copy.src_offset.to_f32(),
+            copy.size.to_f32(),
+        );
+
+        let dst_rect = DeviceRect::from_origin_and_size(
             copy.dest_offset.to_f32(),
             copy.size.to_f32(),
         );
 
-        let src_rect = TexelRect::new(
-            copy.src_offset.x as f32,
-            copy.src_offset.y as f32,
-            (copy.src_offset.x + copy.size.width) as f32,
-            (copy.src_offset.y + copy.size.height) as f32,
-        );
-
-        copy_instances.push(CompositeInstance::new_rgb(
-            dest_rect.cast_unit(),
-            dest_rect,
-            PremultipliedColorF::WHITE,
-            ZBufferId(0),
+        copy_instances.push(CopyInstance {
             src_rect,
-            CompositorTransform::identity(),
-        ));
+            dst_rect,
+            dst_texture_size,
+        });
     }
 
     if !copy_instances.is_empty() {
         renderer.draw_instanced_batch(
             &copy_instances,
-            VertexArrayKind::Composite,
-            // We bind the staging texture manually because it isn't known
-            // to the texture resolver.
+            VertexArrayKind::Copy,
             &BatchTextures::empty(),
-            &mut dummy_stats,
+            &mut RendererStats::default(),
         );
 
         stats.num_draw_calls += 1;
@@ -666,7 +639,7 @@ pub struct UploadTexturePool {
     /// To keep things simple we always allocate enough memory for formats with four bytes
     /// per pixel (more than we need for alpha-only textures but it works just as well).
     temporary_buffers: Vec<Vec<mem::MaybeUninit<u8>>>,
-    used_temporary_buffers: usize,
+    min_temporary_buffers: usize,
     delay_buffer_deallocation: u64,
 }
 
@@ -677,7 +650,7 @@ impl UploadTexturePool {
             delay_texture_deallocation: [0; 3],
             current_frame: 0,
             temporary_buffers: Vec::new(),
-            used_temporary_buffers: 0,
+            min_temporary_buffers: 0,
             delay_buffer_deallocation: 0,
         }
     }
@@ -693,6 +666,7 @@ impl UploadTexturePool {
 
     pub fn begin_frame(&mut self) {
         self.current_frame += 1;
+        self.min_temporary_buffers = self.temporary_buffers.len();
     }
 
     /// Create or reuse a staging texture.
@@ -742,10 +716,11 @@ impl UploadTexturePool {
     /// Content is first written to the temporary buffer and uploaded via a single
     /// glTexSubImage2D call.
     pub fn get_temporary_buffer(&mut self) -> Vec<mem::MaybeUninit<u8>> {
-        self.used_temporary_buffers += 1;
-        self.temporary_buffers.pop().unwrap_or_else(|| {
+        let buffer = self.temporary_buffers.pop().unwrap_or_else(|| {
             vec![mem::MaybeUninit::new(0); BATCH_UPLOAD_TEXTURE_SIZE.area() as usize * 4]
-        })
+        });
+        self.min_temporary_buffers = self.min_temporary_buffers.min(self.temporary_buffers.len());
+        buffer
     }
 
     /// Return memory that was obtained from this pool via get_temporary_buffer.
@@ -796,8 +771,13 @@ impl UploadTexturePool {
             }
         }
 
-        // Similar logic for temporary CPU buffers.
-        let unused_buffers = self.temporary_buffers.len() - self.used_temporary_buffers;
+        // Similar logic for temporary CPU buffers. Our calls to get and return
+        // temporary buffers should have been balanced for this frame, but the call
+        // get_temporary_buffer will allocate a buffer if the vec is empty. Since we
+        // carry these buffers from frame to frame, we keep track of the smallest
+        // length of the temporary_buffers vec that we encountered this frame. Those
+        // buffers were not touched and we deallocate some if there are a lot of them.
+        let unused_buffers = self.min_temporary_buffers;
         if unused_buffers < 8 {
             self.delay_buffer_deallocation = self.current_frame + 120;
         }
@@ -811,7 +791,6 @@ impl UploadTexturePool {
             // of the vector.
             self.temporary_buffers.pop();
         }
-        self.used_temporary_buffers = 0;
     }
 
     pub fn report_memory_to(&self, report: &mut MemoryReport, size_op_funs: &MallocSizeOfOps) {
@@ -835,6 +814,7 @@ struct UploadStats {
     cpu_copy_time: u64,
     gpu_copy_commands_time: u64,
     bytes_uploaded: usize,
+    items_uploaded: usize,
 }
 
 #[derive(Debug)]

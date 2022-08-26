@@ -3,8 +3,11 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import React, { PureComponent } from "react";
+import PropTypes from "prop-types";
+
 import { connect } from "../../../utils/connect";
 import actions from "../../../actions";
+
 import {
   getTruncatedFileName,
   getDisplayPath,
@@ -12,9 +15,9 @@ import {
   getFileURL,
 } from "../../../utils/source";
 import {
-  getHasSiblingOfSameName,
   getBreakpointsForSource,
   getContext,
+  getThread,
 } from "../../../selectors";
 
 import SourceIcon from "../../shared/SourceIcon";
@@ -22,26 +25,29 @@ import SourceIcon from "../../shared/SourceIcon";
 import showContextMenu from "./BreakpointHeadingsContextMenu";
 
 class BreakpointHeading extends PureComponent {
+  static get propTypes() {
+    return {
+      cx: PropTypes.object.isRequired,
+      sources: PropTypes.array.isRequired,
+      source: PropTypes.object.isRequired,
+      selectSource: PropTypes.func.isRequired,
+      thread: PropTypes.object.isRequired,
+    };
+  }
   onContextMenu = e => {
     showContextMenu({ ...this.props, contextMenuEvent: e });
   };
 
   render() {
-    const {
-      cx,
-      sources,
-      source,
-      hasSiblingOfSameName,
-      selectSource,
-    } = this.props;
+    const { cx, sources, source, selectSource, thread } = this.props;
 
     const path = getDisplayPath(source, sources);
-    const query = hasSiblingOfSameName ? getSourceQueryString(source) : "";
+    const query = getSourceQueryString(source);
 
     return (
       <div
         className="breakpoint-heading"
-        title={getFileURL(source, false)}
+        title={`${thread?.name} - ${getFileURL(source, false)}`}
         onClick={() => selectSource(cx, source.id)}
         onContextMenu={this.onContextMenu}
       >
@@ -62,8 +68,8 @@ class BreakpointHeading extends PureComponent {
 
 const mapStateToProps = (state, { source }) => ({
   cx: getContext(state),
-  hasSiblingOfSameName: getHasSiblingOfSameName(state, source),
   breakpointsForSource: getBreakpointsForSource(state, source.id),
+  thread: getThread(state, source.thread),
 });
 
 export default connect(mapStateToProps, {

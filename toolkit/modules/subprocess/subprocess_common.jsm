@@ -7,25 +7,27 @@
 
 /* eslint-disable mozilla/balanced-listeners */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AsyncShutdown",
   "resource://gre/modules/AsyncShutdown.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 
+var obj = {};
 Services.scriptloader.loadSubScript(
   "resource://gre/modules/subprocess/subprocess_shared.js",
-  this
+  obj
 );
 
-/* global SubprocessConstants */
+const { SubprocessConstants, ArrayBuffer_transfer } = obj;
+
 var EXPORTED_SYMBOLS = ["BaseProcess", "PromiseWorker", "SubprocessConstants"];
 
 const BUFFER_SIZE = 32768;
@@ -52,14 +54,14 @@ class PromiseWorker extends ChromeWorker {
     this.addEventListener("message", this.onmessage);
 
     this.shutdown = this.shutdown.bind(this);
-    AsyncShutdown.webWorkersShutdown.addBlocker(
+    lazy.AsyncShutdown.webWorkersShutdown.addBlocker(
       "Subprocess.jsm: Shut down IO worker",
       this.shutdown
     );
   }
 
   onClose() {
-    AsyncShutdown.webWorkersShutdown.removeBlocker(this.shutdown);
+    lazy.AsyncShutdown.webWorkersShutdown.removeBlocker(this.shutdown);
   }
 
   shutdown() {
@@ -396,9 +398,9 @@ class InputPipe extends Pipe {
         let buffer = this.buffers[0];
 
         this.buffers[0] = buffer.slice(length);
-        result = ArrayBuffer.transfer(buffer, length);
+        result = ArrayBuffer_transfer(buffer, length);
       } else {
-        result = ArrayBuffer.transfer(this.buffers.shift(), length);
+        result = ArrayBuffer_transfer(this.buffers.shift(), length);
         let u8result = new Uint8Array(result);
 
         while (byteLength < length) {
@@ -687,7 +689,7 @@ class BaseProcess {
     this.worker.call("kill", [this.id, force]);
 
     if (!force) {
-      setTimeout(() => {
+      lazy.setTimeout(() => {
         if (this.exitCode == null) {
           this.worker.call("kill", [this.id, true]);
         }

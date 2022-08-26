@@ -7,16 +7,37 @@
 #ifndef jit_BaselineCacheIRCompiler_h
 #define jit_BaselineCacheIRCompiler_h
 
+#include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "jstypes.h"
 
 #include "jit/CacheIR.h"
 #include "jit/CacheIRCompiler.h"
+#include "jit/CacheIROpsGenerated.h"
+#include "jit/CacheIRReader.h"
+
+struct JS_PUBLIC_API JSContext;
+
+class JSScript;
 
 namespace js {
 namespace jit {
 
-class ICCacheIRStub;
+class CacheIRWriter;
 class ICFallbackStub;
+class ICScript;
+class JitCode;
+class Label;
+class MacroAssembler;
+
+struct Address;
+struct Register;
+
+enum class TailCallVMFunctionId;
 
 enum class ICAttachResult { Attached, DuplicateStub, TooLarge, OOM };
 
@@ -24,7 +45,8 @@ ICAttachResult AttachBaselineCacheIRStub(JSContext* cx,
                                          const CacheIRWriter& writer,
                                          CacheKind kind, JSScript* outerScript,
                                          ICScript* icScript,
-                                         ICFallbackStub* stub);
+                                         ICFallbackStub* stub,
+                                         const char* name);
 
 // BaselineCacheIRCompiler compiles CacheIR to BaselineIC native code.
 class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
@@ -43,8 +65,8 @@ class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
       uint32_t newShapeOffset, mozilla::Maybe<uint32_t> numNewSlotsOffset);
 
   bool updateArgc(CallFlags flags, Register argcReg, Register scratch);
-  void loadStackObject(ArgumentKind kind, CallFlags flags, size_t stackPushed,
-                       Register argcReg, Register dest);
+  void loadStackObject(ArgumentKind kind, CallFlags flags, Register argcReg,
+                       Register dest);
   void pushArguments(Register argcReg, Register calleeReg, Register scratch,
                      Register scratch2, CallFlags flags, bool isJitCall);
   void pushStandardArguments(Register argcReg, Register scratch,
@@ -87,8 +109,8 @@ class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
  public:
   friend class AutoStubFrame;
 
-  BaselineCacheIRCompiler(JSContext* cx, const CacheIRWriter& writer,
-                          uint32_t stubDataOffset);
+  BaselineCacheIRCompiler(JSContext* cx, TempAllocator& alloc,
+                          const CacheIRWriter& writer, uint32_t stubDataOffset);
 
   [[nodiscard]] bool init(CacheKind kind);
 

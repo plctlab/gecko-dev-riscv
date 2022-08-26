@@ -23,16 +23,18 @@ function run_test() {
     "state.json"
   );
 
-  // We need to ensure FOG is initialized, otherwise operations will be stuck in the pre-init queue.
-  let FOG = Cc["@mozilla.org/toolkit/glean;1"].createInstance(Ci.nsIFOG);
-  FOG.initializeFOG();
-
   Services.prefs.setBoolPref(
     "toolkit.telemetry.testing.overrideProductsCheck",
     true
   );
   run_next_test();
 }
+
+add_task(function test_setup() {
+  // FOG needs a profile and to be init.
+  do_get_profile();
+  Services.fog.initializeFOG();
+});
 
 add_task(async function test_client_id() {
   const invalidIDs = [
@@ -47,21 +49,26 @@ add_task(async function test_client_id() {
   // If there is no DRS file, and no cached id, we should get a new client ID.
   await ClientID._reset();
   Services.prefs.clearUserPref(PREF_CACHED_CLIENTID);
-  await OS.File.remove(drsPath, { ignoreAbsent: true });
+  await IOUtils.remove(drsPath, { ignoreAbsent: true });
   let clientID = await ClientID.getClientID();
   Assert.equal(typeof clientID, "string");
   Assert.ok(uuidRegex.test(clientID));
+  if (AppConstants.platform != "android") {
+    Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 
   // We should be guarded against invalid DRS json.
   await ClientID._reset();
   Services.prefs.clearUserPref(PREF_CACHED_CLIENTID);
-  await OS.File.writeAtomic(drsPath, "abcd", {
-    encoding: "utf-8",
+  await IOUtils.writeUTF8(drsPath, "abcd", {
     tmpPath: drsPath + ".tmp",
   });
   clientID = await ClientID.getClientID();
   Assert.equal(typeof clientID, "string");
   Assert.ok(uuidRegex.test(clientID));
+  if (AppConstants.platform != "android") {
+    Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 
   // If the DRS data is broken, we should end up with the cached ID.
   let oldClientID = clientID;
@@ -70,6 +77,9 @@ add_task(async function test_client_id() {
     await CommonUtils.writeJSON({ clientID: invalidID }, drsPath);
     clientID = await ClientID.getClientID();
     Assert.equal(clientID, oldClientID);
+    if (AppConstants.platform != "android") {
+      Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+    }
   }
 
   // Test that valid DRS actually works.
@@ -78,12 +88,18 @@ add_task(async function test_client_id() {
   await CommonUtils.writeJSON({ clientID: validClientID }, drsPath);
   clientID = await ClientID.getClientID();
   Assert.equal(clientID, validClientID);
+  if (AppConstants.platform != "android") {
+    Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 
   // Test that reloading a valid DRS works.
   await ClientID._reset();
   Services.prefs.clearUserPref(PREF_CACHED_CLIENTID);
   clientID = await ClientID.getClientID();
   Assert.equal(clientID, validClientID);
+  if (AppConstants.platform != "android") {
+    Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 
   // Assure that cached IDs are being checked for validity.
   for (let [invalidID, prefFunc] of invalidIDs) {
@@ -116,12 +132,18 @@ add_task(async function test_setCanaryClientID() {
   await ClientID.setCanaryClientID();
   let clientID = await ClientID.getClientID();
   Assert.equal(KNOWN_UUID, clientID);
+  if (AppConstants.platform != "android") {
+    Assert.equal(clientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 });
 
 add_task(async function test_removeParallelGet() {
   // We should get a valid UUID after reset
   await ClientID.removeClientID();
   let firstClientID = await ClientID.getClientID();
+  if (AppConstants.platform != "android") {
+    Assert.equal(firstClientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 
   // We should get the same ID twice when requesting it in parallel to a reset.
   let promiseRemoveClientID = ClientID.removeClientID();
@@ -140,4 +162,7 @@ add_task(async function test_removeParallelGet() {
     otherClientID,
     "Getting the client ID in parallel to a reset should give the same id."
   );
+  if (AppConstants.platform != "android") {
+    Assert.equal(newClientID, Glean.legacyTelemetry.clientId.testGetValue());
+  }
 });

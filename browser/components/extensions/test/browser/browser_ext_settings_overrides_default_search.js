@@ -12,8 +12,8 @@ ChromeUtils.defineModuleGetter(
 const { AddonTestUtils } = ChromeUtils.import(
   "resource://testing-common/AddonTestUtils.jsm"
 );
-const { SearchTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SearchTestUtils.jsm"
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
 );
 
 const EXTENSION1_ID = "extension1@mozilla.com";
@@ -33,7 +33,7 @@ async function restoreDefaultEngine() {
   await Services.search.setDefault(engine);
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   let searchExtensions = getChromeDir(getResolvedURI(gTestPath));
   searchExtensions.append("search-engines");
 

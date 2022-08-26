@@ -20,7 +20,7 @@ if sys.version_info < (3,):
 class SolusBootstrapper(LinuxBootstrapper, BaseBootstrapper):
     """Solus experimental bootstrapper."""
 
-    SYSTEM_PACKAGES = ["nodejs", "unzip", "zip"]
+    SYSTEM_PACKAGES = ["unzip", "zip"]
     SYSTEM_COMPONENTS = ["system.devel"]
 
     BROWSER_PACKAGES = [
@@ -30,7 +30,6 @@ class SolusBootstrapper(LinuxBootstrapper, BaseBootstrapper):
         "libevent",
         "libvpx",
         "libxt",
-        "nasm",
         "libstartup-notification",
         "gst-plugins-base",
         "gst-plugins-good",
@@ -39,9 +38,6 @@ class SolusBootstrapper(LinuxBootstrapper, BaseBootstrapper):
     ]
 
     MOBILE_ANDROID_COMMON_PACKAGES = [
-        "openjdk-8",
-        # For downloading the Android SDK and NDK.
-        "wget",
         # See comment about 32 bit binaries and multilib below.
         "ncurses-32bit",
         "readline-32bit",
@@ -62,10 +58,6 @@ class SolusBootstrapper(LinuxBootstrapper, BaseBootstrapper):
     def install_browser_artifact_mode_packages(self, mozconfig_builder):
         self.install_browser_packages(mozconfig_builder, artifact_mode=True)
 
-    def ensure_nasm_packages(self, state_dir, checkout_root):
-        # installed via install_browser_packages
-        pass
-
     def install_mobile_android_packages(self, mozconfig_builder, artifact_mode=False):
         try:
             self.package_install(*self.MOBILE_ANDROID_COMMON_PACKAGES)
@@ -74,7 +66,6 @@ class SolusBootstrapper(LinuxBootstrapper, BaseBootstrapper):
             raise e
 
         # 2. Android pieces.
-        self.ensure_java(mozconfig_builder)
         super().install_mobile_android_packages(
             mozconfig_builder, artifact_mode=artifact_mode
         )

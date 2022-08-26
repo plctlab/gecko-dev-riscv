@@ -13,9 +13,12 @@ const { RemoteSettings } = ChromeUtils.import(
 const { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+
+const APS_PREF =
+  "privacy.partition.always_partition_third_party_non_cookie_storage";
 
 const COLLECTION_NAME = "anti-tracking-url-decoration";
 const PREF_NAME = "privacy.restrict3rdpartystorage.url_decorations";
@@ -41,7 +44,7 @@ add_task(async _ => {
   let records = [
     {
       id: "1",
-      last_modified: 100000000000000000001,
+      last_modified: 1000000000000001,
       schema: Date.now(),
       token: TOKEN_1,
     },
@@ -53,8 +56,8 @@ add_task(async _ => {
       data: { current: records },
     });
   }
-  let db = await RemoteSettings(COLLECTION_NAME).db;
-  await db.importChanges({}, 42, [records[0]]);
+  let db = RemoteSettings(COLLECTION_NAME).db;
+  await db.importChanges({}, Date.now(), [records[0]]);
   await emitSync();
 
   await uds.ensureUpdated();
@@ -87,19 +90,19 @@ add_task(async _ => {
   records.push(
     {
       id: "2",
-      last_modified: 100000000000000000002,
+      last_modified: 1000000000000002,
       schema: Date.now(),
       token: TOKEN_2,
     },
     {
       id: "3",
-      last_modified: 100000000000000000003,
+      last_modified: 1000000000000003,
       schema: Date.now(),
       token: TOKEN_3,
     },
     {
       id: "4",
-      last_modified: 100000000000000000004,
+      last_modified: 1000000000000005,
       schema: Date.now(),
       token: TOKEN_4,
     }
@@ -146,6 +149,7 @@ AntiTracking._createTask({
   extraPrefs: [
     ["network.http.referer.defaultPolicy", 3], // Ensure we don't downgrade because of the default policy.
     ["network.http.referer.defaultPolicy.trackers", 3],
+    [APS_PREF, false],
   ],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
@@ -174,7 +178,10 @@ AntiTracking._createTask({
       ok(false, "No query parameters should be found");
     }
   },
-  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 2]],
+  extraPrefs: [
+    ["network.http.referer.defaultPolicy.trackers", 2],
+    [APS_PREF, false],
+  ],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
   iframeSandbox: null,
@@ -205,6 +212,7 @@ AntiTracking._createTask({
   extraPrefs: [
     ["network.http.referer.defaultPolicy", 3], // Ensure we don't downgrade because of the default policy.
     ["network.http.referer.defaultPolicy.trackers", 3],
+    [APS_PREF, false],
   ],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
@@ -233,7 +241,10 @@ AntiTracking._createTask({
       ok(false, "No query parameters should be found");
     }
   },
-  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 2]],
+  extraPrefs: [
+    ["network.http.referer.defaultPolicy.trackers", 2],
+    [APS_PREF, false],
+  ],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
   iframeSandbox: null,

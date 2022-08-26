@@ -2,8 +2,8 @@ const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 var { SitePermissions } = ChromeUtils.import(
   "resource:///modules/SitePermissions.jsm"
@@ -104,7 +104,7 @@ function promiseIndicatorWindow() {
 }
 
 async function assertWebRTCIndicatorStatus(expected) {
-  let ui = ChromeUtils.import("resource:///modules/webrtcUI.jsm", {}).webrtcUI;
+  let ui = ChromeUtils.import("resource:///modules/webrtcUI.jsm").webrtcUI;
   let expectedState = expected ? "visible" : "hidden";
   let msg = "WebRTC indicator " + expectedState;
   if (!expected && ui.showGlobalIndicator) {

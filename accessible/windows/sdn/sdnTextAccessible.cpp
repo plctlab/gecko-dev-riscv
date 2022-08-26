@@ -61,10 +61,10 @@ sdnTextAccessible::get_clippedSubstringBounds(
       document,
       "There must always be a doc accessible, but there isn't. Crash!");
 
-  nsIntRect docRect = document->Bounds();
-  nsIntRect unclippedRect(x, y, width, height);
+  LayoutDeviceIntRect docRect = document->Bounds();
+  LayoutDeviceIntRect unclippedRect(x, y, width, height);
 
-  nsIntRect clippedRect;
+  LayoutDeviceIntRect clippedRect;
   clippedRect.IntersectRect(unclippedRect, docRect);
 
   *aX = clippedRect.X();
@@ -142,9 +142,9 @@ sdnTextAccessible::get_fontFamily(BSTR __RPC_FAR* aFontFamily) {
   if (!frame) return E_FAIL;
 
   RefPtr<nsFontMetrics> fm = nsLayoutUtils::GetFontMetricsForFrame(frame, 1.0f);
+  RefPtr<gfxFont> font = fm->GetThebesFontGroup()->GetFirstValidFont();
 
-  const nsCString& name =
-      fm->GetThebesFontGroup()->GetFirstValidFont()->GetName();
+  const nsCString& name = font->GetName();
   if (name.IsEmpty()) return S_FALSE;
 
   NS_ConvertUTF8toUTF16 str(name);

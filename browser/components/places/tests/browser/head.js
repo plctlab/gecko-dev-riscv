@@ -1,8 +1,6 @@
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   this,
   "TestUtils",
@@ -82,7 +80,7 @@ function checkLibraryPaneVisibility(library, selectedPane) {
       "Bookmark/History tree is hidden"
     );
     Assert.ok(
-      !library.document.getElementById("downloadsRichListBox").hidden,
+      !library.document.getElementById("downloadsListBox").hidden,
       "Downloads are shown"
     );
   } else {
@@ -91,7 +89,7 @@ function checkLibraryPaneVisibility(library, selectedPane) {
       "Bookmark/History tree is shown"
     );
     Assert.ok(
-      library.document.getElementById("downloadsRichListBox").hidden,
+      library.document.getElementById("downloadsListBox").hidden,
       "Downloads are hidden"
     );
   }
@@ -162,14 +160,13 @@ function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
  *        The toolbar to update.
  * @param {boolean} aVisible
  *        True to make the toolbar visible, false to make it hidden.
- * @param {function} aCallback
  *
  * @returns {Promise}
  * @resolves Any animation associated with updating the toolbar's visibility has
  *           finished.
  * @rejects Never.
  */
-function promiseSetToolbarVisibility(aToolbar, aVisible, aCallback) {
+function promiseSetToolbarVisibility(aToolbar, aVisible) {
   if (isToolbarVisible(aToolbar) != aVisible) {
     let visibilityChanged = TestUtils.waitForCondition(
       () => aToolbar.collapsed != aVisible
@@ -213,6 +210,8 @@ function isToolbarVisible(aToolbar) {
  *        The URL of the dialog.
  * @param {boolean} [skipOverlayWait]
  *        Avoid waiting for the overlay.
+ * @returns {string} guid
+ *          Bookmark guid
  */
 var withBookmarksDialog = async function(
   autoCancel,
@@ -295,7 +294,7 @@ var withBookmarksDialog = async function(
   if (closeFn) {
     closePromise = closeFn(dialogWin);
   }
-
+  let guid;
   try {
     await taskFn(dialogWin);
   } finally {
@@ -304,9 +303,11 @@ var withBookmarksDialog = async function(
       doc.getElementById("bookmarkpropertiesdialog").cancelDialog();
       await closePromise;
     }
+    guid = await PlacesUIUtils.lastBookmarkDialogDeferred.promise;
     // Give the dialog a little time to close itself.
     await dialogClosePromise;
   }
+  return guid;
 };
 
 /**
@@ -524,6 +525,31 @@ async function hideBookmarksPanel(win = window) {
   await hiddenPromise;
 }
 
-registerCleanupFunction(() => {
+// Create a temporary folder, set it as the default folder,
+// then remove the folder. This is used to ensure that the
+// default folder gets reset properly.
+async function createAndRemoveDefaultFolder() {
+  let tempFolder = await PlacesUtils.bookmarks.insertTree({
+    guid: PlacesUtils.bookmarks.unfiledGuid,
+    children: [
+      {
+        title: "temp folder",
+        type: PlacesUtils.bookmarks.TYPE_FOLDER,
+      },
+    ],
+  });
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.bookmarks.defaultLocation", tempFolder[0].guid]],
+  });
+
+  let defaultGUID = await PlacesUIUtils.defaultParentGuid;
+  is(defaultGUID, tempFolder[0].guid, "check default guid");
+
+  await PlacesUtils.bookmarks.remove(tempFolder);
+}
+
+registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("browser.bookmarks.defaultLocation");
+  await PlacesTransactions.clearTransactionsHistory(true, true);
 });

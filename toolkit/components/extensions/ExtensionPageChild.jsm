@@ -7,27 +7,22 @@
 
 /* exported ExtensionPageChild */
 
-var EXPORTED_SYMBOLS = ["ExtensionPageChild"];
+var EXPORTED_SYMBOLS = ["ExtensionPageChild", "getContextChildManagerGetter"];
 
 /**
  * This file handles privileged extension page logic that runs in the
  * child process.
  */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ExtensionChildDevToolsUtils",
   "resource://gre/modules/ExtensionChildDevToolsUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionProcessScript",
-  "resource://gre/modules/ExtensionProcessScript.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Schemas",
   "resource://gre/modules/Schemas.jsm"
 );
@@ -82,6 +77,29 @@ const initializeBackgroundPage = context => {
     Services.console.logMessage(consoleMsg);
   }
 
+  function ignoredSuspendListener() {
+    logWarningMessage({
+      text:
+        "Background event page was not terminated on idle because a DevTools toolbox is attached to the extension.",
+      filename: context.contentWindow.location.href,
+    });
+  }
+
+  if (!context.extension.manifest.background.persistent) {
+    context.extension.on(
+      "background-script-suspend-ignored",
+      ignoredSuspendListener
+    );
+    context.callOnClose({
+      close: () => {
+        context.extension.off(
+          "background-script-suspend-ignored",
+          ignoredSuspendListener
+        );
+      },
+    });
+  }
+
   let alertOverwrite = text => {
     const { filename, columnNumber, lineNumber } = Components.stack.caller;
 
@@ -109,13 +127,9 @@ const initializeBackgroundPage = context => {
   });
 };
 
-function getFrameData(global) {
-  return ExtensionProcessScript.getFrameData(global, true);
-}
-
 var apiManager = new (class extends SchemaAPIManager {
   constructor() {
-    super("addon", Schemas);
+    super("addon", lazy.Schemas);
     this.initialized = false;
   }
 
@@ -134,7 +148,7 @@ var apiManager = new (class extends SchemaAPIManager {
 
 var devtoolsAPIManager = new (class extends SchemaAPIManager {
   constructor() {
-    super("devtools", Schemas);
+    super("devtools", lazy.Schemas);
     this.initialized = false;
   }
 
@@ -150,6 +164,44 @@ var devtoolsAPIManager = new (class extends SchemaAPIManager {
     }
   }
 })();
+
+function getContextChildManagerGetter(
+  { envType },
+  ChildAPIManagerClass = ChildAPIManager
+) {
+  return function() {
+    let apiManager =
+      envType === "devtools_parent"
+        ? devtoolsAPIManager
+        : this.extension.apiManager;
+
+    apiManager.lazyInit();
+
+    let localApis = {};
+    let can = new CanOfAPIs(this, apiManager, localApis);
+
+    let childManager = new ChildAPIManagerClass(
+      this,
+      this.messageManager,
+      can,
+      {
+        envType,
+        viewType: this.viewType,
+        url: this.uri.spec,
+        incognito: this.incognito,
+        // Additional data a BaseContext subclass may optionally send
+        // as part of the CreateProxyContext request sent to the main process
+        // (e.g. WorkerContexChild implements this method to send the service
+        // worker descriptor id along with the details send by default here).
+        ...this.getCreateProxyContextData?.(),
+      }
+    );
+
+    this.callOnClose(childManager);
+
+    return childManager;
+  };
+}
 
 class ExtensionBaseContextChild extends BaseContext {
   /**
@@ -185,13 +237,13 @@ class ExtensionBaseContextChild extends BaseContext {
       });
     }
 
-    Schemas.exportLazyGetter(contentWindow, "browser", () => {
+    lazy.Schemas.exportLazyGetter(contentWindow, "browser", () => {
       let browserObj = Cu.createObjectIn(contentWindow);
       this.childManager.inject(browserObj);
       return browserObj;
     });
 
-    Schemas.exportLazyGetter(contentWindow, "chrome", () => {
+    lazy.Schemas.exportLazyGetter(contentWindow, "chrome", () => {
       let chromeApiWrapper = Object.create(this.childManager);
       chromeApiWrapper.isChromeCompat = true;
 
@@ -282,23 +334,7 @@ class ExtensionPageContextChild extends ExtensionBaseContextChild {
 defineLazyGetter(
   ExtensionPageContextChild.prototype,
   "childManager",
-  function() {
-    this.extension.apiManager.lazyInit();
-
-    let localApis = {};
-    let can = new CanOfAPIs(this, this.extension.apiManager, localApis);
-
-    let childManager = new ChildAPIManager(this, this.messageManager, can, {
-      envType: "addon_parent",
-      viewType: this.viewType,
-      url: this.uri.spec,
-      incognito: this.incognito,
-    });
-
-    this.callOnClose(childManager);
-
-    return childManager;
-  }
+  getContextChildManagerGetter({ envType: "addon_parent" })
 );
 
 class DevToolsContextChild extends ExtensionBaseContextChild {
@@ -318,7 +354,7 @@ class DevToolsContextChild extends ExtensionBaseContextChild {
     super(extension, Object.assign(params, { envType: "devtools_child" }));
 
     this.devtoolsToolboxInfo = params.devtoolsToolboxInfo;
-    ExtensionChildDevToolsUtils.initThemeChangeObserver(
+    lazy.ExtensionChildDevToolsUtils.initThemeChangeObserver(
       params.devtoolsToolboxInfo.themeName,
       this
     );
@@ -332,29 +368,17 @@ class DevToolsContextChild extends ExtensionBaseContextChild {
   }
 }
 
-defineLazyGetter(DevToolsContextChild.prototype, "childManager", function() {
-  devtoolsAPIManager.lazyInit();
-
-  let localApis = {};
-  let can = new CanOfAPIs(this, devtoolsAPIManager, localApis);
-
-  let childManager = new ChildAPIManager(this, this.messageManager, can, {
-    envType: "devtools_parent",
-    viewType: this.viewType,
-    url: this.uri.spec,
-    incognito: this.incognito,
-  });
-
-  this.callOnClose(childManager);
-
-  return childManager;
-});
+defineLazyGetter(
+  DevToolsContextChild.prototype,
+  "childManager",
+  getContextChildManagerGetter({ envType: "devtools_parent" })
+);
 
 ExtensionPageChild = {
+  initialized: false,
+
   // Map<innerWindowId, ExtensionPageContextChild>
   extensionContexts: new Map(),
-
-  initialized: false,
 
   apiManager,
 
@@ -424,11 +448,19 @@ ExtensionPageChild = {
       );
     }
 
-    let mm = contentWindow.docShell.messageManager;
-
-    let { viewType, tabId, devtoolsToolboxInfo } = getFrameData(mm) || {};
-
     let uri = contentWindow.document.documentURIObject;
+
+    let mm = contentWindow.docShell.messageManager;
+    let data = mm.sendSyncMessage("Extension:GetFrameData")[0];
+    if (!data) {
+      let policy = WebExtensionPolicy.getByHostname(uri.host);
+      Cu.reportError(`FrameData missing for ${policy?.id} page ${uri.spec}`);
+    }
+    let { viewType, tabId, devtoolsToolboxInfo } = data ?? {};
+
+    if (viewType) {
+      ExtensionPageChild.expectViewLoad(mm, viewType);
+    }
 
     if (devtoolsToolboxInfo) {
       context = new DevToolsContextChild(extension, {

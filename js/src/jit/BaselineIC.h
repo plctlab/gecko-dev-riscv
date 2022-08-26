@@ -18,9 +18,10 @@
 #include "jit/shared/Assembler-shared.h"
 #include "jit/TypeData.h"
 #include "js/TypeDecls.h"
-#include "vm/JSScript.h"
 
 class JS_PUBLIC_API JSTracer;
+
+enum class JSOp : uint8_t;
 
 namespace js {
 
@@ -226,9 +227,6 @@ class ICFallbackStub final : public ICStub {
   ICState& state() { return state_; }
 
   uint32_t pcOffset() const { return pcOffset_; }
-  jsbytecode* pc(JSScript* script) const {
-    return script->offsetToPC(pcOffset_);
-  }
 
   // Add a new stub to the IC chain terminated by this fallback stub.
   inline void addNewStub(ICEntry* icEntry, ICCacheIRStub* stub);
@@ -422,6 +420,9 @@ extern bool DoNewObjectFallback(JSContext* cx, BaselineFrame* frame,
 extern bool DoCompareFallback(JSContext* cx, BaselineFrame* frame,
                               ICFallbackStub* stub, HandleValue lhs,
                               HandleValue rhs, MutableHandleValue ret);
+
+extern bool DoCloseIterFallback(JSContext* cx, BaselineFrame* frame,
+                                ICFallbackStub* stub, HandleObject iter);
 
 }  // namespace jit
 }  // namespace js

@@ -102,21 +102,26 @@ _hb_atomic_ptr_impl_cmplexch (const void **P, const void *O_, const void *N)
 #define hb_atomic_ptr_impl_cmpexch(P,O,N)	_hb_atomic_ptr_impl_cmplexch ((const void **) (P), (O), (N))
 
 
-#elif defined(HB_NO_MT)
+#else /* defined(HB_NO_MT) */
 
 #define hb_atomic_int_impl_add(AI, V)		((*(AI) += (V)) - (V))
-
 #define _hb_memory_barrier()			do {} while (0)
-
 #define hb_atomic_ptr_impl_cmpexch(P,O,N)	(* (void **) (P) == (void *) (O) ? (* (void **) (P) = (void *) (N), true) : false)
 
-
-#else
-
-#error "Could not find any system to define atomic_int macros."
-#error "Check hb-atomic.hh for possible resolutions."
-
 #endif
+
+
+#ifndef _hb_compiler_memory_r_barrier
+/* This we always use std::atomic for; and should never be disabled...
+ * except that MSVC gives me an internal compiler error on it. */
+#if !defined(_MSC_VER)
+#include <atomic>
+#define _hb_compiler_memory_r_barrier() std::atomic_signal_fence (std::memory_order_acquire)
+#else
+#define _hb_compiler_memory_r_barrier() do {} while (0)
+#endif
+#endif
+
 
 
 #ifndef _hb_memory_r_barrier

@@ -2,7 +2,7 @@
 
 By default, the about:newtab, about:welcome and about:home pages in Firefox (the pages you see when you open a new tab and when you start the browser), will send data back to Mozilla servers about usage of these pages.  The intent is to collect data in order to improve the user's experience while using Activity Stream.  Data about your specific browsing behaior or the sites you visit is **never transmitted to any Mozilla server**.  At any time, it is easy to **turn off** this data collection by [opting out of Firefox telemetry](https://support.mozilla.org/kb/share-telemetry-data-mozilla-help-improve-firefox).
 
-Data is sent to our servers in the form of discreet HTTPS 'pings' or messages whenever you do some action on the Activity Stream about:home, about:newtab or about:welcome pages.  We try to minimize the amount and frequency of pings by batching them together.  Pings are sent in [JSON serialized format](http://www.json.org/).
+Data is sent to our servers in the form of discrete HTTPS 'pings' or messages whenever you do some action on the Activity Stream about:home, about:newtab or about:welcome pages.  We try to minimize the amount and frequency of pings by batching them together.  Pings are sent in [JSON serialized format](http://www.json.org/).
 
 At Mozilla, [we take your privacy very seriously](https://www.mozilla.org/privacy/).  The Activity Stream page will never send any data that could personally identify you.  We do not transmit what you are browsing, searches you perform or any private settings.  Activity Stream does not set or send cookies, and uses [Transport Layer Security](https://en.wikipedia.org/wiki/Transport_Layer_Security) to securely transmit data to Mozilla servers.
 
@@ -161,11 +161,15 @@ A user event ping includes some basic metadata (tab id, addon version, etc.) as 
 ```js
 {
   "event": "CLICK",
-  "source": "CARDGRID",
+  "source": ["CARDGRID" | "CARDGRID_WIDGET"],
   "action_position": 2,
   "value": {
     // "spoc" for sponsored stories, "organic" for regular stories.
-    "card_type": ["organic" | "spoc"],
+    "card_type": ["organic" | "spoc" | "topics_widget"],
+    // topic and position only exists if its card_type = "topics_widget"
+    "topic": "entertainment"
+    // The index position of the topic link within the card
+    "position_in_card": 0
   }
 
   // Basic metadata
@@ -640,6 +644,8 @@ This reports all the Pocket recommended articles (a list of `id`s) when the user
   "source": "pocket",
   "page": ["about:newtab" | "about:home" | "about:welcome" | "unknown"],
   "user_prefs": 7,
+  "window_inner_width": 1000,
+  "window_inner_height" 900,
   "experiments": {
     "experiment_1": {"branch": "control"},
     "experiment_2": {"branch": "treatment"}
@@ -664,6 +670,8 @@ This reports the user's interaction with those Pocket tiles.
     "experiment_2": {"branch": "treatment"}
   },
   "user_prefs": 7,
+  "window_inner_width": 1000,
+  "window_inner_height" 900,
 
   // "pos" is the 0-based index to record the tile's position in the Pocket section.
   // "shim" is a base64 encoded shim attached to spocs, unique to the impression from the Ad server.
@@ -671,25 +679,6 @@ This reports the user's interaction with those Pocket tiles.
 
   // A 0-based index to record which tile in the "tiles" list that the user just interacted with.
   "click|block|pocket": 0
-}
-```
-
-### Load more button ping
-
-```js
-{
-  "event": "CLICK",
-  "source": "DS_LOAD_MORE_BUTTON",
-
-  // Basic metadata
-  "action": "activity_stream_event",
-  "page": ["about:newtab" | "about:home" | "about:welcome" | "unknown"],
-  "client_id": "26288a14-5cc4-d14f-ae0a-bb01ef45be9c",
-  "session_id": "005deed0-e3e4-4c02-a041-17405fd703f6",
-  "browser_session_id": "e7e52665-7db3-f348-9918-e93160eb2ef3",
-  "addon_version": "20180710100040",
-  "locale": "en-US",
-  "user_prefs": 7
 }
 ```
 
@@ -1037,6 +1026,31 @@ Similar policy applied as for the Infobar messages: client_id is reported in all
 }
 ```
 
+## ToastNotification pings
+
+This reports when the user interacts with a toast notification: an OS-level
+toast notification UI affordance or a pop-up OS-level window.  Similar policy
+applied as for the What's New panel: client_id is reported in all the
+channels. Currently this is only used in experiments.
+
+```
+{
+  "experiments" : {
+    "exp1" : {
+      "branch" : "treatment-a"
+    }
+  },
+  "addon_version" : "20210115035053",
+  "release_channel" : "release",
+  "locale" : "en-US",
+  "event" : ["IMPRESSION"],
+  "client_id" : "c4beb4bf-4feb-9c4e-9587-9323b28c2e50",
+  "version" : "86",
+  "message_id" : "TOAST_NOTIFICATION_EXAMPLE_ID",
+  "browser_session_id" : "93714e76-9919-ca49-b697-5e7c09a1394f"
+}
+```
+
 ## Messaging-experiments pings
 
 As the new experiment platform, the Messaging experiment manager is now managing & operating all the experiments of Firefox Messaging System, including the first-run experience (about:welcome), CFR, Whats-new-panel, Moments Page, and Snippets.
@@ -1068,21 +1082,28 @@ Unlike other Activity Stream pings, this is a Firefox Events telemetry event, an
 ### Experiment attribute errors
 
 This records whether issues were encountered with any of the targeting attributes used in the experiment enrollment or message targeting.
-Two different types of events are sent: `attribute_error` and `attribute_timeout` along with the attribute that caused it.
+Two different types of events are sent: `attribute_error` and `attribute_timeout` along with the attribute that caused it. An attribute
+is a variable inside the JEXL targeting expression that is evaluated client side by the browser.
 
 ```js
-[
+{
   "messaging_experiments",
   "targeting",
   "attribute_error", // event
-  "foo" // attribute
-],
-[
+  "foo", // attribute,
+  "extra_keys": {
+    "source": "message id or experiment slug",
+  },
+},
+{
   "messaging_experiments",
   "targeting",
   "attribute_timeout", // event
-  "bar" // attribute
-]
+  "bar", // attribute,
+  "extra_keys": {
+    "source": "message id or experiment slug",
+  },
+}
 ```
 
 ## Firefox Onboarding (about:welcome) pings
@@ -1239,3 +1260,12 @@ These record the impression and click pings for the Sponsored TopSites.
   }
 }
 ```
+
+## Glean "newtab" ping
+
+Unlike the other data collections, this is a
+[Glean Ping](https://mozilla.github.io/glean/book/user/pings/index.html)
+that batches events and metadata about newtab sessions.
+
+You can find full documentation about this ping and its contents in
+[its Glean Dictionary entry](https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/pings/newtab).

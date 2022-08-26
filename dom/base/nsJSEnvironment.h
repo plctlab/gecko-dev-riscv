@@ -57,33 +57,36 @@ class nsJSContext : public nsIScriptContext {
 
   enum IsShrinking { ShrinkingGC, NonShrinkingGC };
 
-  enum IsIncremental { IncrementalGC, NonIncrementalGC };
-
   // Setup all the statics etc - safe to call multiple times after Startup().
   static void EnsureStatics();
 
   static void SetLowMemoryState(bool aState);
 
   static void GarbageCollectNow(JS::GCReason reason,
-                                IsIncremental aIncremental = NonIncrementalGC,
-                                IsShrinking aShrinking = NonShrinkingGC,
-                                int64_t aSliceMillis = 0);
+                                IsShrinking aShrinking = NonShrinkingGC);
 
-  static void CycleCollectNow(nsICycleCollectorListener* aListener = nullptr);
+  static void RunIncrementalGCSlice(JS::GCReason aReason,
+                                    IsShrinking aShrinking,
+                                    js::SliceBudget& aBudget);
+
+  static void CycleCollectNow(mozilla::CCReason aReason,
+                              nsICycleCollectorListener* aListener = nullptr);
 
   // Finish up any in-progress incremental GC.
-  static void PrepareForCycleCollectionSlice(mozilla::TimeStamp aDeadline);
+  static void PrepareForCycleCollectionSlice(mozilla::CCReason aReason,
+                                             mozilla::TimeStamp aDeadline);
 
   // Run a cycle collector slice, using a heuristic to decide how long to run
   // it.
-  static void RunCycleCollectorSlice(mozilla::TimeStamp aDeadline);
+  static void RunCycleCollectorSlice(mozilla::CCReason aReason,
+                                     mozilla::TimeStamp aDeadline);
 
   // Run a cycle collector slice, using the given work budget.
   static void RunCycleCollectorWorkSlice(int64_t aWorkBudget);
 
-  static void BeginCycleCollectionCallback();
+  static void BeginCycleCollectionCallback(mozilla::CCReason aReason);
   static void EndCycleCollectionCallback(
-      mozilla::CycleCollectorResults& aResults);
+      const mozilla::CycleCollectorResults& aResults);
 
   // Return the longest CC slice time since ClearMaxCCSliceTime() was last
   // called.
@@ -100,9 +103,14 @@ class nsJSContext : public nsIScriptContext {
   static void MaybeRunNextCollectorSlice(nsIDocShell* aDocShell,
                                          JS::GCReason aReason);
 
-  // The GC should probably run soon, in the zone of object aObj (if given).
+  // The GC should run soon, in the zone of aObj if given. If aObj is
+  // nullptr, collect all Zones.
   static void PokeGC(JS::GCReason aReason, JSObject* aObj,
                      mozilla::TimeDuration aDelay = 0);
+
+  // If usage is nearing a threshold, request idle-only GC work. (This is called
+  // when a collection would be relatively convenient.)
+  static void MaybePokeGC();
 
   // Immediately perform a non-incremental shrinking GC and CC.
   static void DoLowMemoryGC();
@@ -151,8 +159,7 @@ class nsJSContext : public nsIScriptContext {
   static bool DOMOperationCallback(JSContext* cx);
 };
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SerializedStackHolder;
 
@@ -176,7 +183,7 @@ class AsyncErrorReporter final : public mozilla::Runnable {
   NS_IMETHOD Run() override;
 
   // This is only used on main thread!
-  JS::PersistentRootedValue mException;
+  JS::PersistentRooted<JS::Value> mException;
   bool mHasException = false;
 
   RefPtr<xpc::ErrorReport> mReport;
@@ -185,8 +192,7 @@ class AsyncErrorReporter final : public mozilla::Runnable {
   UniquePtr<SerializedStackHolder> mStackHolder;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 // An interface for fast and native conversion to/from nsIArray. If an object
 // supports this interface, JS can reach directly in for the argv, and avoid

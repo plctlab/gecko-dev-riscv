@@ -36,6 +36,7 @@ pub enum Method {
     Connect,
     Options,
     Trace,
+    Patch,
 }
 
 impl Method {
@@ -49,6 +50,7 @@ impl Method {
             Method::Connect => "CONNECT",
             Method::Options => "OPTIONS",
             Method::Trace => "TRACE",
+            Method::Patch => "PATCH",
         }
     }
 }
@@ -87,6 +89,11 @@ impl Request {
     /// Alias for `Request::new(Method::Get, url)`, for convenience.
     pub fn get(url: Url) -> Self {
         Self::new(Method::Get, url)
+    }
+
+    /// Alias for `Request::new(Method::Patch, url)`, for convenience.
+    pub fn patch(url: Url) -> Self {
+        Self::new(Method::Patch, url)
     }
 
     /// Alias for `Request::new(Method::Post, url)`, for convenience.
@@ -290,19 +297,19 @@ pub mod status_codes {
     /// Is it a 2xx status?
     #[inline]
     pub fn is_success_code(c: u16) -> bool {
-        200 <= c && c < 300
+        (200..300).contains(&c)
     }
 
     /// Is it a 4xx error?
     #[inline]
     pub fn is_client_error_code(c: u16) -> bool {
-        400 <= c && c < 500
+        (400..500).contains(&c)
     }
 
     /// Is it a 5xx error?
     #[inline]
     pub fn is_server_error_code(c: u16) -> bool {
-        500 <= c && c < 600
+        (500..600).contains(&c)
     }
 
     macro_rules! define_status_codes {

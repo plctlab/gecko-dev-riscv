@@ -21,6 +21,7 @@
 #include "mozilla/dom/WebCryptoTask.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/RootedDictionary.h"
 
 // Template taken from security/nss/lib/util/templates.c
 // This (or SGN_EncodeDigestInfo) would ideally be exported
@@ -137,7 +138,8 @@ static nsresult GetAlgorithmName(JSContext* aCx, const OOS& aAlgorithm,
     aName.Assign(aAlgorithm.GetAsString());
   } else {
     // Coerce to algorithm and extract name
-    JS::RootedValue value(aCx, JS::ObjectValue(*aAlgorithm.GetAsObject()));
+    JS::Rooted<JS::Value> value(aCx,
+                                JS::ObjectValue(*aAlgorithm.GetAsObject()));
     Algorithm alg;
 
     if (!alg.Init(aCx, value)) {
@@ -162,7 +164,7 @@ static nsresult Coerce(JSContext* aCx, T& aTarget, const OOS& aAlgorithm) {
     return NS_ERROR_DOM_SYNTAX_ERR;
   }
 
-  JS::RootedValue value(aCx, JS::ObjectValue(*aAlgorithm.GetAsObject()));
+  JS::Rooted<JS::Value> value(aCx, JS::ObjectValue(*aAlgorithm.GetAsObject()));
   if (!aTarget.Init(aCx, value)) {
     return NS_ERROR_DOM_SYNTAX_ERR;
   }
@@ -1357,7 +1359,7 @@ class ImportKeyTask : public WebCryptoTask {
 
     // Try JWK
     ClearException ce(aCx);
-    JS::RootedValue value(aCx, JS::ObjectValue(*aKeyData));
+    JS::Rooted<JS::Value> value(aCx, JS::ObjectValue(*aKeyData));
     if (!mJwk.Init(aCx, value)) {
       mEarlyRv = NS_ERROR_DOM_DATA_ERR;
       return;
@@ -1504,6 +1506,9 @@ class ImportSymmetricKeyTask : public ImportKeyTask {
 
     // Construct an appropriate KeyAlorithm,
     // and verify that usages are appropriate
+    if (mKeyData.Length() > UINT32_MAX / 8) {
+      return NS_ERROR_DOM_DATA_ERR;
+    }
     uint32_t length = 8 * mKeyData.Length();  // bytes to bits
     if (mAlgName.EqualsLiteral(WEBCRYPTO_ALG_AES_CBC) ||
         mAlgName.EqualsLiteral(WEBCRYPTO_ALG_AES_CTR) ||

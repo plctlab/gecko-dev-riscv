@@ -565,6 +565,12 @@ TRRLoadInfo::GetIsFromObjectOrEmbed(bool* aIsFromObjectOrEmbed) {
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetShouldSkipCheckForBrokenURLOrZeroSized(
+    bool* aShouldSkipCheckForBrokenURLOrZeroSized) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetResultPrincipalURI(nsIURI** aURI) {
   nsCOMPtr<nsIURI> uri = mResultPrincipalURI;
   uri.forget(aURI);
@@ -575,6 +581,16 @@ NS_IMETHODIMP
 TRRLoadInfo::SetResultPrincipalURI(nsIURI* aURI) {
   mResultPrincipalURI = aURI;
   return NS_OK;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetChannelCreationOriginalURI(nsIURI** aURI) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetChannelCreationOriginalURI(nsIURI* aURI) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -689,6 +705,16 @@ TRRLoadInfo::SetAllowDeprecatedSystemRequests(
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetIsUserTriggeredSave(bool* aIsUserTriggeredSave) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsUserTriggeredSave(bool aIsUserTriggeredSave) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetIsInDevToolsContext(bool* aIsInDevToolsContext) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -717,6 +743,18 @@ TRRLoadInfo::GetLoadingEmbedderPolicy(
 NS_IMETHODIMP
 TRRLoadInfo::SetLoadingEmbedderPolicy(
     nsILoadInfo::CrossOriginEmbedderPolicy aPolicy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+    bool* aIsOriginTrialCoepCredentiallessEnabledForTopLevel) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+    bool aIsOriginTrialCoepCredentiallessEnabledForTopLevel) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

@@ -10,11 +10,11 @@
 #include "mozilla/AnonymousContentKey.h"
 #include "mozilla/AtomArray.h"
 #include "mozilla/EnumeratedArray.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PostTraversalTask.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoUtils.h"
+#include "mozilla/dom/RustTypes.h"
 #include "mozilla/UniquePtr.h"
 #include "MainThreadUtils.h"
 #include "nsCSSPseudoElements.h"
@@ -28,8 +28,15 @@
 
 namespace mozilla {
 enum class MediaFeatureChangeReason : uint16_t;
-enum class StyleOrientation : uint8_t;
+enum class StylePageOrientation : uint8_t;
 enum class StyleRuleChangeKind : uint32_t;
+
+template <typename Integer, typename Number, typename LinearStops>
+struct StyleTimingFunction;
+struct StylePiecewiseLinearFunction;
+using StyleComputedTimingFunction =
+    StyleTimingFunction<int32_t, float, StylePiecewiseLinearFunction>;
+
 namespace css {
 class Rule;
 }  // namespace css
@@ -50,7 +57,6 @@ class nsIContent;
 
 class nsPresContext;
 class nsWindowSizes;
-struct nsTimingFunction;
 struct TreeMatchContext;
 
 namespace mozilla {
@@ -125,7 +131,8 @@ class ServoStyleSet {
   void ImportRuleLoaded(dom::CSSImportRule&, StyleSheet&);
 
   // Runs style invalidation due to document state changes.
-  void InvalidateStyleForDocumentStateChanges(EventStates aStatesChanged);
+  void InvalidateStyleForDocumentStateChanges(
+      dom::DocumentState aStatesChanged);
 
   void RecordShadowStyleChange(dom::ShadowRoot&);
 
@@ -226,11 +233,9 @@ class ServoStyleSet {
   already_AddRefed<ComputedStyle> ResolveNonInheritingAnonymousBoxStyle(
       PseudoStyleType);
 
-#ifdef MOZ_XUL
   already_AddRefed<ComputedStyle> ResolveXULTreePseudoStyle(
       dom::Element* aParentElement, nsCSSAnonBoxPseudoStaticAtom* aPseudoTag,
       ComputedStyle* aParentStyle, const AtomArray& aInputWord);
-#endif
 
   size_t SheetCount(Origin) const;
   StyleSheet* SheetAt(Origin, size_t aIndex) const;
@@ -240,7 +245,7 @@ class ServoStyleSet {
   // value to page-size, as well as for an explicit size or paper name which
   // is not square.
   // If the value is auto or square, then returns nothing.
-  Maybe<StyleOrientation> GetDefaultPageOrientation();
+  Maybe<StylePageOrientation> GetDefaultPageOrientation();
 
   void AppendAllNonDocumentAuthorSheets(nsTArray<StyleSheet*>& aArray) const;
 
@@ -340,7 +345,7 @@ class ServoStyleSet {
 
   bool GetKeyframesForName(const dom::Element&, const ComputedStyle&,
                            nsAtom* aName,
-                           const nsTimingFunction& aTimingFunction,
+                           const StyleComputedTimingFunction& aTimingFunction,
                            nsTArray<Keyframe>& aKeyframes);
 
   nsTArray<ComputedKeyframeValues> GetComputedKeyframeValuesFor(
@@ -355,6 +360,8 @@ class ServoStyleSet {
   void AppendFontFaceRules(nsTArray<nsFontFaceRuleContainer>& aArray);
 
   const RawServoCounterStyleRule* CounterStyleRuleForName(nsAtom* aName);
+
+  const RawServoScrollTimelineRule* ScrollTimelineRuleForName(nsAtom* aName);
 
   // Get all the currently-active font feature values set.
   already_AddRefed<gfxFontFeatureValueSet> BuildFontFeatureValueSet();
@@ -428,13 +435,13 @@ class ServoStyleSet {
    * the changed state isn't depended upon by any pseudo-class selectors
    * in a style sheet.
    */
-  bool HasStateDependency(const dom::Element&, EventStates) const;
+  bool HasStateDependency(const dom::Element&, dom::ElementState) const;
 
   /**
    * Returns true if a change in document state might require us to restyle the
    * document.
    */
-  bool HasDocumentStateDependency(EventStates aState) const;
+  bool HasDocumentStateDependency(dom::DocumentState) const;
 
   /**
    * Get a new ComputedStyle that uses the same rules as the given ComputedStyle
@@ -448,6 +455,12 @@ class ServoStyleSet {
       ComputedStyle* aComputedStyle, ComputedStyle* aNewParent,
       ComputedStyle* aNewParentIgnoringFirstLine,
       ComputedStyle* aNewLayoutParent, dom::Element* aElement);
+
+  /**
+   * Invalidate styles where there's any viewport units dependent style.
+   */
+  enum class OnlyDynamic : bool { No, Yes };
+  void InvalidateForViewportUnits(OnlyDynamic);
 
  private:
   friend class AutoSetInServoTraversal;

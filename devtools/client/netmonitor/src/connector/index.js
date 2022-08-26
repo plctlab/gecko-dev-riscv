@@ -15,6 +15,8 @@ const {
   getDisplayedTimingMarker,
 } = require("devtools/client/netmonitor/src/selectors/index");
 
+const { TYPES } = require("devtools/shared/commands/resource/resource-command");
+
 // Network throttling
 loader.lazyRequireGetter(
   this,
@@ -50,8 +52,14 @@ class Connector {
     this.updatePersist = this.updatePersist.bind(this);
 
     this.networkFront = null;
-    this.listenForNetworkEvents = true;
   }
+
+  static NETWORK_RESOURCES = [
+    TYPES.NETWORK_EVENT,
+    TYPES.NETWORK_EVENT_STACKTRACE,
+    TYPES.WEBSOCKET,
+    TYPES.SERVER_SENT_EVENT,
+  ];
 
   get currentTarget() {
     return this.commands.targetCommand.targetFront;
@@ -93,34 +101,16 @@ class Connector {
       owner: this.owner,
     });
 
-    await this.commands.targetCommand.watchTargets(
-      [this.commands.targetCommand.TYPES.FRAME],
-      this.onTargetAvailable
-    );
-
-    const { TYPES } = this.toolbox.resourceCommand;
-    const targetResources = [
-      TYPES.DOCUMENT_EVENT,
-      TYPES.NETWORK_EVENT,
-      TYPES.NETWORK_EVENT_STACKTRACE,
-    ];
-
-    if (Services.prefs.getBoolPref("devtools.netmonitor.features.webSockets")) {
-      targetResources.push(TYPES.WEBSOCKET);
-    }
-
-    if (
-      Services.prefs.getBoolPref(
-        "devtools.netmonitor.features.serverSentEvents"
-      )
-    ) {
-      targetResources.push(TYPES.SERVER_SENT_EVENT);
-    }
-
-    await this.toolbox.resourceCommand.watchResources(targetResources, {
-      onAvailable: this.onResourceAvailable,
-      onUpdated: this.onResourceUpdated,
+    await this.commands.targetCommand.watchTargets({
+      types: [this.commands.targetCommand.TYPES.FRAME],
+      onAvailable: this.onTargetAvailable,
     });
+
+    await this.toolbox.resourceCommand.watchResources([TYPES.DOCUMENT_EVENT], {
+      onAvailable: this.onResourceAvailable,
+    });
+
+    await this.resume(false);
 
     // Server side persistance of the data across reload is disabled by default.
     // Ensure enabling it, if the related frontend pref is true.
@@ -141,25 +131,16 @@ class Connector {
 
     this._destroyed = true;
 
-    this.commands.targetCommand.unwatchTargets(
-      [this.commands.targetCommand.TYPES.FRAME],
-      this.onTargetAvailable
-    );
+    this.commands.targetCommand.unwatchTargets({
+      types: [this.commands.targetCommand.TYPES.FRAME],
+      onAvailable: this.onTargetAvailable,
+    });
 
-    const { TYPES } = this.toolbox.resourceCommand;
-    this.toolbox.resourceCommand.unwatchResources(
-      [
-        TYPES.DOCUMENT_EVENT,
-        TYPES.NETWORK_EVENT,
-        TYPES.NETWORK_EVENT_STACKTRACE,
-        TYPES.WEBSOCKET,
-        TYPES.SERVER_SENT_EVENT,
-      ],
-      {
-        onAvailable: this.onResourceAvailable,
-        onUpdated: this.onResourceUpdated,
-      }
-    );
+    this.toolbox.resourceCommand.unwatchResources([TYPES.DOCUMENT_EVENT], {
+      onAvailable: this.onResourceAvailable,
+    });
+
+    this.pause();
 
     Services.prefs.removeObserver(
       DEVTOOLS_ENABLE_PERSISTENT_LOG_PREF,
@@ -171,15 +152,41 @@ class Connector {
     }
 
     this.webConsoleFront = null;
+
+    this.dataProvider.destroy();
     this.dataProvider = null;
   }
 
-  async pause() {
-    this.listenForNetworkEvents = false;
+  clear() {
+    // Clear all the caches in the data provider
+    this.dataProvider.clear();
+
+    this.toolbox.resourceCommand.clearResources(Connector.NETWORK_RESOURCES);
+    this.emitForTests("clear-network-resources");
+
+    // Disable the realted network logs in the webconsole
+    this.toolbox.disableAllConsoleNetworkLogs();
   }
 
-  async resume() {
-    this.listenForNetworkEvents = true;
+  pause() {
+    return this.toolbox.resourceCommand.unwatchResources(
+      Connector.NETWORK_RESOURCES,
+      {
+        onAvailable: this.onResourceAvailable,
+        onUpdated: this.onResourceUpdated,
+      }
+    );
+  }
+
+  resume(ignoreExistingResources = true) {
+    return this.toolbox.resourceCommand.watchResources(
+      Connector.NETWORK_RESOURCES,
+      {
+        onAvailable: this.onResourceAvailable,
+        onUpdated: this.onResourceUpdated,
+        ignoreExistingResources,
+      }
+    );
   }
 
   async onTargetAvailable({ targetFront, isTargetSwitching }) {
@@ -198,14 +205,8 @@ class Connector {
 
   async onResourceAvailable(resources, { areExistingResources }) {
     for (const resource of resources) {
-      const { TYPES } = this.toolbox.resourceCommand;
-
       if (resource.resourceType === TYPES.DOCUMENT_EVENT) {
         this.onDocEvent(resource, { areExistingResources });
-        continue;
-      }
-
-      if (!this.listenForNetworkEvents) {
         continue;
       }
 
@@ -277,13 +278,7 @@ class Connector {
 
   async onResourceUpdated(updates) {
     for (const { resource, update } of updates) {
-      if (
-        resource.resourceType ===
-          this.toolbox.resourceCommand.TYPES.NETWORK_EVENT &&
-        this.listenForNetworkEvents
-      ) {
-        this.dataProvider.onNetworkResourceUpdated(resource, update);
-      }
+      this.dataProvider.onNetworkResourceUpdated(resource, update);
     }
   }
 
@@ -432,9 +427,6 @@ class Connector {
     if (this.hasResourceCommandSupport && this.networkFront) {
       return this.networkFront.getBlockedUrls();
     }
-    if (!this.webConsoleFront.traits.blockedUrls) {
-      return [];
-    }
     return this.webConsoleFront.getBlockedUrls();
   }
 
@@ -443,12 +435,8 @@ class Connector {
       DEVTOOLS_ENABLE_PERSISTENT_LOG_PREF
     );
 
-    // @backward-compat { version 93 } The network parent actor started exposing setPersist method.
-    // Once we drop support for 92, we can drop the trait, but we will have to keep the other checks
-    // until we stop using legacy listeners entirely. (bug 1689459)
-    const hasServerSupport = this.commands.targetCommand.hasTargetWatcherSupport(
-      "network-persist"
-    );
+    // Lets keep these checks until we stop using legacy listeners entirely. (bug 1689459)
+    const hasServerSupport = this.commands.targetCommand.hasTargetWatcherSupport();
     if (
       hasServerSupport &&
       this.hasResourceCommandSupport &&

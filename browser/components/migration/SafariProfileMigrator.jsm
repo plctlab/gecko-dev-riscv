@@ -8,36 +8,26 @@ const { FileUtils } = ChromeUtils.import(
   "resource://gre/modules/FileUtils.jsm"
 );
 const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 const { MigrationUtils, MigratorPrototype } = ChromeUtils.import(
   "resource:///modules/MigrationUtils.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PropertyListUtils",
   "resource://gre/modules/PropertyListUtils.jsm"
 );
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FormHistory",
   "resource://gre/modules/FormHistory.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
 function Bookmarks(aBookmarksFile) {
   this._file = aBookmarksFile;
@@ -49,7 +39,7 @@ Bookmarks.prototype = {
   migrate: function B_migrate(aCallback) {
     return (async () => {
       let dict = await new Promise(resolve =>
-        PropertyListUtils.read(this._file, resolve)
+        lazy.PropertyListUtils.read(this._file, resolve)
       );
       if (!dict) {
         throw new Error("Could not read Bookmarks.plist");
@@ -68,7 +58,7 @@ Bookmarks.prototype = {
         this._histogramBookmarkRoots &
         MigrationUtils.SOURCE_BOOKMARK_ROOTS_BOOKMARKS_TOOLBAR
       ) {
-        PlacesUIUtils.maybeToggleBookmarkToolbarVisibilityAfterMigration();
+        lazy.PlacesUIUtils.maybeToggleBookmarkToolbarVisibilityAfterMigration();
       }
     })().then(
       () => aCallback(true),
@@ -139,41 +129,19 @@ Bookmarks.prototype = {
         // both the places root and the unfiled-bookmarks root.
         // Because the former is only an implementation detail in our UI,
         // the unfiled root seems to be the best choice.
-        folderGuid = PlacesUtils.bookmarks.unfiledGuid;
+        folderGuid = lazy.PlacesUtils.bookmarks.unfiledGuid;
         this._histogramBookmarkRoots |=
           MigrationUtils.SOURCE_BOOKMARK_ROOTS_UNFILED;
         break;
       }
       case this.MENU_COLLECTION: {
-        folderGuid = PlacesUtils.bookmarks.menuGuid;
-        if (
-          !Services.prefs.getBoolPref("browser.toolbars.bookmarks.2h2020") &&
-          !MigrationUtils.isStartupMigration &&
-          PlacesUtils.getChildCountForFolder(folderGuid) >
-            PlacesUIUtils.NUM_TOOLBAR_BOOKMARKS_TO_UNHIDE
-        ) {
-          folderGuid = await MigrationUtils.createImportedBookmarksFolder(
-            "Safari",
-            folderGuid
-          );
-        }
+        folderGuid = lazy.PlacesUtils.bookmarks.menuGuid;
         this._histogramBookmarkRoots |=
           MigrationUtils.SOURCE_BOOKMARK_ROOTS_BOOKMARKS_MENU;
         break;
       }
       case this.TOOLBAR_COLLECTION: {
-        folderGuid = PlacesUtils.bookmarks.toolbarGuid;
-        if (
-          !Services.prefs.getBoolPref("browser.toolbars.bookmarks.2h2020") &&
-          !MigrationUtils.isStartupMigration &&
-          PlacesUtils.getChildCountForFolder(folderGuid) >
-            PlacesUIUtils.NUM_TOOLBAR_BOOKMARKS_TO_UNHIDE
-        ) {
-          folderGuid = await MigrationUtils.createImportedBookmarksFolder(
-            "Safari",
-            folderGuid
-          );
-        }
+        folderGuid = lazy.PlacesUtils.bookmarks.toolbarGuid;
         this._histogramBookmarkRoots |=
           MigrationUtils.SOURCE_BOOKMARK_ROOTS_BOOKMARKS_TOOLBAR;
         break;
@@ -187,8 +155,8 @@ Bookmarks.prototype = {
         );
         folderGuid = (
           await MigrationUtils.insertBookmarkWrapper({
-            parentGuid: PlacesUtils.bookmarks.menuGuid,
-            type: PlacesUtils.bookmarks.TYPE_FOLDER,
+            parentGuid: lazy.PlacesUtils.bookmarks.menuGuid,
+            type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
             title: readingListTitle,
           })
         ).guid;
@@ -223,7 +191,7 @@ Bookmarks.prototype = {
         if (type == "WebBookmarkTypeList" && entry.has("Children")) {
           return {
             title: entry.get("Title"),
-            type: PlacesUtils.bookmarks.TYPE_FOLDER,
+            type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
             children: this._convertEntries(entry.get("Children")),
           };
         }
@@ -271,7 +239,7 @@ History.prototype = {
   },
 
   migrate: function H_migrate(aCallback) {
-    PropertyListUtils.read(this._file, aDict => {
+    lazy.PropertyListUtils.read(this._file, aDict => {
       try {
         if (!aDict) {
           throw new Error("Could not read history property list");
@@ -294,7 +262,7 @@ History.prototype = {
                   {
                     // Safari's History file contains only top-level urls.  It does not
                     // distinguish between typed urls and linked urls.
-                    transition: PlacesUtils.history.TRANSITIONS.LINK,
+                    transition: lazy.PlacesUtils.history.TRANSITIONS.LINK,
                     date,
                   },
                 ],
@@ -352,7 +320,7 @@ MainPreferencesPropertyList.prototype = {
     let alreadyReading = !!this._callbacks.length;
     this._callbacks.push(aCallback);
     if (!alreadyReading) {
-      PropertyListUtils.read(this._file, aDict => {
+      lazy.PropertyListUtils.read(this._file, aDict => {
         this._dict = aDict;
         for (let callback of this._callbacks) {
           try {
@@ -388,7 +356,7 @@ SearchStrings.prototype = {
               fieldname: "searchbar-history",
               value: searchString,
             }));
-            FormHistory.update(changes);
+            lazy.FormHistory.update(changes);
           }
         }
       }, aCallback)

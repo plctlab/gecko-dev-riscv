@@ -11,6 +11,7 @@
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/NativeKeyBindingsType.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/WritingModes.h"
@@ -70,6 +71,7 @@ HeadlessWidget::HeadlessWidget()
       mDestroyed(false),
       mTopLevel(nullptr),
       mCompositorWidget(nullptr),
+      mSizeMode(nsSizeMode_Normal),
       mLastSizeMode(nsSizeMode_Normal),
       mEffectiveSizeMode(nsSizeMode_Normal),
       mRestoreBounds(0, 0, 0, 0) {
@@ -242,7 +244,6 @@ void HeadlessWidget::Move(double aX, double aY) {
   }
 
   mBounds.MoveTo(x, y);
-  NotifyRollupGeometryChange();
 }
 
 LayoutDeviceIntPoint HeadlessWidget::WidgetToScreenOffset() {
@@ -299,7 +300,12 @@ void HeadlessWidget::SetSizeMode(nsSizeMode aMode) {
     return;
   }
 
-  nsBaseWidget::SetSizeMode(aMode);
+  if (aMode == nsSizeMode_Normal && mSizeMode == nsSizeMode_Fullscreen) {
+    MakeFullScreen(false);
+    return;
+  }
+
+  mSizeMode = aMode;
 
   // Normally in real widget backends a window event would be triggered that
   // would cause the window manager to handle resizing the window. In headless
@@ -351,8 +357,7 @@ void HeadlessWidget::ApplySizeModeSideEffects() {
   }
 }
 
-nsresult HeadlessWidget::MakeFullScreen(bool aFullScreen,
-                                        nsIScreen* aTargetScreen) {
+nsresult HeadlessWidget::MakeFullScreen(bool aFullScreen) {
   // Directly update the size mode here so a later call SetSizeMode does
   // nothing.
   if (aFullScreen) {
@@ -377,11 +382,9 @@ nsresult HeadlessWidget::MakeFullScreen(bool aFullScreen,
   // will be ignored if still transitioning to fullscreen, so it must be
   // triggered on the next tick.
   RefPtr<HeadlessWidget> self(this);
-  nsCOMPtr<nsIScreen> targetScreen(aTargetScreen);
   NS_DispatchToCurrentThread(NS_NewRunnableFunction(
-      "HeadlessWidget::MakeFullScreen",
-      [self, targetScreen, aFullScreen]() -> void {
-        self->InfallibleMakeFullScreen(aFullScreen, targetScreen);
+      "HeadlessWidget::MakeFullScreen", [self, aFullScreen]() -> void {
+        self->InfallibleMakeFullScreen(aFullScreen);
       }));
 
   return NS_OK;
@@ -403,7 +406,7 @@ bool HeadlessWidget::GetEditCommands(NativeKeyBindingsType aType,
   Maybe<WritingMode> writingMode;
   if (aEvent.NeedsToRemapNavigationKey()) {
     if (RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher()) {
-      writingMode = dispatcher->MaybeWritingModeAtSelection();
+      writingMode = dispatcher->MaybeQueryWritingModeAtSelection();
     }
   }
 

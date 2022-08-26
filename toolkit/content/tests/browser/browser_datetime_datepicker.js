@@ -109,8 +109,18 @@ async function verifyPickerPosition(browsingContext, inputId) {
       msg + ": " + got + " should be equal(-ish) to " + exp
     );
   }
-  is_close(helper.panel.screenX, inputRect.left, "datepicker x position");
-  is_close(helper.panel.screenY, inputRect.bottom, "datepicker y position");
+  const marginLeft = parseFloat(getComputedStyle(helper.panel).marginLeft);
+  const marginTop = parseFloat(getComputedStyle(helper.panel).marginTop);
+  is_close(
+    helper.panel.screenX - marginLeft,
+    inputRect.left,
+    "datepicker x position"
+  );
+  is_close(
+    helper.panel.screenY - marginTop,
+    inputRect.bottom,
+    "datepicker y position"
+  );
 }
 
 let helper = new DateTimeTestHelper();
@@ -776,13 +786,6 @@ add_task(async function test_datepicker_abs_max() {
  * Ensure datetime-local picker closes when focus moves to a time input.
  */
 add_task(async function test_datetime_focus_to_input() {
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["dom.forms.datetime-local", true],
-      ["dom.forms.datetime-local.widget", true],
-    ],
-  });
-
   await helper.openPicker(
     `data:text/html,<input id=datetime type=datetime-local>`
   );
@@ -814,13 +817,6 @@ add_task(async function test_datetime_focus_to_input() {
 
 // Bug 1726546
 add_task(async function test_datetime_local_min() {
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["dom.forms.datetime-local", true],
-      ["dom.forms.datetime-local.widget", true],
-    ],
-  });
-
   const inputValue = "2016-12-15T04:00";
   const inputMin = "2016-12-05T12:22";
   const inputMax = "2016-12-25T12:22";
@@ -884,13 +880,6 @@ add_task(async function test_datetime_local_min() {
 
 // Bug 1726546
 add_task(async function test_datetime_local_min_select_invalid() {
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["dom.forms.datetime-local", true],
-      ["dom.forms.datetime-local.widget", true],
-    ],
-  });
-
   const inputValue = "2016-12-15T05:00";
   const inputMin = "2016-12-05T12:22";
   const inputMax = "2016-12-25T12:22";

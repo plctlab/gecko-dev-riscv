@@ -17,13 +17,23 @@
 #include "vm/PropertyResult.h"
 #include "vm/TypedArrayObject.h"
 
-#include "gc/FreeOp-inl.h"
+#ifdef ENABLE_RECORD_TUPLE
+#  include "vm/TupleType.h"
+#endif
+
+#include "gc/GCContext-inl.h"
 #include "gc/Marking-inl.h"
 #include "gc/ObjectKind-inl.h"
 #include "vm/ObjectOperations-inl.h"  // js::MaybeHasInterestingSymbolProperty
 #include "vm/Realm-inl.h"
 
 namespace js {
+
+#ifdef ENABLE_RECORD_TUPLE
+// Defined in vm/RecordTupleShared.{h,cpp}. We cannot include that file
+// because it causes circular dependencies.
+extern bool IsExtendedPrimitiveWrapper(const JSObject& obj);
+#endif
 
 // Get the GC kind to use for scripted 'new', empty object literals ({}), and
 // the |Object| constructor.
@@ -72,7 +82,7 @@ js::NativeObject::calculateDynamicSlots(Shape* shape) {
                                shape->getObjectClass());
 }
 
-inline void JSObject::finalize(JSFreeOp* fop) {
+inline void JSObject::finalize(JS::GCContext* gcx) {
   js::probes::FinalizeObject(this);
 
 #ifdef DEBUG
@@ -88,7 +98,7 @@ inline void JSObject::finalize(JSFreeOp* fop) {
       clasp->isNativeObject() ? &as<js::NativeObject>() : nullptr;
 
   if (clasp->hasFinalize()) {
-    clasp->doFinalize(fop, this);
+    clasp->doFinalize(gcx, this);
   }
 
   if (!nobj) {
@@ -98,13 +108,13 @@ inline void JSObject::finalize(JSFreeOp* fop) {
   if (nobj->hasDynamicSlots()) {
     js::ObjectSlots* slotsHeader = nobj->getSlotsHeader();
     size_t size = js::ObjectSlots::allocSize(slotsHeader->capacity());
-    fop->free_(this, slotsHeader, size, js::MemoryUse::ObjectSlots);
+    gcx->free_(this, slotsHeader, size, js::MemoryUse::ObjectSlots);
   }
 
   if (nobj->hasDynamicElements()) {
     js::ObjectElements* elements = nobj->getElementsHeader();
     size_t size = elements->numAllocatedElements() * sizeof(js::HeapSlot);
-    fop->free_(this, nobj->getUnshiftedElementsHeader(), size,
+    gcx->free_(this, nobj->getUnshiftedElementsHeader(), size,
                js::MemoryUse::ObjectElements);
   }
 }
@@ -128,6 +138,10 @@ inline bool JSObject::isUnqualifiedVarObj() const {
     return as<js::DebugEnvironmentProxy>().environment().isUnqualifiedVarObj();
   }
   return is<js::GlobalObject>() || is<js::NonSyntacticVariablesObject>();
+}
+
+inline bool JSObject::canHaveFixedElements() const {
+  return (is<js::ArrayObject>() || IF_RECORD_TUPLE(is<js::TupleType>(), false));
 }
 
 namespace js {
@@ -172,20 +186,20 @@ class MOZ_RAII AutoSuppressAllocationMetadataBuilder {
 template <typename T>
 [[nodiscard]] static MOZ_ALWAYS_INLINE T* SetNewObjectMetadata(JSContext* cx,
                                                                T* obj) {
+  MOZ_ASSERT(cx->isMainThreadContext());
   MOZ_ASSERT(!cx->realm()->hasObjectPendingMetadata());
 
-  // The metadata builder is invoked for each object created on the active
-  // thread, except when analysis/compilation is active, to avoid recursion.
-  if (!cx->isHelperThreadContext()) {
-    if (MOZ_UNLIKELY(cx->realm()->hasAllocationMetadataBuilder()) &&
-        !cx->zone()->suppressAllocationMetadataBuilder) {
-      // Don't collect metadata on objects that represent metadata.
-      AutoSuppressAllocationMetadataBuilder suppressMetadata(cx);
+  // The metadata builder is invoked for each object created on the main thread,
+  // except when it's suppressed.
+  if (MOZ_UNLIKELY(cx->realm()->hasAllocationMetadataBuilder()) &&
+      !cx->zone()->suppressAllocationMetadataBuilder) {
+    // Don't collect metadata on objects that represent metadata, to avoid
+    // recursion.
+    AutoSuppressAllocationMetadataBuilder suppressMetadata(cx);
 
-      Rooted<T*> rooted(cx, obj);
-      cx->realm()->setNewObjectMetadata(cx, rooted);
-      return rooted;
-    }
+    Rooted<T*> rooted(cx, obj);
+    cx->realm()->setNewObjectMetadata(cx, rooted);
+    return rooted;
   }
 
   return obj;
@@ -206,6 +220,11 @@ inline js::GlobalObject& JSObject::nonCCWGlobal() const {
 inline bool JSObject::nonProxyIsExtensible() const {
   MOZ_ASSERT(!uninlinedIsProxyObject());
 
+#ifdef ENABLE_RECORD_TUPLE
+  if (js::IsExtendedPrimitiveWrapper(*this)) {
+    return false;
+  }
+#endif
   // [[Extensible]] for ordinary non-proxy objects is an object flag.
   return !hasFlag(js::ObjectFlag::NotExtensible);
 }
@@ -280,8 +299,8 @@ static MOZ_ALWAYS_INLINE bool HasNoToPrimitiveMethodPure(JSObject* obj,
 #ifdef DEBUG
     NativeObject* pobj;
     PropertyResult prop;
-    MOZ_ASSERT(
-        LookupPropertyPure(cx, obj, SYMBOL_TO_JSID(toPrimitive), &pobj, &prop));
+    MOZ_ASSERT(LookupPropertyPure(cx, obj, PropertyKey::Symbol(toPrimitive),
+                                  &pobj, &prop));
     MOZ_ASSERT(prop.isNotFound());
 #endif
     return true;
@@ -289,7 +308,7 @@ static MOZ_ALWAYS_INLINE bool HasNoToPrimitiveMethodPure(JSObject* obj,
 
   NativeObject* pobj;
   PropertyResult prop;
-  if (!LookupPropertyPure(cx, holder, SYMBOL_TO_JSID(toPrimitive), &pobj,
+  if (!LookupPropertyPure(cx, holder, PropertyKey::Symbol(toPrimitive), &pobj,
                           &prop)) {
     return false;
   }

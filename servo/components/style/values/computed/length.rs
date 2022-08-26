@@ -31,24 +31,33 @@ impl ToComputedValue for specified::NoCalcLength {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        match *self {
-            specified::NoCalcLength::Absolute(length) => length.to_computed_value(context),
-            specified::NoCalcLength::FontRelative(length) => {
-                length.to_computed_value(context, FontBaseSize::CurrentStyle)
-            },
-            specified::NoCalcLength::ViewportPercentage(length) => {
-                context.builder.add_flags(ComputedValueFlags::USES_VIEWPORT_UNITS);
-                length.to_computed_value(context.viewport_size_for_viewport_unit_resolution())
-            },
-            specified::NoCalcLength::ServoCharacterWidth(length) => {
-                length.to_computed_value(context.style().get_font().clone_font_size().size())
-            },
-        }
+        self.to_computed_value_with_base_size(context, FontBaseSize::CurrentStyle)
     }
 
     #[inline]
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         specified::NoCalcLength::Absolute(AbsoluteLength::Px(computed.px()))
+    }
+}
+
+impl specified::NoCalcLength {
+    /// Computes a length with a given font-relative base size.
+    pub fn to_computed_value_with_base_size(&self, context: &Context, base_size: FontBaseSize) -> Length {
+        match *self {
+            specified::NoCalcLength::Absolute(length) => length.to_computed_value(context),
+            specified::NoCalcLength::FontRelative(length) => {
+                length.to_computed_value(context, base_size)
+            },
+            specified::NoCalcLength::ViewportPercentage(length) => {
+                context
+                    .builder
+                    .add_flags(ComputedValueFlags::USES_VIEWPORT_UNITS);
+                length.to_computed_value(context)
+            },
+            specified::NoCalcLength::ServoCharacterWidth(length) => {
+                length.to_computed_value(context.style().get_font().clone_font_size().size())
+            },
+        }
     }
 }
 
@@ -191,7 +200,7 @@ impl Size {
             GenericSize::MaxContent |
             GenericSize::FitContent |
             GenericSize::MozAvailable |
-            GenericSize::FitContentFunction(_) => false
+            GenericSize::FitContentFunction(_) => false,
         }
     }
 }

@@ -6,6 +6,7 @@
 
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "nsTableColFrame.h"
 #include "nsTableFrame.h"
 #include "nsStyleConsts.h"
@@ -347,7 +348,6 @@ void nsTableColGroupFrame::Reflow(nsPresContext* aPresContext,
   }
 
   aDesiredSize.ClearSize();
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsTableColGroupFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
@@ -423,8 +423,9 @@ void nsTableColGroupFrame::InvalidateFrame(uint32_t aDisplayItemKey,
                                            bool aRebuildDisplayItems) {
   nsIFrame::InvalidateFrame(aDisplayItemKey, aRebuildDisplayItems);
   if (GetTableFrame()->IsBorderCollapse()) {
+    const bool rebuild = StaticPrefs::layout_display_list_retain_sc();
     GetParent()->InvalidateFrameWithRect(InkOverflowRect() + GetPosition(),
-                                         aDisplayItemKey, false);
+                                         aDisplayItemKey, rebuild);
   }
 }
 
@@ -437,7 +438,7 @@ void nsTableColGroupFrame::InvalidateFrameWithRect(const nsRect& aRect,
   // we get an inactive layer created and this is computed
   // within FrameLayerBuilder
   GetParent()->InvalidateFrameWithRect(aRect + GetPosition(), aDisplayItemKey,
-                                       false);
+                                       aRebuildDisplayItems);
 }
 
 #ifdef DEBUG_FRAME_DUMP

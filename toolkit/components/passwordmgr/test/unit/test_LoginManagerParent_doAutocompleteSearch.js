@@ -20,7 +20,7 @@ const NEW_PASSWORD_TEMPLATE_ARG = {
   isProbablyANewPasswordField: true,
 };
 
-add_task(async function setup() {
+add_setup(async () => {
   Services.prefs.setBoolPref("signon.generation.available", true);
   Services.prefs.setBoolPref("signon.generation.enabled", true);
 
@@ -94,7 +94,7 @@ add_task(async function test_generated_noLogins() {
     ...NEW_PASSWORD_TEMPLATE_ARG,
     ...{
       // This is false when there is no autocomplete="new-password" attribute &&
-      // LoginAutoComplete._isProbablyANewPasswordField returns false
+      // LoginAutoComplete.isProbablyANewPasswordField returns false
       isProbablyANewPasswordField: false,
     },
   });

@@ -93,12 +93,27 @@ add_task(async function() {
     "getAllTargets(ALL_TYPES) returned the expected targets"
   );
 
-  targetCommand.destroy();
+  for (const target of allTargets) {
+    is(
+      target.commands,
+      commands,
+      "Each target front has a `commands` attribute - " + target
+    );
+  }
 
   // Wait for all the targets to be fully attached so we don't have pending requests.
   await waitForAllTargetsToBeAttached(targetCommand);
 
+  ok(
+    !targetCommand.isDestroyed(),
+    "TargetCommand isn't destroyed before calling commands.destroy()"
+  );
   await commands.destroy();
+  ok(
+    targetCommand.isDestroyed(),
+    "TargetCommand is destroyed after calling commands.destroy()"
+  );
+
   await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
     // registrationPromise is set by the test page.
     const registration = await content.wrappedJSObject.registrationPromise;

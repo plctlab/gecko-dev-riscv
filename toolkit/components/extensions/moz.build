@@ -18,12 +18,14 @@ EXTRA_JS_MODULES += [
     "ExtensionChildDevToolsUtils.jsm",
     "ExtensionCommon.jsm",
     "ExtensionContent.jsm",
+    "ExtensionDNR.sys.mjs",
     "ExtensionPageChild.jsm",
     "ExtensionParent.jsm",
     "ExtensionPermissions.jsm",
     "ExtensionPreferencesManager.jsm",
     "ExtensionProcessScript.jsm",
     "extensionProcessScriptLoader.js",
+    "ExtensionScriptingStore.jsm",
     "ExtensionSettingsStore.jsm",
     "ExtensionShortcuts.jsm",
     "ExtensionStorage.jsm",
@@ -32,12 +34,12 @@ EXTRA_JS_MODULES += [
     "ExtensionStorageSyncKinto.jsm",
     "ExtensionTelemetry.jsm",
     "ExtensionUtils.jsm",
+    "ExtensionWorkerChild.jsm",
     "FindContent.jsm",
     "MatchURLFilters.jsm",
     "MessageManagerProxy.jsm",
     "NativeManifests.jsm",
     "NativeMessaging.jsm",
-    "onExtensionBrowser.js",
     "PerformanceCounters.jsm",
     "ProxyChannelFilter.jsm",
     "Schemas.jsm",
@@ -53,6 +55,8 @@ TESTING_JS_MODULES += [
     "ExtensionTestCommon.jsm",
     "ExtensionXPCShellUtils.jsm",
     "MessageChannel.jsm",
+    "test/xpcshell/data/TestWorkerWatcherChild.jsm",
+    "test/xpcshell/data/TestWorkerWatcherParent.jsm",
 ]
 
 DIRS += [
@@ -126,7 +130,12 @@ XPCSHELL_TESTS_MANIFESTS += [
 # Only include tests that requires the WebExtensions WebIDL API bindings
 # in builds where they are enabled (currently only on Nightly builds).
 if CONFIG["MOZ_WEBEXT_WEBIDL_ENABLED"]:
-    XPCSHELL_TESTS_MANIFESTS += ["test/xpcshell/webidl-api/xpcshell.ini"]
+    XPCSHELL_TESTS_MANIFESTS += [
+        "test/xpcshell/webidl-api/xpcshell.ini",
+        "test/xpcshell/xpcshell-serviceworker.ini",
+    ]
+    MOCHITEST_MANIFESTS += ["test/mochitest/mochitest-serviceworker.ini"]
+
 
 SPHINX_TREES["webextensions"] = "docs"
 

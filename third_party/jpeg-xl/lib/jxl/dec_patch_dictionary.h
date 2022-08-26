@@ -78,25 +78,12 @@ struct PatchBlending {
 // Position and size of the patch in the reference frame.
 struct PatchReferencePosition {
   size_t ref, x0, y0, xsize, ysize;
-  bool operator<(const PatchReferencePosition& oth) const {
-    return std::make_tuple(ref, x0, y0, xsize, ysize) <
-           std::make_tuple(oth.ref, oth.x0, oth.y0, oth.xsize, oth.ysize);
-  }
-  bool operator==(const PatchReferencePosition& oth) const {
-    return !(*this < oth) && !(oth < *this);
-  }
 };
 
 struct PatchPosition {
   // Position of top-left corner of the patch in the image.
   size_t x, y;
-  // Different blend mode for color and extra channels.
-  std::vector<PatchBlending> blending;
-  PatchReferencePosition ref_pos;
-  bool operator<(const PatchPosition& oth) const {
-    return std::make_tuple(ref_pos, x, y) <
-           std::make_tuple(oth.ref_pos, oth.x, oth.y);
-  }
+  size_t ref_pos_idx;
 };
 
 struct PassesSharedState;
@@ -122,10 +109,9 @@ class PatchDictionary {
     ComputePatchCache();
   }
 
-  // Only adds patches that belong to the `image_rect` area of the decoded
-  // image, writing them to the `opsin_rect` area of `opsin`.
-  Status AddTo(Image3F* opsin, const Rect& opsin_rect,
-               float* const* extra_channels, const Rect& image_rect) const;
+  // Adds patches to a segment of `xsize` pixels, starting at `inout`, assumed
+  // to be located at position (x0, y) in the frame.
+  void AddOneRow(float* const* inout, size_t y, size_t x0, size_t xsize) const;
 
   // Returns dependencies of this patch dictionary on reference frame ids as a
   // bit mask: bits 0-3 indicate reference frame 0-3.
@@ -136,7 +122,10 @@ class PatchDictionary {
 
   const PassesSharedState* shared_;
   std::vector<PatchPosition> positions_;
+  std::vector<PatchReferencePosition> ref_positions_;
+  std::vector<PatchBlending> blendings_;
 
+  // TODO(szabadka) Limit the size of these vectors or use an interval tree.
   // Patch occurrences sorted by y.
   std::vector<size_t> sorted_patches_;
   // Index of the first patch for each y value.

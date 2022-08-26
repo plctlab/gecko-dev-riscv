@@ -9,7 +9,14 @@ let extension;
 let defaultEngine;
 let addedEngine;
 
-add_task(async function setup() {
+add_setup(async function() {
+  // Disable window occlusion. Bug 1733955
+  if (navigator.platform.indexOf("Win") == 0) {
+    await SpecialPowers.pushPrefEnv({
+      set: [["widget.windows.window_occlusion_tracking.enabled", false]],
+    });
+  }
+
   defaultEngine = await Services.search.getDefault();
 
   extension = await SearchTestUtils.installSearchExtension({

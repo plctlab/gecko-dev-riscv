@@ -7,13 +7,16 @@
 
 var EXPORTED_SYMBOLS = ["OsEnvironment"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   WindowsRegistry: "resource://gre/modules/WindowsRegistry.jsm",
   WindowsVersionInfo:
     "resource://gre/modules/components-utils/WindowsVersionInfo.jsm",
@@ -25,7 +28,7 @@ let OsEnvironment = {
    */
   Policy: {
     getAllowedAppSources: () =>
-      WindowsRegistry.readRegKey(
+      lazy.WindowsRegistry.readRegKey(
         Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer",
         "AicEnabled"
@@ -40,7 +43,7 @@ let OsEnvironment = {
       }
 
       // The App Sources feature was added in Windows 10, build 15063.
-      const { buildNumber } = WindowsVersionInfo.get();
+      const { buildNumber } = lazy.WindowsVersionInfo.get();
       return buildNumber >= 15063;
     },
   },

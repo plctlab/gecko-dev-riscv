@@ -22,12 +22,16 @@ var EXPORTED_SYMBOLS = [
 const { Integration } = ChromeUtils.import(
   "resource://gre/modules/Integration.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   DownloadHistory: "resource://gre/modules/DownloadHistory.jsm",
   DownloadPaths: "resource://gre/modules/DownloadPaths.jsm",
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
@@ -35,25 +39,23 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   NetUtil: "resource://gre/modules/NetUtil.jsm",
   OS: "resource://gre/modules/osfile.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gExternalAppLauncher",
   "@mozilla.org/uriloader/external-helper-app-service;1",
   Ci.nsPIExternalAppLauncher
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gExternalHelperAppService",
   "@mozilla.org/uriloader/external-helper-app-service;1",
   Ci.nsIExternalHelperAppService
 );
 
-/* global DownloadIntegration */
 Integration.downloads.defineModuleGetter(
-  this,
+  lazy,
   "DownloadIntegration",
   "resource://gre/modules/DownloadIntegration.jsm"
 );
@@ -133,7 +135,7 @@ const kProgressUpdateIntervalMs = 400;
  * managed by the user interface and persisted across sessions.
  */
 var Download = function() {
-  this._deferSucceeded = PromiseUtils.defer();
+  this._deferSucceeded = lazy.PromiseUtils.defer();
 };
 
 Download.prototype = {
@@ -175,6 +177,15 @@ Download.prototype = {
    * they are expected to be deleted, until the "stopped" property becomes true.
    */
   canceled: false,
+
+  /**
+   * Downloaded files can be deleted from within Firefox, e.g. via the context
+   * menu. Currently Firefox does not track file moves (see bug 1746386), so if
+   * a download's target file stops existing we have to assume it's "moved or
+   * missing." To distinguish files intentionally deleted within Firefox from
+   * files that are moved/missing, we mark them as "deleted" with this property.
+   */
+  deleted: false,
 
   /**
    * When the download fails, this is set to a DownloadError instance indicating
@@ -274,6 +285,15 @@ Download.prototype = {
    * download has completed.
    */
   launchWhenSucceeded: false,
+
+  /**
+   * When a download starts, we typically want to automatically open the
+   * downloads panel if the pref browser.download.alwaysOpenPanel is enabled.
+   * However, there are conditions where we want to prevent this. For example, a
+   * false value can prevent the downloads panel from opening when an add-on
+   * creates a download without user input as part of some background operation.
+   */
+  openDownloadsListOnStart: true,
 
   /**
    * This represents the MIME type of the download.
@@ -382,7 +402,7 @@ Download.prototype = {
 
     // Create a new deferred object and an associated promise before starting
     // the actual download.  We store it on the download as the current attempt.
-    let deferAttempt = PromiseUtils.defer();
+    let deferAttempt = lazy.PromiseUtils.defer();
     let currentAttempt = deferAttempt.promise;
     this._currentAttempt = currentAttempt;
 
@@ -460,16 +480,10 @@ Download.prototype = {
           }
 
           // Disallow download if parental controls service restricts it.
-          if (await DownloadIntegration.shouldBlockForParentalControls(this)) {
+          if (
+            await lazy.DownloadIntegration.shouldBlockForParentalControls(this)
+          ) {
             throw new DownloadError({ becauseBlockedByParentalControls: true });
-          }
-
-          // Disallow download if needed runtime permissions have not been granted
-          // by user.
-          if (await DownloadIntegration.shouldBlockForRuntimePermissions()) {
-            throw new DownloadError({
-              becauseBlockedByRuntimePermissions: true,
-            });
           }
 
           // We should check if we have been canceled in the meantime, after all
@@ -590,7 +604,7 @@ Download.prototype = {
    * @rejects  JavaScript exception if any of the operations failed.
    */
   async _succeed() {
-    await DownloadIntegration.downloadDone(this);
+    await lazy.DownloadIntegration.downloadDone(this);
 
     this._deferSucceeded.resolve();
 
@@ -600,17 +614,18 @@ Download.prototype = {
       // Always schedule files to be deleted at the end of the private browsing
       // mode, regardless of the value of the pref.
       if (this.source.isPrivate) {
-        gExternalAppLauncher.deleteTemporaryPrivateFileWhenPossible(
-          new FileUtils.File(this.target.path)
+        lazy.gExternalAppLauncher.deleteTemporaryPrivateFileWhenPossible(
+          new lazy.FileUtils.File(this.target.path)
         );
       } else if (
         Services.prefs.getBoolPref("browser.helperApps.deleteTempFileOnExit") &&
-        !Services.prefs.getBoolPref(
-          "browser.download.improvements_to_download_panel"
+        Services.prefs.getBoolPref(
+          "browser.download.start_downloads_in_tmp_dir",
+          false
         )
       ) {
-        gExternalAppLauncher.deleteTemporaryFileOnExit(
-          new FileUtils.File(this.target.path)
+        lazy.gExternalAppLauncher.deleteTemporaryFileOnExit(
+          new lazy.FileUtils.File(this.target.path)
         );
       }
     }
@@ -674,8 +689,8 @@ Download.prototype = {
           if (err.becauseTargetFailed) {
             // In case we cannot write to the target file
             // retry with a new unique name
-            let uniquePath = DownloadPaths.createNiceUniqueFile(
-              new FileUtils.File(this.target.path)
+            let uniquePath = lazy.DownloadPaths.createNiceUniqueFile(
+              new lazy.FileUtils.File(this.target.path)
             ).path;
             this.target.path = uniquePath;
             return this.start();
@@ -687,7 +702,7 @@ Download.prototype = {
           this._notifyChange();
         });
       this._notifyChange();
-      this._promiseUnblock = DownloadIntegration.downloadDone(this);
+      this._promiseUnblock = lazy.DownloadIntegration.downloadDone(this);
       return this._promiseUnblock;
     }
 
@@ -798,7 +813,7 @@ Download.prototype = {
       Services.telemetry.scalarAdd("downloads.file_opened", 1);
     }
 
-    return DownloadIntegration.launchDownload(this, options);
+    return lazy.DownloadIntegration.launchDownload(this, options);
   },
 
   /*
@@ -815,7 +830,7 @@ Download.prototype = {
    *           the containing folder.
    */
   showContainingDirectory: function D_showContainingDirectory() {
-    return DownloadIntegration.showContainingDirectory(this.target.path);
+    return lazy.DownloadIntegration.showContainingDirectory(this.target.path);
   },
 
   /**
@@ -941,6 +956,7 @@ Download.prototype = {
           if (this.currentBytes != 0 || this.hasPartialData) {
             this.currentBytes = 0;
             this.hasPartialData = false;
+            this.target.refreshPartFileState();
             this._notifyChange();
           }
         } finally {
@@ -961,8 +977,10 @@ Download.prototype = {
     }
 
     try {
-      let sourceUri = NetUtil.newURI(this.source.url);
-      let targetUri = NetUtil.newURI(new FileUtils.File(this.target.path));
+      let sourceUri = lazy.NetUtil.newURI(this.source.url);
+      let targetUri = lazy.NetUtil.newURI(
+        new lazy.FileUtils.File(this.target.path)
+      );
       return sourceUri.equals(targetUri);
     } catch (ex) {
       return false;
@@ -1121,6 +1139,36 @@ Download.prototype = {
     });
 
     return promise;
+  },
+
+  /**
+   * Deletes all file data associated with a download, preserving the download
+   * object itself and updating it for download views.
+   */
+  async manuallyRemoveData() {
+    let { path } = this.target;
+    if (this.succeeded) {
+      // Temp files are made "read-only" by DownloadIntegration.downloadDone, so
+      // reset the permission bits to read/write. This won't be necessary after
+      // bug 1733587 since Downloads won't ever be temporary.
+      await IOUtils.setPermissions(path, 0o660);
+      await IOUtils.remove(path, { ignoreAbsent: true });
+    }
+    this.deleted = true;
+    await this.cancel();
+    await this.removePartialData();
+    // We need to guarantee that the UI is refreshed irrespective of what state
+    // the download is in when this is called, to ensure the download doesn't
+    // wind up stuck displaying as if it exists when it actually doesn't. And
+    // that means updating this.target.partFileExists no matter what.
+    await this.target.refreshPartFileState();
+    await this.refresh();
+    // The above methods will sometimes call _notifyChange, but not always. It
+    // depends on whether the download is `succeeded`, `stopped`, `canceled`,
+    // etc. Since this method needs to update the UI and can be invoked on any
+    // download as long as its target has some file on the system, we need to
+    // call _notifyChange no matter what state the download is in.
+    this._notifyChange();
   },
 
   /**
@@ -1294,6 +1342,7 @@ const kPlainSerializableDownloadProperties = [
   "launchWhenSucceeded",
   "contentType",
   "handleInternally",
+  "openDownloadsListOnStart",
 ];
 
 /**
@@ -1387,6 +1436,11 @@ DownloadSource.prototype = {
   url: null,
 
   /**
+   * String containing the original URL for the download source.
+   */
+  originalUrl: null,
+
+  /**
    * Indicates whether the download originated from a private window.  This
    * determines the context of the network request that is made to retrieve the
    * resource.
@@ -1446,6 +1500,11 @@ DownloadSource.prototype = {
   cookieJarSettings: null,
 
   /**
+   * Represents the authentication header of the download source, could be null if
+   * the download source had no authentication header.
+   */
+  authHeader: null,
+  /**
    * Returns a static representation of the current object state.
    *
    * @return A JavaScript object that can be serialized to JSON.
@@ -1469,7 +1528,7 @@ DownloadSource.prototype = {
     if (this.referrerInfo && isString(this.referrerInfo)) {
       serializable.referrerInfo = this.referrerInfo;
     } else if (this.referrerInfo) {
-      serializable.referrerInfo = E10SUtils.serializeReferrerInfo(
+      serializable.referrerInfo = lazy.E10SUtils.serializeReferrerInfo(
         this.referrerInfo
       );
     }
@@ -1477,13 +1536,13 @@ DownloadSource.prototype = {
     if (this.loadingPrincipal) {
       serializable.loadingPrincipal = isString(this.loadingPrincipal)
         ? this.loadingPrincipal
-        : E10SUtils.serializePrincipal(this.loadingPrincipal);
+        : lazy.E10SUtils.serializePrincipal(this.loadingPrincipal);
     }
 
     if (this.cookieJarSettings) {
       serializable.cookieJarSettings = isString(this.cookieJarSettings)
         ? this.cookieJarSettings
-        : E10SUtils.serializeCookieJarSettings(this.cookieJarSettings);
+        : lazy.E10SUtils.serializeCookieJarSettings(this.cookieJarSettings);
     }
 
     serializeUnknownProperties(this, serializable);
@@ -1542,13 +1601,16 @@ DownloadSource.fromSerializable = function(aSerializable) {
         source[propName] = aSerializable[propName];
       }
     }
+    if ("originalUrl" in aSerializable) {
+      source.originalUrl = aSerializable.originalUrl;
+    }
     if ("referrerInfo" in aSerializable) {
       // Quick pass, pass directly nsIReferrerInfo, we don't need to serialize
       // and deserialize
       if (aSerializable.referrerInfo instanceof Ci.nsIReferrerInfo) {
         source.referrerInfo = aSerializable.referrerInfo;
       } else {
-        source.referrerInfo = E10SUtils.deserializeReferrerInfo(
+        source.referrerInfo = lazy.E10SUtils.deserializeReferrerInfo(
           aSerializable.referrerInfo
         );
       }
@@ -1559,7 +1621,7 @@ DownloadSource.fromSerializable = function(aSerializable) {
       if (aSerializable.loadingPrincipal instanceof Ci.nsIPrincipal) {
         source.loadingPrincipal = aSerializable.loadingPrincipal;
       } else {
-        source.loadingPrincipal = E10SUtils.deserializePrincipal(
+        source.loadingPrincipal = lazy.E10SUtils.deserializePrincipal(
           aSerializable.loadingPrincipal
         );
       }
@@ -1576,10 +1638,14 @@ DownloadSource.fromSerializable = function(aSerializable) {
       if (aSerializable.cookieJarSettings instanceof Ci.nsICookieJarSettings) {
         source.cookieJarSettings = aSerializable.cookieJarSettings;
       } else {
-        source.cookieJarSettings = E10SUtils.deserializeCookieJarSettings(
+        source.cookieJarSettings = lazy.E10SUtils.deserializeCookieJarSettings(
           aSerializable.cookieJarSettings
         );
       }
+    }
+
+    if ("authHeader" in aSerializable) {
+      source.authHeader = aSerializable.authHeader;
     }
 
     deserializeUnknownProperties(
@@ -1587,9 +1653,11 @@ DownloadSource.fromSerializable = function(aSerializable) {
       aSerializable,
       property =>
         property != "url" &&
+        property != "originalUrl" &&
         property != "isPrivate" &&
         property != "referrerInfo" &&
-        property != "cookieJarSettings"
+        property != "cookieJarSettings" &&
+        property != "authHeader"
     );
   }
 
@@ -1776,8 +1844,7 @@ var DownloadError = function(aProperties) {
   } else if (
     aProperties.becauseBlocked ||
     aProperties.becauseBlockedByParentalControls ||
-    aProperties.becauseBlockedByReputationCheck ||
-    aProperties.becauseBlockedByRuntimePermissions
+    aProperties.becauseBlockedByReputationCheck
   ) {
     this.message = "Download blocked.";
   } else {
@@ -1805,9 +1872,6 @@ var DownloadError = function(aProperties) {
     this.becauseBlocked = true;
     this.becauseBlockedByReputationCheck = true;
     this.reputationCheckVerdict = aProperties.reputationCheckVerdict || "";
-  } else if (aProperties.becauseBlockedByRuntimePermissions) {
-    this.becauseBlocked = true;
-    this.becauseBlockedByRuntimePermissions = true;
   } else if (aProperties.becauseBlocked) {
     this.becauseBlocked = true;
   }
@@ -1829,6 +1893,7 @@ DownloadError.BLOCK_VERDICT_MALWARE = "Malware";
 DownloadError.BLOCK_VERDICT_POTENTIALLY_UNWANTED = "PotentiallyUnwanted";
 DownloadError.BLOCK_VERDICT_INSECURE = "Insecure";
 DownloadError.BLOCK_VERDICT_UNCOMMON = "Uncommon";
+DownloadError.BLOCK_VERDICT_DOWNLOAD_SPAM = "DownloadSpam";
 
 DownloadError.prototype = {
   __proto__: Error.prototype,
@@ -1867,15 +1932,6 @@ DownloadError.prototype = {
   becauseBlockedByReputationCheck: false,
 
   /**
-   * Indicates the download was blocked because a runtime permission required to
-   * download files was not granted.
-   *
-   * This does not apply to all systems. On Android this flag is set to true if
-   * a needed runtime permission (storage) has not been granted by the user.
-   */
-  becauseBlockedByRuntimePermissions: false,
-
-  /**
    * If becauseBlockedByReputationCheck is true, indicates the detailed reason
    * why the download was blocked, according to the "BLOCK_VERDICT_" constants.
    *
@@ -1905,8 +1961,6 @@ DownloadError.prototype = {
       becauseBlocked: this.becauseBlocked,
       becauseBlockedByParentalControls: this.becauseBlockedByParentalControls,
       becauseBlockedByReputationCheck: this.becauseBlockedByReputationCheck,
-      becauseBlockedByRuntimePermissions: this
-        .becauseBlockedByRuntimePermissions,
       reputationCheckVerdict: this.reputationCheckVerdict,
     };
 
@@ -1936,7 +1990,6 @@ DownloadError.fromSerializable = function(aSerializable) {
       property != "becauseBlocked" &&
       property != "becauseBlockedByParentalControls" &&
       property != "becauseBlockedByReputationCheck" &&
-      property != "becauseBlockedByRuntimePermissions" &&
       property != "reputationCheckVerdict"
   );
 
@@ -2013,7 +2066,9 @@ DownloadSaver.prototype = {
    */
   addToHistory() {
     if (AppConstants.MOZ_PLACES) {
-      DownloadHistory.addDownloadToHistory(this.download).catch(Cu.reportError);
+      lazy.DownloadHistory.addDownloadToHistory(this.download).catch(
+        Cu.reportError
+      );
     }
   },
 
@@ -2144,10 +2199,10 @@ DownloadCopySaver.prototype = {
     // download is in progress.
     try {
       // If the file already exists, don't delete its contents yet.
-      let file = await OS.File.open(targetPath, { write: true });
+      let file = await lazy.OS.File.open(targetPath, { write: true });
       await file.close();
     } catch (ex) {
-      if (!(ex instanceof OS.File.Error)) {
+      if (!(ex instanceof lazy.OS.File.Error)) {
         throw ex;
       }
       // Throw a DownloadError indicating that the operation failed because of
@@ -2158,7 +2213,7 @@ DownloadCopySaver.prototype = {
       throw error;
     }
 
-    let deferSaveComplete = PromiseUtils.defer();
+    let deferSaveComplete = lazy.PromiseUtils.defer();
 
     if (this._canceled) {
       // Don't create the BackgroundFileSaver object if we have been
@@ -2275,7 +2330,7 @@ DownloadCopySaver.prototype = {
               // Only the first, outermost encoding is considered.
               let encoding = aRequest.contentEncodings.getNext();
               if (encoding) {
-                aRequest.applyConversion = gExternalHelperAppService.applyDecodingForExtension(
+                aRequest.applyConversion = lazy.gExternalHelperAppService.applyDecodingForExtension(
                   uri.fileExtension,
                   encoding
                 );
@@ -2317,13 +2372,13 @@ DownloadCopySaver.prototype = {
 
             // Use a part file, determining if we should keep it on failure.
             backgroundFileSaver.setTarget(
-              new FileUtils.File(partFilePath),
+              new lazy.FileUtils.File(partFilePath),
               keepPartialData
             );
           } else {
             // Set the final target file, and delete it on failure.
             backgroundFileSaver.setTarget(
-              new FileUtils.File(targetPath),
+              new lazy.FileUtils.File(targetPath),
               false
             );
           }
@@ -2342,7 +2397,15 @@ DownloadCopySaver.prototype = {
           }
         },
 
-        onDataAvailable(aRequest, aInputStream, aOffset, aCount) {
+        onDataAvailable: (aRequest, aInputStream, aOffset, aCount) => {
+          // Check if the download have been canceled in the mean time,
+          // and close the channel and return earlier, BackgroundFileSaver
+          // methods shouldn't be called anymore after `finish` was called
+          // on download cancellation.
+          if (this._canceled) {
+            aRequest.cancel(Cr.NS_BINDING_ABORTED);
+            return;
+          }
           backgroundFileSaver.onDataAvailable(
             aRequest,
             aInputStream,
@@ -2365,7 +2428,7 @@ DownloadCopySaver.prototype = {
         // notifications.
         let channel;
         if (download.source.loadingPrincipal) {
-          channel = NetUtil.newChannel({
+          channel = lazy.NetUtil.newChannel({
             uri: download.source.url,
             contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
             loadingPrincipal: download.source.loadingPrincipal,
@@ -2376,7 +2439,7 @@ DownloadCopySaver.prototype = {
               Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
           });
         } else {
-          channel = NetUtil.newChannel({
+          channel = lazy.NetUtil.newChannel({
             uri: download.source.url,
             contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
             loadUsingSystemPrincipal: true,
@@ -2399,6 +2462,18 @@ DownloadCopySaver.prototype = {
         ) {
           channel.loadInfo.cookieJarSettings =
             download.source.cookieJarSettings;
+        }
+        if (
+          channel instanceof Ci.nsIHttpChannel &&
+          download.source.authHeader
+        ) {
+          try {
+            channel.setRequestHeader(
+              "Authorization",
+              download.source.authHeader,
+              true
+            );
+          } catch (e) {}
         }
 
         if (download.source.userContextId) {
@@ -2496,7 +2571,7 @@ DownloadCopySaver.prototype = {
     let {
       shouldBlock,
       verdict,
-    } = await DownloadIntegration.shouldBlockForReputationCheck(download);
+    } = await lazy.DownloadIntegration.shouldBlockForReputationCheck(download);
     if (shouldBlock) {
       Services.telemetry
         .getKeyedHistogramById("DOWNLOADS_USER_ACTION_ON_BLOCKED_DOWNLOAD")
@@ -2508,7 +2583,7 @@ DownloadCopySaver.prototype = {
       // DownloadIntegration. We will always remove the file when the
       // download did not use a partial file path, meaning it
       // currently has its final filename.
-      if (!DownloadIntegration.shouldKeepBlockedData() || !partFilePath) {
+      if (!lazy.DownloadIntegration.shouldKeepBlockedData() || !partFilePath) {
         await this.removeData(!partFilePath);
       } else {
         newProperties.hasBlockedData = true;
@@ -2529,8 +2604,8 @@ DownloadCopySaver.prototype = {
         if (e.name === "NotAllowedError") {
           // In case we cannot write to the target file
           // retry with a new unique name
-          let uniquePath = DownloadPaths.createNiceUniqueFile(
-            new FileUtils.File(targetPath)
+          let uniquePath = lazy.DownloadPaths.createNiceUniqueFile(
+            new lazy.FileUtils.File(targetPath)
           ).path;
           await IOUtils.move(partFilePath, uniquePath);
           this.download.target.path = uniquePath;
@@ -2653,8 +2728,8 @@ DownloadCopySaver.fromSerializable = function(aSerializable) {
  * For more background on the process, see the DownloadLegacyTransfer object.
  */
 var DownloadLegacySaver = function() {
-  this.deferExecuted = PromiseUtils.defer();
-  this.deferCanceled = PromiseUtils.defer();
+  this.deferExecuted = lazy.PromiseUtils.defer();
+  this.deferCanceled = lazy.PromiseUtils.defer();
 };
 
 DownloadLegacySaver.prototype = {
@@ -2774,6 +2849,15 @@ DownloadLegacySaver.prototype = {
       this.download.source.referrerInfo = aRequest.referrerInfo;
     }
 
+    // Don't open the download panel when the user initiated to save a
+    // link or document.
+    if (
+      aRequest instanceof Ci.nsIChannel &&
+      aRequest.loadInfo.isUserTriggeredSave
+    ) {
+      this.download.openDownloadsListOnStart = false;
+    }
+
     this.addToHistory();
   },
 
@@ -2865,12 +2949,12 @@ DownloadLegacySaver.prototype = {
       if (!this.download.target.partFilePath) {
         try {
           // This atomic operation is more efficient than an existence check.
-          let file = await OS.File.open(this.download.target.path, {
+          let file = await lazy.OS.File.open(this.download.target.path, {
             create: true,
           });
           await file.close();
         } catch (ex) {
-          if (!(ex instanceof OS.File.Error) || !ex.becauseExists) {
+          if (!(ex instanceof lazy.OS.File.Error) || !ex.becauseExists) {
             throw ex;
           }
         }

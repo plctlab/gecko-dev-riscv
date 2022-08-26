@@ -66,6 +66,7 @@
 #include "nsIFrameInlines.h"
 #include "nsIScrollableFrame.h"
 #include "nsITheme.h"
+#include "nsIWidget.h"
 #include "nsLayoutUtils.h"
 #include "nsNameSpaceManager.h"
 #include "nsPlaceholderFrame.h"
@@ -265,8 +266,6 @@ bool nsBoxFrame::GetInitialHAlignment(nsBoxFrame::Halignment& aHalign) {
         return false;
     }
   }
-
-  return false;
 }
 
 bool nsBoxFrame::GetInitialVAlignment(nsBoxFrame::Valignment& aValign) {
@@ -306,8 +305,6 @@ bool nsBoxFrame::GetInitialVAlignment(nsBoxFrame::Valignment& aValign) {
         return false;
     }
   }
-
-  return false;
 }
 
 void nsBoxFrame::GetInitialOrientation(bool& aIsHorizontal) {
@@ -564,8 +561,6 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
 #endif
 
   ReflowAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput, aStatus);
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 nsSize nsBoxFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) {
@@ -678,11 +673,10 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
   return size;
 }
 
-nscoord nsBoxFrame::GetXULFlex() {
+int32_t nsBoxFrame::GetXULFlex() {
   if (XULNeedsRecalc(mFlex)) {
-    nsIFrame::AddXULFlex(this, mFlex);
+    mFlex = nsIFrame::ComputeXULFlex(this);
   }
-
   return mFlex;
 }
 
@@ -849,9 +843,9 @@ nsresult nsBoxFrame::AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
       aAttribute == nsGkAtoms::align || aAttribute == nsGkAtoms::valign ||
       aAttribute == nsGkAtoms::minwidth || aAttribute == nsGkAtoms::maxwidth ||
       aAttribute == nsGkAtoms::minheight ||
-      aAttribute == nsGkAtoms::maxheight || aAttribute == nsGkAtoms::flex ||
-      aAttribute == nsGkAtoms::orient || aAttribute == nsGkAtoms::pack ||
-      aAttribute == nsGkAtoms::dir || aAttribute == nsGkAtoms::equalsize) {
+      aAttribute == nsGkAtoms::maxheight || aAttribute == nsGkAtoms::orient ||
+      aAttribute == nsGkAtoms::pack || aAttribute == nsGkAtoms::dir ||
+      aAttribute == nsGkAtoms::equalsize) {
     if (aAttribute == nsGkAtoms::align || aAttribute == nsGkAtoms::valign ||
         aAttribute == nsGkAtoms::orient || aAttribute == nsGkAtoms::pack ||
         aAttribute == nsGkAtoms::dir) {
@@ -921,12 +915,25 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
           this, nsRect(aBuilder->ToReferenceFrame(this), GetSize()));
     }
 
-    if (mContent->AsElement()->HasAttr(nsGkAtoms::titlebar_max_button)) {
+    nsStaticAtom* windowButtonTypes[] = {nsGkAtoms::min, nsGkAtoms::max,
+                                         nsGkAtoms::close, nullptr};
+    int32_t buttonTypeIndex = mContent->AsElement()->FindAttrValueIn(
+        kNameSpaceID_None, nsGkAtoms::titlebar_button, windowButtonTypes,
+        eCaseMatters);
+
+    if (buttonTypeIndex >= 0) {
+      MOZ_ASSERT(buttonTypeIndex < 3);
+
       if (auto* widget = GetNearestWidget()) {
+        using ButtonType = nsIWidget::WindowButtonType;
+        auto buttonType = buttonTypeIndex == 0
+                              ? ButtonType::Minimize
+                              : (buttonTypeIndex == 1 ? ButtonType::Maximize
+                                                      : ButtonType::Close);
         auto rect = LayoutDevicePixel::FromAppUnitsToNearest(
             nsRect(aBuilder->ToReferenceFrame(this), GetSize()),
             PresContext()->AppUnitsPerDevPixel());
-        widget->SetMaximizeButtonRect(rect);
+        widget->SetWindowButtonRect(buttonType, rect);
       }
     }
   }
@@ -951,7 +958,7 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     // and merge them into a single Content() list. This can cause us
     // to violate CSS stacking order, but forceLayer is a magic
     // XUL-only extension anyway.
-    nsDisplayList masterList;
+    nsDisplayList masterList(aBuilder);
     masterList.AppendToTop(tempLists.BorderBackground());
     masterList.AppendToTop(tempLists.BlockBorderBackgrounds());
     masterList.AppendToTop(tempLists.Floats());

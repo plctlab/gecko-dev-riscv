@@ -19,7 +19,7 @@ use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::media_queries::MediaList;
 use style::parser::ParserContext;
 use style::shared_lock::{Locked, SharedRwLock};
-use style::stylesheets::import_rule::{ImportSheet, ImportLayer};
+use style::stylesheets::import_rule::{ImportLayer, ImportSheet};
 use style::stylesheets::AllowImportRules;
 use style::stylesheets::{ImportRule, Origin, StylesheetLoader as StyleStylesheetLoader};
 use style::stylesheets::{StylesheetContents, UrlExtraData};
@@ -163,7 +163,7 @@ impl StyleStylesheetLoader for AsyncStylesheetParser {
         media: Arc<Locked<MediaList>>,
         layer: Option<ImportLayer>,
     ) -> Arc<Locked<ImportRule>> {
-        let stylesheet = ImportSheet::new_pending(self.origin, self.quirks_mode);
+        let stylesheet = ImportSheet::new_pending();
         let rule = Arc::new(lock.wrap(ImportRule {
             url: url.clone(),
             stylesheet,

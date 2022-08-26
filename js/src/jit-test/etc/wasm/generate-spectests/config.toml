@@ -1,6 +1,6 @@
 # Standard 'directives.txt' prologues for jit-tests
 harness_directive = "|jit-test| skip-if: true"
-directive = "|jit-test| test-also=--wasm-compiler=optimizing; test-also=--wasm-compiler=baseline; test-also=--test-wasm-await-tier2; test-also=--disable-wasm-huge-memory; skip-variant-if: --disable-wasm-huge-memory, !wasmHugeMemorySupported(); local-include:harness/harness.js"
+directive = "|jit-test| test-also=--wasm-compiler=optimizing; test-also=--wasm-compiler=baseline; test-also=--wasm-test-serialization; test-also=--test-wasm-await-tier2; test-also=--disable-wasm-huge-memory; skip-variant-if: --disable-wasm-huge-memory, !wasmHugeMemorySupported(); local-include:harness/harness.js"
 
 # Failing tests across all testsuites
 excluded_tests = [
@@ -21,8 +21,6 @@ excluded_tests = [
   "exports.wast",
   # false-positive windows-specific failure
   "memory_trap.wast",
-  # false-positive error on duplicate export name (names.wast:19)
-  "names.wast",
   # false-positive error on invalid UTF-8 custom section name (utf8-custom-section-id.wast:6)
   "utf8-custom-section-id.wast",
   # invalid table maximum length for web embeddings
@@ -35,10 +33,12 @@ excluded_tests = [
 name = "spec"
 url = "https://github.com/WebAssembly/spec"
 excluded_tests = []
+directive = "; test-also=--no-avx; skip-variant-if: --no-avx, !getBuildConfiguration().x86 && !getBuildConfiguration().x64 || getBuildConfiguration().simulator"
 
 [[repos]]
 name = "threads"
 url = "https://github.com/WebAssembly/threads"
+branch = "main"
 parent = "spec"
 excluded_tests = [
   "atomic.wast",
@@ -53,18 +53,9 @@ skip_wpt = true
 directive = "; skip-if: !wasmThreadsEnabled()"
 
 [[repos]]
-name = "simd"
-url = "https://github.com/WebAssembly/simd"
-branch = "main"
-parent = "spec"
-# Skip in jit-test when it's not enabled
-directive = "; skip-if: !wasmSimdEnabled()"
-excluded_tests = []
-
-[[repos]]
 name = "exception-handling"
 url = "https://github.com/WebAssembly/exception-handling"
-branch = "master"
+branch = "main"
 parent = "spec"
 # Skip in jit-test when it's not enabled
 directive = "; --wasm-exceptions; skip-if: !wasmExceptionsEnabled()"
@@ -73,3 +64,10 @@ excluded_tests = [
   # upstream spec, it can be removed when the repo is rebased.
   "global.wast"
 ]
+
+[[repos]]
+name = "memory64"
+url = "https://github.com/mozilla-spidermonkey/memory64"
+branch = "test-cases"
+directive = "; skip-if: !wasmMemory64Enabled()"
+excluded_tests = []

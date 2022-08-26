@@ -1,3 +1,4 @@
+skip-if(OSX) load 1185191.html # this needs to run near the beginning of the test suite
 load 0-timescale.html # bug 1229166
 skip-if(Android) pref(media.autoplay.default,0) load 459439-1.html # bug 888557
 load 466607-1.html
@@ -107,7 +108,6 @@ load buffer-source-slow-resampling-1.html
 load convolver-memory-report-1.html
 load copyFromChannel-2.html
 load empty-buffer-source.html
-test-pref(media.devices.insecure.enabled,true) load enumerateDevices-after-discard-1.html
 HTTP load media-element-source-seek-1.html
 load offline-buffer-source-ended-1.html
 load oscillator-ended-1.html
@@ -149,3 +149,10 @@ load 1697521.html
 load 1708790.html
 skip-if(cocoaWidget) load 1709130.html # video failed decoding on MacOS, 1709684
 skip-if(appleSilicon) load 1517199.html
+load 1734008.html
+load 1741677.html
+load 1748272.html
+load 1752917.html
+load 1762620.html
+load 1765842.html
+load 1770073.html

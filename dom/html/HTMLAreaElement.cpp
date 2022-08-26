@@ -12,7 +12,6 @@
 #include "mozilla/dom/HTMLAnchorElement.h"
 #include "mozilla/dom/HTMLAreaElementBinding.h"
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/MemoryReporting.h"
 #include "nsWindowSizes.h"
 
@@ -49,8 +48,6 @@ void HTMLAreaElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
 nsresult HTMLAreaElement::PostHandleEvent(EventChainPostVisitor& aVisitor) {
   return PostHandleEventForAnchors(aVisitor);
 }
-
-bool HTMLAreaElement::IsLink(nsIURI** aURI) const { return IsHTMLLink(aURI); }
 
 void HTMLAreaElement::GetLinkTarget(nsAString& aTarget) {
   GetAttr(kNameSpaceID_None, nsGkAtoms::target, aTarget);
@@ -108,10 +105,13 @@ nsresult HTMLAreaElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
 void HTMLAreaElement::ToString(nsAString& aSource) { GetHref(aSource); }
 
 already_AddRefed<nsIURI> HTMLAreaElement::GetHrefURI() const {
+  if (nsCOMPtr<nsIURI> uri = GetCachedURI()) {
+    return uri.forget();
+  }
   return GetHrefURIForAnchors();
 }
 
-EventStates HTMLAreaElement::IntrinsicState() const {
+ElementState HTMLAreaElement::IntrinsicState() const {
   return Link::LinkState() | nsGenericHTMLElement::IntrinsicState();
 }
 

@@ -50,8 +50,8 @@ PostMessageEvent::PostMessageEvent(BrowsingContext* aSource,
 
 PostMessageEvent::~PostMessageEvent() = default;
 
-NS_IMETHODIMP
-PostMessageEvent::Run() {
+// TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230, bug 1535398)
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP PostMessageEvent::Run() {
   // Note: We don't init this AutoJSAPI with targetWindow, because we do not
   // want exceptions during message deserialization to trigger error events on
   // targetWindow.
@@ -137,16 +137,16 @@ PostMessageEvent::Run() {
       if (mCallerWindowID == 0) {
         rv = errorObject->Init(
             errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()), u""_ns,
-            0, 0, nsIScriptError::errorFlag, "DOM Window", mIsFromPrivateWindow,
-            mProvidedPrincipal->IsSystemPrincipal());
+            0, 0, nsIScriptError::errorFlag, "DOM Window"_ns,
+            mIsFromPrivateWindow, mProvidedPrincipal->IsSystemPrincipal());
       } else if (callerURI) {
         rv = errorObject->InitWithSourceURI(errorText, callerURI, u""_ns, 0, 0,
                                             nsIScriptError::errorFlag,
-                                            "DOM Window", mCallerWindowID);
+                                            "DOM Window"_ns, mCallerWindowID);
       } else {
         rv = errorObject->InitWithWindowID(
             errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()), u""_ns,
-            0, 0, nsIScriptError::errorFlag, "DOM Window", mCallerWindowID);
+            0, 0, nsIScriptError::errorFlag, "DOM Window"_ns, mCallerWindowID);
       }
       NS_ENSURE_SUCCESS(rv, rv);
 
@@ -164,6 +164,8 @@ PostMessageEvent::Run() {
       do_QueryObject(targetWindow);
 
   JS::CloneDataPolicy cloneDataPolicy;
+  cloneDataPolicy.allowErrorStackFrames();
+
   MOZ_DIAGNOSTIC_ASSERT(targetWindow);
   if (mCallerAgentClusterId.isSome() && targetWindow->GetDocGroup() &&
       targetWindow->GetDocGroup()->AgentClusterId().Equals(
@@ -187,7 +189,13 @@ PostMessageEvent::Run() {
     holder = &mHolder.ref<StructuredCloneHolder>();
   } else {
     MOZ_ASSERT(mHolder.constructed<ipc::StructuredCloneData>());
-    mHolder.ref<ipc::StructuredCloneData>().Read(cx, &messageData, rv);
+    // It's not possible to send shared objects over IPC so we have a different
+    // policy.
+    JS::CloneDataPolicy cloneDataPolicyIPC;
+    cloneDataPolicyIPC.allowErrorStackFrames();
+
+    mHolder.ref<ipc::StructuredCloneData>().Read(cx, &messageData,
+                                                 cloneDataPolicyIPC, rv);
     holder = &mHolder.ref<ipc::StructuredCloneData>();
   }
   if (NS_WARN_IF(rv.Failed())) {
@@ -249,8 +257,9 @@ void PostMessageEvent::Dispatch(nsGlobalWindowInner* aTargetWindow,
   WidgetEvent* internalEvent = aEvent->WidgetEventPtr();
 
   nsEventStatus status = nsEventStatus_eIgnore;
-  EventDispatcher::Dispatch(ToSupports(aTargetWindow), presContext,
-                            internalEvent, aEvent, &status);
+  // TODO: Bug 1506441
+  EventDispatcher::Dispatch(MOZ_KnownLive(ToSupports(aTargetWindow)),
+                            presContext, internalEvent, aEvent, &status);
 }
 
 void PostMessageEvent::DispatchToTargetThread(ErrorResult& aError) {

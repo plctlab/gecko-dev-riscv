@@ -13,11 +13,12 @@
 
 #include "xpcprivate.h"
 #include "xpcpublic.h"
+#include "XPCMaps.h"
 #include "XPCWrapper.h"
 #include "XPCJSMemoryReporter.h"
 #include "XrayWrapper.h"
 #include "WrapperFactory.h"
-#include "mozJSComponentLoader.h"
+#include "mozJSModuleLoader.h"
 #include "nsNetUtil.h"
 #include "nsContentSecurityUtils.h"
 
@@ -56,13 +57,14 @@
 #include "js/SliceBudget.h"
 #include "js/UbiNode.h"
 #include "js/UbiNodeUtils.h"
-#include "js/friend/UsageStatistics.h"  // JS_TELEMETRY_*, JS_SetAccumulateTelemetryCallback
+#include "js/friend/UsageStatistics.h"  // JSMetric, JS_SetAccumulateTelemetryCallback
 #include "js/friend/WindowProxy.h"  // js::SetWindowProxyClass
 #include "js/friend/XrayJitInfo.h"  // JS::SetXrayJitInfo
 #include "mozilla/dom/AbortSignalBinding.h"
 #include "mozilla/dom/GeneratedAtomList.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/FetchUtil.h"
 #include "mozilla/dom/WindowBinding.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
@@ -101,6 +103,7 @@ const char* const XPCJSRuntime::mStrings[] = {
     "Ci",               // IDX_CI
     "Cr",               // IDX_CR
     "Cu",               // IDX_CU
+    "Services",         // IDX_SERVICES
     "wrappedJSObject",  // IDX_WRAPPED_JSOBJECT
     "prototype",        // IDX_PROTOTYPE
     "eval",             // IDX_EVAL
@@ -126,6 +129,10 @@ const char* const XPCJSRuntime::mStrings[] = {
     "interfaceId",      // IDX_INTERFACE_ID
     "initializer",      // IDX_INITIALIZER
     "print",            // IDX_PRINT
+    "fetch",            // IDX_FETCH
+    "crypto",           // IDX_CRYPTO
+    "indexedDB",        // IDX_INDEXEDDB
+    "structuredClone",  // IDX_STRUCTUREDCLONE
 };
 
 /***************************************************************************/
@@ -138,6 +145,7 @@ const char* const XPCJSRuntime::mStrings[] = {
 class AsyncFreeSnowWhite : public Runnable {
  public:
   NS_IMETHOD Run() override {
+    AUTO_PROFILER_LABEL_RELEVANT_FOR_JS("Incremental CC", GCCC);
     AUTO_PROFILER_LABEL("AsyncFreeSnowWhite::Run", GCCC_FreeSnowWhite);
 
     TimeStamp start = TimeStamp::Now();
@@ -494,6 +502,12 @@ void Scriptability::SetWindowAllowsScript(bool aAllowed) {
 }
 
 /* static */
+bool Scriptability::AllowedIfExists(JSObject* aScope) {
+  RealmPrivate* realmPrivate = RealmPrivate::Get(aScope);
+  return realmPrivate ? realmPrivate->scriptability.Allowed() : true;
+}
+
+/* static */
 Scriptability& Scriptability::Get(JSObject* aScope) {
   return RealmPrivate::Get(aScope)->scriptability;
 }
@@ -654,7 +668,7 @@ void NukeAllWrappersForRealm(
 
 }  // namespace xpc
 
-static void CompartmentDestroyedCallback(JSFreeOp* fop,
+static void CompartmentDestroyedCallback(JS::GCContext* gcx,
                                          JS::Compartment* compartment) {
   // NB - This callback may be called in JS_DestroyContext, which happens
   // after the XPCJSRuntime has been torn down.
@@ -693,6 +707,10 @@ void XPCJSRuntime::TraceNativeBlackRoots(JSTracer* trc) {
     if (AutoMarkingPtr* roots = cx->mAutoRoots) {
       roots->TraceJSAll(trc);
     }
+  }
+
+  if (mIID2NativeInterfaceMap) {
+    mIID2NativeInterfaceMap->Trace(trc);
   }
 
   dom::TraceBlackJS(trc);
@@ -739,8 +757,8 @@ void XPCJSRuntime::PrepareForForgetSkippable() {
   }
 }
 
-void XPCJSRuntime::BeginCycleCollectionCallback() {
-  nsJSContext::BeginCycleCollectionCallback();
+void XPCJSRuntime::BeginCycleCollectionCallback(CCReason aReason) {
+  nsJSContext::BeginCycleCollectionCallback(aReason);
 
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
@@ -800,9 +818,12 @@ void XPCJSRuntime::GCSliceCallback(JSContext* cx, JS::GCProgress progress,
 void XPCJSRuntime::DoCycleCollectionCallback(JSContext* cx) {
   // The GC has detected that a CC at this point would collect a tremendous
   // amount of garbage that is being revivified unnecessarily.
-  NS_DispatchToCurrentThread(
-      NS_NewRunnableFunction("XPCJSRuntime::DoCycleCollectionCallback",
-                             []() { nsJSContext::CycleCollectNow(nullptr); }));
+  //
+  // The GC_WAITING reason is a little overloaded here, but we want to do
+  // a CC to allow Realms to be collected when they are referenced by a cycle.
+  NS_DispatchToCurrentThread(NS_NewRunnableFunction(
+      "XPCJSRuntime::DoCycleCollectionCallback",
+      []() { nsJSContext::CycleCollectNow(CCReason::GC_WAITING, nullptr); }));
 
   XPCJSRuntime* self = nsXPConnect::GetRuntimeInstance();
   if (!self) {
@@ -822,7 +843,7 @@ void XPCJSRuntime::CustomGCCallback(JSGCStatus status) {
 }
 
 /* static */
-void XPCJSRuntime::FinalizeCallback(JSFreeOp* fop, JSFinalizeStatus status,
+void XPCJSRuntime::FinalizeCallback(JS::GCContext* gcx, JSFinalizeStatus status,
                                     void* data) {
   XPCJSRuntime* self = nsXPConnect::GetRuntimeInstance();
   if (!self) {
@@ -895,25 +916,20 @@ void XPCJSRuntime::FinalizeCallback(JSFreeOp* fop, JSFinalizeStatus status,
       XPCWrappedNativeScope::SweepAllWrappedNativeTearOffs();
 
       // Now we need to kill the 'Dying' XPCWrappedNativeProtos.
-      // We transfered these native objects to this table when their
-      // JSObject's were finalized. We did not destroy them immediately
-      // at that point because the ordering of JS finalization is not
-      // deterministic and we did not yet know if any wrappers that
-      // might still be referencing the protos where still yet to be
-      // finalized and destroyed. We *do* know that the protos'
-      // JSObjects would not have been finalized if there were any
-      // wrappers that referenced the proto but where not themselves
-      // slated for finalization in this gc cycle. So... at this point
-      // we know that any and all wrappers that might have been
-      // referencing the protos in the dying list are themselves dead.
-      // So, we can safely delete all the protos in the list.
-
-      for (auto i = self->mDyingWrappedNativeProtoMap->Iter(); !i.Done();
-           i.Next()) {
-        auto* entry = static_cast<XPCWrappedNativeProtoMap::Entry*>(i.Get());
-        delete static_cast<const XPCWrappedNativeProto*>(entry->key);
-        i.Remove();
-      }
+      //
+      // We transferred these native objects to this list when their JSObjects
+      // were finalized. We did not destroy them immediately at that point
+      // because the ordering of JS finalization is not deterministic and we did
+      // not yet know if any wrappers that might still be referencing the protos
+      // were still yet to be finalized and destroyed. We *do* know that the
+      // protos' JSObjects would not have been finalized if there were any
+      // wrappers that referenced the proto but were not themselves slated for
+      // finalization in this gc cycle.
+      //
+      // At this point we know that any and all wrappers that might have been
+      // referencing the protos in the dying list are themselves dead. So, we
+      // can safely delete all the protos in the list.
+      self->mDyingWrappedNativeProtos.clear();
 
       MOZ_ASSERT(self->mGCIsRunning, "bad state");
       self->mGCIsRunning = false;
@@ -924,7 +940,7 @@ void XPCJSRuntime::FinalizeCallback(JSFreeOp* fop, JSFinalizeStatus status,
 }
 
 /* static */
-void XPCJSRuntime::WeakPointerZonesCallback(JSContext* cx, void* data) {
+void XPCJSRuntime::WeakPointerZonesCallback(JSTracer* trc, void* data) {
   // Called before each sweeping slice -- after processing any final marking
   // triggered by barriers -- to clear out any references to things that are
   // about to be finalized and update any pointers to moved GC things.
@@ -938,26 +954,26 @@ void XPCJSRuntime::WeakPointerZonesCallback(JSContext* cx, void* data) {
   AutoRestore<bool> restoreState(self->mGCIsRunning);
   self->mGCIsRunning = true;
 
-  self->mWrappedJSMap->UpdateWeakPointersAfterGC();
-  self->mUAWidgetScopeMap.sweep();
+  self->mWrappedJSMap->UpdateWeakPointersAfterGC(trc);
+  self->mUAWidgetScopeMap.traceWeak(trc);
 }
 
 /* static */
-void XPCJSRuntime::WeakPointerCompartmentCallback(JSContext* cx,
+void XPCJSRuntime::WeakPointerCompartmentCallback(JSTracer* trc,
                                                   JS::Compartment* comp,
                                                   void* data) {
   // Called immediately after the ZoneGroup weak pointer callback, but only
   // once for each compartment that is being swept.
   CompartmentPrivate* xpcComp = CompartmentPrivate::Get(comp);
   if (xpcComp) {
-    xpcComp->UpdateWeakPointersAfterGC();
+    xpcComp->UpdateWeakPointersAfterGC(trc);
   }
 }
 
-void CompartmentPrivate::UpdateWeakPointersAfterGC() {
-  mRemoteProxies.sweep();
-  mWrappedJSMap->UpdateWeakPointersAfterGC();
-  mScope->UpdateWeakPointersAfterGC();
+void CompartmentPrivate::UpdateWeakPointersAfterGC(JSTracer* trc) {
+  mRemoteProxies.traceWeak(trc);
+  mWrappedJSMap->UpdateWeakPointersAfterGC(trc);
+  mScope->UpdateWeakPointersAfterGC(trc);
 }
 
 void XPCJSRuntime::CustomOutOfMemoryCallback() {
@@ -989,7 +1005,7 @@ void XPCJSRuntime::OnLargeAllocationFailure() {
 }
 
 class LargeAllocationFailureRunnable final : public Runnable {
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
   CondVar mCondVar;
   bool mWaiting;
 
@@ -1113,8 +1129,6 @@ void XPCJSRuntime::Shutdown(JSContext* cx) {
   mClassInfo2NativeSetMap = nullptr;
 
   mNativeSetMap = nullptr;
-
-  mDyingWrappedNativeProtoMap = nullptr;
 
   // Prevent ~LinkedList assertion failures if we leaked things.
   mWrappedNativeScopes.clear();
@@ -1937,10 +1951,6 @@ void ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats& rtStats,
                 rtStats.runtime.scriptData,
                 "The table holding script data shared in the runtime.");
 
-  RREPORT_BYTES(rtPath + "runtime/tracelogger"_ns, KIND_HEAP,
-                rtStats.runtime.tracelogger,
-                "The memory used for the tracelogger (per-runtime).");
-
   nsCString nonNotablePath =
       rtPath +
       nsPrintfCString(
@@ -2286,8 +2296,8 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
   XPCWrappedNativeScope::ScopeSizeInfo sizeInfo(JSMallocSizeOf);
   XPCWrappedNativeScope::AddSizeOfAllScopesIncludingThis(cx, &sizeInfo);
 
-  mozJSComponentLoader* loader = mozJSComponentLoader::Get();
-  size_t jsComponentLoaderSize =
+  mozJSModuleLoader* loader = mozJSModuleLoader::Get();
+  size_t jsModuleLoaderSize =
       loader ? loader->SizeOfIncludingThis(JSMallocSizeOf) : 0;
 
   // This is the second step (see above).  First we report stuff in the
@@ -2518,14 +2528,8 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
                sizeInfo.mProtoAndIfaceCacheSize,
                "Prototype and interface binding caches.");
 
-  REPORT_BYTES("explicit/xpconnect/js-component-loader"_ns, KIND_HEAP,
-               jsComponentLoaderSize, "XPConnect's JS component loader.");
-
-  // Report tracelogger (global).
-
-  REPORT_BYTES(
-      "explicit/js-non-window/tracelogger"_ns, KIND_HEAP, gStats.tracelogger,
-      "The memory used for the tracelogger, including the graph and events.");
+  REPORT_BYTES("explicit/xpconnect/js-module-loader"_ns, KIND_HEAP,
+               jsModuleLoaderSize, "XPConnect's JS module loader.");
 
   // Report HelperThreadState.
 
@@ -2573,130 +2577,21 @@ static nsresult JSSizeOfTab(JSObject* objArg, size_t* jsObjectsSize,
 
 }  // namespace xpc
 
-static void AccumulateTelemetryCallback(int id, uint32_t sample,
-                                        const char* key) {
+static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
+  // clang-format off
   switch (id) {
-    case JS_TELEMETRY_GC_REASON:
-      Telemetry::Accumulate(Telemetry::GC_REASON_2, sample);
+#define CASE_ACCUMULATE(NAME, _)                      \
+    case JSMetric::NAME:                              \
+      Telemetry::Accumulate(Telemetry::NAME, sample); \
       break;
-    case JS_TELEMETRY_GC_IS_ZONE_GC:
-      Telemetry::Accumulate(Telemetry::GC_IS_COMPARTMENTAL, sample);
-      break;
-    case JS_TELEMETRY_GC_MS:
-      Telemetry::Accumulate(Telemetry::GC_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_BUDGET_MS_2:
-      Telemetry::Accumulate(Telemetry::GC_BUDGET_MS_2, sample);
-      break;
-    case JS_TELEMETRY_GC_BUDGET_WAS_INCREASED:
-      Telemetry::Accumulate(Telemetry::GC_BUDGET_WAS_INCREASED, sample);
-      break;
-    case JS_TELEMETRY_GC_SLICE_WAS_LONG:
-      Telemetry::Accumulate(Telemetry::GC_SLICE_WAS_LONG, sample);
-      break;
-    case JS_TELEMETRY_GC_BUDGET_OVERRUN:
-      Telemetry::Accumulate(Telemetry::GC_BUDGET_OVERRUN, sample);
-      break;
-    case JS_TELEMETRY_GC_ANIMATION_MS:
-      Telemetry::Accumulate(Telemetry::GC_ANIMATION_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_MAX_PAUSE_MS_2:
-      Telemetry::Accumulate(Telemetry::GC_MAX_PAUSE_MS_2, sample);
-      break;
-    case JS_TELEMETRY_GC_PREPARE_MS:
-      Telemetry::Accumulate(Telemetry::GC_PREPARE_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_MARK_MS:
-      Telemetry::Accumulate(Telemetry::GC_MARK_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_SWEEP_MS:
-      Telemetry::Accumulate(Telemetry::GC_SWEEP_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_COMPACT_MS:
-      Telemetry::Accumulate(Telemetry::GC_COMPACT_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_MARK_ROOTS_US:
-      Telemetry::Accumulate(Telemetry::GC_MARK_ROOTS_US, sample);
-      break;
-    case JS_TELEMETRY_GC_MARK_GRAY_MS_2:
-      Telemetry::Accumulate(Telemetry::GC_MARK_GRAY_MS_2, sample);
-      break;
-    case JS_TELEMETRY_GC_MARK_WEAK_MS:
-      Telemetry::Accumulate(Telemetry::GC_MARK_WEAK_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_SLICE_MS:
-      Telemetry::Accumulate(Telemetry::GC_SLICE_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_SLOW_PHASE:
-      Telemetry::Accumulate(Telemetry::GC_SLOW_PHASE, sample);
-      break;
-    case JS_TELEMETRY_GC_SLOW_TASK:
-      Telemetry::Accumulate(Telemetry::GC_SLOW_TASK, sample);
-      break;
-    case JS_TELEMETRY_GC_MMU_50:
-      Telemetry::Accumulate(Telemetry::GC_MMU_50, sample);
-      break;
-    case JS_TELEMETRY_GC_RESET:
-      Telemetry::Accumulate(Telemetry::GC_RESET, sample);
-      break;
-    case JS_TELEMETRY_GC_RESET_REASON:
-      Telemetry::Accumulate(Telemetry::GC_RESET_REASON, sample);
-      break;
-    case JS_TELEMETRY_GC_NON_INCREMENTAL:
-      Telemetry::Accumulate(Telemetry::GC_NON_INCREMENTAL, sample);
-      break;
-    case JS_TELEMETRY_GC_NON_INCREMENTAL_REASON:
-      Telemetry::Accumulate(Telemetry::GC_NON_INCREMENTAL_REASON, sample);
-      break;
-    case JS_TELEMETRY_GC_MINOR_REASON:
-      Telemetry::Accumulate(Telemetry::GC_MINOR_REASON, sample);
-      break;
-    case JS_TELEMETRY_GC_MINOR_REASON_LONG:
-      Telemetry::Accumulate(Telemetry::GC_MINOR_REASON_LONG, sample);
-      break;
-    case JS_TELEMETRY_GC_MINOR_US:
-      Telemetry::Accumulate(Telemetry::GC_MINOR_US, sample);
-      break;
-    case JS_TELEMETRY_GC_NURSERY_BYTES:
-      Telemetry::Accumulate(Telemetry::GC_NURSERY_BYTES_2, sample);
-      break;
-    case JS_TELEMETRY_GC_PRETENURE_COUNT_2:
-      Telemetry::Accumulate(Telemetry::GC_PRETENURE_COUNT_2, sample);
-      break;
-    case JS_TELEMETRY_GC_NURSERY_PROMOTION_RATE:
-      Telemetry::Accumulate(Telemetry::GC_NURSERY_PROMOTION_RATE, sample);
-      break;
-    case JS_TELEMETRY_GC_TENURED_SURVIVAL_RATE:
-      Telemetry::Accumulate(Telemetry::GC_TENURED_SURVIVAL_RATE, sample);
-      break;
-    case JS_TELEMETRY_GC_MARK_RATE_2:
-      Telemetry::Accumulate(Telemetry::GC_MARK_RATE_2, sample);
-      break;
-    case JS_TELEMETRY_GC_TIME_BETWEEN_S:
-      Telemetry::Accumulate(Telemetry::GC_TIME_BETWEEN_S, sample);
-      break;
-    case JS_TELEMETRY_GC_TIME_BETWEEN_SLICES_MS:
-      Telemetry::Accumulate(Telemetry::GC_TIME_BETWEEN_SLICES_MS, sample);
-      break;
-    case JS_TELEMETRY_GC_SLICE_COUNT:
-      Telemetry::Accumulate(Telemetry::GC_SLICE_COUNT, sample);
-      break;
-    case JS_TELEMETRY_GC_EFFECTIVENESS:
-      Telemetry::Accumulate(Telemetry::GC_EFFECTIVENESS, sample);
-      break;
-    case JS_TELEMETRY_DESERIALIZE_BYTES:
-      Telemetry::Accumulate(Telemetry::DESERIALIZE_BYTES, sample);
-      break;
-    case JS_TELEMETRY_DESERIALIZE_ITEMS:
-      Telemetry::Accumulate(Telemetry::DESERIALIZE_ITEMS, sample);
-      break;
-    case JS_TELEMETRY_DESERIALIZE_US:
-      Telemetry::Accumulate(Telemetry::DESERIALIZE_US, sample);
-      break;
+
+    FOR_EACH_JS_METRIC(CASE_ACCUMULATE)
+#undef CASE_ACCUMULATE
+
     default:
-      // Some telemetry only exists in the JS Shell, and are not reported here.
-      break;
+      MOZ_CRASH("Bad metric id");
   }
+  // clang-format on
 }
 
 static void SetUseCounterCallback(JSObject* obj, JSUseCounter counter) {
@@ -2726,7 +2621,7 @@ static void GetRealmNameCallback(JSContext* cx, Realm* realm, char* buf,
   memcpy(buf, name.get(), name.Length() + 1);
 }
 
-static void DestroyRealm(JSFreeOp* fop, JS::Realm* realm) {
+static void DestroyRealm(JS::GCContext* gcx, JS::Realm* realm) {
   // Get the current compartment private into an AutoPtr (which will do the
   // cleanup for us), and null out the private field.
   mozilla::UniquePtr<RealmPrivate> priv(RealmPrivate::Get(realm));
@@ -2899,8 +2794,6 @@ XPCJSRuntime::XPCJSRuntime(JSContext* aCx)
       mClassInfo2NativeSetMap(mozilla::MakeUnique<ClassInfo2NativeSetMap>()),
       mNativeSetMap(mozilla::MakeUnique<NativeSetMap>()),
       mWrappedNativeScopes(),
-      mDyingWrappedNativeProtoMap(
-          mozilla::MakeUnique<XPCWrappedNativeProtoMap>()),
       mGCIsRunning(false),
       mNativesToReleaseArray(),
       mDoingFinalization(false),
@@ -2977,7 +2870,7 @@ void XPCJSRuntime::Initialize(JSContext* cx) {
   mLoaderGlobal.init(cx, nullptr);
 
   // these jsids filled in later when we have a JSContext to work with.
-  mStrIDs[0] = JSID_VOID;
+  mStrIDs[0] = JS::PropertyKey::Void();
 
   nsScriptSecurityManager::GetScriptSecurityManager()->InitJSCallbacks(cx);
 
@@ -3013,21 +2906,13 @@ void XPCJSRuntime::Initialize(JSContext* cx) {
 
   js::SetWindowProxyClass(cx, &OuterWindowProxyClass);
 
-  {
-    JS::AbortSignalIsAborted isAborted = [](JSObject* obj) {
-      dom::AbortSignal* domObj = dom::UnwrapDOMObject<dom::AbortSignal>(obj);
-      MOZ_ASSERT(domObj);
-      return domObj->Aborted();
-    };
-
-    JS::InitPipeToHandling(dom::AbortSignal_Binding::GetJSClass(), isAborted,
-                           cx);
-  }
-
   JS::SetXrayJitInfo(&gXrayJitInfo);
   JS::SetProcessLargeAllocationFailureCallback(
       OnLargeAllocationFailureCallback);
+
+  // The WasmAltDataType is build by the JS engine from the build id.
   JS::SetProcessBuildIdOp(GetBuildId);
+  FetchUtil::InitWasmAltDataType();
 
   // The JS engine needs to keep the source code around in order to implement
   // Function.prototype.toSource(). It'd be nice to not have to do this for
@@ -3073,16 +2958,15 @@ void XPCJSRuntime::Initialize(JSContext* cx) {
 
 bool XPCJSRuntime::InitializeStrings(JSContext* cx) {
   // if it is our first context then we need to generate our string ids
-  if (JSID_IS_VOID(mStrIDs[0])) {
+  if (mStrIDs[0].isVoid()) {
     RootedString str(cx);
     for (unsigned i = 0; i < XPCJSContext::IDX_TOTAL_COUNT; i++) {
       str = JS_AtomizeAndPinString(cx, mStrings[i]);
       if (!str) {
-        mStrIDs[0] = JSID_VOID;
+        mStrIDs[0] = JS::PropertyKey::Void();
         return false;
       }
       mStrIDs[i] = PropertyKey::fromPinnedString(str);
-      mStrJSVals[i].setString(str);
     }
 
     if (!mozilla::dom::DefineStaticJSVals(cx)) {
@@ -3159,9 +3043,8 @@ void XPCJSRuntime::DebugDump(int16_t depth) {
   // iterate sets...
   if (depth && mNativeSetMap->Count()) {
     XPC_LOG_INDENT();
-    for (auto i = mNativeSetMap->Iter(); !i.Done(); i.Next()) {
-      auto* entry = static_cast<NativeSetMap::Entry*>(i.Get());
-      entry->key_value->DebugDump(depth);
+    for (auto i = mNativeSetMap->Iter(); !i.done(); i.next()) {
+      i.get()->DebugDump(depth);
     }
     XPC_LOG_OUTDENT();
   }
@@ -3298,7 +3181,7 @@ void XPCJSRuntime::DeleteSingletonScopes() {
 
 JSObject* XPCJSRuntime::LoaderGlobal() {
   if (!mLoaderGlobal) {
-    RefPtr<mozJSComponentLoader> loader = mozJSComponentLoader::Get();
+    RefPtr loader = mozJSModuleLoader::Get();
 
     dom::AutoJSAPI jsapi;
     jsapi.Init();

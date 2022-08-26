@@ -117,6 +117,18 @@ async function openPreferencesViaOpenPreferencesAPI(aPane, aOptions) {
   return { selectedPane };
 }
 
+async function runSearchInput(input) {
+  let searchInput = gBrowser.contentDocument.getElementById("searchInput");
+  searchInput.focus();
+  let searchCompletedPromise = BrowserTestUtils.waitForEvent(
+    gBrowser.contentWindow,
+    "PreferencesSearchCompleted",
+    evt => evt.detail == input
+  );
+  EventUtils.sendString(input);
+  await searchCompletedPromise;
+}
+
 async function evaluateSearchResults(
   keyword,
   searchReults,
@@ -125,15 +137,7 @@ async function evaluateSearchResults(
   searchReults = Array.isArray(searchReults) ? searchReults : [searchReults];
   searchReults.push("header-searchResults");
 
-  let searchInput = gBrowser.contentDocument.getElementById("searchInput");
-  searchInput.focus();
-  let searchCompletedPromise = BrowserTestUtils.waitForEvent(
-    gBrowser.contentWindow,
-    "PreferencesSearchCompleted",
-    evt => evt.detail == keyword
-  );
-  EventUtils.sendString(keyword);
-  await searchCompletedPromise;
+  await runSearchInput(keyword);
 
   let mainPrefTag = gBrowser.contentDocument.getElementById("mainPrefPane");
   for (let i = 0; i < mainPrefTag.childElementCount; i++) {
@@ -267,5 +271,21 @@ function createObserveAllPromise(observances) {
       },
     };
     Services.obs.addObserver(permObserver, "perm-changed");
+  });
+}
+
+/**
+ * Waits for preference to be set and asserts the value.
+ * @param {string} pref - Preference key.
+ * @param {*} expectedValue - Expected value of the preference.
+ * @param {string} message - Assertion message.
+ */
+async function waitForAndAssertPrefState(pref, expectedValue, message) {
+  await TestUtils.waitForPrefChange(pref, value => {
+    if (value != expectedValue) {
+      return false;
+    }
+    is(value, expectedValue, message);
+    return true;
   });
 }

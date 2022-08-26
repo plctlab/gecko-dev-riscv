@@ -6,13 +6,9 @@
 
 const EXPORTED_SYMBOLS = ["AppInfo"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
-});
 
 const ID_FIREFOX = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}";
 const ID_THUNDERBIRD = "{3550f703-e582-4d05-9a08-453d09bdfdc6}";

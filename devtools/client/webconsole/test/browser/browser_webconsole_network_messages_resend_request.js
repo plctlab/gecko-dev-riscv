@@ -4,7 +4,7 @@
 "use strict";
 
 const TEST_URI =
-  "data:text/html;charset=utf8,Test that 'Resend Request' context menu " +
+  "data:text/html;charset=utf8,<!DOCTYPE html>Test that 'Resend Request' context menu " +
   "item resends the selected request and select it in netmonitor panel.";
 
 const TEST_FILE = "test-network-request.html";
@@ -28,7 +28,9 @@ add_task(async function task() {
   await navigateTo(documentUrl);
   info("Document loaded.");
 
-  const message = await waitFor(() => findMessage(hud, documentUrl));
+  const message = await waitFor(() =>
+    findMessageByType(hud, documentUrl, ".network")
+  );
 
   const menuPopup = await openContextMenu(hud, message);
   const openResendRequestMenuItem = menuPopup.querySelector(
@@ -38,7 +40,9 @@ add_task(async function task() {
 
   // Wait for message containing the resent request url
   openResendRequestMenuItem.click();
-  await waitFor(() => findMessages(hud, documentUrl).length === 2);
+  await waitFor(
+    () => findMessagesByType(hud, documentUrl, ".network").length === 2
+  );
 
   ok(true, "The resent request url is correct.");
 });

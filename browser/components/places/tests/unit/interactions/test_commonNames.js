@@ -12,9 +12,8 @@ const TEST_URL6 = "https://maps.google.com/";
  * usually, the site's brand name with correct spacing and capitalization.
  */
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PageDataCollector: "resource:///modules/pagedata/PageDataCollector.jsm",
-  PageDataService: "resource:///modules/pagedata/PageDataService.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  PageDataService: "resource:///modules/pagedata/PageDataService.sys.mjs",
 });
 
 add_task(async function setup() {
@@ -37,19 +36,16 @@ add_task(async function setup() {
  * Tests that we return site_name page data as a common name.
  */
 add_task(async function fromMetadata() {
-  PageDataService.pageDataDiscovered(TEST_URL1, [
-    {
-      type: PageDataCollector.DATA_TYPE.GENERAL,
-      data: [
-        {
-          site_name: "Test Example",
-        },
-      ],
-    },
-  ]);
+  let actor = {};
+  PageDataService.lockEntry(actor, TEST_URL1);
+  PageDataService.pageDataDiscovered({
+    url: TEST_URL1,
+    siteName: "Test Example",
+  });
   await assertUrlNotification(TOPIC_ADDED, [TEST_URL1], () =>
     Snapshots.add({ url: TEST_URL1 })
   );
+  PageDataService.unlockEntry(actor, TEST_URL1);
 
   let snapshot = await Snapshots.get(TEST_URL1);
   Assert.equal(
@@ -87,19 +83,16 @@ add_task(async function customName_noMetadata() {
  * CommonNames.jsm.
  */
 add_task(async function customName_withMetadata() {
-  PageDataService.pageDataDiscovered(TEST_URL3, [
-    {
-      type: PageDataCollector.DATA_TYPE.GENERAL,
-      data: [
-        {
-          site_name: "Test Example 2",
-        },
-      ],
-    },
-  ]);
+  let actor = {};
+  PageDataService.lockEntry(actor, TEST_URL3);
+  PageDataService.pageDataDiscovered({
+    url: TEST_URL3,
+    siteName: "Test Example 2",
+  });
   await assertUrlNotification(TOPIC_ADDED, [TEST_URL3], () =>
     Snapshots.add({ url: TEST_URL3 })
   );
+  PageDataService.unlockEntry(actor, TEST_URL3);
 
   let snapshot = await Snapshots.get(TEST_URL3);
   Assert.equal(

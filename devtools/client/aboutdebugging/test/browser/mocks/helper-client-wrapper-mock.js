@@ -62,7 +62,7 @@ function createClientMock() {
     // no-op
     getDeviceDescription: () => {},
     // Return default preference value or null if no match.
-    getPreference: function(prefName) {
+    getPreference(prefName) {
       if (prefName in this._preferences) {
         return this._preferences[prefName];
       }
@@ -70,6 +70,13 @@ function createClientMock() {
         return DEFAULT_PREFERENCES[prefName];
       }
       return null;
+    },
+    // no-op
+    createRootResourceCommand: () => {
+      return {
+        watchResources: () => new Promise(r => r()),
+        unwatchResources: () => {},
+      };
     },
     // Empty array of addons
     listAddons: () => [],
@@ -88,7 +95,7 @@ function createClientMock() {
     // no-op
     getFront: () => {},
     // stores the preference locally (doesn't update about:config)
-    setPreference: function(prefName, value) {
+    setPreference(prefName, value) {
       this._preferences[prefName] = value;
     },
     getPerformancePanelUrl: () => CHROME_URL_ROOT + "empty.html",

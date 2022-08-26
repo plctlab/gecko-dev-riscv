@@ -20,9 +20,11 @@
 #include "nsIUploadChannel2.h"
 #include "nsIURIMutator.h"
 #include "nsNetUtil.h"
+#include "nsQueryObject.h"
 #include "nsStringStream.h"
 #include "nsThreadUtils.h"
 #include "nsURLHelper.h"
+#include "ODoH.h"
 #include "TRR.h"
 #include "TRRService.h"
 #include "TRRServiceChannel.h"
@@ -83,14 +85,15 @@ TRR::TRR(AHostResolver* aResolver, bool aPB)
 
 // to verify a domain
 TRR::TRR(AHostResolver* aResolver, nsACString& aHost, enum TrrType aType,
-         const nsACString& aOriginSuffix, bool aPB)
+         const nsACString& aOriginSuffix, bool aPB, bool aUseFreshConnection)
     : mozilla::Runnable("TRR"),
       mHost(aHost),
       mRec(nullptr),
       mHostResolver(aResolver),
       mType(aType),
       mPB(aPB),
-      mOriginSuffix(aOriginSuffix) {
+      mOriginSuffix(aOriginSuffix),
+      mUseFreshConnection(aUseFreshConnection) {
   MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess(),
                         "TRR must be in parent or socket process");
 }
@@ -165,8 +168,10 @@ bool TRR::MaybeBlockRequest() {
       return true;
     }
 
-    if (UseDefaultServer() && TRRService::Get()->IsTemporarilyBlocked(
-                                  mHost, mOriginSuffix, mPB, true)) {
+    if (!StaticPrefs::network_trr_strict_native_fallback() &&
+        UseDefaultServer() &&
+        TRRService::Get()->IsTemporarilyBlocked(mHost, mOriginSuffix, mPB,
+                                                true)) {
       if (mType == TRRTYPE_A) {
         // count only blocklist for A records to avoid double counts
         Telemetry::Accumulate(Telemetry::DNS_TRR_BLACKLISTED3,
@@ -262,9 +267,15 @@ nsresult TRR::SendHTTPRequest() {
     return rv;
   }
 
-  channel->SetLoadFlags(
-      nsIRequest::LOAD_ANONYMOUS | nsIRequest::INHIBIT_CACHING |
-      nsIRequest::LOAD_BYPASS_CACHE | nsIChannel::LOAD_BYPASS_URL_CLASSIFIER);
+  auto loadFlags = nsIRequest::LOAD_ANONYMOUS | nsIRequest::INHIBIT_CACHING |
+                   nsIRequest::LOAD_BYPASS_CACHE |
+                   nsIChannel::LOAD_BYPASS_URL_CLASSIFIER;
+  if (mUseFreshConnection) {
+    // Causes TRRServiceChannel to tell the connection manager
+    // to clear out any connection with the current conn info.
+    loadFlags |= nsIRequest::LOAD_FRESH_CONNECTION;
+  }
+  channel->SetLoadFlags(loadFlags);
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = channel->SetNotificationCallbacks(this);
@@ -303,6 +314,24 @@ nsresult TRR::SendHTTPRequest() {
   NS_ENSURE_SUCCESS(rv, rv);
   rv = internalChannel->SetIsTRRServiceChannel(true);
   NS_ENSURE_SUCCESS(rv, rv);
+
+  if (UseDefaultServer() && StaticPrefs::network_trr_async_connInfo()) {
+    RefPtr<nsHttpConnectionInfo> trrConnInfo =
+        TRRService::Get()->TRRConnectionInfo();
+    if (trrConnInfo) {
+      nsAutoCString host;
+      dnsURI->GetHost(host);
+      if (host.Equals(trrConnInfo->GetOrigin())) {
+        internalChannel->SetConnectionInfo(trrConnInfo);
+        LOG(("TRR::SendHTTPRequest use conn info:%s\n",
+             trrConnInfo->HashKey().get()));
+      } else {
+        MOZ_DIAGNOSTIC_ASSERT(false);
+      }
+    } else {
+      TRRService::Get()->InitTRRConnectionInfo();
+    }
+  }
 
   if (useGet) {
     rv = httpChannel->SetRequestMethod("GET"_ns);
@@ -640,8 +669,6 @@ void TRR::SaveAdditionalRecords(
     // This is quite hacky, and should be fixed.
     hostRecord->mResolving++;
     hostRecord->mEffectiveTRRMode = mRec->mEffectiveTRRMode;
-    RefPtr<AddrHostRecord> addrRec = do_QueryObject(hostRecord);
-    addrRec->mTrrStart = TimeStamp::Now();
     LOG(("Completing lookup for additional: %s",
          nsCString(recordEntry.GetKey()).get()));
     (void)mHostResolver->CompleteLookup(hostRecord, NS_OK, ai, mPB,
@@ -681,9 +708,6 @@ void TRR::StoreIPHintAsDNSRecord(const struct SVCB& aSVCBRecord) {
   // This is quite hacky, and should be fixed.
   hostRecord->mResolving++;
   hostRecord->mEffectiveTRRMode = mRec->mEffectiveTRRMode;
-  RefPtr<AddrHostRecord> addrRec = do_QueryObject(hostRecord);
-  addrRec->mTrrStart = TimeStamp::Now();
-
   (void)mHostResolver->CompleteLookup(hostRecord, NS_OK, ai, mPB, mOriginSuffix,
                                       TRRSkippedReason::TRR_OK, this);
 }
@@ -770,6 +794,19 @@ void TRR::HandleDecodeError(nsresult aStatusCode) {
   }
 }
 
+bool TRR::HasUsableResponse() {
+  if (mType == TRRTYPE_A || mType == TRRTYPE_AAAA) {
+    return !mDNS.mAddresses.IsEmpty();
+  }
+  if (mType == TRRTYPE_TXT) {
+    return mResult.is<TypeRecordTxt>();
+  }
+  if (mType == TRRTYPE_HTTPSSVC) {
+    return mResult.is<TypeRecordHTTPSSVC>();
+  }
+  return false;
+}
+
 nsresult TRR::FollowCname(nsIChannel* aChannel) {
   nsresult rv = NS_OK;
   nsAutoCString cname;
@@ -795,8 +832,18 @@ nsresult TRR::FollowCname(nsIChannel* aChannel) {
 
   // restore mCname as DohDecode() change it
   mCname = cname;
-  if (NS_SUCCEEDED(rv) && !mDNS.mAddresses.IsEmpty()) {
+  if (NS_SUCCEEDED(rv) && HasUsableResponse()) {
     ReturnData(aChannel);
+    return NS_OK;
+  }
+
+  bool ra = mPacket && mPacket->RecursionAvailable().unwrapOr(false);
+  LOG(("ra = %d", ra));
+  if (rv == NS_ERROR_UNKNOWN_HOST && ra) {
+    // If recursion is available, but no addresses have been returned,
+    // we can just return a failure here.
+    LOG(("TRR::FollowCname not sending another request as RA flag is set."));
+    FailData(NS_ERROR_UNKNOWN_HOST);
     return NS_OK;
   }
 
@@ -820,6 +867,10 @@ nsresult TRR::FollowCname(nsIChannel* aChannel) {
 nsresult TRR::On200Response(nsIChannel* aChannel) {
   // decode body and create an AddrInfo struct for the response
   nsClassHashtable<nsCStringHashKey, DOHresp> additionalRecords;
+  RefPtr<TypeHostRecord> typeRec = do_QueryObject(mRec);
+  if (typeRec && typeRec->mOriginHost) {
+    GetOrCreateDNSPacket()->SetOriginHost(typeRec->mOriginHost);
+  }
   nsresult rv = GetOrCreateDNSPacket()->Decode(
       mHost, mType, mCname, StaticPrefs::network_trr_allow_rfc1918(), mDNS,
       mResult, additionalRecords, mTTL);

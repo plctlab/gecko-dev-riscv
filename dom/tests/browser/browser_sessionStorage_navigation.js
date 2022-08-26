@@ -22,6 +22,15 @@ add_task(async function() {
         `cross-origin site and then navigating back`
     );
 
+    await SpecialPowers.pushPrefEnv({
+      set: [
+        [
+          "privacy.partition.always_partition_third_party_non_cookie_storage",
+          false,
+        ],
+      ],
+    });
+
     BrowserTestUtils.loadURI(browser, URL1);
     await BrowserTestUtils.browserLoaded(browser);
 
@@ -113,6 +122,18 @@ add_task(async function() {
               ORIGIN,
               `Navigate to ${ORIGIN} as expected`
             );
+
+            // Bug 1746646: Make mochitests work with TCP enabled (cookieBehavior = 5)
+            // Acquire storage access permission here so that the iframe has
+            // first-party access to the sessionStorage. Without this, it is
+            // isolated and this test will always fail
+            SpecialPowers.wrap(content.document).notifyUserGestureActivation();
+            await SpecialPowers.addPermission(
+              "storageAccessAPI",
+              true,
+              content.window.location.href
+            );
+            await SpecialPowers.wrap(content.document).requestStorageAccess();
 
             let value1 = content.window.sessionStorage.getItem(key);
             is(

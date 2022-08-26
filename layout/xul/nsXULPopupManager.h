@@ -189,7 +189,7 @@ extern const nsNavigationDirection DirectionFromKeyCodeTable[2][6];
 struct PendingPopup {
   PendingPopup(nsIContent* aPopup, mozilla::dom::Event* aEvent);
 
-  const nsCOMPtr<nsIContent> mPopup;
+  const RefPtr<nsIContent> mPopup;
   const RefPtr<mozilla::dom::Event> mEvent;
 
   // Device pixels relative to the showing popup's presshell's
@@ -389,7 +389,6 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   virtual bool ShouldRollupOnMouseActivate() override;
   virtual uint32_t GetSubmenuWidgetChain(
       nsTArray<nsIWidget*>* aWidgetChain) override;
-  virtual void NotifyGeometryChange() override {}
   virtual nsIWidget* GetRollupWidget() override;
   virtual bool RollupNativeMenu() override;
 
@@ -467,13 +466,25 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   // will remain active.
   void SetActiveMenuBar(nsMenuBarFrame* aMenuBar, bool aActivate);
 
+  struct MayShowMenuResult {
+    const bool mIsNative = false;
+    nsMenuFrame* const mMenuFrame = nullptr;
+    nsMenuPopupFrame* const mMenuPopupFrame = nullptr;
+
+    explicit operator bool() const {
+      MOZ_ASSERT(!!mMenuFrame == !!mMenuPopupFrame);
+      return mIsNative || mMenuFrame;
+    }
+  };
+
+  MayShowMenuResult MayShowMenu(nsIContent* aMenu);
+
   /**
    * Open a <menu> given its content node. If aSelectFirstItem is
    * set to true, the first item on the menu will automatically be
-   * selected. If aAsynchronous is true, the event will be dispatched
-   * asynchronously. This should be true when called from frame code.
+   * selected.
    */
-  void ShowMenu(nsIContent* aMenu, bool aSelectFirstItem, bool aAsynchronous);
+  void ShowMenu(nsIContent* aMenu, bool aSelectFirstItem);
 
   /**
    * Open a popup, either anchored or unanchored. If aSelectFirstItem is
@@ -520,19 +531,18 @@ class nsXULPopupManager final : public nsIDOMEventListener,
    * This fires the popupshowing event synchronously.
    *
    * Returns whether native menus are supported for aPopup on this platform.
+   * TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
    */
-  bool ShowPopupAsNativeMenu(nsIContent* aPopup, int32_t aXPos, int32_t aYPos,
-                             bool aIsContextMenu,
-                             mozilla::dom::Event* aTriggerEvent);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY bool ShowPopupAsNativeMenu(
+      nsIContent* aPopup, int32_t aXPos, int32_t aYPos, bool aIsContextMenu,
+      mozilla::dom::Event* aTriggerEvent);
 
   /**
    * Open a tooltip at a specific screen position specified by aXPos and aYPos,
-   * measured in CSS pixels.
-   *
-   * This fires the popupshowing event synchronously.
+   * measured in device pixels. This fires the popupshowing event synchronously.
    */
   void ShowTooltipAtScreen(nsIContent* aPopup, nsIContent* aTriggerContent,
-                           int32_t aXPos, int32_t aYPos);
+                           const mozilla::LayoutDeviceIntPoint&);
 
   /*
    * Hide a popup aPopup. If the popup is in a <menu>, then also inform the
@@ -774,9 +784,9 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   // callbacks for ShowPopup and HidePopup as events may be done asynchronously
   void ShowPopupCallback(nsIContent* aPopup, nsMenuPopupFrame* aPopupFrame,
                          bool aIsContextMenu, bool aSelectFirstItem);
-  void HidePopupCallback(nsIContent* aPopup, nsMenuPopupFrame* aPopupFrame,
-                         nsIContent* aNextPopup, nsIContent* aLastPopup,
-                         nsPopupType aPopupType, bool aDeselectMenu);
+  MOZ_CAN_RUN_SCRIPT void HidePopupCallback(
+      nsIContent* aPopup, nsMenuPopupFrame* aPopupFrame, nsIContent* aNextPopup,
+      nsIContent* aLastPopup, nsPopupType aPopupType, bool aDeselectMenu);
 
   /**
    * Trigger frame construction and reflow in the popup, fire a popupshowing
@@ -785,9 +795,11 @@ class nsXULPopupManager final : public nsIDOMEventListener,
    * aPendingPopup - information about the popup to open
    * aIsContextMenu - true for context menus
    * aSelectFirstItem - true to select the first item in the menu
+   * TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
    */
-  void BeginShowingPopup(const PendingPopup& aPendingPopup, bool aIsContextMenu,
-                         bool aSelectFirstItem);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void BeginShowingPopup(
+      const PendingPopup& aPendingPopup, bool aIsContextMenu,
+      bool aSelectFirstItem);
 
   /**
    * Fire a popuphiding event and then hide the popup. This will be called
@@ -842,8 +854,8 @@ class nsXULPopupManager final : public nsIDOMEventListener,
   /**
    * Fire a popupshowing event for aPopup.
    */
-  nsEventStatus FirePopupShowingEvent(const PendingPopup& aPendingPopup,
-                                      nsPresContext* aPresContext);
+  MOZ_CAN_RUN_SCRIPT nsEventStatus FirePopupShowingEvent(
+      const PendingPopup& aPendingPopup, nsPresContext* aPresContext);
 
   /**
    * Set mouse capturing for the current popup. This traps mouse clicks that
@@ -863,7 +875,9 @@ class nsXULPopupManager final : public nsIDOMEventListener,
    * This is also used when only a menubar is active without any open menus,
    * so that keyboard navigation between menus on the menubar may be done.
    */
-  void UpdateKeyboardListeners();
+  // TODO: Convert UpdateKeyboardListeners() to MOZ_CAN_RUN_SCRIPT and get rid
+  //       of the kungFuDeathGrip in it.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void UpdateKeyboardListeners();
 
   /*
    * Returns true if the docshell for aDoc is aExpected or a child of aExpected.

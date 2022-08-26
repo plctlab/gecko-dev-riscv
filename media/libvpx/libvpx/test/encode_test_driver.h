@@ -49,7 +49,7 @@ enum TestMode {
 class CxDataIterator {
  public:
   explicit CxDataIterator(vpx_codec_ctx_t *encoder)
-      : encoder_(encoder), iter_(NULL) {}
+      : encoder_(encoder), iter_(nullptr) {}
 
   const vpx_codec_cx_pkt_t *Next() {
     return vpx_codec_get_cx_data(encoder_, &iter_);
@@ -148,6 +148,13 @@ class Encoder {
     ASSERT_EQ(VPX_CODEC_OK, res) << EncoderError();
   }
 
+#if CONFIG_VP9_ENCODER
+  void Control(int ctrl_id, vpx_rc_funcs_t *arg) {
+    const vpx_codec_err_t res = vpx_codec_control_(&encoder_, ctrl_id, arg);
+    ASSERT_EQ(VPX_CODEC_OK, res) << EncoderError();
+  }
+#endif  // CONFIG_VP9_ENCODER
+
 #if CONFIG_VP8_ENCODER || CONFIG_VP9_ENCODER
   void Control(int ctrl_id, vpx_active_map_t *arg) {
     const vpx_codec_err_t res = vpx_codec_control_(&encoder_, ctrl_id, arg);
@@ -199,8 +206,7 @@ class Encoder {
 class EncoderTest {
  protected:
   explicit EncoderTest(const CodecFactory *codec)
-      : codec_(codec), abort_(false), init_flags_(0), frame_flags_(0),
-        last_pts_(0) {
+      : codec_(codec), abort_(false), init_flags_(0), frame_flags_(0) {
     // Default to 1 thread.
     cfg_.g_threads = 1;
   }
@@ -284,7 +290,6 @@ class EncoderTest {
   TwopassStatsStore stats_;
   unsigned long init_flags_;
   unsigned long frame_flags_;
-  vpx_codec_pts_t last_pts_;
 };
 
 }  // namespace libvpx_test

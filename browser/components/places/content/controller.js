@@ -3,10 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* import-globals-from ../../../base/content/utilityOverlay.js */
-/* import-globals-from ../PlacesUIUtils.jsm */
-/* import-globals-from ../../../../toolkit/components/places/PlacesUtils.jsm */
-/* import-globals-from ../../../../toolkit/components/places/PlacesTransactions.jsm */
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTransactions: "resource://gre/modules/PlacesTransactions.sys.mjs",
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
+
+/* import-globals-from /browser/base/content/utilityOverlay.js */
 /* import-globals-from ./places.js */
 
 /**
@@ -324,28 +327,7 @@ PlacesController.prototype = {
         break;
       }
       case "placesCmd_showInFolder":
-        // Open containing folder in left pane bookmark tree
-        let currentNode = this._view.selectedNode;
-        if (this._view.parentElement.id.includes("Panel")) {
-          // We're in the sidebar - clear the search box first
-          let searchBox = document.getElementById("search-box");
-          searchBox.value = "";
-          searchBox.doCommand();
-          // And go to the node
-          this._view.selectItems([currentNode.bookmarkGuid], true);
-        } else {
-          PlacesUtils.bookmarks
-            .fetch(currentNode.bookmarkGuid, null, { includePath: true })
-            .then(b => {
-              let containers = b.path.map(obj => {
-                return obj.guid;
-              });
-              // selectLeftPane looks for literal "AllBookmarks" as a "built-in"
-              containers.splice(0, 0, "AllBookmarks");
-              PlacesOrganizer.selectLeftPaneContainerByHierarchy(containers);
-              this._view.selectItems([currentNode.bookmarkGuid], false);
-            });
-        }
+        this.showInFolder(this._view.selectedNode.bookmarkGuid);
         break;
     }
   },
@@ -464,6 +446,13 @@ PlacesController.prototype = {
     if (
       aMenuItem.hasAttribute("hide-if-private-browsing") &&
       !PrivateBrowsingUtils.enabled
+    ) {
+      return false;
+    }
+
+    if (
+      aMenuItem.hasAttribute("hide-if-usercontext-disabled") &&
+      !Services.prefs.getBoolPref("privacy.userContext.enabled", false)
     ) {
       return false;
     }
@@ -682,10 +671,10 @@ PlacesController.prototype = {
       "placesContext_createBookmark"
     );
     createBookmarkItem.label = PlacesUIUtils.getString(
-      `cmd.bookmark${stringId}.label`
+      `cmd.bookmark${stringId}2.label`
     );
     createBookmarkItem.accessKey = PlacesUIUtils.getString(
-      `cmd.bookmark${stringId}.accesskey`
+      `cmd.bookmark${stringId}2.accesskey`
     );
 
     return usableItemCount > 0;
@@ -1375,9 +1364,9 @@ PlacesController.prototype = {
     ]);
 
     const flags =
-      Services.prompt.BUTTON_TITLE_CANCEL * Services.prompt.BUTTON_POS_0 +
-      Services.prompt.BUTTON_TITLE_IS_STRING * Services.prompt.BUTTON_POS_1 +
-      Services.prompt.BUTTON_POS_0_DEFAULT;
+      Services.prompt.BUTTON_TITLE_IS_STRING * Services.prompt.BUTTON_POS_0 +
+      Services.prompt.BUTTON_TITLE_CANCEL * Services.prompt.BUTTON_POS_1 +
+      Services.prompt.BUTTON_POS_1_DEFAULT;
 
     let bag = await Services.prompt.asyncConfirmEx(
       window.browsingContext,
@@ -1385,13 +1374,13 @@ PlacesController.prototype = {
       title,
       body,
       flags,
-      null,
       forget,
+      null,
       null,
       null,
       false
     );
-    if (!(bag.getProperty("buttonNumClicked") === 1)) {
+    if (bag.getProperty("buttonNumClicked") !== 0) {
       return;
     }
 
@@ -1399,6 +1388,46 @@ PlacesController.prototype = {
       await this.ForgetAboutSite.removeDataFromBaseDomain(host);
     } else {
       await this.ForgetAboutSite.removeDataFromDomain(host);
+    }
+  },
+
+  showInFolder(aBookmarkGuid) {
+    // Open containing folder in left pane/sidebar bookmark tree
+    if (
+      this._view._rootElt &&
+      this._view._rootElt.id.includes("bookmarksMenu")
+    ) {
+      // We're in the toolbar bookmarks menu
+      window.SidebarUI._show("viewBookmarksSidebar").then(() => {
+        let theSidebar = document.getElementById("sidebar");
+        theSidebar.contentDocument
+          .getElementById("bookmarks-view")
+          .selectItems([aBookmarkGuid]);
+      });
+    } else if (
+      this._view.parentElement &&
+      this._view.parentElement.id.includes("Panel")
+    ) {
+      // We're in the sidebar - clear the search box first
+      let searchBox = document.getElementById("search-box");
+      searchBox.value = "";
+      searchBox.doCommand();
+
+      // And go to the node
+      this._view.selectItems([aBookmarkGuid], true);
+    } else {
+      // We're in the bookmark library/manager
+      PlacesUtils.bookmarks
+        .fetch(aBookmarkGuid, null, { includePath: true })
+        .then(b => {
+          let containers = b.path.map(obj => {
+            return obj.guid;
+          });
+          // selectLeftPane looks for literal "AllBookmarks" as a "built-in"
+          containers.splice(0, 0, "AllBookmarks");
+          PlacesOrganizer.selectLeftPaneContainerByHierarchy(containers);
+          this._view.selectItems([aBookmarkGuid], false);
+        });
     }
   },
 };
@@ -1531,6 +1560,16 @@ var PlacesControllerDragHelper = {
             parentId = PlacesUtils.bookmarks.getFolderIdForItem(parentId);
           }
         }
+
+        // Disallow the dropping of multiple bookmarks if they include
+        // a javascript: bookmarklet
+        if (
+          !flavor.startsWith("text/x-moz-place") &&
+          (nodes.length > 1 || dropCount > 1) &&
+          nodes.some(n => n.uri?.startsWith("javascript:"))
+        ) {
+          return false;
+        }
       }
     }
     return true;
@@ -1542,7 +1581,7 @@ var PlacesControllerDragHelper = {
    * @param {object} insertionPoint The insertion point where the items should
    *                                be dropped.
    * @param {object} dt             The dataTransfer information for the drop.
-   * @param {object} view           The view or the tree element. This allows
+   * @param {object} [view]         The view or the tree element. This allows
    *                                batching to take place.
    */
   async onDrop(insertionPoint, dt, view) {
@@ -1559,6 +1598,7 @@ var PlacesControllerDragHelper = {
     // DataTransfer is only valid during the synchronous handling of the `drop`
     // event handler callback.
     let nodes = [];
+    let externalDrag = false;
     for (let i = 0; i < dropCount; ++i) {
       let flavor = this.getFirstValidFlavor(dt.mozTypesAt(i));
       if (!flavor) {
@@ -1574,10 +1614,15 @@ var PlacesControllerDragHelper = {
         handled.add(data);
       }
 
+      // Check that the drag/drop is not internal
+      if (i == 0 && !flavor.startsWith("text/x-moz-place")) {
+        externalDrag = true;
+      }
+
       if (flavor != TAB_DROP_TYPE) {
         nodes = [...nodes, ...PlacesUtils.unwrapNodes(data, flavor)];
       } else if (
-        data instanceof XULElement &&
+        XULElement.isInstance(data) &&
         data.localName == "tab" &&
         data.ownerGlobal.isChromeWindow
       ) {
@@ -1590,6 +1635,51 @@ var PlacesControllerDragHelper = {
         });
       } else {
         throw new Error("bogus data was passed as a tab");
+      }
+    }
+
+    // If a multiple urls are being dropped from the urlbar or an external source,
+    // and they include javascript url, not bookmark any of them
+    if (
+      externalDrag &&
+      (nodes.length > 1 || dropCount > 1) &&
+      nodes.some(n => n.uri?.startsWith("javascript:"))
+    ) {
+      throw new Error("Javascript bookmarklet passed with uris");
+    }
+
+    // If a single javascript url is being dropped from the urlbar or an external source,
+    // show the bookmark dialog as a speedbump protection against malicious cases.
+    if (
+      nodes.length == 1 &&
+      externalDrag &&
+      nodes[0].uri?.startsWith("javascript")
+    ) {
+      let uri;
+      try {
+        uri = Services.io.newURI(nodes[0].uri);
+      } catch (ex) {
+        // Invalid uri, we skip this code and the entry will be discarded later.
+      }
+
+      if (uri) {
+        let bookmarkGuid = await PlacesUIUtils.showBookmarkDialog(
+          {
+            action: "add",
+            type: "bookmark",
+            defaultInsertionPoint: insertionPoint,
+            hiddenRows: ["folderPicker"],
+            title: nodes[0].title,
+            uri,
+          },
+          BrowserWindowTracker.getTopWindow() // `window` may be the Library.
+        );
+
+        if (bookmarkGuid && view) {
+          view.selectItems([bookmarkGuid], false);
+        }
+
+        return;
       }
     }
 

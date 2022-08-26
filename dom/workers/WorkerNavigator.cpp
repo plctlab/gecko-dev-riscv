@@ -11,7 +11,6 @@
 #include "ErrorList.h"
 #include "MainThreadUtils.h"
 #include "RuntimeService.h"
-#include "WorkerPrivate.h"
 #include "WorkerRunnable.h"
 #include "WorkerScope.h"
 #include "mozilla/dom/LockManager.h"
@@ -149,9 +148,11 @@ class GetUserAgentRunnable final : public WorkerMainThreadRunnable {
 
     nsCOMPtr<nsPIDOMWindowInner> window = mWorkerPrivate->GetWindow();
 
-    bool isCallerChrome = mWorkerPrivate->UsesSystemPrincipal();
-    nsresult rv = dom::Navigator::GetUserAgent(
-        window, mWorkerPrivate->GetPrincipal(), isCallerChrome, mUA);
+    bool shouldResistFingerprinting =
+        mWorkerPrivate->ShouldResistFingerprinting();
+    nsresult rv =
+        dom::Navigator::GetUserAgent(window, mWorkerPrivate->GetDocument(),
+                                     Some(shouldResistFingerprinting), mUA);
     if (NS_FAILED(rv)) {
       NS_WARNING("Failed to retrieve user-agent from the worker thread.");
     }
@@ -177,7 +178,10 @@ uint64_t WorkerNavigator::HardwareConcurrency() const {
   RuntimeService* rts = RuntimeService::GetService();
   MOZ_ASSERT(rts);
 
-  return rts->ClampedHardwareConcurrency();
+  WorkerPrivate* aWorkerPrivate = GetCurrentThreadWorkerPrivate();
+  bool rfp = aWorkerPrivate->ShouldResistFingerprinting();
+
+  return rts->ClampedHardwareConcurrency(rfp);
 }
 
 StorageManager* WorkerNavigator::Storage() {

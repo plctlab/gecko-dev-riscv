@@ -81,8 +81,8 @@ pref("network.http.max-persistent-connections-per-server", 6);
 pref("network.http.max-persistent-connections-per-proxy", 20);
 
 // spdy
-pref("network.http.spdy.push-allowance", 32768);
-pref("network.http.spdy.default-hpack-buffer", 4096); // 4k
+pref("network.http.http2.push-allowance", 32768);
+pref("network.http.http2.default-hpack-buffer", 4096); // 4k
 
 // http3
 pref("network.http.http3.default-qpack-table-size", 0);
@@ -141,9 +141,6 @@ pref("signon.debug", false);
 /* form helper (scroll to and optionally zoom into editable fields)  */
 pref("formhelper.autozoom", true);
 
-/* find helper */
-pref("findhelper.autozoom", true);
-
 /* autocomplete */
 pref("browser.formfill.enable", true);
 
@@ -195,8 +192,6 @@ pref("extensions.compatability.locales.buildid", "0");
 pref("extensions.installDistroAddons", false);
 
 pref("extensions.webextOptionalPermissionPrompts", true);
-
-pref("extensions.webextensions.background-delayed-startup", true);
 
 pref("extensions.experiments.enabled", false);
 
@@ -345,13 +340,8 @@ pref("app.channelURL", "https://www.mozilla.org/%LOCALE%/firefox/channel/");
 // Name of alternate about: page for certificate errors (when undefined, defaults to about:neterror)
 pref("security.alternate_certificate_error_page", "certerror");
 
-pref("security.warn_viewing_mixed", false); // Warning is disabled.  See Bug 616712.
-
 // Enable pinning
 pref("security.cert_pinning.enforcement_level", 1);
-
-// Only fetch OCSP for EV certificates
-pref("security.OCSP.enabled", 2);
 
 /* prefs used by the update timer system (including blocklist pings) */
 pref("app.update.timerFirstInterval", 30000); // milliseconds
@@ -388,8 +378,6 @@ pref("apz.overscroll.enabled", true);
 pref("apz.second_tap_tolerance", "0.3");
 pref("apz.touch_move_tolerance", "0.03");
 pref("apz.touch_start_tolerance", "0.06");
-
-pref("layers.low-precision-buffer", true);
 
 pref("notification.feature.enabled", true);
 
@@ -458,9 +446,6 @@ pref("media.realtime_decoder.enabled", true);
 
 pref("full-screen-api.enabled", true);
 
-pref("direct-texture.force.enabled", false);
-pref("direct-texture.force.disabled", false);
-
 // This fraction in 1000ths of velocity remains after every animation frame when the velocity is low.
 pref("ui.scrolling.friction_slow", -1);
 // This fraction in 1000ths of velocity remains after every animation frame when the velocity is high.
@@ -521,30 +506,11 @@ pref("media.plugins.enabled", true);
 // 16 = Force hardware decoding
 pref("media.stagefright.omxcodec.flags", 0);
 
-pref("layers.enable-tiles", true);
-
-// Enable the dynamic toolbar
-pref("browser.chrome.dynamictoolbar", true);
-
 // Location Bar AutoComplete.
 pref("browser.urlbar.autocomplete.enabled", true);
 
 // Hide common parts of URLs like "www." or "http://"
 pref("browser.urlbar.trimURLs", true);
-
-// initial web feed readers list
-pref("browser.contentHandlers.types.0.title", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.0.uri", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.0.type", "application/vnd.mozilla.maybe.feed");
-pref("browser.contentHandlers.types.1.title", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.1.uri", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.1.type", "application/vnd.mozilla.maybe.feed");
-pref("browser.contentHandlers.types.2.title", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.2.uri", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.2.type", "application/vnd.mozilla.maybe.feed");
-pref("browser.contentHandlers.types.3.title", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.3.uri", "chrome://browser/locale/region.properties");
-pref("browser.contentHandlers.types.3.type", "application/vnd.mozilla.maybe.feed");
 
 // Shortnumber matching needed for e.g. Brazil:
 // 01187654321 can be found with 87654321

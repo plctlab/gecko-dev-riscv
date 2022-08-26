@@ -14,6 +14,9 @@
 #include "prlink.h"
 
 namespace mozilla {
+
+class ChildProfilerController;
+
 namespace gmp {
 
 class GMPContentChild;
@@ -25,8 +28,8 @@ class GMPChild : public PGMPChild {
   GMPChild();
   virtual ~GMPChild();
 
-  bool Init(const nsAString& aPluginPath, base::ProcessId aParentPid,
-            mozilla::ipc::ScopedPort aPort);
+  bool Init(const nsAString& aPluginPath,
+            mozilla::ipc::UntypedEndpoint&& aEndpoint);
   MessageLoop* GMPMessageLoop();
 
   // Main thread only.
@@ -44,7 +47,7 @@ class GMPChild : public PGMPChild {
 
   mozilla::ipc::IPCResult RecvProvideStorageId(const nsCString& aStorageId);
 
-  mozilla::ipc::IPCResult AnswerStartPlugin(const nsString& aAdapter);
+  mozilla::ipc::IPCResult RecvStartPlugin(const nsString& aAdapter);
   mozilla::ipc::IPCResult RecvPreloadLibs(const nsCString& aLibs);
 
   PGMPTimerChild* AllocPGMPTimerChild();
@@ -61,11 +64,19 @@ class GMPChild : public PGMPChild {
   mozilla::ipc::IPCResult RecvInitGMPContentChild(
       Endpoint<PGMPContentChild>&& aEndpoint);
 
+  mozilla::ipc::IPCResult RecvFlushFOGData(FlushFOGDataResolver&& aResolver);
+
+  mozilla::ipc::IPCResult RecvTestTriggerMetrics(
+      TestTriggerMetricsResolver&& aResolve);
+
+  mozilla::ipc::IPCResult RecvInitProfiler(
+      Endpoint<mozilla::PProfilerChild>&& aEndpoint);
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
   void ProcessingError(Result aCode, const char* aReason) override;
 
   GMPErr GetAPI(const char* aAPIName, void* aHostAPI, void** aPluginAPI,
-                const nsCString aKeySystem = ""_ns);
+                const nsACString& aKeySystem = ""_ns);
 
   nsTArray<std::pair<nsCString, nsCString>> MakeCDMHostVerificationPaths();
 
@@ -73,6 +84,8 @@ class GMPChild : public PGMPChild {
 
   RefPtr<GMPTimerChild> mTimerChild;
   RefPtr<GMPStorageChild> mStorage;
+
+  RefPtr<ChildProfilerController> mProfilerController;
 
   MessageLoop* mGMPMessageLoop;
   nsString mPluginPath;

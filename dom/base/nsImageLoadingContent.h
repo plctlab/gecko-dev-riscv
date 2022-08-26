@@ -15,7 +15,6 @@
 
 #include "imgINotificationObserver.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
 #include "nsIContentPolicy.h"
@@ -23,6 +22,7 @@
 #include "nsIRequest.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/RustTypes.h"
 #include "nsAttrValue.h"
 #include "Units.h"
 
@@ -97,7 +97,12 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * nsImageLoadingContent::ImageState() to return |aState|. Call again with
    * |aForce| as false to revert ImageState() to its original behaviour.
    */
-  void ForceImageState(bool aForce, mozilla::EventStates::InternalType aState);
+  void ForceImageState(bool aForce,
+                       mozilla::dom::ElementState::InternalType aState);
+
+  // Trigger text recognition for the current image request.
+  already_AddRefed<mozilla::dom::Promise> RecognizeCurrentImageText(
+      mozilla::ErrorResult&);
 
  protected:
   enum ImageLoadType {
@@ -130,15 +135,15 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
 
   /**
    * ImageState is called by subclasses that are computing their content state.
-   * The return value will have the NS_EVENT_STATE_BROKEN bit set as needed.
+   * The return value will have the ElementState::BROKEN bit set as needed.
    *
    * Note that this state assumes that this node is "trying" to be an
    * image (so for example complete lack of attempt to load an image will lead
-   * to NS_EVENT_STATE_BROKEN being set).  Subclasses that are not "trying" to
+   * to ElementState::BROKEN being set).  Subclasses that are not "trying" to
    * be an image (eg an HTML <input> of type other than "image") should just
    * not call this method when computing their intrinsic state.
    */
-  mozilla::EventStates ImageState() const;
+  mozilla::dom::ElementState ImageState() const;
 
   /**
    * LoadImage is called by subclasses when the appropriate
@@ -184,9 +189,10 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * Helper function to get the frame associated with this content. Not named
    * GetPrimaryFrame to prevent ambiguous method names in subclasses.
    *
-   * @return The frame which we belong to, or nullptr if it doesn't exist.
+   * @return The frame we own, or nullptr if it doesn't exist, or isn't
+   * associated with any of our requests.
    */
-  nsIFrame* GetOurPrimaryFrame();
+  nsIFrame* GetOurPrimaryImageFrame();
 
   /**
    * Helper function to get the PresContext associated with this content's
@@ -424,16 +430,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
       const Maybe<OnNonvisible>& aNonvisibleAction = Nothing());
 
   /**
-   * Retrieve a pointer to the 'registered with the refresh driver' flag for
-   * which a particular image request corresponds.
-   *
-   * @returns A pointer to the boolean flag for a given image request, or
-   *          |nullptr| if the request is not either |mPendingRequest| or
-   *          |mCurrentRequest|.
-   */
-  bool* GetRegisteredFlagForRequest(imgIRequest* aRequest);
-
-  /**
    * Reset animation of the current request if
    * |mNewRequestsWillNeedAnimationReset| was true when the request was
    * prepared.
@@ -472,17 +468,17 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   /* MEMBERS */
   RefPtr<imgRequestProxy> mCurrentRequest;
   RefPtr<imgRequestProxy> mPendingRequest;
-  uint32_t mCurrentRequestFlags;
-  uint32_t mPendingRequestFlags;
+  uint8_t mCurrentRequestFlags = 0;
+  uint8_t mPendingRequestFlags = 0;
 
   enum {
     // Set if the request needs ResetAnimation called on it.
-    REQUEST_NEEDS_ANIMATION_RESET = 0x00000001U,
+    REQUEST_NEEDS_ANIMATION_RESET = 1 << 0,
     // Set if the request is currently tracked with the document.
-    REQUEST_IS_TRACKED = 0x00000004U,
+    REQUEST_IS_TRACKED = 1 << 1,
     // Set if this is an imageset request, such as from <img srcset> or
     // <picture>
-    REQUEST_IS_IMAGESET = 0x00000008U
+    REQUEST_IS_IMAGESET = 1 << 2,
   };
 
   // If the image was blocked or if there was an error loading, it's nice to
@@ -550,7 +546,7 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * When mIsImageStateForced is true, this holds the ImageState that we'll
    * return in ImageState().
    */
-  mozilla::EventStates mForcedImageState;
+  mozilla::dom::ElementState mForcedImageState;
 
   mozilla::TimeStamp mMostRecentRequestChange;
 

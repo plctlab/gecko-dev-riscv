@@ -5,59 +5,57 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const global = this;
-
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
 var { DefaultMap, DefaultWeakMap } = ExtensionUtils;
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ExtensionParent",
   "resource://gre/modules/ExtensionParent.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ShortcutUtils",
   "resource://gre/modules/ShortcutUtils.jsm"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "contentPolicyService",
   "@mozilla.org/addons/content-policy;1",
   "nsIAddonContentPolicy"
 );
 
 XPCOMUtils.defineLazyGetter(
-  this,
+  lazy,
   "StartupCache",
-  () => ExtensionParent.StartupCache
+  () => lazy.ExtensionParent.StartupCache
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "treatWarningsAsErrors",
   "extensions.webextensions.warnings-as-errors",
   false
 );
 
-var EXPORTED_SYMBOLS = ["SchemaRoot", "Schemas"];
+const EXPORTED_SYMBOLS = ["SchemaRoot", "Schemas"];
+let Schemas;
 
 const KEY_CONTENT_SCHEMAS = "extensions-framework/schemas/content";
 const KEY_PRIVILEGED_SCHEMAS = "extensions-framework/schemas/privileged";
@@ -72,7 +70,7 @@ const isParentProcess =
 
 function readJSON(url) {
   return new Promise((resolve, reject) => {
-    NetUtil.asyncFetch(
+    lazy.NetUtil.asyncFetch(
       { uri: url, loadUsingSystemPrincipal: true },
       (inputStream, status) => {
         if (!Components.isSuccessCode(status)) {
@@ -82,7 +80,7 @@ function readJSON(url) {
           return;
         }
         try {
-          let text = NetUtil.readInputStreamToString(
+          let text = lazy.NetUtil.readInputStreamToString(
             inputStream,
             inputStream.available()
           );
@@ -306,6 +304,18 @@ const POSTPROCESSORS = {
     context.logError(context.makeError(msg));
     throw new Error(msg);
   },
+
+  webAccessibleMatching(value, context) {
+    // Ensure each object has at least one of matches or extension_ids array.
+    for (let obj of value) {
+      if (!obj.matches && !obj.extension_ids) {
+        const msg = `web_accessible_resources requires one of "matches" or "extension_ids"`;
+        context.logError(context.makeError(msg));
+        throw new Error(msg);
+      }
+    }
+    return value;
+  },
 };
 
 // Parses a regular expression, with support for the Python extended
@@ -397,7 +407,7 @@ class Context {
       }
     }
 
-    let props = ["preprocessors", "isChromeCompat", "manifestVersion"];
+    let props = ["isChromeCompat", "manifestVersion", "preprocessors"];
     for (let prop of props) {
       if (prop in params) {
         if (prop in this && typeof this[prop] == "object") {
@@ -1051,6 +1061,30 @@ const FORMATS = {
     return url;
   },
 
+  origin(string, context) {
+    let url;
+    try {
+      url = new URL(string);
+    } catch (e) {
+      throw new Error(`Invalid origin: ${string}`);
+    }
+    if (!/^https?:/.test(url.protocol)) {
+      throw new Error(`Invalid origin must be http or https for URL ${string}`);
+    }
+    // url.origin is punycode so a direct check against string wont work.
+    // url.href appends a slash even if not in the original string, we we
+    // additionally check that string does not end in slash.
+    if (string.endsWith("/") || url.href != new URL(url.origin).href) {
+      throw new Error(
+        `Invalid origin for URL ${string}, replace with origin ${url.origin}`
+      );
+    }
+    if (!context.checkLoadURL(url.origin)) {
+      throw new Error(`Access denied for URL ${url}`);
+    }
+    return url.origin;
+  },
+
   relativeUrl(string, context) {
     if (!context.url) {
       // If there's no context URL, return relative URLs unresolved, and
@@ -1119,14 +1153,15 @@ const FORMATS = {
   },
 
   contentSecurityPolicy(string, context) {
-    // Manifest V3 extension_pages allows localhost.  When sandbox is
+    // Manifest V3 extension_pages allows localhost and WASM.  When sandbox is
     // implemented, or any other V3 or later directive, the flags
     // logic will need to be updated.
     let flags =
       context.manifestVersion < 3
         ? Ci.nsIAddonContentPolicy.CSP_ALLOW_ANY
-        : Ci.nsIAddonContentPolicy.CSP_ALLOW_LOCALHOST;
-    let error = contentPolicyService.validateAddonCSP(string, flags);
+        : Ci.nsIAddonContentPolicy.CSP_ALLOW_LOCALHOST |
+          Ci.nsIAddonContentPolicy.CSP_ALLOW_WASM;
+    let error = lazy.contentPolicyService.validateAddonCSP(string, flags);
     if (error != null) {
       // The CSP validation error is not reported as part of the "choices" error message,
       // we log the CSP validation error explicitly here to make it easier for the addon developers
@@ -1153,7 +1188,7 @@ const FORMATS = {
   },
 
   manifestShortcutKey(string, context) {
-    if (ShortcutUtils.validate(string) == ShortcutUtils.IS_VALID) {
+    if (lazy.ShortcutUtils.validate(string) == lazy.ShortcutUtils.IS_VALID) {
       return string;
     }
     let errorMessage =
@@ -1289,7 +1324,7 @@ class Entry {
     let error = context.makeError(warningMessage, { warning: true });
     context.logError(error);
 
-    if (treatWarningsAsErrors) {
+    if (lazy.treatWarningsAsErrors) {
       // This pref is false by default, and true by default in tests to
       // discourage the use of deprecated APIs in our unit tests.
       // If a warning is an expected part of a test, temporarily set the pref
@@ -1349,6 +1384,7 @@ class Type extends Entry {
       "deprecated",
       "preprocess",
       "postprocess",
+      "privileged",
       "allowedContexts",
       "min_manifest_version",
       "max_manifest_version",
@@ -1989,12 +2025,21 @@ class ObjectType extends Type {
           `Property "${prop}" is unsupported in Manifest Version ${context.manifestVersion}`,
           `not contain an unsupported "${prop}" property`
         );
-        if (context.manifestVersion === 2) {
-          // Existing MV2 extensions might have some of the new MV3 properties.
-          // Since we've ignored them till now, we should just warn and bail.
-          this.logWarning(context, forceString(error.error));
-          return;
+
+        this.logWarning(context, forceString(error.error));
+        if (this.additionalProperties) {
+          // When `additionalProperties` is set to UnrecognizedProperty, the
+          // caller (i.e. ObjectType's normalize method) assigns the original
+          // value to `result[prop]`. Erase the property now to prevent
+          // `result[prop]` from becoming anything other than `undefined.
+          //
+          // A warning was already logged above, so we do not need to also log
+          // "An unexpected property was found in the WebExtension manifest."
+          remainingProps.delete(prop);
         }
+        // When `additionalProperties` is not set, ObjectType's normalize method
+        // will return an error because prop is still in remainingProps.
+        return;
       }
     } else if (unsupported) {
       if (prop in properties) {
@@ -2656,7 +2701,7 @@ class CallEntry extends Entry {
         // For Chrome compatibility, use the default value if null or undefined
         // is explicitly passed but is not a valid argument in this position.
         if (parameter.optional && (arg === null || arg === undefined)) {
-          fixedArgs[parameterIndex] = Cu.cloneInto(parameter.default, global);
+          fixedArgs[parameterIndex] = Cu.cloneInto(parameter.default, {});
         } else {
           return false;
         }
@@ -2725,9 +2770,11 @@ FunctionEntry = class FunctionEntry extends CallEntry {
         "returns",
         "permissions",
         "allowAmbiguousOptionalArguments",
+        "allowCrossOriginArguments",
       ]),
       schema.unsupported || false,
       schema.allowAmbiguousOptionalArguments || false,
+      schema.allowCrossOriginArguments || false,
       returns,
       schema.permissions || null
     );
@@ -2740,6 +2787,7 @@ FunctionEntry = class FunctionEntry extends CallEntry {
     type,
     unsupported,
     allowAmbiguousOptionalArguments,
+    allowCrossOriginArguments,
     returns,
     permissions
   ) {
@@ -2747,6 +2795,7 @@ FunctionEntry = class FunctionEntry extends CallEntry {
     this.unsupported = unsupported;
     this.returns = returns;
     this.permissions = permissions;
+    this.allowCrossOriginArguments = allowCrossOriginArguments;
 
     this.isAsync = type.isAsync;
     this.hasAsyncCallback = type.hasAsyncCallback;
@@ -2839,7 +2888,11 @@ FunctionEntry = class FunctionEntry extends CallEntry {
     }
 
     return {
-      descriptor: { value: Cu.exportFunction(stub, context.cloneScope) },
+      descriptor: {
+        value: Cu.exportFunction(stub, context.cloneScope, {
+          allowCrossOriginArguments: this.allowCrossOriginArguments,
+        }),
+      },
       revoke() {
         apiImpl.revoke();
         apiImpl = null;
@@ -3469,7 +3522,7 @@ class SchemaRoot extends Namespace {
     for (let [key, schema] of this.schemaJSON.entries()) {
       try {
         if (typeof schema.deserialize === "function") {
-          schema = schema.deserialize(global, isParentProcess);
+          schema = schema.deserialize(globalThis, isParentProcess);
 
           // If we're in the parent process, we need to keep the
           // StructuredCloneHolder blob around in order to send to future child
@@ -3564,7 +3617,7 @@ class SchemaRoot extends Namespace {
   }
 }
 
-this.Schemas = {
+Schemas = {
   initialized: false,
 
   REVOKE: Symbol("@@revoke"),
@@ -3580,6 +3633,14 @@ this.Schemas = {
   privilegedSchemaJSON: new Map(),
 
   _rootSchema: null,
+
+  // A weakmap for the validation Context class instances given an extension
+  // context (keyed by the extensin context instance).
+  // This is used instead of the InjectionContext for webIDL API validation
+  // and normalization (see Schemas.checkParameters).
+  paramsValidationContexts: new DefaultWeakMap(
+    extContext => new Context(extContext)
+  ),
 
   get rootSchema() {
     if (!this.initialized) {
@@ -3623,7 +3684,7 @@ this.Schemas = {
   _loadCachedSchemasPromise: null,
   loadCachedSchemas() {
     if (!this._loadCachedSchemasPromise) {
-      this._loadCachedSchemasPromise = StartupCache.schemas
+      this._loadCachedSchemasPromise = lazy.StartupCache.schemas
         .getAll()
         .then(results => {
           return results;
@@ -3673,7 +3734,7 @@ this.Schemas = {
 
     let blob =
       schemaCache.get(url) ||
-      (await StartupCache.schemas.get(url, readJSONAndBlobbify));
+      (await lazy.StartupCache.schemas.get(url, readJSONAndBlobbify));
 
     if (!this.schemaJSON.has(url)) {
       this.addSchema(url, blob, content);
@@ -3716,6 +3777,7 @@ this.Schemas = {
       "OptionalPermission",
       "PermissionNoPrompt",
       "OptionalPermissionNoPrompt",
+      "PermissionPrivileged",
     ]
   ) {
     const ns = this.getNamespace("manifest");
@@ -3755,5 +3817,32 @@ this.Schemas = {
    */
   normalize(obj, typeName, context) {
     return this.rootSchema.normalize(obj, typeName, context);
+  },
+
+  /**
+   * Validate and normalize the arguments for an API request originated
+   * from the webIDL API bindings.
+   *
+   * This provides for calls originating through WebIDL the parameters
+   * validation and normalization guarantees that the ext-APINAMESPACE.js
+   * scripts expects (what InjectionContext does for the regular bindings).
+   *
+   * @param {object}     extContext
+   * @param {string}     apiNamespace
+   * @param {string}     apiName
+   * @param {Array<any>} args
+   *
+   * @returns {Array<any>} Normalized arguments array.
+   */
+  checkParameters(extContext, apiNamespace, apiName, args) {
+    const apiSchema = this.getNamespace(apiNamespace)?.get(apiName);
+    if (!apiSchema) {
+      throw new Error(`API Schema not found for ${apiNamespace}.${apiName}`);
+    }
+
+    return apiSchema.checkParameters(
+      args,
+      this.paramsValidationContexts.get(extContext)
+    );
   },
 };

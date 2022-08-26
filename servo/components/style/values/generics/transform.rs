@@ -404,15 +404,7 @@ impl ToAbsoluteLength for ComputedLength {
 impl ToAbsoluteLength for ComputedLengthPercentage {
     #[inline]
     fn to_pixel_length(&self, containing_len: Option<ComputedLength>) -> Result<CSSFloat, ()> {
-        match containing_len {
-            Some(relative_len) => Ok(self.resolve(relative_len).px()),
-            // If we don't have reference box, we cannot resolve the used value,
-            // so only retrieve the length part. This will be used for computing
-            // distance without any layout info.
-            //
-            // FIXME(emilio): This looks wrong.
-            None => Ok(self.resolve(Zero::zero()).px()),
-        }
+        Ok(self.maybe_percentage_relative_to(containing_len).ok_or(())?.px())
     }
 }
 
@@ -572,11 +564,20 @@ impl<T> Transform<T> {
 
 impl<T: ToMatrix> Transform<T> {
     /// Return the equivalent 3d matrix of this transform list.
+    ///
     /// We return a pair: the first one is the transform matrix, and the second one
     /// indicates if there is any 3d transform function in this transform list.
     #[cfg_attr(rustfmt, rustfmt_skip)]
     pub fn to_transform_3d_matrix(
         &self,
+        reference_box: Option<&Rect<ComputedLength>>
+    ) -> Result<(Transform3D<CSSFloat>, bool), ()> {
+        Self::components_to_transform_3d_matrix(&self.0, reference_box)
+    }
+
+    /// Converts a series of components to a 3d matrix.
+    pub fn components_to_transform_3d_matrix(
+        ops: &[T],
         reference_box: Option<&Rect<ComputedLength>>
     ) -> Result<(Transform3D<CSSFloat>, bool), ()> {
         let cast_3d_transform = |m: Transform3D<f64>| -> Transform3D<CSSFloat> {
@@ -590,26 +591,27 @@ impl<T: ToMatrix> Transform<T> {
             )
         };
 
-        let (m, is_3d) = self.to_transform_3d_matrix_f64(reference_box)?;
+        let (m, is_3d) = Self::components_to_transform_3d_matrix_f64(ops, reference_box)?;
         Ok((cast_3d_transform(m), is_3d))
     }
 
     /// Same as Transform::to_transform_3d_matrix but a f64 version.
-    pub fn to_transform_3d_matrix_f64(
-        &self,
+    fn components_to_transform_3d_matrix_f64(
+        ops: &[T],
         reference_box: Option<&Rect<ComputedLength>>,
     ) -> Result<(Transform3D<f64>, bool), ()> {
-        // We intentionally use Transform3D<f64> during computation to avoid error propagation
-        // because using f32 to compute triangle functions (e.g. in rotation()) is not
-        // accurate enough. In Gecko, we also use "double" to compute the triangle functions.
-        // Therefore, let's use Transform3D<f64> during matrix computation and cast it into f32
-        // in the end.
+        // We intentionally use Transform3D<f64> during computation to avoid
+        // error propagation because using f32 to compute triangle functions
+        // (e.g. in rotation()) is not accurate enough. In Gecko, we also use
+        // "double" to compute the triangle functions. Therefore, let's use
+        // Transform3D<f64> during matrix computation and cast it into f32 in
+        // the end.
         let mut transform = Transform3D::<f64>::identity();
         let mut contain_3d = false;
 
-        for operation in &*self.0 {
+        for operation in ops {
             let matrix = operation.to_3d_matrix(reference_box)?;
-            contain_3d |= operation.is_3d();
+            contain_3d = contain_3d || operation.is_3d();
             transform = matrix.then(&transform);
         }
 
@@ -687,7 +689,7 @@ pub trait IsParallelTo {
 
 impl<Number, Angle> ToCss for Rotate<Number, Angle>
 where
-    Number: Copy + ToCss,
+    Number: Copy + ToCss + Zero,
     Angle: ToCss,
     (Number, Number, Number): IsParallelTo,
 {
@@ -700,25 +702,41 @@ where
             Rotate::None => dest.write_str("none"),
             Rotate::Rotate(ref angle) => angle.to_css(dest),
             Rotate::Rotate3D(x, y, z, ref angle) => {
-                // If a 3d rotation is specified, the property must serialize with an axis
-                // specified. If the axis is parallel with the x, y, or z axises, it must
-                // serialize as the appropriate keyword.
+                // If the axis is parallel with the x or y axes, it must serialize as the
+                // appropriate keyword. If a rotation about the z axis (that is, in 2D) is
+                // specified, the property must serialize as just an <angle>
+                //
                 // https://drafts.csswg.org/css-transforms-2/#individual-transform-serialization
                 let v = (x, y, z);
-                if v.is_parallel_to(&DirectionVector::new(1., 0., 0.)) {
-                    dest.write_char('x')?;
+                let axis = if x.is_zero() && y.is_zero() && z.is_zero() {
+                    // The zero length vector is parallel to every other vector, so
+                    // is_parallel_to() returns true for it. However, it is definitely different
+                    // from x axis, y axis, or z axis, and it's meaningless to perform a rotation
+                    // using that direction vector. So we *have* to serialize it using that same
+                    // vector - we can't simplify to some theoretically parallel axis-aligned
+                    // vector.
+                    None
+                } else if v.is_parallel_to(&DirectionVector::new(1., 0., 0.)) {
+                    Some("x ")
                 } else if v.is_parallel_to(&DirectionVector::new(0., 1., 0.)) {
-                    dest.write_char('y')?;
+                    Some("y ")
                 } else if v.is_parallel_to(&DirectionVector::new(0., 0., 1.)) {
-                    dest.write_char('z')?;
+                    // When we're parallel to the z-axis, we can just serialize the angle.
+                    return angle.to_css(dest);
                 } else {
-                    x.to_css(dest)?;
-                    dest.write_char(' ')?;
-                    y.to_css(dest)?;
-                    dest.write_char(' ')?;
-                    z.to_css(dest)?;
+                    None
+                };
+                match axis {
+                    Some(a) => dest.write_str(a)?,
+                    None => {
+                        x.to_css(dest)?;
+                        dest.write_char(' ')?;
+                        y.to_css(dest)?;
+                        dest.write_char(' ')?;
+                        z.to_css(dest)?;
+                        dest.write_char(' ')?;
+                    },
                 }
-                dest.write_char(' ')?;
                 angle.to_css(dest)
             },
         }

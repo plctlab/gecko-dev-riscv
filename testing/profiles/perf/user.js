@@ -10,7 +10,6 @@ user_pref("browser.addon-watch.interval", -1); // Deactivate add-on watching
 // Disable Bookmark backups by default.
 user_pref("browser.bookmarks.max_backups", 0);
 user_pref("browser.cache.disk.smart_size.enabled", false);
-user_pref("browser.chrome.dynamictoolbar", false);
 user_pref("browser.contentHandlers.types.0.uri", "http://127.0.0.1/rss?url=%s");
 user_pref("browser.contentHandlers.types.1.uri", "http://127.0.0.1/rss?url=%s");
 user_pref("browser.contentHandlers.types.2.uri", "http://127.0.0.1/rss?url=%s");
@@ -78,7 +77,6 @@ user_pref("network.http.speculative-parallel-limit", 0);
 // tests. This, like many things, will stop working correctly in 2038.
 user_pref("places.database.lastMaintenance", 2147483647);
 user_pref("plugin.state.flash", 0);
-user_pref("plugins.flashBlock.enabled", false);
 user_pref("privacy.reduceTimerPrecision", false); // Bug 1445243 - reduces precision of tests
 user_pref("privacy.trackingprotection.annotate_channels", false);
 user_pref("privacy.trackingprotection.enabled", false);
@@ -88,6 +86,14 @@ user_pref("security.enable_java", false);
 user_pref("security.fileuri.strict_origin_policy", false);
 user_pref("toolkit.telemetry.server", "https://127.0.0.1/telemetry-dummy/");
 user_pref("telemetry.fog.test.localhost_port", -1);
+// The telemetry system sometimes uses a separate program to send telemetry
+// pings, particularly in the case when Firefox is shutting down. The prefs above
+// prevent telemetry from being sent anywhere useful, but even so the process would
+// still be launched. Because performance tests start and stop the browser in rapid
+// succession, the pingsender calls from the previous test can run simultaneously with
+// the next test, increasing the system resource load and skewing the
+// results. So we just silently skip the pingsender invocation during perf tests.
+user_pref("toolkit.telemetry.testing.suppressPingsender", true);
 user_pref("startup.homepage_welcome_url", "");
 user_pref("startup.homepage_welcome_url.additional", "");
 // Ensures that system principal triggered about:blank load within the current

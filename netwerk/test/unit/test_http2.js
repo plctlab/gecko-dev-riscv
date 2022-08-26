@@ -491,7 +491,7 @@ Http2ConcurrentListener.prototype.onStopRequest = function(request, status) {
 
   if (this.count == this.target) {
     if (this.reset > 0) {
-      prefs.setIntPref("network.http.spdy.default-concurrent", this.reset);
+      prefs.setIntPref("network.http.http2.default-concurrent", this.reset);
     }
     run_next_test();
     do_test_finished();
@@ -502,9 +502,9 @@ function test_http2_concurrent() {
   var concurrent_listener = new Http2ConcurrentListener();
   concurrent_listener.target = 201;
   concurrent_listener.reset = prefs.getIntPref(
-    "network.http.spdy.default-concurrent"
+    "network.http.http2.default-concurrent"
   );
-  prefs.setIntPref("network.http.spdy.default-concurrent", 100);
+  prefs.setIntPref("network.http.http2.default-concurrent", 100);
 
   for (var i = 0; i < concurrent_listener.target; i++) {
     concurrent_channels[i] = makeChan(
@@ -520,9 +520,9 @@ function test_http2_concurrent_post() {
   concurrent_listener.target = 8;
   concurrent_listener.recvdHdr = posts[2].length;
   concurrent_listener.reset = prefs.getIntPref(
-    "network.http.spdy.default-concurrent"
+    "network.http.http2.default-concurrent"
   );
-  prefs.setIntPref("network.http.spdy.default-concurrent", 3);
+  prefs.setIntPref("network.http.http2.default-concurrent", 3);
 
   for (var i = 0; i < concurrent_listener.target; i++) {
     concurrent_channels[i] = makeChan(
@@ -684,6 +684,12 @@ function test_http2_post() {
   do_post(posts[0], chan, listener, "POST");
 }
 
+function test_http2_empty_post() {
+  var chan = makeChan("https://localhost:" + serverPort + "/post");
+  var listener = new Http2PostListener("0");
+  do_post("", chan, listener, "POST");
+}
+
 // Make sure we can do a simple PATCH
 function test_http2_patch() {
   var chan = makeChan("https://localhost:" + serverPort + "/patch");
@@ -702,7 +708,6 @@ const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
 
 var httpserv = null;
 var httpserv2 = null;
-var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
 
 var altsvcClientListener = {
   onStartRequest: function test_onStartR(request) {
@@ -719,7 +724,7 @@ var altsvcClientListener = {
     );
     if (!isHttp2Connection) {
       dump("/altsvc1 not over h2 yet - retry\n");
-      var chan = makeChan(
+      let chan = makeChan(
         "http://foo.example.com:" + httpserv.identity.primaryPort + "/altsvc1"
       ).QueryInterface(Ci.nsIHttpChannel);
       // we use this header to tell the server to issue a altsvc frame for the
@@ -733,7 +738,7 @@ var altsvcClientListener = {
       chan.asyncOpen(altsvcClientListener);
     } else {
       Assert.ok(isHttp2Connection);
-      var chan = makeChan(
+      let chan = makeChan(
         "http://foo.example.com:" + httpserv2.identity.primaryPort + "/altsvc2"
       ).QueryInterface(Ci.nsIHttpChannel);
       chan.loadFlags = Ci.nsIRequest.LOAD_BYPASS_CACHE;
@@ -1320,6 +1325,7 @@ var tests = [
   test_http2_big,
   test_http2_huge_suspended,
   test_http2_post,
+  test_http2_empty_post,
   test_http2_patch,
   test_http2_pushapi_1,
   test_http2_continuations,
@@ -1363,8 +1369,7 @@ function run_next_test() {
 }
 
 var prefs;
-var spdypref;
-var spdypush;
+var http2push;
 var http2pref;
 var altsvcpref1;
 var altsvcpref2;
@@ -1374,9 +1379,8 @@ var speculativeLimit;
 
 function resetPrefs() {
   prefs.setIntPref("network.http.speculative-parallel-limit", speculativeLimit);
-  prefs.setBoolPref("network.http.spdy.enabled", spdypref);
-  prefs.setBoolPref("network.http.spdy.allow-push", spdypush);
-  prefs.setBoolPref("network.http.spdy.enabled.http2", http2pref);
+  prefs.setBoolPref("network.http.http2.enabled", http2pref);
+  prefs.setBoolPref("network.http.http2.allow-push", http2push);
   prefs.setBoolPref("network.http.altsvc.enabled", altsvcpref1);
   prefs.setBoolPref("network.http.altsvc.oe", altsvcpref2);
   prefs.clearUserPref("network.dns.localDomains");
@@ -1393,7 +1397,7 @@ function run_test() {
 
   // Set to allow the cert presented by our H2 server
   do_get_profile();
-  prefs = Cc["@mozilla.org/preferences-service;1"].getService(Ci.nsIPrefBranch);
+  prefs = Services.prefs;
   speculativeLimit = prefs.getIntPref(
     "network.http.speculative-parallel-limit"
   );
@@ -1409,15 +1413,13 @@ function run_test() {
   addCertFromFile(certdb, "http2-ca.pem", "CTu,u,u");
 
   // Enable all versions of spdy to see that we auto negotiate http/2
-  spdypref = prefs.getBoolPref("network.http.spdy.enabled");
-  spdypush = prefs.getBoolPref("network.http.spdy.allow-push");
-  http2pref = prefs.getBoolPref("network.http.spdy.enabled.http2");
+  http2pref = prefs.getBoolPref("network.http.http2.enabled");
+  http2push = prefs.getBoolPref("network.http.http2.allow-push");
   altsvcpref1 = prefs.getBoolPref("network.http.altsvc.enabled");
   altsvcpref2 = prefs.getBoolPref("network.http.altsvc.oe", true);
 
-  prefs.setBoolPref("network.http.spdy.enabled", true);
-  prefs.setBoolPref("network.http.spdy.allow-push", true);
-  prefs.setBoolPref("network.http.spdy.enabled.http2", true);
+  prefs.setBoolPref("network.http.http2.enabled", true);
+  prefs.setBoolPref("network.http.http2.allow-push", true);
   prefs.setBoolPref("network.http.altsvc.enabled", true);
   prefs.setBoolPref("network.http.altsvc.oe", true);
   prefs.setCharPref(

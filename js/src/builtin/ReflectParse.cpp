@@ -7,7 +7,6 @@
 /* JS reflection package. */
 
 #include "mozilla/DebugOnly.h"
-#include "mozilla/Maybe.h"
 
 #include <stdlib.h>
 #include <utility>
@@ -15,25 +14,27 @@
 #include "jspubtd.h"
 
 #include "builtin/Array.h"
-#include "builtin/Reflect.h"
 #include "frontend/CompilationStencil.h"
 #include "frontend/ModuleSharedContext.h"
 #include "frontend/ParseNode.h"
 #include "frontend/Parser.h"
-#include "js/CharacterEncoding.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #include "js/PropertyAndElement.h"    // JS_DefineFunction
 #include "js/StableStringChars.h"
-#include "vm/BigIntType.h"
+#include "vm/ErrorContext.h"
 #include "vm/FunctionFlags.h"  // js::FunctionFlags
+#include "vm/Interpreter.h"
 #include "vm/JSAtom.h"
 #include "vm/JSObject.h"
 #include "vm/ModuleBuilder.h"  // js::ModuleBuilder
 #include "vm/PlainObject.h"    // js::PlainObject
 #include "vm/RegExpObject.h"
 
+#include "vm/JSAtom-inl.h"
+#include "vm/JSContext-inl.h"
 #include "vm/JSObject-inl.h"
+#include "vm/ObjectOperations-inl.h"
 
 using namespace js;
 using namespace js::frontend;
@@ -273,6 +274,7 @@ class NodeBuilder {
   using CallbackArray = RootedValueArray<AST_LIMIT>;
 
   JSContext* cx;
+  ErrorContext* ec;
   frontend::Parser<frontend::FullParseHandler, char16_t>* parser;
   bool saveLoc;            /* save source location information?     */
   char const* src;         /* source filename or null               */
@@ -281,8 +283,9 @@ class NodeBuilder {
   RootedValue userv;       /* user-specified builder object or null */
 
  public:
-  NodeBuilder(JSContext* c, bool l, char const* s)
+  NodeBuilder(JSContext* c, ErrorContext* e, bool l, char const* s)
       : cx(c),
+        ec(e),
         parser(nullptr),
         saveLoc(l),
         src(s),
@@ -313,7 +316,7 @@ class NodeBuilder {
     RootedValue funv(cx);
     for (unsigned i = 0; i < AST_LIMIT; i++) {
       const char* name = callbackNames[i];
-      RootedAtom atom(cx, Atomize(cx, name, strlen(name)));
+      Rooted<JSAtom*> atom(cx, Atomize(cx, name, strlen(name)));
       if (!atom) {
         return false;
       }
@@ -398,7 +401,7 @@ class NodeBuilder {
     /*
      * Bug 575416: instead of Atomize, lookup constant atoms in tbl file
      */
-    RootedAtom atom(cx, Atomize(cx, s, strlen(s)));
+    Rooted<JSAtom*> atom(cx, Atomize(cx, s, strlen(s)));
     if (!atom) {
       return false;
     }
@@ -408,7 +411,7 @@ class NodeBuilder {
   }
 
   [[nodiscard]] bool newObject(MutableHandleObject dst) {
-    RootedPlainObject nobj(cx, NewPlainObject(cx));
+    Rooted<PlainObject*> nobj(cx, NewPlainObject(cx));
     if (!nobj) {
       return false;
     }
@@ -477,7 +480,7 @@ class NodeBuilder {
     /*
      * Bug 575416: instead of Atomize, lookup constant atoms in tbl file
      */
-    RootedAtom atom(cx, Atomize(cx, name, strlen(name)));
+    Rooted<JSAtom*> atom(cx, Atomize(cx, name, strlen(name)));
     if (!atom) {
       return false;
     }
@@ -600,6 +603,13 @@ class NodeBuilder {
 
   [[nodiscard]] bool debuggerStatement(TokenPos* pos, MutableHandleValue dst);
 
+  [[nodiscard]] bool moduleRequest(HandleValue moduleSpec,
+                                   NodeVector& assertions, TokenPos* pos,
+                                   MutableHandleValue dst);
+
+  [[nodiscard]] bool importAssertion(HandleValue key, HandleValue value,
+                                     TokenPos* pos, MutableHandleValue dst);
+
   [[nodiscard]] bool importDeclaration(NodeVector& elts, HandleValue moduleSpec,
                                        TokenPos* pos, MutableHandleValue dst);
 
@@ -716,11 +726,19 @@ class NodeBuilder {
   [[nodiscard]] bool metaProperty(HandleValue meta, HandleValue property,
                                   TokenPos* pos, MutableHandleValue dst);
 
-  [[nodiscard]] bool callImportExpression(HandleValue ident, HandleValue arg,
+  [[nodiscard]] bool callImportExpression(HandleValue ident, NodeVector& args,
                                           TokenPos* pos,
                                           MutableHandleValue dst);
 
   [[nodiscard]] bool super(TokenPos* pos, MutableHandleValue dst);
+
+#ifdef ENABLE_RECORD_TUPLE
+  [[nodiscard]] bool recordExpression(NodeVector& elts, TokenPos* pos,
+                                      MutableHandleValue dst);
+
+  [[nodiscard]] bool tupleExpression(NodeVector& elts, TokenPos* pos,
+                                     MutableHandleValue dst);
+#endif
 
   /*
    * declarations
@@ -751,7 +769,7 @@ bool NodeBuilder::createNode(ASTType type, TokenPos* pos,
   MOZ_ASSERT(type > AST_ERROR && type < AST_LIMIT);
 
   RootedValue tv(cx);
-  RootedPlainObject node(cx, NewPlainObject(cx));
+  Rooted<PlainObject*> node(cx, NewPlainObject(cx));
   if (!node || !setNodeLoc(node, pos) || !atomValue(nodeTypeNames[type], &tv) ||
       !defineProperty(node, "type", tv)) {
     return false;
@@ -764,7 +782,7 @@ bool NodeBuilder::createNode(ASTType type, TokenPos* pos,
 bool NodeBuilder::newArray(NodeVector& elts, MutableHandleValue dst) {
   const size_t len = elts.length();
   if (len > UINT32_MAX) {
-    ReportAllocationOverflow(cx);
+    ReportAllocationOverflow(ec);
     return false;
   }
   RootedObject array(cx, NewDenseFullyAllocatedArray(cx, uint32_t(len)));
@@ -1349,6 +1367,18 @@ bool NodeBuilder::objectExpression(NodeVector& elts, TokenPos* pos,
   return listNode(AST_OBJECT_EXPR, "properties", elts, pos, dst);
 }
 
+#ifdef ENABLE_RECORD_TUPLE
+bool NodeBuilder::recordExpression(NodeVector& elts, TokenPos* pos,
+                                   MutableHandleValue dst) {
+  return listNode(AST_RECORD_EXPR, "properties", elts, pos, dst);
+}
+
+bool NodeBuilder::tupleExpression(NodeVector& elts, TokenPos* pos,
+                                  MutableHandleValue dst) {
+  return listNode(AST_TUPLE_EXPR, "elements", elts, pos, dst);
+}
+#endif
+
 bool NodeBuilder::thisExpression(TokenPos* pos, MutableHandleValue dst) {
   RootedValue cb(cx, callbacks[AST_THIS_EXPR]);
   if (!cb.isNull()) {
@@ -1379,7 +1409,33 @@ bool NodeBuilder::yieldExpression(HandleValue arg, YieldKind kind,
                  dst);
 }
 
-bool NodeBuilder::importDeclaration(NodeVector& elts, HandleValue moduleSpec,
+bool NodeBuilder::moduleRequest(HandleValue moduleSpec, NodeVector& assertions,
+                                TokenPos* pos, MutableHandleValue dst) {
+  RootedValue array(cx);
+  if (!newArray(assertions, &array)) {
+    return false;
+  }
+
+  RootedValue cb(cx, callbacks[AST_MODULE_REQUEST]);
+  if (!cb.isNull()) {
+    return callback(cb, array, moduleSpec, pos, dst);
+  }
+
+  return newNode(AST_MODULE_REQUEST, pos, "source", moduleSpec, "assertions",
+                 array, dst);
+}
+
+bool NodeBuilder::importAssertion(HandleValue key, HandleValue value,
+                                  TokenPos* pos, MutableHandleValue dst) {
+  RootedValue cb(cx, callbacks[AST_IMPORT_ASSERTION]);
+  if (!cb.isNull()) {
+    return callback(cb, key, value, pos, dst);
+  }
+
+  return newNode(AST_IMPORT_ASSERTION, pos, "key", key, "value", value, dst);
+}
+
+bool NodeBuilder::importDeclaration(NodeVector& elts, HandleValue moduleRequest,
                                     TokenPos* pos, MutableHandleValue dst) {
   RootedValue array(cx);
   if (!newArray(elts, &array)) {
@@ -1388,11 +1444,11 @@ bool NodeBuilder::importDeclaration(NodeVector& elts, HandleValue moduleSpec,
 
   RootedValue cb(cx, callbacks[AST_IMPORT_DECL]);
   if (!cb.isNull()) {
-    return callback(cb, array, moduleSpec, pos, dst);
+    return callback(cb, array, moduleRequest, pos, dst);
   }
 
-  return newNode(AST_IMPORT_DECL, pos, "specifiers", array, "source",
-                 moduleSpec, dst);
+  return newNode(AST_IMPORT_DECL, pos, "specifiers", array, "moduleRequest",
+                 moduleRequest, dst);
 }
 
 bool NodeBuilder::importSpecifier(HandleValue importName,
@@ -1419,7 +1475,7 @@ bool NodeBuilder::importNamespaceSpecifier(HandleValue bindingName,
 }
 
 bool NodeBuilder::exportDeclaration(HandleValue decl, NodeVector& elts,
-                                    HandleValue moduleSpec,
+                                    HandleValue moduleRequest,
                                     HandleValue isDefault, TokenPos* pos,
                                     MutableHandleValue dst) {
   RootedValue array(cx, NullValue());
@@ -1430,11 +1486,11 @@ bool NodeBuilder::exportDeclaration(HandleValue decl, NodeVector& elts,
   RootedValue cb(cx, callbacks[AST_EXPORT_DECL]);
 
   if (!cb.isNull()) {
-    return callback(cb, decl, array, moduleSpec, pos, dst);
+    return callback(cb, decl, array, moduleRequest, pos, dst);
   }
 
   return newNode(AST_EXPORT_DECL, pos, "declaration", decl, "specifiers", array,
-                 "source", moduleSpec, "isDefault", isDefault, dst);
+                 "moduleRequest", moduleRequest, "isDefault", isDefault, dst);
 }
 
 bool NodeBuilder::exportSpecifier(HandleValue bindingName,
@@ -1666,14 +1722,19 @@ bool NodeBuilder::metaProperty(HandleValue meta, HandleValue property,
                  dst);
 }
 
-bool NodeBuilder::callImportExpression(HandleValue ident, HandleValue arg,
+bool NodeBuilder::callImportExpression(HandleValue ident, NodeVector& args,
                                        TokenPos* pos, MutableHandleValue dst) {
-  RootedValue cb(cx, callbacks[AST_CALL_IMPORT]);
-  if (!cb.isNull()) {
-    return callback(cb, arg, pos, dst);
+  RootedValue array(cx);
+  if (!newArray(args, &array)) {
+    return false;
   }
 
-  return newNode(AST_CALL_IMPORT, pos, "ident", ident, "arg", arg, dst);
+  RootedValue cb(cx, callbacks[AST_CALL_IMPORT]);
+  if (!cb.isNull()) {
+    return callback(cb, ident, array, pos, dst);
+  }
+
+  return newNode(AST_CALL_IMPORT, pos, "ident", ident, "arguments", array, dst);
 }
 
 bool NodeBuilder::super(TokenPos* pos, MutableHandleValue dst) {
@@ -1694,6 +1755,7 @@ namespace {
  */
 class ASTSerializer {
   JSContext* cx;
+  ErrorContext* ec;
   Parser<FullParseHandler, char16_t>* parser;
   NodeBuilder builder;
   DebugOnly<uint32_t> lineno;
@@ -1726,6 +1788,7 @@ class ASTSerializer {
   bool exportSpecifier(BinaryNode* exportSpec, MutableHandleValue dst);
   bool exportNamespaceSpecifier(UnaryNode* exportSpec, MutableHandleValue dst);
   bool classDefinition(ClassNode* pn, bool expr, MutableHandleValue dst);
+  bool importAssertions(ListNode* assertionList, NodeVector& assertions);
 
   bool optStatement(ParseNode* pn, MutableHandleValue dst) {
     if (!pn) {
@@ -1765,7 +1828,8 @@ class ASTSerializer {
   bool staticClassBlock(StaticClassBlock* staticClassBlock,
                         MutableHandleValue dst);
 
-  bool optIdentifier(HandleAtom atom, TokenPos* pos, MutableHandleValue dst) {
+  bool optIdentifier(Handle<JSAtom*> atom, TokenPos* pos,
+                     MutableHandleValue dst) {
     if (!atom) {
       dst.setMagic(JS_SERIALIZE_NO_NODE);
       return true;
@@ -1773,7 +1837,7 @@ class ASTSerializer {
     return identifier(atom, pos, dst);
   }
 
-  bool identifier(HandleAtom atom, TokenPos* pos, MutableHandleValue dst);
+  bool identifier(Handle<JSAtom*> atom, TokenPos* pos, MutableHandleValue dst);
   bool identifier(NameNode* id, MutableHandleValue dst);
   bool identifierOrLiteral(ParseNode* id, MutableHandleValue dst);
   bool literal(ParseNode* pn, MutableHandleValue dst);
@@ -1798,10 +1862,12 @@ class ASTSerializer {
   bool functionBody(ParseNode* pn, TokenPos* pos, MutableHandleValue dst);
 
  public:
-  ASTSerializer(JSContext* c, bool l, char const* src, uint32_t ln)
+  ASTSerializer(JSContext* c, ErrorContext* e, bool l, char const* src,
+                uint32_t ln)
       : cx(c),
+        ec(e),
         parser(nullptr),
-        builder(c, l, src)
+        builder(c, e, l, src)
 #ifdef DEBUG
         ,
         lineno(ln)
@@ -2087,8 +2153,14 @@ bool ASTSerializer::importDeclaration(BinaryNode* importNode,
   ListNode* specList = &importNode->left()->as<ListNode>();
   MOZ_ASSERT(specList->isKind(ParseNodeKind::ImportSpecList));
 
-  ParseNode* moduleSpecNode = importNode->right();
+  auto* moduleRequest = &importNode->right()->as<BinaryNode>();
+  MOZ_ASSERT(moduleRequest->isKind(ParseNodeKind::ImportModuleRequest));
+
+  ParseNode* moduleSpecNode = moduleRequest->left();
   MOZ_ASSERT(moduleSpecNode->isKind(ParseNodeKind::StringExpr));
+
+  auto* assertionList = &moduleRequest->right()->as<ListNode>();
+  MOZ_ASSERT(assertionList->isKind(ParseNodeKind::ImportAssertionList));
 
   NodeVector elts(cx);
   if (!elts.reserve(specList->count())) {
@@ -2112,8 +2184,23 @@ bool ASTSerializer::importDeclaration(BinaryNode* importNode,
   }
 
   RootedValue moduleSpec(cx);
-  return literal(moduleSpecNode, &moduleSpec) &&
-         builder.importDeclaration(elts, moduleSpec, &importNode->pn_pos, dst);
+  if (!literal(moduleSpecNode, &moduleSpec)) {
+    return false;
+  }
+
+  NodeVector assertions(cx);
+  if (!importAssertions(assertionList, assertions)) {
+    return false;
+  }
+
+  RootedValue moduleRequestValue(cx);
+  if (!builder.moduleRequest(moduleSpec, assertions, &importNode->pn_pos,
+                             &moduleRequestValue)) {
+    return false;
+  }
+
+  return builder.importDeclaration(elts, moduleRequestValue,
+                                   &importNode->pn_pos, dst);
 }
 
 bool ASTSerializer::importSpecifier(BinaryNode* importSpec,
@@ -2148,9 +2235,9 @@ bool ASTSerializer::exportDeclaration(ParseNode* exportNode,
              exportNode->isKind(ParseNodeKind::ExportDefaultStmt));
   MOZ_ASSERT_IF(exportNode->isKind(ParseNodeKind::ExportStmt),
                 exportNode->is<UnaryNode>());
-  MOZ_ASSERT_IF(
-      exportNode->isKind(ParseNodeKind::ExportFromStmt),
-      exportNode->as<BinaryNode>().right()->isKind(ParseNodeKind::StringExpr));
+  MOZ_ASSERT_IF(exportNode->isKind(ParseNodeKind::ExportFromStmt),
+                exportNode->as<BinaryNode>().right()->isKind(
+                    ParseNodeKind::ImportModuleRequest));
 
   RootedValue decl(cx, NullValue());
   NodeVector elts(cx);
@@ -2215,8 +2302,24 @@ bool ASTSerializer::exportDeclaration(ParseNode* exportNode,
   }
 
   RootedValue moduleSpec(cx, NullValue());
+  RootedValue moduleRequestValue(cx, NullValue());
   if (exportNode->isKind(ParseNodeKind::ExportFromStmt)) {
-    if (!literal(exportNode->as<BinaryNode>().right(), &moduleSpec)) {
+    ParseNode* moduleRequest = exportNode->as<BinaryNode>().right();
+    if (!literal(moduleRequest->as<BinaryNode>().left(), &moduleSpec)) {
+      return false;
+    }
+
+    auto* assertionList =
+        &moduleRequest->as<BinaryNode>().right()->as<ListNode>();
+    MOZ_ASSERT(assertionList->isKind(ParseNodeKind::ImportAssertionList));
+
+    NodeVector assertions(cx);
+    if (!importAssertions(assertionList, assertions)) {
+      return false;
+    }
+
+    if (!builder.moduleRequest(moduleSpec, assertions, &exportNode->pn_pos,
+                               &moduleRequestValue)) {
       return false;
     }
   }
@@ -2226,7 +2329,7 @@ bool ASTSerializer::exportDeclaration(ParseNode* exportNode,
     isDefault.setBoolean(true);
   }
 
-  return builder.exportDeclaration(decl, elts, moduleSpec, isDefault,
+  return builder.exportDeclaration(decl, elts, moduleRequestValue, isDefault,
                                    &exportNode->pn_pos, dst);
 }
 
@@ -2252,6 +2355,39 @@ bool ASTSerializer::exportNamespaceSpecifier(UnaryNode* exportSpec,
   RootedValue exportName(cx);
   return identifierOrLiteral(exportNameNode, &exportName) &&
          builder.exportNamespaceSpecifier(exportName, &exportSpec->pn_pos, dst);
+}
+
+bool ASTSerializer::importAssertions(ListNode* assertionList,
+                                     NodeVector& assertions) {
+  for (ParseNode* assertionItem : assertionList->contents()) {
+    BinaryNode* assertionNode = &assertionItem->as<BinaryNode>();
+    MOZ_ASSERT(assertionNode->isKind(ParseNodeKind::ImportAssertion));
+
+    NameNode* keyNameNode = &assertionNode->left()->as<NameNode>();
+    NameNode* valueNameNode = &assertionNode->right()->as<NameNode>();
+
+    RootedValue key(cx);
+    if (!identifierOrLiteral(keyNameNode, &key)) {
+      return false;
+    }
+
+    RootedValue value(cx);
+    if (!literal(valueNameNode, &value)) {
+      return false;
+    }
+
+    RootedValue assertion(cx);
+    if (!builder.importAssertion(key, value, &assertionNode->pn_pos,
+                                 &assertion)) {
+      return false;
+    }
+
+    if (!assertions.append(assertion)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 bool ASTSerializer::switchCase(CaseClause* caseClause, MutableHandleValue dst) {
@@ -2558,7 +2694,7 @@ bool ASTSerializer::statement(ParseNode* pn, MutableHandleValue dst) {
     case ParseNodeKind::ContinueStmt: {
       LoopControlStatement* node = &pn->as<LoopControlStatement>();
       RootedValue label(cx);
-      RootedAtom pnAtom(cx);
+      Rooted<JSAtom*> pnAtom(cx);
       if (node->label()) {
         pnAtom.set(parser->liftParserAtomToJSAtom(node->label()));
         if (!pnAtom) {
@@ -2577,7 +2713,8 @@ bool ASTSerializer::statement(ParseNode* pn, MutableHandleValue dst) {
       MOZ_ASSERT(labelNode->pn_pos.encloses(stmtNode->pn_pos));
 
       RootedValue label(cx), stmt(cx);
-      RootedAtom pnAtom(cx, parser->liftParserAtomToJSAtom(labelNode->label()));
+      Rooted<JSAtom*> pnAtom(
+          cx, parser->liftParserAtomToJSAtom(labelNode->label()));
       if (!pnAtom.get()) {
         return false;
       }
@@ -3037,7 +3174,8 @@ bool ASTSerializer::expression(ParseNode* pn, MutableHandleValue dst) {
 
       RootedValue expr(cx);
       RootedValue propname(cx);
-      RootedAtom pnAtom(cx, parser->liftParserAtomToJSAtom(prop->key().atom()));
+      Rooted<JSAtom*> pnAtom(
+          cx, parser->liftParserAtomToJSAtom(prop->key().atom()));
       if (!pnAtom.get()) {
         return false;
       }
@@ -3214,6 +3352,48 @@ bool ASTSerializer::expression(ParseNode* pn, MutableHandleValue dst) {
       return builder.objectExpression(elts, &obj->pn_pos, dst);
     }
 
+#ifdef ENABLE_RECORD_TUPLE
+    case ParseNodeKind::RecordExpr: {
+      ListNode* record = &pn->as<ListNode>();
+      NodeVector elts(cx);
+      if (!elts.reserve(record->count())) {
+        return false;
+      }
+
+      for (ParseNode* item : record->contents()) {
+        MOZ_ASSERT(record->pn_pos.encloses(item->pn_pos));
+
+        RootedValue prop(cx);
+        if (!property(item, &prop)) {
+          return false;
+        }
+        elts.infallibleAppend(prop);
+      }
+
+      return builder.recordExpression(elts, &record->pn_pos, dst);
+    }
+
+    case ParseNodeKind::TupleExpr: {
+      ListNode* tuple = &pn->as<ListNode>();
+      NodeVector elts(cx);
+      if (!elts.reserve(tuple->count())) {
+        return false;
+      }
+
+      for (ParseNode* item : tuple->contents()) {
+        MOZ_ASSERT(tuple->pn_pos.encloses(item->pn_pos));
+
+        RootedValue expr(cx);
+        if (!expression(item, &expr)) {
+          return false;
+        }
+        elts.infallibleAppend(expr);
+      }
+
+      return builder.tupleExpression(elts, &tuple->pn_pos, dst);
+    }
+#endif
+
     case ParseNodeKind::PrivateName:
     case ParseNodeKind::Name:
       return identifier(&pn->as<NameNode>(), dst);
@@ -3276,7 +3456,27 @@ bool ASTSerializer::expression(ParseNode* pn, MutableHandleValue dst) {
     case ParseNodeKind::ClassDecl:
       return classDefinition(&pn->as<ClassNode>(), true, dst);
 
-    case ParseNodeKind::NewTargetExpr:
+    case ParseNodeKind::NewTargetExpr: {
+      auto* node = &pn->as<NewTargetNode>();
+      ParseNode* firstNode = node->newHolder();
+      MOZ_ASSERT(firstNode->isKind(ParseNodeKind::PosHolder));
+      MOZ_ASSERT(node->pn_pos.encloses(firstNode->pn_pos));
+
+      ParseNode* secondNode = node->targetHolder();
+      MOZ_ASSERT(secondNode->isKind(ParseNodeKind::PosHolder));
+      MOZ_ASSERT(node->pn_pos.encloses(secondNode->pn_pos));
+
+      RootedValue firstIdent(cx);
+      RootedValue secondIdent(cx);
+
+      Rooted<JSAtom*> firstStr(cx, cx->names().new_);
+      Rooted<JSAtom*> secondStr(cx, cx->names().target);
+
+      return identifier(firstStr, &firstNode->pn_pos, &firstIdent) &&
+             identifier(secondStr, &secondNode->pn_pos, &secondIdent) &&
+             builder.metaProperty(firstIdent, secondIdent, &node->pn_pos, dst);
+    }
+
     case ParseNodeKind::ImportMetaExpr: {
       BinaryNode* node = &pn->as<BinaryNode>();
       ParseNode* firstNode = node->left();
@@ -3290,16 +3490,8 @@ bool ASTSerializer::expression(ParseNode* pn, MutableHandleValue dst) {
       RootedValue firstIdent(cx);
       RootedValue secondIdent(cx);
 
-      RootedAtom firstStr(cx);
-      RootedAtom secondStr(cx);
-
-      if (node->getKind() == ParseNodeKind::NewTargetExpr) {
-        firstStr = cx->names().new_;
-        secondStr = cx->names().target;
-      } else {
-        firstStr = cx->names().import;
-        secondStr = cx->names().meta;
-      }
+      Rooted<JSAtom*> firstStr(cx, cx->names().import);
+      Rooted<JSAtom*> secondStr(cx, cx->names().meta);
 
       return identifier(firstStr, &firstNode->pn_pos, &firstIdent) &&
              identifier(secondStr, &secondNode->pn_pos, &secondIdent) &&
@@ -3312,16 +3504,43 @@ bool ASTSerializer::expression(ParseNode* pn, MutableHandleValue dst) {
       MOZ_ASSERT(identNode->isKind(ParseNodeKind::PosHolder));
       MOZ_ASSERT(identNode->pn_pos.encloses(identNode->pn_pos));
 
-      ParseNode* argNode = node->right();
+      ParseNode* specNode = node->right();
+      MOZ_ASSERT(specNode->is<BinaryNode>());
+      MOZ_ASSERT(specNode->isKind(ParseNodeKind::CallImportSpec));
+
+      ParseNode* argNode = specNode->as<BinaryNode>().left();
       MOZ_ASSERT(node->pn_pos.encloses(argNode->pn_pos));
 
-      RootedValue ident(cx);
-      RootedValue arg(cx);
+      ParseNode* optionsArgNode = specNode->as<BinaryNode>().right();
+      MOZ_ASSERT(node->pn_pos.encloses(optionsArgNode->pn_pos));
 
-      HandlePropertyName name = cx->names().import;
-      return identifier(name, &identNode->pn_pos, &ident) &&
-             expression(argNode, &arg) &&
-             builder.callImportExpression(ident, arg, &pn->pn_pos, dst);
+      RootedValue ident(cx);
+      Handle<PropertyName*> name = cx->names().import;
+      if (!identifier(name, &identNode->pn_pos, &ident)) {
+        return false;
+      }
+
+      NodeVector args(cx);
+
+      RootedValue arg(cx);
+      if (!expression(argNode, &arg)) {
+        return false;
+      }
+      if (!args.append(arg)) {
+        return false;
+      }
+
+      if (!optionsArgNode->isKind(ParseNodeKind::PosHolder)) {
+        RootedValue optionsArg(cx);
+        if (!expression(optionsArgNode, &optionsArg)) {
+          return false;
+        }
+        if (!args.append(optionsArg)) {
+          return false;
+        }
+      }
+
+      return builder.callImportExpression(ident, args, &pn->pn_pos, dst);
     }
 
     case ParseNodeKind::SetThis: {
@@ -3416,7 +3635,7 @@ bool ASTSerializer::literal(ParseNode* pn, MutableHandleValue dst) {
 
     case ParseNodeKind::RegExpExpr: {
       RegExpObject* re = pn->as<RegExpLiteral>().create(
-          cx, parser->parserAtoms(),
+          cx, ec, parser->parserAtoms(),
           parser->getCompilationState().input.atomCache,
           parser->getCompilationState());
       if (!re) {
@@ -3570,7 +3789,7 @@ bool ASTSerializer::pattern(ParseNode* pn, MutableHandleValue dst) {
   }
 }
 
-bool ASTSerializer::identifier(HandleAtom atom, TokenPos* pos,
+bool ASTSerializer::identifier(Handle<JSAtom*> atom, TokenPos* pos,
                                MutableHandleValue dst) {
   RootedValue atomContentsVal(cx, unrootedAtomContents(atom));
   return builder.identifier(atomContentsVal, pos, dst);
@@ -3579,7 +3798,7 @@ bool ASTSerializer::identifier(HandleAtom atom, TokenPos* pos,
 bool ASTSerializer::identifier(NameNode* id, MutableHandleValue dst) {
   LOCAL_ASSERT(id->atom());
 
-  RootedAtom pnAtom(cx, parser->liftParserAtomToJSAtom(id->atom()));
+  Rooted<JSAtom*> pnAtom(cx, parser->liftParserAtomToJSAtom(id->atom()));
   if (!pnAtom.get()) {
     return false;
   }
@@ -3604,7 +3823,7 @@ bool ASTSerializer::function(FunctionNode* funNode, ASTType type,
   bool isExpression = funbox->hasExprBody();
 
   RootedValue id(cx);
-  RootedAtom funcAtom(cx);
+  Rooted<JSAtom*> funcAtom(cx);
   if (funbox->explicitName()) {
     funcAtom.set(parser->liftParserAtomToJSAtom(funbox->explicitName()));
     if (!funcAtom) {
@@ -3889,7 +4108,8 @@ static bool reflect_parse(JSContext* cx, uint32_t argc, Value* vp) {
   }
 
   /* Extract the builder methods first to report errors before parsing. */
-  ASTSerializer serialize(cx, loc, filename.get(), lineno);
+  MainThreadErrorContext ec(cx);
+  ASTSerializer serialize(cx, &ec, loc, filename.get(), lineno);
   if (!serialize.init(builder)) {
     return false;
   }
@@ -3912,23 +4132,24 @@ static bool reflect_parse(JSContext* cx, uint32_t argc, Value* vp) {
 
   Rooted<CompilationInput> input(cx, CompilationInput(options));
   if (target == ParseGoal::Script) {
-    if (!input.get().initForGlobal(cx)) {
+    if (!input.get().initForGlobal(cx, &ec)) {
       return false;
     }
   } else {
-    if (!input.get().initForModule(cx)) {
+    if (!input.get().initForModule(cx, &ec)) {
       return false;
     }
   }
 
   LifoAllocScope allocScope(&cx->tempLifoAlloc());
   frontend::CompilationState compilationState(cx, allocScope, input.get());
-  if (!compilationState.init(cx)) {
+  if (!compilationState.init(cx, &ec)) {
     return false;
   }
 
   Parser<FullParseHandler, char16_t> parser(
-      cx, options, chars.begin().get(), chars.length(),
+      cx, &ec, cx->stackLimitForCurrentPrincipal(), options,
+      chars.begin().get(), chars.length(),
       /* foldConstants = */ false, compilationState,
       /* syntaxParser = */ nullptr);
   if (!parser.checkOptions()) {
@@ -3944,16 +4165,12 @@ static bool reflect_parse(JSContext* cx, uint32_t argc, Value* vp) {
       return false;
     }
   } else {
-    if (!GlobalObject::ensureModulePrototypesCreated(cx, cx->global())) {
-      return false;
-    }
-
     ModuleBuilder builder(cx, &parser);
 
     uint32_t len = chars.length();
     SourceExtent extent =
         SourceExtent::makeGlobalExtent(len, options.lineno, options.column);
-    ModuleSharedContext modulesc(cx, options, builder, extent);
+    ModuleSharedContext modulesc(cx, &ec, options, builder, extent);
     pn = parser.moduleBody(&modulesc);
     if (!pn) {
       return false;

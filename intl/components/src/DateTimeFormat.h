@@ -9,6 +9,8 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/intl/ICU4CGlue.h"
 #include "mozilla/intl/ICUError.h"
+
+#include "mozilla/intl/DateTimePart.h"
 #include "mozilla/intl/DateTimePatternGenerator.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Result.h"
@@ -34,8 +36,7 @@ class Calendar;
  * of the DateTimeFormat operation. DateTimeFormat::TryFormat should be
  * relatively inexpensive after the initial construction.
  *
- * This class supports creating from Styles (a fixed set of options), from
- * Skeletons (a list of fields and field widths to include), and from a
+ * This class supports creating from Styles (a fixed set of options) and from a
  * components bag (a list of components and their lengths).
  *
  * This API serves to back the ECMA-402 Intl.DateTimeFormat API.
@@ -250,6 +251,7 @@ class DateTimeFormat final {
       DateTimePatternGenerator* aDateTimePatternGenerator,
       Maybe<Span<const char16_t>> aTimeZoneOverride = Nothing{});
 
+ private:
   /**
    * Create a DateTimeFormat from a UTF-16 skeleton.
    *
@@ -265,20 +267,10 @@ class DateTimeFormat final {
   static Result<UniquePtr<DateTimeFormat>, ICUError> TryCreateFromSkeleton(
       Span<const char> aLocale, Span<const char16_t> aSkeleton,
       DateTimePatternGenerator* aDateTimePatternGenerator,
-      Maybe<DateTimeFormat::HourCycle> aHourCycle = Nothing{},
-      Maybe<Span<const char16_t>> aTimeZoneOverride = Nothing{});
+      Maybe<DateTimeFormat::HourCycle> aHourCycle,
+      Maybe<Span<const char16_t>> aTimeZoneOverride);
 
-  /**
-   * Create a DateTimeFormat from a UTF-8 skeleton.
-   *
-   * See the TryCreateFromSkeleton for const char16_t for documentation.
-   */
-  static Result<UniquePtr<DateTimeFormat>, ICUError> TryCreateFromSkeleton(
-      Span<const char> aLocale, Span<const char> aSkeleton,
-      DateTimePatternGenerator* aDateTimePatternGenerator,
-      Maybe<DateTimeFormat::HourCycle> aHourCycle = Nothing{},
-      Maybe<Span<const char>> aTimeZoneOverride = Nothing{});
-
+ public:
   /**
    * Create a DateTimeFormat from a ComponentsBag.
    *
@@ -314,20 +306,20 @@ class DateTimeFormat final {
   template <typename B>
   ICUResult TryFormat(double aUnixEpoch, B& aBuffer) const {
     static_assert(
-        std::is_same<typename B::CharType, unsigned char>::value ||
-            std::is_same<typename B::CharType, char>::value ||
-            std::is_same<typename B::CharType, char16_t>::value,
+        std::is_same_v<typename B::CharType, unsigned char> ||
+            std::is_same_v<typename B::CharType, char> ||
+            std::is_same_v<typename B::CharType, char16_t>,
         "The only buffer CharTypes supported by DateTimeFormat are char "
         "(for UTF-8 support) and char16_t (for UTF-16 support).");
 
-    if constexpr (std::is_same<typename B::CharType, char>::value ||
-                  std::is_same<typename B::CharType, unsigned char>::value) {
+    if constexpr (std::is_same_v<typename B::CharType, char> ||
+                  std::is_same_v<typename B::CharType, unsigned char>) {
       // The output buffer is UTF-8, but ICU uses UTF-16 internally.
 
       // Write the formatted date into the u16Buffer.
       PatternVector u16Vec;
 
-      auto result = FillVectorWithICUCall(
+      auto result = FillBufferWithICUCall(
           u16Vec, [this, &aUnixEpoch](UChar* target, int32_t length,
                                       UErrorCode* status) {
             return udat_format(mDateFormat, aUnixEpoch, target, length,
@@ -342,7 +334,7 @@ class DateTimeFormat final {
       }
       return Ok{};
     } else {
-      static_assert(std::is_same<typename B::CharType, char16_t>::value);
+      static_assert(std::is_same_v<typename B::CharType, char16_t>);
 
       // The output buffer is UTF-16. ICU can output directly into this buffer.
       return FillBufferWithICUCall(
@@ -352,6 +344,44 @@ class DateTimeFormat final {
           });
     }
   };
+
+  /**
+   * Format the Unix epoch time into a DateTimePartVector.
+   *
+   * The caller has to create the buffer and the vector and pass to this method.
+   * The formatted string will be stored in the buffer and formatted parts in
+   * the vector.
+   *
+   * aUnixEpoch is the number of milliseconds since 1 January 1970, UTC.
+   *
+   * See:
+   * https://tc39.es/ecma402/#sec-formatdatetimetoparts
+   */
+  template <typename B>
+  ICUResult TryFormatToParts(double aUnixEpoch, B& aBuffer,
+                             DateTimePartVector& aParts) const {
+    static_assert(std::is_same_v<typename B::CharType, char16_t>,
+                  "Only char16_t is supported (for UTF-16 support) now.");
+
+    UErrorCode status = U_ZERO_ERROR;
+    UFieldPositionIterator* fpositer = ufieldpositer_open(&status);
+    if (U_FAILURE(status)) {
+      return Err(ToICUError(status));
+    }
+
+    auto result = FillBufferWithICUCall(
+        aBuffer, [this, aUnixEpoch, fpositer](UChar* chars, int32_t size,
+                                              UErrorCode* status) {
+          return udat_formatForFields(mDateFormat, aUnixEpoch, chars, size,
+                                      fpositer, status);
+        });
+    if (result.isErr()) {
+      ufieldpositer_close(fpositer);
+      return result.propagateErr();
+    }
+
+    return TryFormatToParts(fpositer, aBuffer.length(), aParts);
+  }
 
   /**
    * Copies the pattern for the current DateTimeFormat to a buffer.
@@ -379,8 +409,7 @@ class DateTimeFormat final {
    * plan to remove it.
    */
   template <typename B>
-  ICUResult GetOriginalSkeleton(B& aBuffer,
-                                Maybe<HourCycle> aHourCycle = Nothing()) {
+  ICUResult GetOriginalSkeleton(B& aBuffer) {
     static_assert(std::is_same_v<typename B::CharType, char16_t>);
     if (mOriginalSkeleton.length() == 0) {
       // Generate a skeleton from the resolved pattern, there was no originally
@@ -395,10 +424,6 @@ class DateTimeFormat final {
 
     if (!FillBuffer(mOriginalSkeleton, aBuffer)) {
       return Err(ICUError::OutOfMemory);
-    }
-    if (aHourCycle) {
-      DateTimeFormat::ReplaceHourSymbol(Span(aBuffer.data(), aBuffer.length()),
-                                        *aHourCycle);
     }
     return Ok();
   }
@@ -422,13 +447,6 @@ class DateTimeFormat final {
   Result<ComponentsBag, ICUError> ResolveComponents();
 
   ~DateTimeFormat();
-
-  /**
-   * TODO(Bug 1686965) - Temporarily get the underlying ICU object while
-   * migrating to the unified API. This should be removed when completing the
-   * migration.
-   */
-  UDateFormat* UnsafeGetUDateFormat() const { return mDateFormat; }
 
   /**
    * Clones the Calendar from a DateTimeFormat, and sets its time with the
@@ -474,6 +492,9 @@ class DateTimeFormat final {
 
   ICUResult CacheSkeleton(Span<const char16_t> aSkeleton);
 
+  ICUResult TryFormatToParts(UFieldPositionIterator* aFieldPositionIterator,
+                             size_t aSpanSize,
+                             DateTimePartVector& aParts) const;
   /**
    * Replaces all hour pattern characters in |patternOrSkeleton| to use the
    * matching hour representation for |hourCycle|.

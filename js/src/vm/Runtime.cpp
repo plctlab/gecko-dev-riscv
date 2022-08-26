@@ -29,7 +29,6 @@
 #include "jsmath.h"
 
 #include "frontend/CompilationStencil.h"
-#include "gc/FreeOp.h"
 #include "gc/PublicIterators.h"
 #include "jit/IonCompileTask.h"
 #include "jit/JitRuntime.h"
@@ -40,6 +39,7 @@
 #include "js/Interrupt.h"
 #include "js/MemoryMetrics.h"
 #include "js/SliceBudget.h"
+#include "js/Stack.h"  // JS::NativeStackLimitMin
 #include "js/Wrapper.h"
 #include "util/WindowsWrapper.h"
 #include "vm/DateTime.h"
@@ -47,9 +47,7 @@
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 #include "vm/PromiseObject.h"  // js::PromiseObject
-#include "vm/TraceLogging.h"
-#include "vm/TraceLoggingGraph.h"
-#include "vm/Warnings.h"  // js::WarnNumberUC
+#include "vm/Warnings.h"       // js::WarnNumberUC
 #include "wasm/WasmSignalHandlers.h"
 
 #include "debugger/DebugAPI-inl.h"
@@ -124,7 +122,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       activeThreadHasScriptDataAccess(false),
 #endif
       numParseTasks(0),
-      numActiveHelperThreadZones(0),
       numRealms(0),
       numDebuggeeRealms_(0),
       numDebuggeeRealmsObservingCoverage_(0),
@@ -137,7 +134,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       gc(thisFromCtor()),
       gcInitialized(false),
       emptyString(nullptr),
-      defaultFreeOp_(nullptr),
 #if !JS_HAS_INTL_API
       thousandsSeparator(nullptr),
       decimalSeparator(nullptr),
@@ -146,7 +142,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       beingDestroyed_(false),
       allowContentJS_(true),
       atoms_(nullptr),
-      permanentAtomsDuringInit_(nullptr),
       permanentAtoms_(nullptr),
       staticStrings(nullptr),
       commonNames(nullptr),
@@ -156,16 +151,13 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       afterWaitCallback(nullptr),
       offthreadIonCompilationEnabled_(true),
       parallelParsingEnabled_(true),
-#ifdef DEBUG
-      offThreadParsesRunning_(0),
-      offThreadParsingBlocked_(false),
-#endif
       autoWritableJitCodeActive_(false),
       oomCallback(nullptr),
       debuggerMallocSizeOf(ReturnZeroSize),
       stackFormat_(parentRuntime ? js::StackFormat::Default
                                  : js::StackFormat::SpiderMonkey),
       wasmInstances(mutexid::WasmRuntimeInstances),
+      moduleAsyncEvaluatingPostOrder(ASYNC_EVALUATING_POST_ORDER_INIT),
       moduleResolveHook(),
       moduleMetadataHook(),
       moduleDynamicImportHook(),
@@ -189,9 +181,6 @@ JSRuntime::~JSRuntime() {
 
   MOZ_ASSERT(wasmInstances.lock()->empty());
 
-  MOZ_ASSERT(offThreadParsesRunning_ == 0);
-  MOZ_ASSERT(!offThreadParsingBlocked_);
-
   MOZ_ASSERT(numRealms == 0);
   MOZ_ASSERT(numDebuggeeRealms_ == 0);
   MOZ_ASSERT(numDebuggeeRealmsObservingCoverage_ == 0);
@@ -208,8 +197,6 @@ bool JSRuntime::init(JSContext* cx, uint32_t maxbytes) {
   }
 
   mainContext_ = cx;
-
-  defaultFreeOp_ = cx->defaultFreeOp();
 
   if (!gc.init(maxbytes)) {
     return false;
@@ -254,10 +241,13 @@ void JSRuntime::destroyRuntime() {
   sharedIntlData.ref().destroyInstance();
 #endif
 
+  // Caches might hold on ScriptData which are saved in the ScriptDataTable.
+  // Clear all stencils from caches to remove ScriptDataTable entries.
+  caches().purgeStencils();
+
   if (gcInitialized) {
     /*
-     * Finish any in-progress GCs first. This ensures the parseWaitingOnGC
-     * list is empty in CancelOffThreadParses.
+     * Finish any in-progress GCs first.
      */
     JSContext* cx = mainContextFromOwnThread();
     if (JS::IsIncrementalGCInProgress(cx)) {
@@ -275,6 +265,7 @@ void JSRuntime::destroyRuntime() {
      */
     CancelOffThreadIonCompile(this);
     CancelOffThreadParses(this);
+    CancelOffThreadDelazify(this);
     CancelOffThreadCompressions(this);
 
     /*
@@ -290,12 +281,10 @@ void JSRuntime::destroyRuntime() {
     profilingScripts = false;
 
     JS::PrepareForFullGC(cx);
-    gc.gc(JS::GCOptions::Normal, JS::GCReason::DESTROY_RUNTIME);
+    gc.gc(JS::GCOptions::Shutdown, JS::GCReason::DESTROY_RUNTIME);
   }
 
   AutoNoteSingleThreadedRegion anstr;
-
-  MOZ_ASSERT(!hasHelperThreadZones());
 
 #ifdef DEBUG
   {
@@ -318,24 +307,15 @@ void JSRuntime::destroyRuntime() {
 #endif
 }
 
-void JSRuntime::addTelemetry(int id, uint32_t sample, const char* key) {
+void JSRuntime::addTelemetry(JSMetric id, uint32_t sample) {
   if (telemetryCallback) {
-    (*telemetryCallback)(id, sample, key);
+    (*telemetryCallback)(id, sample);
   }
-}
-
-JSTelemetrySender JSRuntime::getTelemetrySender() const {
-  return JSTelemetrySender(telemetryCallback);
 }
 
 void JSRuntime::setTelemetryCallback(
     JSRuntime* rt, JSAccumulateTelemetryDataCallback callback) {
   rt->telemetryCallback = callback;
-}
-
-void JSRuntime::setSourceElementCallback(JSRuntime* rt,
-                                         JSSourceElementCallback callback) {
-  rt->sourceElementCallback = callback;
 }
 
 void JSRuntime::setUseCounter(JSObject* obj, JSUseCounter counter) {
@@ -374,12 +354,6 @@ void JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
   rtSizes->temporary += cx->tempLifoAlloc().sizeOfExcludingThis(mallocSizeOf);
   rtSizes->interpreterStack +=
       cx->interpreterStack().sizeOfExcludingThis(mallocSizeOf);
-#ifdef JS_TRACE_LOGGING
-  if (cx->traceLogger) {
-    rtSizes->tracelogger += cx->traceLogger->sizeOfIncludingThis(mallocSizeOf);
-  }
-#endif
-
   rtSizes->uncompressedSourceCache +=
       caches().uncompressedSourceCache.sizeOfExcludingThis(mallocSizeOf);
 
@@ -487,7 +461,7 @@ static bool HandleInterrupt(JSContext* cx, bool invokeCallback) {
 
 void JSContext::requestInterrupt(InterruptReason reason) {
   interruptBits_ |= uint32_t(reason);
-  jitStackLimit = UINTPTR_MAX;
+  jitStackLimit = JS::NativeStackLimitMin;
 
   if (reason == InterruptReason::CallbackUrgent) {
     // If this interrupt is urgent (slow script dialog for instance), take
@@ -504,7 +478,7 @@ void JSContext::requestInterrupt(InterruptReason reason) {
 
 bool JSContext::handleInterrupt() {
   MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime()));
-  if (hasAnyPendingInterrupt() || jitStackLimit == UINTPTR_MAX) {
+  if (hasAnyPendingInterrupt() || jitStackLimit == JS::NativeStackLimitMin) {
     bool invokeCallback =
         hasPendingInterrupt(InterruptReason::CallbackUrgent) ||
         hasPendingInterrupt(InterruptReason::CallbackCanWait);
@@ -571,17 +545,6 @@ void JSRuntime::traceSharedIntlData(JSTracer* trc) {
   sharedIntlData.ref().trace(trc);
 }
 #endif
-
-JSFreeOp::JSFreeOp(JSRuntime* maybeRuntime, bool isDefault)
-    : runtime_(maybeRuntime), isDefault(isDefault), isCollecting_(!isDefault) {
-  MOZ_ASSERT_IF(maybeRuntime, CurrentThreadCanAccessRuntime(maybeRuntime));
-}
-
-JSFreeOp::~JSFreeOp() {
-  if (!jitPoisonRanges.empty()) {
-    jit::ExecutableAllocator::poisonCode(runtime(), jitPoisonRanges);
-  }
-}
 
 GlobalObject* JSRuntime::getIncumbentGlobal(JSContext* cx) {
   MOZ_ASSERT(cx->jobQueue);
@@ -748,31 +711,6 @@ bool JSRuntime::activeGCInAtomsZone() {
          zone->wasGCStarted();
 }
 
-void JSRuntime::setUsedByHelperThread(Zone* zone) {
-  MOZ_ASSERT(!zone->usedByHelperThread());
-  MOZ_ASSERT(!zone->wasGCStarted());
-  MOZ_ASSERT(!isOffThreadParsingBlocked());
-
-  zone->setUsedByHelperThread();
-  if (numActiveHelperThreadZones++ == 0) {
-    gc.setParallelAtomsAllocEnabled(true);
-  }
-}
-
-void JSRuntime::clearUsedByHelperThread(Zone* zone) {
-  MOZ_ASSERT(zone->usedByHelperThread());
-
-  zone->clearUsedByHelperThread();
-  if (--numActiveHelperThreadZones == 0) {
-    gc.setParallelAtomsAllocEnabled(false);
-  }
-
-  JSContext* cx = mainContextFromOwnThread();
-  if (gc.fullGCForAtomsRequested() && cx->canCollectAtoms()) {
-    gc.triggerFullGCForAtoms(cx);
-  }
-}
-
 void JSRuntime::incrementNumDebuggeeRealms() {
   if (numDebuggeeRealms_ == 0) {
     jitRuntime()->baselineInterpreter().toggleDebuggerInstrumentation(true);
@@ -822,21 +760,8 @@ bool js::CurrentThreadCanAccessRuntime(const JSRuntime* rt) {
 }
 
 bool js::CurrentThreadCanAccessZone(Zone* zone) {
-  // Helper thread zones can only be used by their owning thread.
-  if (zone->usedByHelperThread()) {
-    return zone->ownedByCurrentHelperThread();
-  }
-
-  // Other zones can only be accessed by the runtime's active context.
   return CurrentThreadCanAccessRuntime(zone->runtime_);
 }
-
-#ifdef DEBUG
-bool js::CurrentThreadIsPerformingGC() {
-  JSContext* cx = TlsContext.get();
-  return cx->defaultFreeOp()->isCollecting();
-}
-#endif
 
 JS_PUBLIC_API void JS::SetJSContextProfilerSampleBufferRangeStart(
     JSContext* cx, uint64_t rangeStart) {

@@ -7,14 +7,12 @@ import json
 import pytoml
 import re
 import sys
-
-import six
 import voluptuous
 import voluptuous.humanize
 from voluptuous import Schema, Optional, Any, All, Required, Length, Range, Msg, Match
 
 
-Text = Any(six.text_type, six.binary_type)
+Text = Any(str, bytes)
 
 
 id_regex = re.compile(r"^[a-z0-9-]+$")
@@ -193,6 +191,7 @@ def process_configured_value(name, value):
             "release",
             "dev-edition",
             "esr",
+            "thunderbird",
         }
     )
 

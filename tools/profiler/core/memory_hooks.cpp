@@ -71,7 +71,8 @@ namespace mozilla::profiler {
 // or not.
 static bool profiler_add_native_allocation_marker(int64_t aSize,
                                                   uintptr_t aMemoryAddress) {
-  if (!profiler_can_accept_markers()) {
+  if (!profiler_thread_is_being_profiled_for_markers(
+          profiler_main_thread_id())) {
     return false;
   }
 
@@ -277,7 +278,7 @@ class AllocationTracker {
 
  private:
   AllocationSet mAllocations;
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
 };
 
 static AllocationTracker* gAllocationTracker;

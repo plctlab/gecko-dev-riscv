@@ -6,12 +6,12 @@
 
 var EXPORTED_SYMBOLS = ["TelemetryUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryControllerBase } = ChromeUtils.import(
   "resource://gre/modules/TelemetryControllerBase.jsm"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "UpdateUtils",
   "resource://gre/modules/UpdateUtils.jsm"
 );
@@ -288,6 +288,6 @@ var TelemetryUtils = {
       return overrideChannel;
     }
 
-    return UpdateUtils.getUpdateChannel(false);
+    return lazy.UpdateUtils.getUpdateChannel(false);
   },
 };

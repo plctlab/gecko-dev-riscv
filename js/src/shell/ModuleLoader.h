@@ -8,7 +8,6 @@
 #define shell_ModuleLoader_h
 
 #include "builtin/ModuleObject.h"
-#include "gc/Rooting.h"
 #include "js/RootingAPI.h"
 
 namespace js {
@@ -21,7 +20,10 @@ class ModuleLoader {
 
   // Testing hook to register a module that wasn't loaded by the module loader.
   bool registerTestModule(JSContext* cx, HandleObject moduleRequest,
-                          HandleModuleObject module);
+                          Handle<ModuleObject*> module);
+
+  // Testing hook to clear all loaded modules.
+  void clearModules(JSContext* cx);
 
  private:
   static JSObject* ResolveImportedModule(JSContext* cx,
@@ -33,6 +35,8 @@ class ModuleLoader {
                                       HandleValue referencingPrivate,
                                       HandleObject moduleRequest,
                                       HandleObject promise);
+  static bool GetSupportedImportAssertions(JSContext* cx,
+                                           JS::ImportAssertionVector& values);
 
   static bool DynamicImportDelayFulfilled(JSContext* cx, unsigned argc,
                                           Value* vp);
@@ -60,9 +64,9 @@ class ModuleLoader {
                           HandleValue referencingInfo);
   bool getScriptPath(JSContext* cx, HandleValue privateValue,
                      MutableHandle<JSLinearString*> pathOut);
-  JSLinearString* normalizePath(JSContext* cx, HandleLinearString path);
+  JSLinearString* normalizePath(JSContext* cx, Handle<JSLinearString*> path);
   JSObject* getOrCreateModuleRegistry(JSContext* cx);
-  JSString* fetchSource(JSContext* cx, HandleLinearString path);
+  JSString* fetchSource(JSContext* cx, Handle<JSLinearString*> path);
 
   // The following are used for pinned atoms which do not need rooting.
   JSAtom* loadPathStr = nullptr;

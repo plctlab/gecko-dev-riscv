@@ -86,7 +86,9 @@ Schema definitions/validations that can be used for tests can be found in `syste
   "source": "pocket",
   "page": ["about:newtab" | "about:home" | "about:welcome" | "unknown"]
   "tiles": [{"id": 10000}, {"id": 10001}, {"id": 10002}]
-  "user_prefs": 7
+  "user_prefs": 7,
+  "window_inner_width": 1000,
+  "window_inner_height" 900
 }
 ```
 
@@ -98,6 +100,8 @@ Schema definitions/validations that can be used for tests can be found in `syste
   "source": "pocket",
   "page": "unknown",
   "user_prefs": 7,
+  "window_inner_width": 1000,
+  "window_inner_height" 900,
 
   // "pos" is the 0-based index to record the tile's position in the Pocket section.
   // "shim" is a base64 encoded shim attached to spocs, unique to the impression from the Ad server.
@@ -200,7 +204,7 @@ Schema definitions/validations that can be used for tests can be found in `syste
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
 | ``url``                    | [Optional] The URL of the recommendation shown in one of the highlights spots, if any.                                                               | :one:            |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
-| ``value`` (event)          | [Optional] An object with keys "icon\_type" and "card\_type" to record the extra information for event ping                                          | :one:            |
+| ``value`` (event)          | [Optional] An object with keys "icon\_type", "card\_type" and "pocket\_logged\_in\_status" to record the extra information for event ping            | :one:            |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
 | ``ver``                    | [Auto populated by Onyx] The version of the Onyx API the ping was sent to.                                                                           | :one:            |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
@@ -240,6 +244,10 @@ Schema definitions/validations that can be used for tests can be found in `syste
 | ``block``                  | [Optional] An integer to record the 0-based index when user blocks a Pocket tile.                                                                    | :one:            |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
 | ``pocket``                 | [Optional] An integer to record the 0-based index when user saves a Pocket tile to Pocket.                                                           | :one:            |
++----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
+| ``window_inner_width``     | [Optional] Amount of vertical space in pixels available to the window.                                                                               | :one:            |
++----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
+| ``window_inner_height``    | [Optional] Amount of horizontal space in pixels available to the window.                                                                             | :one:            |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+
 | ``user_prefs``             | [Required] The encoded integer of user's preferences.                                                                                                | :one: & :four:   |
 +----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------+------------------+

@@ -39,12 +39,6 @@
       document.getElementById("div1").setAttribute("role", "button");
       await events;
 
-      msg = "Set a listbox as multiselectable";
-      events = waitForOrderedEvents(
-        [[EVENT_HIDE, "div3"], [EVENT_SHOW, "div3"], [EVENT_REORDER, "container"]], msg);
-      document.getElementById("div3").setAttribute("aria-multiselectable", "true");
-      await events;
-
       msg = "Change a password field to a text field";
       events = waitForOrderedEvents(
         [[EVENT_HIDE, "password"], [EVENT_SHOW, "password"], [EVENT_REORDER, "container"]], msg);
@@ -55,6 +49,13 @@
       events = waitForOrderedEvents(
         [[EVENT_HIDE, "text"], [EVENT_SHOW, "text"], [EVENT_REORDER, "container"]], msg);
       document.getElementById("text").setAttribute("type", "password");
+      await events;
+
+      msg = "Add aria-label to a span";
+      ok(!isAccessible("span2"), "span2 has no accessible");
+      events = waitForOrderedEvents(
+        [[EVENT_SHOW, "span2"], [EVENT_REORDER, "container"]], msg);
+      document.getElementById("span2").setAttribute("aria-label", "label");
       await events;
 
       SimpleTest.finish();
@@ -84,6 +85,7 @@
     <div id="div3" role="listbox">list</div>
     <input type="password" id="password"/>
     <input type="text" id="text"/>
+    <span id="span2"></span>
   </div>
 
   <div id="eventdump"></div>

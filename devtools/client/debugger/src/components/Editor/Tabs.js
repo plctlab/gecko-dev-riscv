@@ -4,6 +4,7 @@
 
 import React, { PureComponent } from "react";
 import ReactDOM from "react-dom";
+import PropTypes from "prop-types";
 import { connect } from "../../utils/connect";
 
 import {
@@ -12,6 +13,7 @@ import {
   getIsPaused,
   getCurrentThread,
   getContext,
+  getBlackBoxRanges,
 } from "../../selectors";
 import { isVisible } from "../../utils/ui";
 
@@ -19,7 +21,6 @@ import { getHiddenTabs } from "../../utils/tabs";
 import { getFilename, isPretty, getFileURL } from "../../utils/source";
 import actions from "../../actions";
 
-import { debounce } from "lodash";
 import "./Tabs.css";
 
 import Tab from "./Tab";
@@ -27,6 +28,8 @@ import { PaneToggleButton } from "../shared/Button";
 import Dropdown from "../shared/Dropdown";
 import AccessibleImage from "../shared/AccessibleImage";
 import CommandBar from "../SecondaryPanes/CommandBar";
+
+const { debounce } = require("devtools/shared/debounce");
 
 function haveTabSourcesChanged(tabSources, prevTabSources) {
   if (tabSources.length !== prevTabSources.length) {
@@ -53,6 +56,23 @@ class Tabs extends PureComponent {
     this.onResize = debounce(() => {
       this.updateHiddenTabs();
     });
+  }
+
+  static get propTypes() {
+    return {
+      cx: PropTypes.object.isRequired,
+      endPanelCollapsed: PropTypes.bool.isRequired,
+      horizontal: PropTypes.bool.isRequired,
+      isPaused: PropTypes.bool.isRequired,
+      moveTab: PropTypes.func.isRequired,
+      moveTabBySourceId: PropTypes.func.isRequired,
+      selectSource: PropTypes.func.isRequired,
+      selectedSource: PropTypes.object,
+      blackBoxRanges: PropTypes.object.isRequired,
+      startPanelCollapsed: PropTypes.bool.isRequired,
+      tabSources: PropTypes.array.isRequired,
+      togglePaneCollapse: PropTypes.func.isRequired,
+    };
   }
 
   get draggedSource() {
@@ -130,7 +150,7 @@ class Tabs extends PureComponent {
     if (isPretty(source)) {
       return "prettyPrint";
     }
-    if (source.isBlackBoxed) {
+    if (this.props.blackBoxRanges[source.url]) {
       return "blackBox";
     }
     return "file";
@@ -287,12 +307,16 @@ class Tabs extends PureComponent {
   }
 }
 
-const mapStateToProps = state => ({
-  cx: getContext(state),
-  selectedSource: getSelectedSource(state),
-  tabSources: getSourcesForTabs(state),
-  isPaused: getIsPaused(state, getCurrentThread(state)),
-});
+const mapStateToProps = state => {
+  const tabSources = getSourcesForTabs(state);
+  return {
+    cx: getContext(state),
+    selectedSource: getSelectedSource(state),
+    tabSources,
+    blackBoxRanges: getBlackBoxRanges(state),
+    isPaused: getIsPaused(state, getCurrentThread(state)),
+  };
+};
 
 export default connect(mapStateToProps, {
   selectSource: actions.selectSource,

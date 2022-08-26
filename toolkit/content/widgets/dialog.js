@@ -7,9 +7,6 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
   const { AppConstants } = ChromeUtils.import(
     "resource://gre/modules/AppConstants.jsm"
   );
@@ -216,7 +213,7 @@
         dump(
           "Trying to position a sizeless window; caller should have called sizeToContent() or sizeTo(). See bug 75649.\n"
         );
-        sizeToContent();
+        window.sizeToContent();
       }
 
       if (opener) {

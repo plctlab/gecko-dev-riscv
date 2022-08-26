@@ -148,6 +148,8 @@ mozilla::LazyLogModule ApplicationReputationService::prlog(
 const char* const ApplicationReputationService::kNonBinaryExecutables[] = {
     ".ad",
     ".air",
+    ".fileloc",
+    ".inetloc",
 };
 
 // Items that should be submitted for application reputation checks that users
@@ -264,6 +266,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".img",      // Mac disk image
     ".imgpart",  // Mac disk image
     //".inf", exec // Windows installer
+    //".inetloc", exec  // Apple finder internet location data file
     ".ini",  // Generic config file
     //".ins", exec // IIS config
     ".internetconnect",  // Configuration file for Apple system
@@ -682,9 +685,8 @@ class PendingLookup final : public nsIStreamListener,
 
   // Wrapper function for nsIStreamListener.onStopRequest to make it easy to
   // guarantee calling the callback
-  nsresult OnStopRequestInternal(nsIRequest* aRequest, nsISupports* aContext,
-                                 nsresult aResult, uint32_t& aVerdict,
-                                 Reason& aReason);
+  nsresult OnStopRequestInternal(nsIRequest* aRequest, nsresult aResult,
+                                 uint32_t& aVerdict, Reason& aReason);
 
   // Return the hex-encoded hash of the whole URI.
   nsresult GetSpecHash(nsACString& aSpec, nsACString& hexEncodedHash);
@@ -1289,12 +1291,9 @@ nsresult PendingLookup::StartLookup() {
 
 nsresult PendingLookup::GetSpecHash(nsACString& aSpec,
                                     nsACString& hexEncodedHash) {
-  nsresult rv;
-
-  nsCOMPtr<nsICryptoHash> cryptoHash =
-      do_CreateInstance("@mozilla.org/security/hash;1", &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-  rv = cryptoHash->Init(nsICryptoHash::SHA256);
+  nsCOMPtr<nsICryptoHash> cryptoHash;
+  nsresult rv =
+      NS_NewCryptoHash(nsICryptoHash::SHA256, getter_AddRefs(cryptoHash));
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = cryptoHash->Update(
@@ -1646,7 +1645,7 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
     nsAutoCString serializedStr(serialized.c_str(), serialized.length());
     serializedStr.ReplaceSubstring("\0"_ns, "\\0"_ns);
 
-    LOG(("Serialized protocol buffer [this = %p]: (length=%d) %s", this,
+    LOG(("Serialized protocol buffer [this = %p]: (length=%zd) %s", this,
          serializedStr.Length(), serializedStr.get()));
   }
 
@@ -1777,14 +1776,12 @@ PendingLookup::OnStopRequest(nsIRequest* aRequest, nsresult aResult) {
 
   uint32_t verdict = nsIApplicationReputationService::VERDICT_SAFE;
   Reason reason = Reason::NotSet;
-  nsresult rv =
-      OnStopRequestInternal(aRequest, nullptr, aResult, verdict, reason);
+  nsresult rv = OnStopRequestInternal(aRequest, aResult, verdict, reason);
   OnComplete(verdict, reason, rv);
   return rv;
 }
 
 nsresult PendingLookup::OnStopRequestInternal(nsIRequest* aRequest,
-                                              nsISupports* aContext,
                                               nsresult aResult,
                                               uint32_t& aVerdict,
                                               Reason& aReason) {
@@ -1969,5 +1966,12 @@ nsresult ApplicationReputationService::QueryReputationInternal(
 nsresult ApplicationReputationService::IsBinary(const nsACString& aFileName,
                                                 bool* aBinary) {
   *aBinary = ::IsBinary(aFileName);
+  return NS_OK;
+}
+
+nsresult ApplicationReputationService::IsExecutable(const nsACString& aFileName,
+                                                    bool* aExecutable) {
+  *aExecutable =
+      ::IsFileType(aFileName, sExecutableExts, ArrayLength(sExecutableExts));
   return NS_OK;
 }

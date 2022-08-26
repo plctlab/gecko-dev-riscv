@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/remote-page */
 
-import "chrome://global/content/certviewer/pvutils_bundle.js";
-import "chrome://global/content/certviewer/asn1js_bundle.js";
-import "chrome://global/content/certviewer/pkijs_bundle.js";
-import "chrome://global/content/certviewer/certDecoder.js";
+import "chrome://global/content/certviewer/pvutils_bundle.jsm";
+import "chrome://global/content/certviewer/asn1js_bundle.jsm";
+import "chrome://global/content/certviewer/pkijs_bundle.jsm";
+import "chrome://global/content/certviewer/certDecoder.jsm";
 
 const { Integer, fromBER } = globalThis.asn1js.asn1js;
 const { Certificate } = globalThis.pkijs.pkijs;
@@ -51,7 +51,6 @@ const KNOWN_ERROR_TITLE_IDS = new Set([
   "nssFailure2-title",
   "csp-xfo-error-title",
   "corruptedContentError-title",
-  "remoteXUL-title",
   "sslv3Used-title",
   "inadequateSecurityError-title",
   "blockedByPolicy-title",
@@ -110,18 +109,9 @@ function retryThis(buttonEl) {
   buttonEl.disabled = true;
 }
 
-function toggleDisplay(node) {
-  const toggle = {
-    "": "block",
-    none: "block",
-    block: "none",
-  };
-  return (node.style.display = toggle[node.style.display]);
-}
-
 function showBlockingErrorReporting() {
   // Display blocking error reporting UI for XFO error and CSP error.
-  document.getElementById("blockingErrorReporting").style.display = "block";
+  document.getElementById("blockingErrorReporting").hidden = false;
 }
 
 function showPrefChangeContainer() {
@@ -136,18 +126,6 @@ function showPrefChangeContainer() {
   setFocus("#prefResetButton", "beforeend");
 }
 
-function showTls10Container() {
-  const panel = document.getElementById("enableTls10Container");
-  panel.style.display = "block";
-  document.getElementById("netErrorButtonContainer").style.display = "none";
-  const button = document.getElementById("enableTls10Button");
-  button.addEventListener("click", function enableTls10(e) {
-    RPMSetBoolPref("security.tls.version.enable-deprecated", true);
-    retryThis(button);
-  });
-  setFocus("#enableTls10Button", "beforeend");
-}
-
 function toggleCertErrorDebugInfoVisibility(shouldShow) {
   let debugInfo = document.getElementById("certificateErrorDebugInformation");
   let copyButton = document.getElementById("copyToClipboardTop");
@@ -155,12 +133,10 @@ function toggleCertErrorDebugInfoVisibility(shouldShow) {
   if (shouldShow === undefined) {
     shouldShow = debugInfo.hidden;
   }
+  debugInfo.hidden = !shouldShow;
   if (shouldShow) {
-    debugInfo.hidden = false;
     copyButton.scrollIntoView({ block: "start", behavior: "smooth" });
     copyButton.focus();
-  } else {
-    debugInfo.hidden = true;
   }
 }
 
@@ -177,7 +153,7 @@ function setupAdvancedButton() {
     .addEventListener("click", togglePanelVisibility);
 
   function togglePanelVisibility() {
-    toggleDisplay(panel);
+    panel.hidden = !panel.hidden;
     if (gIsCertError) {
       // Toggling the advanced panel must ensure that the debugging
       // information panel is hidden as well, since it's opened by the
@@ -197,11 +173,7 @@ function setupAdvancedButton() {
   }
 
   if (getCSSClass() == "expertBadCert") {
-    toggleDisplay(document.getElementById("badCertAdvancedPanel"));
-    // Toggling the advanced panel must ensure that the debugging
-    // information panel is hidden as well, since it's opened by the
-    // error code link in the advanced panel.
-    toggleCertErrorDebugInfoVisibility(false);
+    panel.hidden = false;
   }
 
   disallowCertOverridesIfNeeded();
@@ -277,22 +249,6 @@ function initPage() {
   }
 
   var err = gErrorCode;
-  // List of error pages with an illustration.
-  let illustratedErrors = [
-    "malformedURI",
-    "dnsNotFound",
-    "connectionFailure",
-    "netInterrupt",
-    "netTimeout",
-    "netReset",
-    "netOffline",
-  ];
-  if (
-    illustratedErrors.includes(err) &&
-    !RPMGetBoolPref("browser.proton.enabled")
-  ) {
-    document.body.classList.add("illustrated", err);
-  }
   if (err == "blockedByPolicy") {
     document.body.classList.add("blocked");
   }
@@ -359,6 +315,10 @@ function initPage() {
     ld.innerHTML = errDesc.innerHTML;
   }
 
+  if (err == "dnsNotFound") {
+    RPMCheckAlternateHostAvailable();
+  }
+
   if (err == "sslv3Used") {
     document.getElementById("learnMoreContainer").style.display = "block";
     document.body.className = "certerror";
@@ -367,12 +327,6 @@ function initPage() {
   // remove undisplayed errors to avoid bug 39098
   var errContainer = document.getElementById("errorContainer");
   errContainer.remove();
-
-  if (err == "remoteXUL") {
-    // Remove the "Try again" button for remote XUL errors given that
-    // it is useless.
-    document.getElementById("netErrorButtonContainer").style.display = "none";
-  }
 
   let learnMoreLink = document.getElementById("learnMoreLink");
   learnMoreLink.setAttribute("href", baseURL + "connection-not-secure");
@@ -413,51 +367,33 @@ function initPage() {
     document.getElementById("learnMoreContainer").style.display = "block";
 
     const errorCode = document.getNetErrorInfo().errorCodeString;
-    const isTlsVersionError =
-      errorCode == "SSL_ERROR_UNSUPPORTED_VERSION" ||
-      errorCode == "SSL_ERROR_PROTOCOL_VERSION_ALERT";
-    const tls10OverrideEnabled = RPMGetBoolPref(
-      "security.tls.version.enable-deprecated"
-    );
 
     if (
-      isTlsVersionError &&
-      !tls10OverrideEnabled &&
-      !RPMPrefIsLocked("security.tls.version.min")
+      errorCode == "SSL_ERROR_UNSUPPORTED_VERSION" ||
+      errorCode == "SSL_ERROR_PROTOCOL_VERSION_ALERT"
     ) {
-      // security.tls.* prefs may be reset by the user when they
-      // encounter an error, so it's important that this has a
-      // different pref branch.
-      const showOverride = RPMGetBoolPref(
-        "security.certerrors.tls.version.show-override",
-        true
-      );
+      document.getElementById("tlsVersionNotice").hidden = false;
+    }
 
-      // This is probably a TLS 1.0 server; offer to re-enable.
-      if (showOverride) {
-        showTls10Container();
-      }
-    } else {
-      const hasPrefStyleError = [
-        "interrupted", // This happens with subresources that are above the max tls
-        "SSL_ERROR_NO_CIPHERS_SUPPORTED",
-        "SSL_ERROR_NO_CYPHER_OVERLAP",
-        "SSL_ERROR_PROTOCOL_VERSION_ALERT",
-        "SSL_ERROR_SSL_DISABLED",
-        "SSL_ERROR_UNSUPPORTED_VERSION",
-      ].some(substring => {
-        return substring == errorCode;
+    const hasPrefStyleError = [
+      "interrupted", // This happens with subresources that are above the max tls
+      "SSL_ERROR_NO_CIPHERS_SUPPORTED",
+      "SSL_ERROR_NO_CYPHER_OVERLAP",
+      "SSL_ERROR_PROTOCOL_VERSION_ALERT",
+      "SSL_ERROR_SSL_DISABLED",
+      "SSL_ERROR_UNSUPPORTED_VERSION",
+    ].some(substring => {
+      return substring == errorCode;
+    });
+
+    if (hasPrefStyleError) {
+      RPMAddMessageListener("HasChangedCertPrefs", msg => {
+        if (msg.data.hasChangedCertPrefs) {
+          // Configuration overrides might have caused this; offer to reset.
+          showPrefChangeContainer();
+        }
       });
-
-      if (hasPrefStyleError) {
-        RPMAddMessageListener("HasChangedCertPrefs", msg => {
-          if (msg.data.hasChangedCertPrefs) {
-            // Configuration overrides might have caused this; offer to reset.
-            showPrefChangeContainer();
-          }
-        });
-        RPMSendAsyncMessage("GetChangedCertPrefs");
-      }
+      RPMSendAsyncMessage("GetChangedCertPrefs");
     }
   }
 
@@ -840,7 +776,7 @@ function setCertErrorDetails(event) {
         desc,
         "cert-error-symantec-distrust-description",
         {
-          HOST_NAME,
+          hostname: HOST_NAME,
         }
       );
 
@@ -946,7 +882,7 @@ function setCertErrorDetails(event) {
         "wrongSystemTime_systemDate1"
       ).textContent = systemDate;
       if (clockSkew) {
-        document.body.classList.add("illustrated", "clockSkewError");
+        document.body.classList.add("clockSkewError");
         document.l10n.setAttributes(titleElement, "clockSkewError-title");
         let clockErrDesc = document.getElementById("ed_clockSkewError");
         desc = document.getElementById("errorShortDescText");
@@ -955,10 +891,6 @@ function setCertErrorDetails(event) {
           // eslint-disable-next-line no-unsanitized/property
           desc.innerHTML = clockErrDesc.innerHTML;
         }
-        let errorPageContainer = document.getElementById("errorPageContainer");
-        let textContainer = document.getElementById("text-container");
-        errorPageContainer.style.backgroundPosition = `left top calc(50vh - ${textContainer.clientHeight /
-          2}px)`;
       } else {
         let targetElems = document.querySelectorAll(
           "#wrongSystemTime_systemDate2"
@@ -1248,7 +1180,7 @@ function setFocus(selector, position = "afterbegin") {
     // be focused. We use a requestAnimationFrame to queue up the focus to occur
     // once the button has its frame.
     requestAnimationFrame(() => {
-      button.focus({ preventFocusRing: true });
+      button.focus({ focusVisible: false });
     });
   }
 }

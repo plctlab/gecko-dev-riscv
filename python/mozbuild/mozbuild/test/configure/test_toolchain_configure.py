@@ -370,9 +370,9 @@ class BaseToolchainTest(BaseConfigureTest):
                 compiler = sandbox._value_for(sandbox[var])
                 # Add var on both ends to make it clear which of the
                 # variables is failing the test when that happens.
-                self.assertEquals((var, compiler), (var, result))
+                self.assertEqual((var, compiler), (var, result))
             except SystemExit:
-                self.assertEquals((var, result), (var, self.out.getvalue().strip()))
+                self.assertEqual((var, result), (var, self.out.getvalue().strip()))
                 return
 
         # Normalize the target os to match what we have as keys in
@@ -408,7 +408,7 @@ class BaseToolchainTest(BaseConfigureTest):
             "IMPORT_LIB_SUFFIX",
             "OBJ_SUFFIX",
         ):
-            self.assertEquals(
+            self.assertEqual(
                 "%s=%s" % (k, sandbox.get_config(k)),
                 "%s=%s" % (k, library_name_info[k]),
             )
@@ -833,7 +833,7 @@ def xcrun(stdin, args):
     if args == ("--show-sdk-path",):
         return (
             0,
-            os.path.join(os.path.abspath(os.path.dirname(__file__)), "fake_macos_sdk"),
+            mozpath.join(os.path.abspath(os.path.dirname(__file__)), "macos_fake_sdk"),
             "",
         )
     raise NotImplementedError()

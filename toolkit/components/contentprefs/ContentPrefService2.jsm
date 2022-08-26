@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const {
   ContentPref,
   cbHandleCompletion,
@@ -12,8 +11,9 @@ const {
 const { ContentPrefStore } = ChromeUtils.import(
   "resource://gre/modules/ContentPrefStore.jsm"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Sqlite",
   "resource://gre/modules/Sqlite.jsm"
 );
@@ -114,7 +114,7 @@ ContentPrefService2.prototype = {
 
   // Destruction
 
-  _destroy: function CPS2__destroy() {
+  _destroy() {
     Services.obs.removeObserver(this, "profile-before-change");
     Services.obs.removeObserver(this, "last-pb-context-exited");
 
@@ -972,41 +972,38 @@ ContentPrefService2.prototype = {
   },
 
   // A hash of arrays of observers, indexed by setting name.
-  _observers: {},
+  _observers: new Map(),
 
   // An array of generic observers, which observe all settings.
-  _genericObservers: [],
+  _genericObservers: new Set(),
 
-  addObserverForName: function CPS2_addObserverForName(aName, aObserver) {
-    var observers;
+  addObserverForName(aName, aObserver) {
+    let observers;
     if (aName) {
-      if (!this._observers[aName]) {
-        this._observers[aName] = [];
+      observers = this._observers.get(aName);
+      if (!observers) {
+        observers = new Set();
+        this._observers.set(aName, observers);
       }
-      observers = this._observers[aName];
     } else {
       observers = this._genericObservers;
     }
 
-    if (!observers.includes(aObserver)) {
-      observers.push(aObserver);
-    }
+    observers.add(aObserver);
   },
 
-  removeObserverForName: function CPS2_removeObserverForName(aName, aObserver) {
-    var observers;
+  removeObserverForName(aName, aObserver) {
+    let observers;
     if (aName) {
-      if (!this._observers[aName]) {
+      observers = this._observers.get(aName);
+      if (!observers) {
         return;
       }
-      observers = this._observers[aName];
     } else {
       observers = this._genericObservers;
     }
 
-    if (observers.includes(aObserver)) {
-      observers.splice(observers.indexOf(aObserver), 1);
-    }
+    observers.delete(aObserver);
   },
 
   /**
@@ -1016,15 +1013,15 @@ ContentPrefService2.prototype = {
    * execute before observers that display multiple settings and depend on them
    * being initialized first (like the content prefs sidebar).
    */
-  _getObservers: function ContentPrefService__getObservers(aName) {
-    var observers = [];
-
-    if (aName && this._observers[aName]) {
-      observers = observers.concat(this._observers[aName]);
+  _getObservers(aName) {
+    let genericObserverList = Array.from(this._genericObservers);
+    if (aName) {
+      let observersForName = this._observers.get(aName);
+      if (observersForName) {
+        return Array.from(observersForName).concat(genericObserverList);
+      }
     }
-    observers = observers.concat(this._genericObservers);
-
-    return observers;
+    return genericObserverList;
   },
 
   /**
@@ -1101,8 +1098,8 @@ ContentPrefService2.prototype = {
     this._pbStore.removeAll();
     this._cache.removeAll();
 
-    this._observers = {};
-    this._genericObservers = [];
+    this._observers = new Map();
+    this._genericObservers = new Set();
 
     let tables = ["prefs", "groups", "settings"];
     let stmts = tables.map(t => this._stmt(`DELETE FROM ${t}`));
@@ -1164,10 +1161,7 @@ ContentPrefService2.prototype = {
   },
 
   async _getConnection(aAttemptNum = 0) {
-    let path = PathUtils.join(
-      await PathUtils.getProfileDir(),
-      "content-prefs.sqlite"
-    );
+    let path = PathUtils.join(PathUtils.profileDir, "content-prefs.sqlite");
     let conn;
     let resetAndRetry = async e => {
       if (e.result != Cr.NS_ERROR_FILE_CORRUPTED) {
@@ -1191,8 +1185,8 @@ ContentPrefService2.prototype = {
       return this._getConnection(++aAttemptNum);
     };
     try {
-      conn = await Sqlite.openConnection({ path });
-      Sqlite.shutdown.addBlocker(
+      conn = await lazy.Sqlite.openConnection({ path });
+      lazy.Sqlite.shutdown.addBlocker(
         "Closing ContentPrefService2 connection.",
         () => conn.close()
       );
@@ -1225,8 +1219,11 @@ ContentPrefService2.prototype = {
     if (aConn) {
       await aConn.close();
     }
-    let backupFile = aPath + ".corrupt";
-    let uniquePath = PathUtils.createUniquePath(backupFile);
+    let uniquePath = await IOUtils.createUniqueFile(
+      PathUtils.parent(aPath),
+      PathUtils.filename(aPath) + ".corrupt",
+      0o600
+    );
     await IOUtils.copy(aPath, uniquePath);
     await IOUtils.remove(aPath);
     this.log("Completed DB cleanup.");

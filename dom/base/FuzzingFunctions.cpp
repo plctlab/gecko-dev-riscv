@@ -24,14 +24,12 @@ namespace dom {
 /* static */
 void FuzzingFunctions::GarbageCollect(const GlobalObject&) {
   nsJSContext::GarbageCollectNow(JS::GCReason::COMPONENT_UTILS,
-                                 nsJSContext::NonIncrementalGC,
                                  nsJSContext::NonShrinkingGC);
 }
 
 /* static */
 void FuzzingFunctions::GarbageCollectCompacting(const GlobalObject&) {
   nsJSContext::GarbageCollectNow(JS::GCReason::COMPONENT_UTILS,
-                                 nsJSContext::NonIncrementalGC,
                                  nsJSContext::ShrinkingGC);
 }
 
@@ -50,12 +48,19 @@ void FuzzingFunctions::Crash(const GlobalObject& aGlobalObject,
 
 /* static */
 void FuzzingFunctions::CycleCollect(const GlobalObject&) {
-  nsJSContext::CycleCollectNow();
+  nsJSContext::CycleCollectNow(CCReason::API);
 }
 
 void FuzzingFunctions::MemoryPressure(const GlobalObject&) {
   nsCOMPtr<nsIObserverService> os = services::GetObserverService();
   os->NotifyObservers(nullptr, "memory-pressure", u"heap-minimize");
+}
+
+/* static */
+void FuzzingFunctions::SignalIPCReady(const GlobalObject&) {
+#ifdef FUZZING_SNAPSHOT
+  ContentChild::GetSingleton()->SendSignalFuzzingReady();
+#endif
 }
 
 /* static */

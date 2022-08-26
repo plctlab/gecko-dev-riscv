@@ -14,6 +14,7 @@
 #include "js/Value.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Base64.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/fallible.h"
@@ -102,34 +103,6 @@ nsresult nsStructuredCloneContainer::DeserializeToJsval(
 }
 
 NS_IMETHODIMP
-nsStructuredCloneContainer::DeserializeToVariant(JSContext* aCx,
-                                                 nsIVariant** aData) {
-  NS_ENSURE_ARG_POINTER(aData);
-  *aData = nullptr;
-
-  if (!DataLength()) {
-    return NS_ERROR_FAILURE;
-  }
-
-  // Deserialize to a JS::Value.
-  JS::Rooted<JS::Value> jsStateObj(aCx);
-  nsresult rv = DeserializeToJsval(aCx, &jsStateObj);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  // Now wrap the JS::Value as an nsIVariant.
-  nsCOMPtr<nsIVariant> varStateObj;
-  nsCOMPtr<nsIXPConnect> xpconnect = nsIXPConnect::XPConnect();
-  NS_ENSURE_STATE(xpconnect);
-  xpconnect->JSValToVariant(aCx, jsStateObj, getter_AddRefs(varStateObj));
-  NS_ENSURE_STATE(varStateObj);
-
-  varStateObj.forget(aData);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 nsStructuredCloneContainer::GetDataAsBase64(nsAString& aOut) {
   aOut.Truncate();
 
@@ -143,6 +116,11 @@ nsStructuredCloneContainer::GetDataAsBase64(nsAString& aOut) {
 
   auto iter = Data().Start();
   size_t size = Data().Size();
+  CheckedInt<nsAutoCString::size_type> sizeCheck(size);
+  if (!sizeCheck.isValid()) {
+    return NS_ERROR_FAILURE;
+  }
+
   nsAutoCString binaryData;
   if (!binaryData.SetLength(size, fallible)) {
     return NS_ERROR_OUT_OF_MEMORY;

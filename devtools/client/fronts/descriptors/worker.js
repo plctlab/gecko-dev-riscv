@@ -36,6 +36,7 @@ class WorkerDescriptorFront extends DescriptorMixin(
     this.type = json.type;
     this.scope = json.scope;
     this.fetch = json.fetch;
+    this.traits = json.traits;
   }
 
   get name() {
@@ -63,7 +64,9 @@ class WorkerDescriptorFront extends DescriptorMixin(
     return this.type === Ci.nsIWorkerDebugger.TYPE_SERVICE;
   }
 
-  async attach() {
+  // For now, WorkerDescriptor is morphed into a WorkerTarget when calling this method.
+  // Ideally, we would split this into two distinct classes.
+  async morphWorkerDescriptorIntoWorkerTarget() {
     // temporary, will be moved once we have a target actor
     return this.getTarget();
   }
@@ -78,8 +81,6 @@ class WorkerDescriptorFront extends DescriptorMixin(
         return this;
       }
 
-      const response = await super.attach();
-
       if (this.isServiceWorker) {
         this.registration = await this._getRegistrationIfActive();
         if (this.registration) {
@@ -87,16 +88,13 @@ class WorkerDescriptorFront extends DescriptorMixin(
         }
       }
 
-      this._url = response.url;
-
       if (this.isDestroyedOrBeingDestroyed()) {
         return this;
       }
 
       const workerTargetForm = await super.getTarget();
 
-      // Set the console actor ID on the form to expose it to Target.attachConsole
-      // Set the ThreadActor on the target form so it is accessible by getFront
+      // Set the console and thread actor IDs on the form so it is accessible by TargetMixin.getFront
       this.targetForm.consoleActor = workerTargetForm.consoleActor;
       this.targetForm.threadActor = workerTargetForm.threadActor;
 
@@ -104,7 +102,6 @@ class WorkerDescriptorFront extends DescriptorMixin(
         return this;
       }
 
-      await this.attachConsole();
       return this;
     })();
     return this._attach;

@@ -36,11 +36,13 @@
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TelemetryScalarEnums.h"
 #include "mozilla/dom/quota/DecryptingInputStream_impl.h"
 #include "mozilla/dom/quota/QuotaCommon.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/dom/quota/ScopedLogExtraInfo.h"
 #include "mozilla/fallible.h"
 #include "mozilla/ipc/BackgroundParent.h"
@@ -63,7 +65,7 @@ class nsIFile;
 
 namespace mozilla::dom::indexedDB {
 
-static_assert(SNAPPY_VERSION == 0x010108);
+static_assert(SNAPPY_VERSION == 0x010109);
 
 using mozilla::ipc::IsOnBackgroundThread;
 
@@ -103,10 +105,10 @@ Result<StructuredCloneFileParent, nsresult> DeserializeStructuredCloneFile(
   const StructuredCloneFileBase::FileType type =
       ToStructuredCloneFileType(aText.First());
 
-  QM_TRY_INSPECT(
-      const auto& id,
-      ToResultGet<int32_t>(
-          ToInteger, type == StructuredCloneFileBase::eBlob
+  QM_TRY_INSPECT(const auto& id,
+                 MOZ_TO_RESULT_GET_TYPED(
+                     int32_t, ToInteger,
+                     type == StructuredCloneFileBase::eBlob
                          ? aText
                          : static_cast<const nsAString&>(Substring(aText, 1))));
 
@@ -115,14 +117,7 @@ Result<StructuredCloneFileParent, nsresult> DeserializeStructuredCloneFile(
   // XXX In bug 1432133, for some reasons DatabaseFileInfo object cannot be
   // got. This is just a short-term fix, and we are working on finding the real
   // cause in bug 1519859.
-  if (!fileInfo) {
-    IDB_WARNING(
-        "Corrupt structured clone data detected in IndexedDB. Failing the "
-        "database request. Bug 1519859 will address this problem.");
-    Telemetry::ScalarAdd(Telemetry::ScalarID::IDB_FAILURE_FILEINFO_ERROR, 1);
-
-    return Err(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
-  }
+  QM_TRY(OkIf((bool)fileInfo), Err(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR));
 
   return StructuredCloneFileParent{type, std::move(fileInfo)};
 }
@@ -313,8 +308,9 @@ nsresult ReadCompressedIndexDataValuesFromSource(
   MOZ_ASSERT(aOutIndexValues);
   MOZ_ASSERT(aOutIndexValues->IsEmpty());
 
-  QM_TRY_INSPECT(const int32_t& columnType,
-                 MOZ_TO_RESULT_INVOKE(aSource, GetTypeOfIndex, aColumnIndex));
+  QM_TRY_INSPECT(
+      const int32_t& columnType,
+      MOZ_TO_RESULT_INVOKE_MEMBER(aSource, GetTypeOfIndex, aColumnIndex));
 
   switch (columnType) {
     case mozIStorageStatement::VALUE_TYPE_NULL:
@@ -360,7 +356,9 @@ GetStructuredCloneReadInfoFromBlob(const uint8_t* aBlobData,
                                             &uncompressedLength)),
          Err(NS_ERROR_FILE_CORRUPTED));
 
-  AutoTArray<uint8_t, 512> uncompressed;
+  // `data` (JSStructuredCloneData) currently uses 4k buffer internally.
+  // For performance reasons, it's better to align `uncompressed` with that.
+  AutoTArray<uint8_t, 4096> uncompressed;
   QM_TRY(OkIf(uncompressed.SetLength(uncompressedLength, fallible)),
          Err(NS_ERROR_OUT_OF_MEMORY));
 
@@ -406,7 +404,7 @@ GetStructuredCloneReadInfoFromExternalBlob(
   QM_TRY(OkIf(index < files.Length()), Err(NS_ERROR_UNEXPECTED),
          [](const auto&) { MOZ_ASSERT(false, "Bad index value!"); });
 
-  if (IndexedDatabaseManager::PreprocessingEnabled()) {
+  if (StaticPrefs::dom_indexedDB_preprocessing()) {
     return StructuredCloneReadInfoParent{
         JSStructuredCloneData{JS::StructuredCloneScope::DifferentProcess},
         std::move(files), true};
@@ -454,23 +452,25 @@ GetStructuredCloneReadInfoFromSource(T* aSource, uint32_t aDataIndex,
   MOZ_ASSERT(!IsOnBackgroundThread());
   MOZ_ASSERT(aSource);
 
-  QM_TRY_INSPECT(const int32_t& columnType,
-                 MOZ_TO_RESULT_INVOKE(aSource, GetTypeOfIndex, aDataIndex));
+  QM_TRY_INSPECT(
+      const int32_t& columnType,
+      MOZ_TO_RESULT_INVOKE_MEMBER(aSource, GetTypeOfIndex, aDataIndex));
 
-  QM_TRY_INSPECT(const bool& isNull,
-                 MOZ_TO_RESULT_INVOKE(aSource, GetIsNull, aFileIdsIndex));
+  QM_TRY_INSPECT(const bool& isNull, MOZ_TO_RESULT_INVOKE_MEMBER(
+                                         aSource, GetIsNull, aFileIdsIndex));
 
   QM_TRY_INSPECT(const nsString& fileIds, ([aSource, aFileIdsIndex, isNull] {
                    return isNull ? Result<nsString, nsresult>{VoidString()}
-                                 : MOZ_TO_RESULT_INVOKE_TYPED(nsString, aSource,
-                                                              GetString,
-                                                              aFileIdsIndex);
+                                 : MOZ_TO_RESULT_INVOKE_MEMBER_TYPED(
+                                       nsString, aSource, GetString,
+                                       aFileIdsIndex);
                  }()));
 
   switch (columnType) {
     case mozIStorageStatement::VALUE_TYPE_INTEGER: {
-      QM_TRY_INSPECT(const int64_t& intData,
-                     MOZ_TO_RESULT_INVOKE(aSource, GetInt64, aDataIndex));
+      QM_TRY_INSPECT(
+          const int64_t& intData,
+          MOZ_TO_RESULT_INVOKE_MEMBER(aSource, GetInt64, aDataIndex));
 
       uint64_t uintData;
       memcpy(&uintData, &intData, sizeof(uint64_t));
@@ -631,8 +631,9 @@ nsresult ReadCompressedIndexDataValues(
 template <typename T>
 Result<IndexDataValuesAutoArray, nsresult> ReadCompressedIndexDataValues(
     T& aValues, uint32_t aColumnIndex) {
-  return ToResultInvoke<IndexDataValuesAutoArray>(
-      &ReadCompressedIndexDataValuesFromSource<T>, aValues, aColumnIndex);
+  return MOZ_TO_RESULT_INVOKE_TYPED(IndexDataValuesAutoArray,
+                                    &ReadCompressedIndexDataValuesFromSource<T>,
+                                    aValues, aColumnIndex);
 }
 
 template Result<IndexDataValuesAutoArray, nsresult>

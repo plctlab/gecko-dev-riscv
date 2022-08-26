@@ -21,8 +21,7 @@
 
 #include "builtin/Array.h"
 #include "gc/AllocKind.h"
-#include "gc/FreeOp.h"
-#include "gc/Rooting.h"
+#include "gc/GCContext.h"
 #include "js/CallArgs.h"
 #include "js/CallNonGenericMethod.h"
 #include "js/CharacterEncoding.h"
@@ -41,6 +40,7 @@
 #include "js/Wrapper.h"
 #include "util/StringBuffer.h"
 #include "vm/GlobalObject.h"
+#include "vm/Iteration.h"
 #include "vm/JSAtom.h"
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
@@ -172,7 +172,7 @@ const ClassSpec ErrorObject::classSpecs[JSEXN_ERROR_LIMIT] = {
 #define IMPLEMENT_ERROR_CLASS_MAYBE_WASM_TRAP(name) \
   IMPLEMENT_ERROR_CLASS_CORE(name, ErrorObject::RESERVED_SLOTS_MAYBE_WASM_TRAP)
 
-static void exn_finalize(JSFreeOp* fop, JSObject* obj);
+static void exn_finalize(JS::GCContext* gcx, JSObject* obj);
 
 static const JSClassOps ErrorObjectClassOps = {
     nullptr,       // addProperty
@@ -183,7 +183,6 @@ static const JSClassOps ErrorObjectClassOps = {
     nullptr,       // mayResolve
     exn_finalize,  // finalize
     nullptr,       // call
-    nullptr,       // hasInstance
     nullptr,       // construct
     nullptr,       // trace
 };
@@ -200,11 +199,10 @@ const JSClass ErrorObject::classes[JSEXN_ERROR_LIMIT] = {
     IMPLEMENT_ERROR_CLASS(CompileError), IMPLEMENT_ERROR_CLASS(LinkError),
     IMPLEMENT_ERROR_CLASS_MAYBE_WASM_TRAP(RuntimeError)};
 
-static void exn_finalize(JSFreeOp* fop, JSObject* obj) {
-  MOZ_ASSERT(fop->maybeOnHelperThread());
+static void exn_finalize(JS::GCContext* gcx, JSObject* obj) {
   if (JSErrorReport* report = obj->as<ErrorObject>().getErrorReport()) {
     // Bug 1560019: This allocation is not currently tracked.
-    fop->deleteUntracked(report);
+    gcx->deleteUntracked(report);
   }
 }
 
@@ -315,33 +313,6 @@ static bool Error(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-static ArrayObject* IterableToArray(JSContext* cx, HandleValue iterable) {
-  JS::ForOfIterator iterator(cx);
-  if (!iterator.init(iterable, JS::ForOfIterator::ThrowOnNonIterable)) {
-    return nullptr;
-  }
-
-  RootedArrayObject array(cx, NewDenseEmptyArray(cx));
-  if (!array) {
-    return nullptr;
-  }
-
-  RootedValue nextValue(cx);
-  while (true) {
-    bool done;
-    if (!iterator.next(&nextValue, &done)) {
-      return nullptr;
-    }
-    if (done) {
-      return array;
-    }
-
-    if (!NewbornArrayPush(cx, array, nextValue)) {
-      return nullptr;
-    }
-  }
-}
-
 // AggregateError ( errors, message )
 static bool AggregateError(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -373,8 +344,8 @@ static bool AggregateError(JSContext* cx, unsigned argc, Value* vp) {
 
   // Step 4.
 
-  RootedArrayObject errorsList(cx, IterableToArray(cx, args.get(0)));
-  if (!errorsList) {
+  Rooted<ArrayObject*> errorsList(cx);
+  if (!IterableToArray(cx, args.get(0), &errorsList)) {
     return false;
   }
 
@@ -717,7 +688,7 @@ bool js::ErrorObject::getStack_impl(JSContext* cx, const CallArgs& args) {
   if (cx->runtime()->stackFormat() == js::StackFormat::V8) {
     // When emulating V8 stack frames, we also need to prepend the
     // stringified Error to the stack string.
-    HandlePropertyName name = cx->names().ErrorToStringWithTrailingNewline;
+    Handle<PropertyName*> name = cx->names().ErrorToStringWithTrailingNewline;
     FixedInvokeArgs<0> args2(cx);
     RootedValue rval(cx);
     if (!CallSelfHostedFunction(cx, name, args.thisv(), args2, &rval)) {

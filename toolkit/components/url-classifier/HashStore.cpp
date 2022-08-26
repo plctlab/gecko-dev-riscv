@@ -35,7 +35,6 @@
 #include "nsCheckSummedOutputStream.h"
 #include "prio.h"
 #include "mozilla/Logging.h"
-#include "mozilla/IntegerPrintfMacros.h"
 #include "zlib.h"
 #include "Classifier.h"
 #include "nsUrlClassifierDBService.h"
@@ -182,7 +181,7 @@ void TableUpdateV4::NewPrefixes(int32_t aSize, const nsACString& aPrefixes) {
       LOG(("%.2X%.2X%.2X%.2X", c[0], c[1], c[2], c[3]));
     }
 
-    LOG(("---- %u fixed-length prefixes in total.",
+    LOG(("---- %zu fixed-length prefixes in total.",
          aPrefixes.Length() / aSize));
   }
 

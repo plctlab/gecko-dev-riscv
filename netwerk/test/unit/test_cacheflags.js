@@ -1,7 +1,6 @@
 "use strict";
 
 const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 var httpserver = new HttpServer();
 httpserver.start(-1);
@@ -371,10 +370,11 @@ function run_next_test() {
 
 function handler(httpStatus, metadata, response) {
   gHitServer = true;
+  let etag;
   try {
-    var etag = metadata.getHeader("If-None-Match");
+    etag = metadata.getHeader("If-None-Match");
   } catch (ex) {
-    var etag = "";
+    etag = "";
   }
   if (etag == "testtag") {
     // Allow using the cached data

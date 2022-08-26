@@ -88,10 +88,10 @@ class RelativeTimeFormat final {
                    ? ureldatefmt_format
                    : ureldatefmt_formatNumeric;
 
-    if constexpr (std::is_same<typename B::CharType, char>::value) {
+    if constexpr (std::is_same_v<typename B::CharType, char>) {
       mozilla::Vector<char16_t, StackU16VectorSize> u16Vec;
 
-      MOZ_TRY(FillVectorWithICUCall(
+      MOZ_TRY(FillBufferWithICUCall(
           u16Vec, [this, aNumber, aUnit, fmt](UChar* target, int32_t length,
                                               UErrorCode* status) {
             return fmt(mFormatter, aNumber, ToURelativeDateTimeUnit(aUnit),

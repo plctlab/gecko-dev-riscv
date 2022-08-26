@@ -48,7 +48,7 @@ add_task(async () => {
     ok(descriptor, "Got the new process descriptor");
 
     // Connect to the first content process available
-    const content = processes.filter(p => !p.isParent)[0];
+    const content = processes.filter(p => !p.isParentProcessDescriptor)[0];
 
     const processDescriptor = await client.mainRoot.getProcess(content.id);
     const front = await processDescriptor.getTarget();
@@ -79,12 +79,8 @@ add_task(async () => {
   }
 
   function processScript() {
-    // eslint-disable-next-line no-shadow
-    const { Services } = ChromeUtils.import(
-      "resource://gre/modules/Services.jsm"
-    );
+    /* eslint-env mozilla/process-script */
     const listener = function() {
-      /* global sendAsyncMessage */
       Services.obs.removeObserver(listener, "devtools:loader:destroy");
       sendAsyncMessage("test:getProcess-destroy", null);
     };

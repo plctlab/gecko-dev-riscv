@@ -84,6 +84,7 @@ add_task(async function() {
     "Should decrease value by slow multiplier using down arrow"
   );
 
+  widget.destroy();
   triggerKey = null;
 });
 
@@ -97,6 +98,6 @@ function triggerKey(key, modifier) {
     target: input,
     keyCode: key,
     [modifier]: true,
-    preventDefault: function() {},
+    preventDefault() {},
   });
 }

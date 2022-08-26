@@ -4,15 +4,16 @@
 
 function inChildProcess() {
   return (
+    // eslint-disable-next-line mozilla/use-services
     Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime)
       .processType != Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT
   );
 }
 
-let URL = null;
+let uri = null;
 function makeChan() {
   return NetUtil.newChannel({
-    uri: URL,
+    uri,
     loadUsingSystemPrincipal: true,
   }).QueryInterface(Ci.nsIHttpChannel);
 }
@@ -33,7 +34,7 @@ add_task(async function setup() {
   ok(inChildProcess(), "Sanity check. This should run in the child process");
   // Initialize the URL. Parent runs the server
   do_send_remote_message("start-test");
-  URL = await do_await_remote_message("start-test-done");
+  uri = await do_await_remote_message("start-test-done");
 });
 
 // This test performs a request, and checks that no cookie header are visible

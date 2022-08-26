@@ -88,12 +88,6 @@ const nodeSpec = generateActorSpec({
         value: RetVal("string"),
       },
     },
-    getAllSelectors: {
-      request: {},
-      response: {
-        value: RetVal("array:string"),
-      },
-    },
     getCssPath: {
       request: {},
       response: {
@@ -119,6 +113,18 @@ const nodeSpec = generateActorSpec({
       response: {
         events: RetVal("json"),
       },
+    },
+    enableEventListener: {
+      request: {
+        eventListenerInfoId: Arg(0),
+      },
+      response: {},
+    },
+    disableEventListener: {
+      request: {
+        eventListenerInfoId: Arg(0),
+      },
+      response: {},
     },
     modifyAttributes: {
       request: {

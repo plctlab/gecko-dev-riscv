@@ -15,8 +15,7 @@
 nsresult NS_NewSVGStyleElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using SVGStyleElementBase = SVGElement;
 
@@ -61,6 +60,8 @@ class SVGStyleElement final : public SVGStyleElementBase,
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
   // WebIDL
+  bool Disabled() const;
+  void SetDisabled(bool aDisabled);
   void GetMedia(nsAString& aMedia);
   void SetMedia(const nsAString& aMedia, ErrorResult& rv);
   void GetType(nsAString& aType);
@@ -87,7 +88,6 @@ class SVGStyleElement final : public SVGStyleElementBase,
   void ContentChanged(nsIContent* aContent);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // DOM_SVG_SVGSTYLEELEMENT_H_

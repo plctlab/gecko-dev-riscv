@@ -10,6 +10,7 @@
 #include <iosfwd>    // for ostream
 #include <stdint.h>  // for uint32_t
 #include <stdio.h>   // FILE
+#include <tuple>
 
 #include "Units.h"
 #include "mozilla/DefineEnum.h"  // for MOZ_DEFINE_ENUM_CLASS_WITH_BASE
@@ -165,15 +166,7 @@ typedef BaseTransactionId<CompositionOpportunityType> CompositionOpportunityId;
 /// content in the window.
 enum class WindowKind : int8_t { MAIN = 0, SECONDARY, LAST };
 
-enum class LayersBackend : int8_t {
-  LAYERS_NONE = 0,
-  LAYERS_BASIC,
-  LAYERS_OPENGL,
-  LAYERS_D3D11,
-  LAYERS_CLIENT,
-  LAYERS_WR,
-  LAYERS_LAST
-};
+enum class LayersBackend : int8_t { LAYERS_NONE = 0, LAYERS_WR, LAYERS_LAST };
 
 enum class WebRenderBackend : int8_t { HARDWARE = 0, SOFTWARE, LAST };
 
@@ -220,62 +213,6 @@ MOZ_DEFINE_ENUM_CLASS_WITH_BASE(
 // Unimplemented - PRESERVE_ASPECT_RATIO_CONTAIN
 ));
 // clang-format on
-
-struct EventRegions {
-  // The hit region for a layer contains all areas on the layer that are
-  // sensitive to events. This region is an over-approximation and may
-  // contain regions that are not actually sensitive, but any such regions
-  // will be included in the mDispatchToContentHitRegion.
-  nsIntRegion mHitRegion;
-  // The mDispatchToContentHitRegion for a layer contains all areas for
-  // which the main-thread must be consulted before responding to events.
-  // This region will be a subregion of mHitRegion.
-  nsIntRegion mDispatchToContentHitRegion;
-
-  // The following regions represent the touch-action areas of this layer.
-  // All of these regions are approximations to the true region, but any
-  // variance between the approximation and the true region is guaranteed
-  // to be included in the mDispatchToContentHitRegion.
-  nsIntRegion mNoActionRegion;
-  nsIntRegion mHorizontalPanRegion;
-  nsIntRegion mVerticalPanRegion;
-
-  // Set to true if events targeting the dispatch-to-content region
-  // require target confirmation.
-  // See CompositorHitTestFlags::eRequiresTargetConfirmation.
-  // We don't bother tracking a separate region for this (which would
-  // be a sub-region of the dispatch-to-content region), because the added
-  // overhead of region computations is not worth it, and because
-  // EventRegions are going to be deprecated anyways.
-  bool mDTCRequiresTargetConfirmation;
-
-  EventRegions();
-
-  explicit EventRegions(nsIntRegion aHitRegion);
-
-  // This constructor takes the maybe-hit region and uses it to update the
-  // hit region and dispatch-to-content region. It is useful from converting
-  // from the display item representation to the layer representation.
-  EventRegions(const nsIntRegion& aHitRegion,
-               const nsIntRegion& aMaybeHitRegion,
-               const nsIntRegion& aDispatchToContentRegion,
-               const nsIntRegion& aNoActionRegion,
-               const nsIntRegion& aHorizontalPanRegion,
-               const nsIntRegion& aVerticalPanRegion,
-               bool aDTCRequiresTargetConfirmation);
-
-  bool operator==(const EventRegions& aRegions) const;
-  bool operator!=(const EventRegions& aRegions) const;
-  friend std::ostream& operator<<(std::ostream& aStream, const EventRegions& e);
-
-  void ApplyTranslationAndScale(float aXTrans, float aYTrans, float aXScale,
-                                float aYScale);
-  void Transform(const gfx::Matrix4x4& aTransform);
-  void OrWith(const EventRegions& aOther);
-
-  bool IsEmpty() const;
-  void SetEmpty();
-};
 
 // Bit flags that go on a RefLayer and override the
 // event regions in the entire subtree below. This is needed for propagating
@@ -366,18 +303,108 @@ class CompositableHandle final {
   friend struct IPC::ParamTraits<mozilla::layers::CompositableHandle>;
 
  public:
+  static CompositableHandle GetNext();
+
   CompositableHandle() : mHandle(0) {}
   CompositableHandle(const CompositableHandle& aOther) = default;
   explicit CompositableHandle(uint64_t aHandle) : mHandle(aHandle) {}
   bool IsValid() const { return mHandle != 0; }
   explicit operator bool() const { return IsValid(); }
+  explicit operator uint64_t() const { return mHandle; }
   bool operator==(const CompositableHandle& aOther) const {
     return mHandle == aOther.mHandle;
+  }
+  bool operator!=(const CompositableHandle& aOther) const {
+    return !(*this == aOther);
   }
   uint64_t Value() const { return mHandle; }
 
  private:
   uint64_t mHandle;
+};
+
+enum class CompositableHandleOwner : uint8_t {
+  WebRenderBridge,
+  ImageBridge,
+  InProcessManager,
+};
+
+struct RemoteTextureId {
+  uint64_t mId = 0;
+
+  auto MutTiedFields() { return std::tie(mId); }
+
+  static RemoteTextureId GetNext();
+
+  bool IsValid() const { return mId != 0; }
+
+  // Allow explicit cast to a uint64_t for now
+  explicit operator uint64_t() const { return mId; }
+
+  // Implement some operators so this class can be used as a key in
+  // stdlib classes.
+  bool operator<(const RemoteTextureId& aOther) const {
+    return mId < aOther.mId;
+  }
+
+  bool operator>(const RemoteTextureId& aOther) const {
+    return mId > aOther.mId;
+  }
+
+  bool operator==(const RemoteTextureId& aOther) const {
+    return mId == aOther.mId;
+  }
+
+  bool operator!=(const RemoteTextureId& aOther) const {
+    return !(*this == aOther);
+  }
+
+  // Helper struct that allow this class to be used as a key in
+  // std::unordered_map like so:
+  //   std::unordered_map<RemoteTextureId, ValueType, RemoteTextureId::HashFn>
+  //   myMap;
+  struct HashFn {
+    std::size_t operator()(const RemoteTextureId aKey) const {
+      return std::hash<uint64_t>{}(aKey.mId);
+    }
+  };
+};
+
+struct RemoteTextureOwnerId {
+  uint64_t mId = 0;
+
+  auto MutTiedFields() { return std::tie(mId); }
+
+  static RemoteTextureOwnerId GetNext();
+
+  bool IsValid() const { return mId != 0; }
+
+  // Allow explicit cast to a uint64_t for now
+  explicit operator uint64_t() const { return mId; }
+
+  // Implement some operators so this class can be used as a key in
+  // stdlib classes.
+  bool operator<(const RemoteTextureOwnerId& aOther) const {
+    return mId < aOther.mId;
+  }
+
+  bool operator==(const RemoteTextureOwnerId& aOther) const {
+    return mId == aOther.mId;
+  }
+
+  bool operator!=(const RemoteTextureOwnerId& aOther) const {
+    return !(*this == aOther);
+  }
+
+  // Helper struct that allow this class to be used as a key in
+  // std::unordered_map like so:
+  //   std::unordered_map<RemoteTextureOwnerId, ValueType,
+  //   RemoteTextureOwnerId::HashFn> myMap;
+  struct HashFn {
+    std::size_t operator()(const RemoteTextureOwnerId aKey) const {
+      return std::hash<uint64_t>{}(aKey.mId);
+    }
+  };
 };
 
 // clang-format off

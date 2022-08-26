@@ -26,7 +26,6 @@
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
-#include "mozilla/webgpu/WebGPUChild.h"
 #include "mozilla/mozalloc.h"  // for operator new, etc
 #include "mozilla/Telemetry.h"
 #include "gfxConfig.h"
@@ -86,12 +85,7 @@ CompositorBridgeChild::CompositorBridgeChild(CompositorManagerChild* aManager)
       mFwdTransactionId(0),
       mThread(NS_GetCurrentThread()),
       mProcessToken(0),
-      mSectionAllocator(nullptr),
-      mPaintLock("CompositorBridgeChild.mPaintLock"),
-      mTotalAsyncPaints(0),
-      mIsDelayingForAsyncPaints(false),
-      mSlowFlushCount(0),
-      mTotalFlushCount(0) {
+      mSectionAllocator(nullptr) {
   MOZ_ASSERT(NS_IsMainThread());
 }
 
@@ -122,7 +116,11 @@ void CompositorBridgeChild::AfterDestroy() {
   // The only time we should not issue Send__delete__ is if the actor is already
   // destroyed, e.g. the compositor process crashed.
   if (!mActorDestroyed) {
-    Send__delete__(this);
+    // We saw this send fail quite often with "Channel closing", probably a race
+    // with the other side closing or some event scheduling order.
+    if (GetIPCChannel()->CanSend()) {
+      Send__delete__(this);
+    }
     mActorDestroyed = true;
   }
 
@@ -182,12 +180,6 @@ void CompositorBridgeChild::Destroy() {
     Unused << child->SendDestroy();
   }
 
-  AutoTArray<PWebGPUChild*, 16> webGPUChildren;
-  ManagedPWebGPUChild(webGPUChildren);
-  for (PWebGPUChild* child : webGPUChildren) {
-    Unused << child->SendShutdown();
-  }
-
   const ManagedContainer<PTextureChild>& textures = ManagedPTextureChild();
   for (const auto& key : textures) {
     RefPtr<TextureClient> texture = TextureClient::AsTextureClient(key);
@@ -224,7 +216,8 @@ void CompositorBridgeChild::Destroy() {
 void CompositorBridgeChild::ShutDown() {
   if (sCompositorBridge) {
     sCompositorBridge->Destroy();
-    SpinEventLoopUntil([&]() { return !sCompositorBridge; });
+    SpinEventLoopUntil("CompositorBridgeChild::ShutDown"_ns,
+                       [&]() { return !sCompositorBridge; });
   }
 }
 
@@ -307,9 +300,7 @@ mozilla::ipc::IPCResult CompositorBridgeChild::RecvDidComposite(
   for (const auto& id : aTransactionIds) {
     if (mLayerManager) {
       MOZ_ASSERT(!aId.IsValid());
-      MOZ_ASSERT(mLayerManager->GetBackendType() ==
-                     LayersBackend::LAYERS_CLIENT ||
-                 mLayerManager->GetBackendType() == LayersBackend::LAYERS_WR);
+      MOZ_ASSERT(mLayerManager->GetBackendType() == LayersBackend::LAYERS_WR);
       // Hold a reference to keep LayerManager alive. See Bug 1242668.
       RefPtr<WebRenderLayerManager> m = mLayerManager;
       m->DidComposite(id, aCompositeStart, aCompositeEnd);
@@ -342,20 +333,8 @@ void CompositorBridgeChild::ActorDestroy(ActorDestroyReason aWhy) {
     gfxCriticalNote << "Receive IPC close with reason=AbnormalShutdown";
   }
 
-  {
-    // We take the lock to update these fields, since they are read from the
-    // paint thread. We don't need the lock to init them, since that happens
-    // on the main thread before the paint thread can ever grab a reference
-    // to the CompositorBridge object.
-    //
-    // Note that it is useful to take this lock for one other reason: It also
-    // tells us whether GetIPCChannel is safe to call. If we access the IPC
-    // channel within this lock, when mCanSend is true, then we know it has not
-    // been zapped by IPDL.
-    MonitorAutoLock lock(mPaintLock);
-    mCanSend = false;
-    mActorDestroyed = true;
-  }
+  mCanSend = false;
+  mActorDestroyed = true;
 
   if (mProcessToken && XRE_IsParentProcess()) {
     GPUProcessManager::Get()->NotifyRemoteActorDestroyed(mProcessToken);
@@ -395,11 +374,12 @@ bool CompositorBridgeChild::SendAdoptChild(const LayersId& id) {
   return PCompositorBridgeChild::SendAdoptChild(id);
 }
 
-bool CompositorBridgeChild::SendFlushRendering() {
+bool CompositorBridgeChild::SendFlushRendering(
+    const wr::RenderReasons& aReasons) {
   if (!mCanSend) {
     return false;
   }
-  return PCompositorBridgeChild::SendFlushRendering();
+  return PCompositorBridgeChild::SendFlushRendering(aReasons);
 }
 
 bool CompositorBridgeChild::SendStartFrameTimeRecording(
@@ -421,7 +401,7 @@ bool CompositorBridgeChild::SendStopFrameTimeRecording(
 }
 
 PTextureChild* CompositorBridgeChild::AllocPTextureChild(
-    const SurfaceDescriptor&, const ReadLockDescriptor&, const LayersBackend&,
+    const SurfaceDescriptor&, ReadLockDescriptor&, const LayersBackend&,
     const TextureFlags&, const LayersId&, const uint64_t& aSerial,
     const wr::MaybeExternalImageId& aExternalImageId) {
   return TextureClient::CreateIPDLActor();
@@ -553,20 +533,15 @@ CompositorBridgeChild::GetTileLockAllocator() {
 }
 
 PTextureChild* CompositorBridgeChild::CreateTexture(
-    const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+    const SurfaceDescriptor& aSharedData, ReadLockDescriptor&& aReadLock,
     LayersBackend aLayersBackend, TextureFlags aFlags, uint64_t aSerial,
-    wr::MaybeExternalImageId& aExternalImageId, nsISerialEventTarget* aTarget) {
+    wr::MaybeExternalImageId& aExternalImageId) {
   PTextureChild* textureChild =
       AllocPTextureChild(aSharedData, aReadLock, aLayersBackend, aFlags,
                          LayersId{0} /* FIXME */, aSerial, aExternalImageId);
 
-  // Do the DOM labeling.
-  if (aTarget) {
-    SetEventTargetForActor(textureChild, aTarget);
-  }
-
   return SendPTextureConstructor(
-      textureChild, aSharedData, aReadLock, aLayersBackend, aFlags,
+      textureChild, aSharedData, std::move(aReadLock), aLayersBackend, aFlags,
       LayersId{0} /* FIXME? */, aSerial, aExternalImageId);
 }
 
@@ -602,28 +577,14 @@ void CompositorBridgeChild::EndCanvasTransaction() {
   }
 }
 
-RefPtr<webgpu::WebGPUChild> CompositorBridgeChild::GetWebGPUChild() {
-  MOZ_ASSERT(gfx::gfxConfig::IsEnabled(gfx::Feature::WEBGPU));
-  if (!mWebGPUChild) {
-    webgpu::PWebGPUChild* bridge = SendPWebGPUConstructor();
-    mWebGPUChild = static_cast<webgpu::WebGPUChild*>(bridge);
-  }
-
-  return mWebGPUChild;
+bool CompositorBridgeChild::AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) {
+  ShmemAllocated(this);
+  return PCompositorBridgeChild::AllocUnsafeShmem(aSize, aShmem);
 }
 
-bool CompositorBridgeChild::AllocUnsafeShmem(
-    size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-    ipc::Shmem* aShmem) {
+bool CompositorBridgeChild::AllocShmem(size_t aSize, ipc::Shmem* aShmem) {
   ShmemAllocated(this);
-  return PCompositorBridgeChild::AllocUnsafeShmem(aSize, aType, aShmem);
-}
-
-bool CompositorBridgeChild::AllocShmem(
-    size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-    ipc::Shmem* aShmem) {
-  ShmemAllocated(this);
-  return PCompositorBridgeChild::AllocShmem(aSize, aType, aShmem);
+  return PCompositorBridgeChild::AllocShmem(aSize, aShmem);
 }
 
 bool CompositorBridgeChild::DeallocShmem(ipc::Shmem& aShmem) {
@@ -690,18 +651,6 @@ PWebRenderBridgeChild* CompositorBridgeChild::AllocPWebRenderBridgeChild(
 bool CompositorBridgeChild::DeallocPWebRenderBridgeChild(
     PWebRenderBridgeChild* aActor) {
   WebRenderBridgeChild* child = static_cast<WebRenderBridgeChild*>(aActor);
-  child->ReleaseIPDLReference();
-  return true;
-}
-
-webgpu::PWebGPUChild* CompositorBridgeChild::AllocPWebGPUChild() {
-  webgpu::WebGPUChild* child = new webgpu::WebGPUChild();
-  child->AddIPDLReference();
-  return child;
-}
-
-bool CompositorBridgeChild::DeallocPWebGPUChild(webgpu::PWebGPUChild* aActor) {
-  webgpu::WebGPUChild* child = static_cast<webgpu::WebGPUChild*>(aActor);
   child->ReleaseIPDLReference();
   return true;
 }

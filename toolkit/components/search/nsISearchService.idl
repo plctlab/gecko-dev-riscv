@@ -267,9 +267,9 @@ interface nsISearchService : nsISupports
   Promise runBackgroundChecks();
 
   /**
-   * Resets the default engine to its original value.
+   * Resets the default engine to its app default engine value.
    */
-  Promise resetToOriginalDefaultEngine();
+  Promise resetToAppDefaultEngine();
 
   /**
    * Adds a new Open Search engine from the file at the supplied URI.
@@ -291,15 +291,37 @@ interface nsISearchService : nsISupports
    * Adds a new search engine for enterprises.
    *
    * @param details
-   *        An object that simulates the WebExtension manifest structure:
+   *        An object with the following details:
    *
-   *        {iconURL} Optional
-   *        {description} Optional
-   *        {chrome_settings_overrides} This should contain a {search_provider}
-   *                                    structure that mimics the WebExtension
-   *                                    manifest structure.
+   *        {iconURL} Optional. The icon to use for the engine.
+   *        {description} Optional. The description of the engine.
+   *        {name} The name of the engine
+   *        {encoding} Optional. The encoding of the engine.
+   *        {search_url} The search url for the engine.
+   *        {keyword} Optional. The keyword for the engine.
+   *        {search_url_post_params} Optional. Post parameters for the search
+   *          engine submission.
+   *        {suggest_url} The suggestion url for the engine.
    */
   Promise addPolicyEngine(in jsval details);
+
+  /**
+   * Updates an existing engine for enterprises.
+   *
+   * @param details
+   *        An object with the following details:
+   *
+   *        {iconURL} Optional. The icon to use for the engine.
+   *        {description} Optional. The description of the engine.
+   *        {name} The name of the engine
+   *        {encoding} Optional. The encoding of the engine.
+   *        {search_url} The search url for the engine.
+   *        {keyword} Optional. The keyword for the engine.
+   *        {search_url_post_params} Optional. Post parameters for the search
+   *          engine submission.
+   *        {suggest_url} The suggestion url for the engine.
+   */
+  Promise updatePolicyEngine(in jsval details);
 
   /**
    * Adds a new search engine defined by the user.
@@ -419,23 +441,23 @@ interface nsISearchService : nsISupports
   Promise removeWebExtensionEngine(in AString id);
 
   /**
-   * The original Engine object that is the default for this region,
+   * The Application Default Engine object that is the default for this region,
    * ignoring changes the user may have subsequently made.
    */
-  readonly attribute nsISearchEngine originalDefaultEngine;
+  readonly attribute nsISearchEngine appDefaultEngine;
 
   /**
-   * The original Engine object that is the default for this region when in
+   * The Application Default Engine object that is the default for this region when in
    * private browsing mode, ignoring changes the user may have subsequently made.
    */
-  readonly attribute nsISearchEngine originalPrivateDefaultEngine;
+  readonly attribute nsISearchEngine appPrivateDefaultEngine;
 
   /**
    * The currently active search engine.
    * Unless the application doesn't ship any search plugin, this should never
    * be null. If the currently active engine is removed, this attribute will
-   * fallback first to the original default engine if it's not hidden, then to
-   * the first visible engine, and as a last resort it will unhide the original
+   * fallback first to the application default engine if it's not hidden, then to
+   * the first visible engine, and as a last resort it will unhide the app
    * default engine.
    */
   attribute nsISearchEngine defaultEngine;
@@ -489,7 +511,7 @@ interface nsISearchService : nsISupports
    *   contains information about the default engine for private browsing mode:
    *     name, loadPath, original submissionURL
    */
-  Promise getDefaultEngineInfo();
+  jsval getDefaultEngineInfo();
 
   /**
    * Determines if the provided URL represents results from a search engine, and

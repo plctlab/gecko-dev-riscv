@@ -46,7 +46,7 @@ load 265999-1.html
 load 266222-1.html
 asserts(1-7) load 266360-1.html # bug 576358
 load 266445-1.html
-asserts(2) load 266445-2.html
+load 266445-2.html
 load 268157-1.html
 load 269566-1.html
 load 272647-1.html
@@ -263,7 +263,7 @@ load 469861-1.xhtml
 load 469861-2.xhtml
 load 470851-1.xhtml
 asserts-if(Android&&!asyncPan,1-2) load 473042.xhtml # bug 1034369 (may also cause a few assertions to be registered on the next test)
-asserts(0-5) load 474075.html # bug 847368
+asserts(1) load 474075.html # bug 1775003
 load 477333-1.xhtml
 load 477731-1.html
 load 479114-1.html
@@ -316,7 +316,7 @@ load 543648-1.html
 load 560447-1.html
 load 564063-1.html
 load 569018-1.html
-pref(layout.css.xul-display-values.content.enabled,true) load 570038-1.html
+load chrome://reftest/content/crashtests/layout/base/crashtests/570038-1.html
 load chrome://reftest/content/crashtests/layout/base/crashtests/572003.xhtml
 load 572582-1.xhtml
 load 576649-1.html
@@ -398,7 +398,7 @@ load 836990-1.html
 load 840480.html
 load 842114.html
 load 847242.html
-skip-if(ThreadSanitizer) pref(layers.low-precision-buffer,false) load 852293.html
+skip-if(ThreadSanitizer) load 852293.html
 pref(layers.force-active,true) load 859526-1.html
 pref(layers.force-active,true) load 859630-1.html
 load 860579-1.html
@@ -406,7 +406,7 @@ load 866588.html
 load 876092.html
 load 876221.html
 load 897852.html
-asserts(4-6) asserts-if(Android&&!asyncPan,2) load 898913.html # bug 847368
+load 898913.html
 load 926728.html
 load 930381.html
 load 931450.html
@@ -536,7 +536,7 @@ load 1539303.html
 load 1541679.html
 load 1547261.html
 load 1547391.html
-pref(layout.css.resizeobserver.enabled,true) load 1548057.html
+load 1548057.html
 load 1549867.html
 load 1553874.html
 load 1560328.html
@@ -562,3 +562,10 @@ load 1690163.html
 load 1723200.html
 load 1729578.html
 load 1729581.html
+load 1734007.html
+load 1745860.html
+pref(layout.accessiblecaret.enabled,true) load 1746989.html
+load 1752649.html
+load 1753779.html
+pref(layout.css.backdrop-filter.enabled,true) load 1755790.html
+load 1771503.html

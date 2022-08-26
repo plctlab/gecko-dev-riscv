@@ -122,30 +122,16 @@ const AVAILABLE_INJECTIONS = [
     customFunc: "noSniffFix",
   },
   {
-    id: "bug1561371",
-    platform: "android",
-    domain: "mail.google.com",
-    bug: "1561371",
+    id: "bug1768243",
+    platform: "desktop",
+    domain: "cloud.google.com",
+    bug: "1768243",
     contentScripts: {
-      matches: ["*://mail.google.com/*"],
+      matches: ["*://cloud.google.com/terms/*"],
       css: [
         {
           file:
-            "injections/css/bug1561371-mail.google.com-allow-horizontal-scrolling.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1570119",
-    platform: "desktop",
-    domain: "teamcoco.com",
-    bug: "1570119",
-    contentScripts: {
-      matches: ["*://teamcoco.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1570119-teamcoco.com-scrollbar-width.css",
+            "injections/css/bug1768243-cloud.google.com-allow-table-scrolling.css",
         },
       ],
     },
@@ -304,21 +290,6 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1666771",
-    platform: "desktop",
-    domain: "zillow.com",
-    bug: "1666771",
-    contentScripts: {
-      allFrames: true,
-      matches: ["*://*.zillow.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1666771-zilow-map-overdraw.css",
-        },
-      ],
-    },
-  },
-  {
     id: "bug1631811",
     platform: "all",
     domain: "datastudio.google.com",
@@ -348,20 +319,6 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1704653",
-    platform: "all",
-    domain: "tsky.in",
-    bug: "1704653",
-    contentScripts: {
-      matches: ["*://tsky.in/*"],
-      css: [
-        {
-          file: "injections/css/bug1704653-tsky.in-clear-float.css",
-        },
-      ],
-    },
-  },
-  {
     id: "bug1731825",
     platform: "desktop",
     domain: "Office 365 email handling prompt",
@@ -371,6 +328,7 @@ const AVAILABLE_INJECTIONS = [
         "*://*.live.com/*",
         "*://*.office.com/*",
         "*://*.sharepoint.com/*",
+        "*://*.office365.com/*",
       ],
       js: [
         {
@@ -402,20 +360,6 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1711082",
-    platform: "all",
-    domain: "m.aliexpress.com",
-    bug: "1711082",
-    contentScripts: {
-      matches: ["*://m.aliexpress.com/*"],
-      js: [
-        {
-          file: "injections/js/bug1711082-m.aliexpress.com-undisable-search.js",
-        },
-      ],
-    },
-  },
-  {
     id: "bug1712833",
     platform: "all",
     domain: "buskocchi.desuca.co.jp",
@@ -426,35 +370,6 @@ const AVAILABLE_INJECTIONS = [
         {
           file:
             "injections/css/bug1712833-buskocchi.desuca.co.jp-fix-map-height.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1714612",
-    platform: "all",
-    domain: "www.rfi.it",
-    bug: "1714612",
-    contentScripts: {
-      matches: ["*://www.rfi.it/*"],
-      js: [
-        {
-          file: "injections/js/bug1714612-www.rfi.it-outertext.js",
-        },
-      ],
-      allFrames: true,
-    },
-  },
-  {
-    id: "bug1719870",
-    platform: "desktop",
-    domain: "lcbo.com",
-    bug: "1719870",
-    contentScripts: {
-      matches: ["*://*.lcbo.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1719870-lcbo.com-table-clearfix.css",
         },
       ],
     },
@@ -507,29 +422,313 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1727080",
-    platform: "android",
-    domain: "nexity.fr",
-    bug: "1727080",
+    id: "bug1741234",
+    platform: "all",
+    domain: "patient.alphalabs.ca",
+    bug: "1741234",
     contentScripts: {
-      matches: ["*://*.nexity.fr/*"],
+      matches: ["*://patient.alphalabs.ca/*"],
       css: [
         {
-          file: "injections/css/bug1727080-nexity.fr-svg-size-fix.css",
+          file: "injections/css/bug1741234-patient.alphalabs.ca-height-fix.css",
         },
       ],
     },
   },
   {
-    id: "bug1728140",
+    id: "bug1743614",
     platform: "android",
-    domain: "air-quality.com",
-    bug: "1728140",
+    domain: "storytel.com",
+    bug: "1743614",
     contentScripts: {
-      matches: ["*://air-quality.com/*"],
+      matches: ["*://*.storytel.com/*"],
       css: [
         {
-          file: "injections/css/bug1728140-map-size-fix.css",
+          file: "injections/css/bug1743614-storytel.com-flex-min-width.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1751022",
+    platform: "android",
+    domain: "chotot.com",
+    bug: "1751022",
+    contentScripts: {
+      matches: ["*://*.chotot.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1751022-chotot.com-image-width-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1754473",
+    platform: "android",
+    domain: "m.intl.taobao.com",
+    bug: "1754473",
+    contentScripts: {
+      matches: ["*://m.intl.taobao.com/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1754473-m.intl.taobao.com-number-arrow-buttons-overlapping-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1748455",
+    platform: "android",
+    domain: "reddit.com",
+    bug: "1748455",
+    contentScripts: {
+      matches: ["*://*.reddit.com/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1748455-reddit.com-gallery-image-width-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1739489",
+    platform: "desktop",
+    domain: "Sites using draft.js",
+    bug: "1739489",
+    contentScripts: {
+      matches: [
+        "*://draftjs.org/*", // Bug 1739489
+        "*://www.facebook.com/*", // Bug 1739489
+        "*://twitter.com/*", // Bug 1776229
+        "*://mobile.twitter.com/*", // Bug 1776229
+      ],
+      js: [
+        {
+          file: "injections/js/bug1739489-draftjs-beforeinput.js",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1765947",
+    platform: "android",
+    domain: "veniceincoming.com",
+    bug: "1765947",
+    contentScripts: {
+      matches: ["*://veniceincoming.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1765947-veniceincoming.com-left-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug11769762",
+    platform: "all",
+    domain: "tiktok.com",
+    bug: "1769762",
+    contentScripts: {
+      matches: ["https://www.tiktok.com/*"],
+      js: [
+        {
+          file: "injections/js/bug1769762-tiktok.com-plugins-shim.js",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1770962",
+    platform: "all",
+    domain: "coldwellbankerhomes.com",
+    bug: "1770962",
+    contentScripts: {
+      matches: ["*://*.coldwellbankerhomes.com/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1770962-coldwellbankerhomes.com-image-height.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1774490",
+    platform: "all",
+    domain: "rainews.it",
+    bug: "1774490",
+    contentScripts: {
+      matches: ["*://www.rainews.it/*"],
+      css: [
+        {
+          file: "injections/css/bug1774490-rainews.it-gallery-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1772949",
+    platform: "all",
+    domain: "YouTube embeds",
+    bug: "1772949",
+    customFunc: "runScriptBeforeRequest",
+    script: "injections/js/bug1772949-youtube-webshare-shim.js",
+    request: ["*://www.youtube.com/*/www-embed-player.js*"],
+    message: "The WebShare API is being disabled on a YouTube frame.",
+  },
+  {
+    id: "bug1778239",
+    platform: "all",
+    domain: "m.pji.co.kr",
+    bug: "1778239",
+    contentScripts: {
+      matches: ["*://m.pji.co.kr/*"],
+      js: [
+        {
+          file: "injections/js/bug1778239-m.pji.co.kr-banner-hide.js",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1774005",
+    platform: "all",
+    domain: "Sites relying on window.InstallTrigger",
+    bug: "1774005",
+    contentScripts: {
+      matches: [
+        "*://*.pixiv.net/*", // Bug 1774006
+        "*://*.crunchyroll.com/*", // Bug 1777597
+        "*://www.northcountrypublicradio.org/contact/subscribe.html*", // Bug 1778382
+      ],
+      js: [
+        {
+          file: "injections/js/bug1774005-installtrigger-shim.js",
+        },
+      ],
+      allFrames: true,
+    },
+  },
+  {
+    id: "bug1784302",
+    platform: "android",
+    domain: "open.toutiao.com",
+    bug: "1784302",
+    contentScripts: {
+      matches: ["*://open.toutiao.com/*"],
+      js: [
+        {
+          file: "injections/js/bug1784302-effectiveType-shim.js",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784309",
+    platform: "all",
+    domain: "bet365.com",
+    bug: "1784309",
+    contentScripts: {
+      matches: [
+        "*://*.bet365.com/*",
+        "*://*.bet365.gr/*",
+        "*://*.bet365.com.au/*",
+        "*://*.bet365.de/*",
+        "*://*.bet365.es/*",
+        "*://*.bet365.ca/*",
+        "*://*.bet365.dk/*",
+        "*://*.bet365.mx/*",
+        "*://*.bet365.bet.ar/*",
+      ],
+      js: [
+        {
+          file: "injections/js/bug1784309-bet365.com-math-pow.js",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784141",
+    platform: "android",
+    domain: "aveeno.com",
+    bug: "1784141",
+    contentScripts: {
+      matches: [
+        "*://*.aveeno.com/*",
+        "*://*.aveeno.ca/*",
+        "*://*.aveeno.com.au/*",
+        "*://*.aveeno.co.kr/*",
+        "*://*.aveeno.co.uk/*",
+        "*://*.aveeno.ie/*",
+      ],
+      css: [
+        {
+          file: "injections/css/bug1784141-aveeno.com-unsupported.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784195",
+    platform: "android",
+    domain: "nutmeg.morrisons.com",
+    bug: "1784195",
+    contentScripts: {
+      matches: ["*://nutmeg.morrisons.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1784195-nutmeg.morrisons.com-overflow.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784546",
+    platform: "android",
+    domain: "seznam.cz",
+    bug: "1784546",
+    contentScripts: {
+      matches: ["*://*.seznam.cz/*"],
+      css: [
+        {
+          file: "injections/css/bug1784546-seznam.cz-popup-height.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784351",
+    platform: "desktop",
+    domain: "movistar.com.ar",
+    bug: "1784351",
+    contentScripts: {
+      matches: ["*://*.movistar.com.ar/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1784351-movistar.com.ar-overflow-overlay-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1784199",
+    platform: "all",
+    domain: "Sites based on Entrata Platform",
+    bug: "1784199",
+    contentScripts: {
+      matches: [
+        "*://*.aptsovation.com/*",
+        "*://*.nhcalaska.com/*",
+        "*://*.securityproperties.com/*",
+        "*://*.theloftsorlando.com/*",
+      ],
+      css: [
+        {
+          file: "injections/css/bug1784199-entrata-platform-unsupported.css",
         },
       ],
     },

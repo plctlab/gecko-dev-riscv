@@ -32,17 +32,6 @@ class ExtensionPort;
 class ExtensionMockAPI final : public nsISupports,
                                public nsWrapperCache,
                                public ExtensionAPINamespace {
-  nsCOMPtr<nsIGlobalObject> mGlobal;
-  RefPtr<ExtensionEventManager> mOnTestEventMgr;
-
-  ~ExtensionMockAPI() = default;
-
- protected:
-  // ExtensionAPIBase methods
-  nsIGlobalObject* GetGlobalObject() const override { return mGlobal; }
-
-  nsString GetAPINamespace() const override { return u"mockExtensionAPI"_ns; }
-
  public:
   ExtensionMockAPI(nsIGlobalObject* aGlobal,
                    ExtensionBrowser* aExtensionBrowser);
@@ -60,14 +49,27 @@ class ExtensionMockAPI final : public nsISupports,
                                 JS::MutableHandle<JS::Value> aRetval);
   void GetPropertyAsString(DOMString& aRetval);
 
-  already_AddRefed<ExtensionPort> CallWebExtMethodReturnsPort(
-      JSContext* aCx, const nsAString& aApiMethod,
-      const dom::Sequence<JS::Value>& aArgs, ErrorResult& aRv);
-
   ExtensionEventManager* OnTestEvent();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ExtensionMockAPI)
+
+ protected:
+  // ExtensionAPIBase methods
+  nsIGlobalObject* GetGlobalObject() const override { return mGlobal; }
+
+  ExtensionBrowser* GetExtensionBrowser() const override {
+    return mExtensionBrowser;
+  }
+
+  nsString GetAPINamespace() const override { return u"mockExtensionAPI"_ns; }
+
+ private:
+  ~ExtensionMockAPI() = default;
+
+  nsCOMPtr<nsIGlobalObject> mGlobal;
+  RefPtr<ExtensionBrowser> mExtensionBrowser;
+  RefPtr<ExtensionEventManager> mOnTestEventMgr;
 };
 
 }  // namespace extensions

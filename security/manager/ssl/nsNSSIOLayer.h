@@ -27,9 +27,19 @@ class SharedSSLState;
 }  // namespace psm
 }  // namespace mozilla
 
+const uint32_t kIPCClientCertsSlotTypeModern = 1;
+const uint32_t kIPCClientCertsSlotTypeLegacy = 2;
+
 using mozilla::OriginAttributes;
 
 class nsIObserver;
+
+// Order matters for UpdateEchExtensioNStatus.
+enum class EchExtensionStatus {
+  kNotPresent,  // No ECH Extension was sent
+  kGREASE,      // A GREASE ECH Extension was sent
+  kReal         // A 'real' ECH Extension was sent
+};
 
 class nsNSSSocketInfo final : public CommonSocketControl {
  public:
@@ -65,8 +75,6 @@ class nsNSSSocketInfo final : public CommonSocketControl {
   NS_IMETHOD GetMACAlgorithmUsed(int16_t* aMACAlgorithmUsed) override;
   bool GetDenyClientCert() override;
   void SetDenyClientCert(bool aDenyClientCert) override;
-  NS_IMETHOD GetClientCert(nsIX509Cert** aClientCert) override;
-  NS_IMETHOD SetClientCert(nsIX509Cert* aClientCert) override;
   NS_IMETHOD GetEsniTxt(nsACString& aEsniTxt) override;
   NS_IMETHOD SetEsniTxt(const nsACString& aEsniTxt) override;
   NS_IMETHOD GetEchConfig(nsACString& aEchConfig) override;
@@ -94,8 +102,14 @@ class nsNSSSocketInfo final : public CommonSocketControl {
   void SetFullHandshake() { mIsFullHandshake = true; }
   bool IsFullHandshake() const { return mIsFullHandshake; }
 
+  void UpdateEchExtensionStatus(EchExtensionStatus aEchExtensionStatus) {
+    mEchExtensionStatus = std::max(aEchExtensionStatus, mEchExtensionStatus);
+  }
+  EchExtensionStatus GetEchExtensionStatus() const {
+    return mEchExtensionStatus;
+  }
+
   bool GetJoined() { return mJoined; }
-  void SetSentClientCert() { mSentClientCert = true; }
 
   uint32_t GetProviderTlsFlags() const { return mProviderTlsFlags; }
 
@@ -110,6 +124,10 @@ class nsNSSSocketInfo final : public CommonSocketControl {
   void SetCertVerificationWaiting();
   // Use errorCode == 0 to indicate success;
   void SetCertVerificationResult(PRErrorCode errorCode) override;
+
+  void ClientAuthCertificateSelected(
+      nsTArray<uint8_t>& certBytes,
+      nsTArray<nsTArray<uint8_t>>& certChainBytes);
 
   // for logging only
   PRBool IsWaitingForCertVerification() const {
@@ -167,10 +185,6 @@ class nsNSSSocketInfo final : public CommonSocketControl {
 
   nsresult SetResumptionTokenFromExternalCache();
 
-  void SetClientCertChain(mozilla::UniqueCERTCertList&& clientCertChain) {
-    mClientCertChain = std::move(clientCertChain);
-  }
-
  protected:
   virtual ~nsNSSSocketInfo();
 
@@ -189,13 +203,13 @@ class nsNSSSocketInfo final : public CommonSocketControl {
 
   nsCString mEsniTxt;
   nsCString mEchConfig;
-  nsCString mPeerId;
   bool mEarlyDataAccepted;
   bool mDenyClientCert;
   bool mFalseStartCallbackCalled;
   bool mFalseStarted;
   bool mIsFullHandshake;
   bool mNotedTimeUntilReady;
+  EchExtensionStatus mEchExtensionStatus;  // Currently only used for telemetry.
 
   // True when SSL layer has indicated an "SSL short write", i.e. need
   // to call on send one or more times to push all pending data to write.
@@ -225,7 +239,6 @@ class nsNSSSocketInfo final : public CommonSocketControl {
   mozilla::TimeStamp mSocketCreationTimestamp;
   uint64_t mPlaintextBytesRead;
 
-  nsCOMPtr<nsIX509Cert> mClientCert;
   // Regarding the client certificate message in the TLS handshake, RFC 5246
   // (TLS 1.2) says:
   //   If the certificate_authorities list in the certificate request
@@ -246,36 +259,6 @@ class nsNSSSocketInfo final : public CommonSocketControl {
   RefPtr<mozilla::psm::SharedSSLState> mOwningSharedRef;
 
   nsCOMPtr<nsITlsHandshakeCallbackListener> mTlsHandshakeCallback;
-};
-
-// This class is used to store the needed information for invoking the client
-// cert selection UI.
-class ClientAuthInfo final {
- public:
-  explicit ClientAuthInfo(const nsACString& hostName,
-                          const OriginAttributes& originAttributes,
-                          int32_t port, uint32_t providerFlags,
-                          uint32_t providerTlsFlags, nsIX509Cert* clientCert);
-  ~ClientAuthInfo() = default;
-  ClientAuthInfo(ClientAuthInfo&& aOther) noexcept;
-
-  const nsACString& HostName() const;
-  const OriginAttributes& OriginAttributesRef() const;
-  int32_t Port() const;
-  already_AddRefed<nsIX509Cert> GetClientCert() const;
-  uint32_t ProviderFlags() const;
-  uint32_t ProviderTlsFlags() const;
-
- private:
-  ClientAuthInfo(const ClientAuthInfo&) = delete;
-  void operator=(const ClientAuthInfo&) = delete;
-
-  nsCString mHostName;
-  OriginAttributes mOriginAttributes;
-  int32_t mPort;
-  uint32_t mProviderFlags;
-  uint32_t mProviderTlsFlags;
-  nsCOMPtr<nsIX509Cert> mClientCert;
 };
 
 class nsSSLIOLayerHelpers {
@@ -336,7 +319,7 @@ class nsSSLIOLayerHelpers {
   uint16_t mVersionFallbackLimit;
 
  private:
-  mozilla::Mutex mutex;
+  mozilla::Mutex mutex MOZ_UNANNOTATED;
   nsCOMPtr<nsIObserver> mPrefObserver;
   uint32_t mTlsFlags;
 };
@@ -355,11 +338,16 @@ nsresult nsSSLIOLayerAddToSocket(int32_t family, const char* host, int32_t port,
                                  bool forSTARTTLS, uint32_t flags,
                                  uint32_t tlsFlags);
 
-SECStatus DoGetClientAuthData(ClientAuthInfo&& info,
-                              const mozilla::UniqueCERTCertificate& serverCert,
-                              nsTArray<nsTArray<uint8_t>>&& collectedCANames,
-                              mozilla::UniqueCERTCertificate& outCert,
-                              mozilla::UniqueSECKEYPrivateKey& outKey,
-                              mozilla::UniqueCERTCertList& outBuiltChain);
+extern "C" {
+using FindObjectsCallback = void (*)(uint8_t type, size_t id_len,
+                                     const uint8_t* id, size_t data_len,
+                                     const uint8_t* data, uint32_t slotType,
+                                     void* ctx);
+void DoFindObjects(FindObjectsCallback cb, void* ctx);
+using SignCallback = void (*)(size_t data_len, const uint8_t* data, void* ctx);
+void DoSign(size_t cert_len, const uint8_t* cert, size_t data_len,
+            const uint8_t* data, size_t params_len, const uint8_t* params,
+            SignCallback cb, void* ctx);
+}
 
 #endif  // nsNSSIOLayer_h

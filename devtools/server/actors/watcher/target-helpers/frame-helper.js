@@ -12,17 +12,8 @@ const {
   WindowGlobalLogger,
 } = require("devtools/server/connectors/js-window-actor/WindowGlobalLogger.jsm");
 const Targets = require("devtools/server/actors/targets/index");
-const {
-  getAllRemoteBrowsingContexts,
-  shouldNotifyWindowGlobal,
-} = require("devtools/server/actors/watcher/target-helpers/utils.js");
 
 const browsingContextAttachedObserverByWatcher = new Map();
-
-const isEveryFrameTargetEnabled = Services.prefs.getBoolPref(
-  "devtools.every-frame-target.enabled",
-  false
-);
 
 /**
  * Force creating targets for all existing BrowsingContext, that, for a given Watcher Actor.
@@ -39,7 +30,7 @@ async function createTargets(watcher) {
   // TODO: We should also set the flag for the "parent process" browsing context when we're
   // in the browser toolbox. This is blocked by Bug 1675763, and should be handled as part
   // of Bug 1709529.
-  if (watcher.browserElement) {
+  if (watcher.sessionContext.type == "browser-element") {
     // The `watchedByDevTools` enables gecko behavior tied to this flag, such as:
     //  - reporting the contents of HTML loaded in the docshells
     //  - capturing stacks for the network monitor.
@@ -49,17 +40,18 @@ async function createTargets(watcher) {
   if (!browsingContextAttachedObserverByWatcher.has(watcher)) {
     // We store the browserId here as watcher.browserElement.browserId can momentary be
     // set to 0 when there's a navigation to a new browsing context.
-    const browserId = watcher.browserElement?.browserId;
+    const browserId = watcher.sessionContext.browserId;
     const onBrowsingContextAttached = browsingContext => {
       // We want to set watchedByDevTools on new top-level browsing contexts:
       // - in the case of the BrowserToolbox/BrowserConsole, that would be the browsing
       //   contexts of all the tabs we want to handle.
       // - for the regular toolbox, browsing context that are being created when navigating
       //   to a page that forces a new browsing context.
-      // Then BrowsingContext will propagate to all the tree of children BbrowsingContext's.
+      // Then BrowsingContext will propagate to all the tree of children BrowsingContext's.
       if (
         !browsingContext.parent &&
-        (!watcher.browserElement || browserId === browsingContext.browserId)
+        (watcher.sessionContext.type != "browser-element" ||
+          browserId === browsingContext.browserId)
       ) {
         browsingContext.watchedByDevTools = true;
       }
@@ -75,7 +67,10 @@ async function createTargets(watcher) {
     );
   }
 
-  if (watcher.isServerTargetSwitchingEnabled && watcher.browserElement) {
+  if (
+    watcher.sessionContext.isServerTargetSwitchingEnabled &&
+    watcher.sessionContext.type == "browser-element"
+  ) {
     // If server side target switching is enabled, process the top level browsing context first,
     // so that we guarantee it is notified to the client first.
     // If it is disabled, the top level target will be created from the client instead.
@@ -86,8 +81,10 @@ async function createTargets(watcher) {
     });
   }
 
-  const browsingContexts = getFilteredRemoteBrowsingContext(
-    watcher.browserElement
+  const browsingContexts = watcher.getAllBrowsingContexts().filter(
+    // Filter out the top browsing context we just processed.
+    browsingContext =>
+      browsingContext != watcher.browserElement?.browsingContext
   );
   // Await for the all the queries in order to resolve only *after* we received all
   // already available targets.
@@ -133,8 +130,8 @@ async function createTargetForBrowsingContext({
       .instantiateTarget({
         watcherActorID: watcher.actorID,
         connectionPrefix: watcher.conn.prefix,
-        browserId: watcher.browserId,
-        watchedData: watcher.watchedData,
+        sessionContext: watcher.sessionContext,
+        sessionData: watcher.sessionData,
       });
   } catch (e) {
     console.warn(
@@ -161,17 +158,13 @@ async function createTargetForBrowsingContext({
  *
  * @param WatcherActor watcher
  *        The Watcher Actor requesting to stop watching for new targets.
+ * @param {object} options
+ * @param {boolean} options.isModeSwitching
+ *        true when this is called as the result of a change to the devtools.browsertoolbox.scope pref
  */
-function destroyTargets(watcher) {
+function destroyTargets(watcher, options) {
   // Go over all existing BrowsingContext in order to destroy all targets
-  const browsingContexts = getFilteredRemoteBrowsingContext(
-    watcher.browserElement
-  );
-  if (watcher.isServerTargetSwitchingEnabled && watcher.browserElement) {
-    // If server side target switching is enabled, we should also destroy the top level browsing context.
-    // If it is disabled, the top level target will be destroyed from the client instead.
-    browsingContexts.push(watcher.browserElement.browsingContext);
-  }
+  const browsingContexts = watcher.getAllBrowsingContexts();
 
   for (const browsingContext of browsingContexts) {
     logWindowGlobal(
@@ -187,11 +180,12 @@ function destroyTargets(watcher) {
       .getActor("DevToolsFrame")
       .destroyTarget({
         watcherActorID: watcher.actorID,
-        browserId: watcher.browserId,
+        sessionContext: watcher.sessionContext,
+        options,
       });
   }
 
-  if (watcher.browserElement) {
+  if (watcher.sessionContext.type == "browser-element") {
     watcher.browserElement.browsingContext.watchedByDevTools = false;
   }
 
@@ -214,7 +208,7 @@ function destroyTargets(watcher) {
  * @param Array<Object> entries
  *        The values to be added to this type of data
  */
-async function addWatcherDataEntry({ watcher, type, entries }) {
+async function addSessionDataEntry({ watcher, type, entries }) {
   const browsingContexts = getWatchingBrowsingContexts(watcher);
   const promises = [];
   for (const browsingContext of browsingContexts) {
@@ -225,9 +219,9 @@ async function addWatcherDataEntry({ watcher, type, entries }) {
 
     const promise = browsingContext.currentWindowGlobal
       .getActor("DevToolsFrame")
-      .addWatcherDataEntry({
+      .addSessionDataEntry({
         watcherActorID: watcher.actorID,
-        browserId: watcher.browserId,
+        sessionContext: watcher.sessionContext,
         type,
         entries,
       });
@@ -240,9 +234,9 @@ async function addWatcherDataEntry({ watcher, type, entries }) {
 /**
  * Notify all existing frame targets that some data entries have been removed
  *
- * See addWatcherDataEntry for argument documentation.
+ * See addSessionDataEntry for argument documentation.
  */
-function removeWatcherDataEntry({ watcher, type, entries }) {
+function removeSessionDataEntry({ watcher, type, entries }) {
   const browsingContexts = getWatchingBrowsingContexts(watcher);
   for (const browsingContext of browsingContexts) {
     logWindowGlobal(
@@ -252,9 +246,9 @@ function removeWatcherDataEntry({ watcher, type, entries }) {
 
     browsingContext.currentWindowGlobal
       .getActor("DevToolsFrame")
-      .removeWatcherDataEntry({
+      .removeSessionDataEntry({
         watcherActorID: watcher.actorID,
-        browserId: watcher.browserId,
+        sessionContext: watcher.sessionContext,
         type,
         entries,
       });
@@ -264,13 +258,13 @@ function removeWatcherDataEntry({ watcher, type, entries }) {
 module.exports = {
   createTargets,
   destroyTargets,
-  addWatcherDataEntry,
-  removeWatcherDataEntry,
+  addSessionDataEntry,
+  removeSessionDataEntry,
 };
 
 /**
  * Return the list of BrowsingContexts which should be targeted in order to communicate
- * a new list of resource types to listen or stop listening to.
+ * updated session data.
  *
  * @param WatcherActor watcher
  *        The watcher actor will be used to know which target we debug
@@ -283,41 +277,33 @@ function getWatchingBrowsingContexts(watcher) {
     watcher,
     Targets.TYPES.FRAME
   );
-  const { browserElement } = watcher;
-  const browsingContexts = watchingAdditionalTargets
-    ? getFilteredRemoteBrowsingContext(browserElement)
-    : [];
-  // Even if we aren't watching additional target, we want to process the top level target.
-  // The top level target isn't returned by getFilteredRemoteBrowsingContext, so add it in both cases.
-  if (browserElement) {
-    const topBrowsingContext = browserElement.browsingContext;
-    // Ignore if we are against a page running in the parent process,
-    // which would not support JSWindowActor API
-    // XXX May be we should toggle `includeChrome` and ensure watch/unwatch works
-    // with such page?
-    if (topBrowsingContext.currentWindowGlobal.osPid != -1) {
-      browsingContexts.push(topBrowsingContext);
+  if (watchingAdditionalTargets) {
+    return watcher.getAllBrowsingContexts();
+  }
+  // By default, when we are no longer watching for frame targets, we should no longer try to
+  // communicate with any browsing-context. But.
+  //
+  // For "browser-element" debugging, all targets are provided by watching by watching for frame targets.
+  // So, when we are no longer watching for frame, we don't expect to have any frame target to talk to.
+  // => we should no longer reach any browsing context.
+  //
+  // For "all" (=browser toolbox), there is only the special ParentProcessTargetActor we might want to return here.
+  // But this is actually handled by the WatcherActor which uses `WatcherActor._getTargetActorInParentProcess` to convey session data.
+  // => we should no longer reach any browsing context.
+  //
+  // For "webextension" debugging, there is the special WebExtensionTargetActor, which doesn't run in the parent process,
+  // so that we can't rely on the same code as the browser toolbox.
+  // => we should always reach out this particular browsing context.
+  if (watcher.sessionContext.type == "webextension") {
+    const browsingContext = BrowsingContext.get(
+      watcher.sessionContext.addonBrowsingContextID
+    );
+    // The add-on browsing context may be destroying, in which case we shouldn't try to communicate with it
+    if (browsingContext.currentWindowGlobal) {
+      return [browsingContext];
     }
   }
-  return browsingContexts;
-}
-
-/**
- * Get the list of all BrowsingContext we should interact with.
- * The precise condition of which BrowsingContext we should interact with are defined
- * in `shouldNotifyWindowGlobal`
- *
- * @param BrowserElement browserElement (optional)
- *        If defined, this will restrict to only the Browsing Context matching this
- *        Browser Element and any of its (nested) children iframes.
- */
-function getFilteredRemoteBrowsingContext(browserElement) {
-  return getAllRemoteBrowsingContexts(browserElement?.browsingContext).filter(
-    browsingContext =>
-      shouldNotifyWindowGlobal(browsingContext, browserElement?.browserId, {
-        acceptNonRemoteFrame: isEveryFrameTargetEnabled,
-      })
-  );
+  return [];
 }
 
 // Set to true to log info about about WindowGlobal's being watched.

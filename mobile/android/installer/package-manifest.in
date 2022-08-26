@@ -66,6 +66,8 @@
 @BINPATH@/@DLL_PREFIX@softokn3.chk
 #endif
 
+@BINPATH@/@DLL_PREFIX@ipcclientcerts@DLL_SUFFIX@
+
 #ifndef MOZ_FOLD_LIBS
 @BINPATH@/@DLL_PREFIX@mozsqlite3@DLL_SUFFIX@
 #endif
@@ -78,10 +80,6 @@
 @BINPATH@/@DLL_PREFIX@gvr@DLL_SUFFIX@
 #endif
 
-#ifdef MOZ_USING_WASM_SANDBOXING
-@BINPATH@/@DLL_PREFIX@rlbox@DLL_SUFFIX@
-#endif
-
 [xpcom]
 @BINPATH@/package-name.txt
 
@@ -90,10 +88,11 @@
 @BINPATH@/application.ini
 @BINPATH@/platform.ini
 @BINPATH@/defaults/settings/last_modified.json
-@BINPATH@/defaults/settings/blocklists/addons.json
 ; TODO bug 1639050: addons-bloomfilters should be used instead of addons.json
-@BINPATH@/defaults/settings/security-state/onecrl.json
+@BINPATH@/defaults/settings/blocklists/addons.json
+@BINPATH@/defaults/settings/blocklists/gfx.json
 @BINPATH@/defaults/settings/main/password-recipes.json
+@BINPATH@/defaults/settings/security-state/onecrl.json
 
 ; [Components]
 @BINPATH@/components/components.manifest
@@ -106,16 +105,9 @@
 @BINPATH@/components/antitracking.manifest
 
 @BINPATH@/components/ProcessSingleton.manifest
-@BINPATH@/components/HandlerService.manifest
-@BINPATH@/components/HandlerService.js
 @BINPATH@/components/servicesComponents.manifest
 @BINPATH@/components/servicesSettings.manifest
 @BINPATH@/components/l10n-registry.manifest
-
-#if defined(ENABLE_TESTS) && defined(MOZ_DEBUG)
-@BINPATH@/components/TestInterfaceJS.js
-@BINPATH@/components/TestInterfaceJS.manifest
-#endif
 
 ; Modules
 @BINPATH@/modules/*

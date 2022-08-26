@@ -74,6 +74,9 @@ ChromeUtils.defineModuleGetter(
   "ExperimentAPI",
   "resource://nimbus/ExperimentAPI.jsm"
 );
+XPCOMUtils.defineLazyModuleGetters(this, {
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
+});
 
 const POCKET_ONSAVERECS_PREF = "extensions.pocket.onSaveRecs";
 const POCKET_ONSAVERECS_LOCLES_PREF = "extensions.pocket.onSaveRecs.locales";
@@ -87,14 +90,20 @@ var pktUI = (function() {
   const initialPanelSize = {
     signup: {
       control: { height: 450, width: 300 },
+      refresh: { height: 315, width: 328 },
     },
     saved: {
       control: { height: 132, width: 350 },
+      refresh: { height: 110, width: 350 },
     },
     home: {
       control: { height: 477, width: 328 },
-      // This is for non English sizes, this is not for an AB experiment.
-      no_topics: { height: 247, width: 328 },
+      refresh: { height: 251, width: 328 },
+    },
+    // This is for non English sizes, this is not for an AB experiment.
+    home_no_topics: {
+      control: { height: 247, width: 328 },
+      refresh: { height: 86, width: 328 },
     },
   };
 
@@ -154,23 +163,11 @@ var pktUI = (function() {
    */
   function showSignUp() {
     getFirefoxAccountSignedInUser(function(userdata) {
-      let sizes = initialPanelSize.signup.control;
-      const experiment = ExperimentAPI.getExperiment({
-        featureId: "pocketNewtab",
-      });
-      let utmCampaign = experiment?.slug || `firefox_door_hanger_menu`;
-      let utmSource = experiment?.branch?.slug || `control`;
-
       showPanel(
-        "about:pocket-signup?pockethost=" +
-          Services.prefs.getCharPref("extensions.pocket.site") +
-          "&utmCampaign=" +
-          utmCampaign +
-          "&utmSource=" +
-          utmSource +
-          "&locale=" +
-          getUILocale(),
-        sizes
+        "about:pocket-signup?" +
+          "emailButton=" +
+          NimbusFeatures.saveToPocket.getVariable("emailButton"),
+        `signup`
       );
     });
   }
@@ -197,18 +194,12 @@ var pktUI = (function() {
    */
   function saveAndShowConfirmation() {
     getFirefoxAccountSignedInUser(function(userdata) {
-      const variant = "control";
-      const sizes = initialPanelSize.saved[variant];
       showPanel(
-        "about:pocket-saved?pockethost=" +
-          Services.prefs.getCharPref("extensions.pocket.site") +
-          "&premiumStatus=" +
+        "about:pocket-saved?premiumStatus=" +
           (pktApi.isPremiumUser() ? "1" : "0") +
           "&fxasignedin=" +
-          (typeof userdata == "object" && userdata !== null ? "1" : "0") +
-          "&locale=" +
-          getUILocale(),
-        sizes
+          (typeof userdata == "object" && userdata !== null ? "1" : "0"),
+        `saved`
       );
     });
   }
@@ -217,31 +208,60 @@ var pktUI = (function() {
    * Show the Pocket home panel state
    */
   function showPocketHome() {
-    const locale = getUILocale();
-    let homeVersion = "no_topics";
-    // We have different height for non English because of topics.
-    // In order to have a clean panel load, we optimize the starting height.
-    if (locale.startsWith("en-")) {
-      homeVersion = "control";
-    }
-    const sizes = initialPanelSize.home[homeVersion];
-    showPanel(
-      "about:pocket-home?pockethost=" +
-        Services.prefs.getCharPref("extensions.pocket.site") +
-        "&locale=" +
-        locale,
-      sizes
+    const hideRecentSaves = NimbusFeatures.saveToPocket.getVariable(
+      "hideRecentSaves"
     );
+    const locale = getUILocale();
+    let panel = `home_no_topics`;
+    if (locale.startsWith("en-")) {
+      panel = `home`;
+    }
+    showPanel(`about:pocket-home?hiderecentsaves=${hideRecentSaves}`, panel);
   }
 
   /**
    * Open a generic panel
    */
-  function showPanel(url, options) {
+  function showPanel(urlString, panel) {
+    const locale = getUILocale();
+    let variant = `control`;
+    const layoutRefresh = NimbusFeatures.saveToPocket.getVariable(
+      "layoutRefresh"
+    );
+    if (layoutRefresh) {
+      variant = `refresh`;
+    }
+
+    const options = initialPanelSize[panel][variant];
     resizePanel({
       width: options.width,
       height: options.height,
     });
+    const saveToPocketExperiment = ExperimentAPI.getExperiment({
+      featureId: "saveToPocket",
+    });
+    const pocketNewtabExperiment = ExperimentAPI.getExperiment({
+      featureId: "pocketNewtab",
+    });
+
+    let utmSource = "firefox_pocket_save_button";
+    // We want to know if the user is in a Pocket related experiment,
+    // but we have 2 Pocket related features, so we prioritize the saveToPocket feature.
+    let utmCampaign =
+      saveToPocketExperiment?.slug || pocketNewtabExperiment?.slug;
+    let utmContent =
+      saveToPocketExperiment?.branch?.slug ||
+      pocketNewtabExperiment?.branch?.slug;
+
+    const url = new URL(urlString);
+    // A set of params shared across all panels.
+    url.searchParams.append("utmSource", utmSource);
+    if (utmCampaign && utmContent) {
+      url.searchParams.append("utmCampaign", utmCampaign);
+      url.searchParams.append("utmContent", utmContent);
+    }
+    url.searchParams.append("layoutRefresh", layoutRefresh);
+    url.searchParams.append("locale", locale);
 
     // We don't have to hide and show the panel again if it's already shown
     // as if the user tries to click again on the toolbar button the overlay
@@ -249,7 +269,7 @@ var pktUI = (function() {
     var frame = getPanelFrame();
 
     // Load the frame
-    frame.setAttribute("src", url);
+    frame.setAttribute("src", url.href);
   }
 
   function onShowSignup() {
@@ -268,7 +288,7 @@ var pktUI = (function() {
     );
   }
 
-  function onShowHome() {
+  async function onShowHome() {
     // A successful home button click.
     pktTelemetry.sendStructuredIngestionEvent(
       pktTelemetry.createPingPayload({
@@ -280,6 +300,35 @@ var pktUI = (function() {
         ],
       })
     );
+
+    if (
+      NimbusFeatures.saveToPocket.getVariable("layoutRefresh") &&
+      !NimbusFeatures.saveToPocket.getVariable("hideRecentSaves")
+    ) {
+      let recentSaves = await pktApi.getRecentSavesCache();
+      if (recentSaves) {
+        // We have cache, so we can use those.
+        pktUIMessaging.sendMessageToPanel("PKT_renderRecentSaves", recentSaves);
+      } else {
+        // Let the client know we're loading fresh recs.
+        pktUIMessaging.sendMessageToPanel(
+          "PKT_loadingRecentSaves",
+          recentSaves
+        );
+        // We don't have cache, so fetch fresh stories.
+        pktApi.getRecentSaves({
+          success(data) {
+            pktUIMessaging.sendMessageToPanel("PKT_renderRecentSaves", data);
+          },
+          error(error) {
+            pktUIMessaging.sendErrorMessageToPanel(
+              "PKT_renderRecentSaves",
+              error
+            );
+          },
+        });
+      }
+    }
   }
 
   function onShowSaved() {
@@ -331,6 +380,30 @@ var pktUI = (function() {
         };
         pktUIMessaging.sendMessageToPanel(saveLinkMessageId, successResponse);
         SaveToPocket.itemSaved();
+
+        if (
+          NimbusFeatures.saveToPocket.getVariable("layoutRefresh") &&
+          !NimbusFeatures.saveToPocket.getVariable("hideRecentSaves")
+        ) {
+          // Articles saved for the first time (by anyone) won't have a resolved_id
+          if (item?.resolved_id && item?.resolved_id !== "0") {
+            pktApi.getArticleInfo(item.resolved_url, {
+              success(data) {
+                pktUIMessaging.sendMessageToPanel(
+                  "PKT_articleInfoFetched",
+                  data
+                );
+              },
+              done() {
+                pktUIMessaging.sendMessageToPanel(
+                  "PKT_getArticleInfoAttempted"
+                );
+              },
+            });
+          } else {
+            pktUIMessaging.sendMessageToPanel("PKT_getArticleInfoAttempted");
+          }
+        }
 
         getAndShowRecsForItem(item, {
           success(data) {
@@ -454,8 +527,9 @@ var pktUI = (function() {
 
     // We don't track every click, only clicks with a known source.
     if (data.source) {
-      const { position, source } = data;
+      const { position, source, model } = data;
       const payload = pktTelemetry.createPingPayload({
+        ...(model ? { model } : {}),
         events: [
           {
             action: "click",
@@ -562,6 +636,8 @@ var pktUI = (function() {
     setToolbarPanelFrame,
     getPanelFrame,
     initPrefs,
+    showPanel,
+    getUILocale,
 
     openTabWithUrl,
     onOpenTabWithUrl,

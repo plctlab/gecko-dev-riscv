@@ -3,40 +3,72 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var EXPORTED_SYMBOLS = ["ClickHandlerChild"];
+var EXPORTED_SYMBOLS = ["ClickHandlerChild", "MiddleMousePasteHandlerChild"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WebNavigationFrames",
   "resource://gre/modules/WebNavigationFrames.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "E10SUtils",
   "resource://gre/modules/E10SUtils.jsm"
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "BrowserUtils",
   "resource://gre/modules/BrowserUtils.jsm"
 );
 
-class ClickHandlerChild extends JSWindowActorChild {
-  handleEvent(event) {
+class MiddleMousePasteHandlerChild extends JSWindowActorChild {
+  handleEvent(clickEvent) {
     if (
-      !event.isTrusted ||
-      event.defaultPrevented ||
-      event.button == 2 ||
-      (event.type == "click" && event.button == 1)
+      clickEvent.defaultPrevented ||
+      clickEvent.button != 1 ||
+      MiddleMousePasteHandlerChild.autoscrollEnabled
     ) {
+      return;
+    }
+    this.manager
+      .getActor("ClickHandler")
+      .handleClickEvent(
+        clickEvent,
+        /* is from middle mouse paste handler */ true
+      );
+  }
+
+  onProcessedClick(data) {
+    this.sendAsyncMessage("MiddleClickPaste", data);
+  }
+}
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  MiddleMousePasteHandlerChild,
+  "autoscrollEnabled",
+  "general.autoScroll",
+  true
+);
+
+class ClickHandlerChild extends JSWindowActorChild {
+  handleEvent(wrapperEvent) {
+    this.handleClickEvent(wrapperEvent.sourceEvent);
+  }
+
+  handleClickEvent(event, isFromMiddleMousePasteHandler = false) {
+    if (event.defaultPrevented || event.button == 2) {
       return;
     }
     // Don't do anything on editable things, we shouldn't open links in
@@ -65,13 +97,20 @@ class ClickHandlerChild extends JSWindowActorChild {
       }
     }
 
-    let [href, node, principal] = BrowserUtils.hrefAndLinkNodeForClickEvent(
-      event
-    );
+    // For untrusted events, require a valid transient user gesture activation.
+    if (!event.isTrusted && !ownerDoc.hasValidTransientUserGestureActivation) {
+      return;
+    }
+
+    let [
+      href,
+      node,
+      principal,
+    ] = lazy.BrowserUtils.hrefAndLinkNodeForClickEvent(event);
 
     let csp = ownerDoc.csp;
     if (csp) {
-      csp = E10SUtils.serializeCSP(csp);
+      csp = lazy.E10SUtils.serializeCSP(csp);
     }
 
     let referrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
@@ -82,8 +121,8 @@ class ClickHandlerChild extends JSWindowActorChild {
     } else {
       referrerInfo.initWithDocument(ownerDoc);
     }
-    referrerInfo = E10SUtils.serializeReferrerInfo(referrerInfo);
-    let frameID = WebNavigationFrames.getFrameId(ownerDoc.defaultView);
+    referrerInfo = lazy.E10SUtils.serializeReferrerInfo(referrerInfo);
+    let frameID = lazy.WebNavigationFrames.getFrameId(ownerDoc.defaultView);
 
     let json = {
       button: event.button,
@@ -98,12 +137,12 @@ class ClickHandlerChild extends JSWindowActorChild {
       csp,
       referrerInfo,
       originAttributes: principal ? principal.originAttributes : {},
-      isContentWindowPrivate: PrivateBrowsingUtils.isContentWindowPrivate(
+      isContentWindowPrivate: lazy.PrivateBrowsingUtils.isContentWindowPrivate(
         ownerDoc.defaultView
       ),
     };
 
-    if (href) {
+    if (href && !isFromMiddleMousePasteHandler) {
       try {
         Services.scriptSecurityManager.checkLoadURIStrWithPrincipal(
           principal,
@@ -111,6 +150,26 @@ class ClickHandlerChild extends JSWindowActorChild {
         );
       } catch (e) {
         return;
+      }
+
+      if (
+        !event.isTrusted &&
+        lazy.BrowserUtils.whereToOpenLink(event) != "current"
+      ) {
+        // If we'll open the link, we want to consume the user gesture
+        // activation to ensure that we don't allow multiple links to open
+        // from one user gesture.
+        // Avoid doing so for links opened in the current tab, which get
+        // handled later, by gecko, as otherwise its popup blocker will stop
+        // the link from opening.
+        // We will do the same check (whereToOpenLink) again in the parent and
+        // avoid handling the click for such links... but we still need the
+        // click information in the parent because otherwise places link
+        // tracking breaks. (bug 1742894 tracks improving this.)
+        ownerDoc.consumeTransientUserGestureActivation();
+        // We don't care about the return value because we already checked that
+        // hasValidTransientUserGestureActivation was true earlier in this
+        // function.
       }
 
       json.href = href;
@@ -122,23 +181,29 @@ class ClickHandlerChild extends JSWindowActorChild {
       json.originStoragePrincipal = ownerDoc.effectiveStoragePrincipal;
       json.triggeringPrincipal = ownerDoc.nodePrincipal;
 
+      if (
+        (ownerDoc.URL === "about:newtab" || ownerDoc.URL === "about:home") &&
+        node.dataset.isSponsoredLink === "true"
+      ) {
+        json.globalHistoryOptions = { triggeringSponsoredURL: href };
+      }
+
       // If a link element is clicked with middle button, user wants to open
       // the link somewhere rather than pasting clipboard content.  Therefore,
       // when it's clicked with middle button, we should prevent multiple
       // actions here to avoid leaking clipboard content unexpectedly.
       // Note that whether the link will work actually or not does not matter
       // because in this case, user does not intent to paste clipboard content.
-      if (event.button === 1) {
-        event.preventMultipleActions();
-      }
+      // We also need to do this to prevent multiple tabs opening if there are
+      // nested link elements.
+      event.preventMultipleActions();
 
       this.sendAsyncMessage("Content:Click", json);
-      return;
     }
 
-    // This might be middle mouse navigation.
-    if (event.button == 1) {
-      this.sendAsyncMessage("Content:Click", json);
+    // This might be middle mouse navigation, in which case pass this back:
+    if (!href && event.button == 1 && isFromMiddleMousePasteHandler) {
+      this.manager.getActor("MiddleMousePasteHandler").onProcessedClick(json);
     }
   }
 }

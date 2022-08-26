@@ -23,6 +23,7 @@ class MockGfxInfo final : public nsIGfxInfo {
   int32_t mStatusWrCompositor;
   int32_t mStatusWrShaderCache;
   int32_t mStatusWrOptimizedShaders;
+  int32_t mStatusWrPartialPresent;
   int32_t mMaxRefreshRate;
   bool mHasMixedRefreshRate;
   Maybe<bool> mHasBattery;
@@ -35,6 +36,7 @@ class MockGfxInfo final : public nsIGfxInfo {
         mStatusWrCompositor(nsIGfxInfo::FEATURE_STATUS_OK),
         mStatusWrShaderCache(nsIGfxInfo::FEATURE_STATUS_OK),
         mStatusWrOptimizedShaders(nsIGfxInfo::FEATURE_STATUS_OK),
+        mStatusWrPartialPresent(nsIGfxInfo::FEATURE_STATUS_OK),
         mMaxRefreshRate(-1),
         mHasMixedRefreshRate(false),
         mHasBattery(Some(false)),
@@ -55,6 +57,9 @@ class MockGfxInfo final : public nsIGfxInfo {
         break;
       case nsIGfxInfo::FEATURE_WEBRENDER_OPTIMIZED_SHADERS:
         *_retval = mStatusWrOptimizedShaders;
+        break;
+      case nsIGfxInfo::FEATURE_WEBRENDER_PARTIAL_PRESENT:
+        *_retval = mStatusWrPartialPresent;
         break;
       default:
         return NS_ERROR_NOT_IMPLEMENTED;
@@ -113,10 +118,9 @@ class MockGfxInfo final : public nsIGfxInfo {
   }
 
   NS_IMETHOD GetMonitors(JSContext* cx,
-                         JS::MutableHandleValue _retval) override {
+                         JS::MutableHandle<JS::Value> _retval) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
-  NS_IMETHOD RefreshMonitors(void) override { return NS_ERROR_NOT_IMPLEMENTED; }
   NS_IMETHOD GetFailures(nsTArray<int32_t>& indices,
                          nsTArray<nsCString>& failures) override {
     return NS_ERROR_NOT_IMPLEMENTED;
@@ -147,10 +151,10 @@ class MockGfxInfo final : public nsIGfxInfo {
   NS_IMETHOD GetIsHeadless(bool* aIsHeadless) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
-  NS_IMETHOD GetUsesTiling(bool* aUsesTiling) override {
+  NS_IMETHOD GetTargetFrameRate(uint32_t* aTargetFrameRate) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
-  NS_IMETHOD GetTargetFrameRate(uint32_t* aTargetFrameRate) override {
+  NS_IMETHOD GetCodecSupportInfo(nsACString& aCodecSupportInfo) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
   NS_IMETHOD GetD2DEnabled(bool* aD2DEnabled) override {
@@ -227,15 +231,6 @@ class MockGfxInfo final : public nsIGfxInfo {
   NS_IMETHOD GetIsGPU2Active(bool* aIsGPU2Active) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
-  NS_IMETHOD GetDisplayInfo(nsTArray<nsString>& aDisplayInfo) override {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-  NS_IMETHOD GetDisplayWidth(nsTArray<uint32_t>& aDisplayWidth) override {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-  NS_IMETHOD GetDisplayHeight(nsTArray<uint32_t>& aDisplayHeight) override {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
   NS_IMETHOD GetDrmRenderDevice(nsACString& aDrmRenderDevice) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
@@ -243,6 +238,13 @@ class MockGfxInfo final : public nsIGfxInfo {
                                           bool* _retval) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
+  NS_IMETHOD KillGPUProcessForTests() override {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+  NS_IMETHOD CrashGPUProcessForTests() override {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+
   NS_IMETHOD_(void) GetData() override {}
 
  private:
@@ -367,12 +369,20 @@ TEST_F(GfxConfigManager, WebRenderNoPartialPresent) {
   EXPECT_TRUE(mFeatures.mWrSoftware.IsEnabled());
 }
 
-TEST_F(GfxConfigManager, WebRenderPartialPresentMali) {
+TEST_F(GfxConfigManager, WebRenderPartialBlocked) {
   mWrPartialPresent = true;
-  mMockGfxInfo->mDeviceId = "Mali-T760";
+  mMockGfxInfo->mStatusWrPartialPresent = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
   ConfigureWebRender();
 
   EXPECT_FALSE(mFeatures.mWrPartial.IsEnabled());
+}
+
+TEST_F(GfxConfigManager, WebRenderForcePartialBlocked) {
+  mWrForcePartialPresent = true;
+  mMockGfxInfo->mStatusWrPartialPresent = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
+  ConfigureWebRender();
+
+  EXPECT_TRUE(mFeatures.mWrPartial.IsEnabled());
 }
 
 TEST_F(GfxConfigManager, WebRenderScaledResolutionWithHwStretching) {

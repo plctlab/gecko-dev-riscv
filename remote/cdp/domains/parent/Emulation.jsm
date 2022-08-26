@@ -6,14 +6,18 @@
 
 var EXPORTED_SYMBOLS = ["Emulation"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  NetUtil: "resource://gre/modules/NetUtil.jsm",
+const { Domain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/Domain.jsm"
+);
 
-  Domain: "chrome://remote/content/cdp/domains/Domain.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  NetUtil: "resource://gre/modules/NetUtil.jsm",
 });
 
 const MAX_WINDOW_SIZE = 10000000;
@@ -167,7 +171,7 @@ class Emulation extends Domain {
 
   _isValidHTTPRequestHeaderValue(value) {
     try {
-      const channel = NetUtil.newChannel({
+      const channel = lazy.NetUtil.newChannel({
         uri: "http://localhost",
         loadUsingSystemPrincipal: true,
       });

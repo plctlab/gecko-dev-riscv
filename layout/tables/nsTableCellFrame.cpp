@@ -9,6 +9,7 @@
 #include "gfxUtils.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Helpers.h"
 #include "nsTableFrame.h"
@@ -340,8 +341,9 @@ void nsTableCellFrame::InvalidateFrame(uint32_t aDisplayItemKey,
                                        bool aRebuildDisplayItems) {
   nsIFrame::InvalidateFrame(aDisplayItemKey, aRebuildDisplayItems);
   if (GetTableFrame()->IsBorderCollapse()) {
+    const bool rebuild = StaticPrefs::layout_display_list_retain_sc();
     GetParent()->InvalidateFrameWithRect(InkOverflowRect() + GetPosition(),
-                                         aDisplayItemKey, false);
+                                         aDisplayItemKey, rebuild);
   }
 }
 
@@ -354,7 +356,7 @@ void nsTableCellFrame::InvalidateFrameWithRect(const nsRect& aRect,
   // we get an inactive layer created and this is computed
   // within FrameLayerBuilder
   GetParent()->InvalidateFrameWithRect(aRect + GetPosition(), aDisplayItemKey,
-                                       false);
+                                       aRebuildDisplayItems);
 }
 
 bool nsTableCellFrame::ShouldPaintBordersAndBackgrounds() const {
@@ -851,8 +853,6 @@ void nsTableCellFrame::Reflow(nsPresContext* aPresContext,
   // nsIFrame::FixupPositionedTableParts in another pass, so propagate our
   // dirtiness to them before our parent clears our dirty bits.
   PushDirtyBitToAbsoluteFrames();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 /* ----- global methods ----- */
@@ -1092,6 +1092,26 @@ void nsTableCellFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 
       bgRect += backgrounds->TableToReferenceFrame();
 
+      DisplayListClipState::AutoSaveRestore clipState(aBuilder);
+      nsDisplayListBuilder::AutoCurrentActiveScrolledRootSetter asrSetter(
+          aBuilder);
+      if (IsStackingContext()) {
+        // The col/colgroup items we create below will be inserted directly into
+        // the BorderBackgrounds list of the table frame. That means that
+        // they'll be moved *outside* of any wrapper items from this table cell,
+        // and will not participate in this table cell's opacity / transform /
+        // filter / mask effects. If this cell is a stacking context, then we
+        // may have one or more of those wrapper items, and one of them may have
+        // captured a clip. In order to ensure correct clipping and scrolling of
+        // the col/colgroup items, restore the clip and ASR that we observed
+        // when we entered the table frame. If this cell is a stacking context
+        // but doesn't have any clip capturing wrapper items, then we'll
+        // double-apply the clip. That's ok.
+        clipState.SetClipChainForContainingBlockDescendants(
+            backgrounds->GetTableClipChain());
+        asrSetter.SetCurrentActiveScrolledRoot(backgrounds->GetTableASR());
+      }
+
       // Create backgrounds items as needed for the column and column
       // group that this cell occupies.
       nsTableColFrame* col = backgrounds->GetColForIndex(ColIndex());
@@ -1100,12 +1120,12 @@ void nsTableCellFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
       Maybe<nsDisplayListBuilder::AutoBuildingDisplayList> buildingForColGroup;
       nsDisplayBackgroundImage::AppendBackgroundItemsToTop(
           aBuilder, colGroup, bgRect, backgrounds->ColGroupBackgrounds(), false,
-          nullptr, colGroup->GetRect() + backgrounds->TableToReferenceFrame(),
-          this, &buildingForColGroup);
+          colGroup->GetRect() + backgrounds->TableToReferenceFrame(), this,
+          &buildingForColGroup);
 
       Maybe<nsDisplayListBuilder::AutoBuildingDisplayList> buildingForCol;
       nsDisplayBackgroundImage::AppendBackgroundItemsToTop(
-          aBuilder, col, bgRect, backgrounds->ColBackgrounds(), false, nullptr,
+          aBuilder, col, bgRect, backgrounds->ColBackgrounds(), false,
           col->GetRect() + colGroup->GetPosition() +
               backgrounds->TableToReferenceFrame(),
           this, &buildingForCol);

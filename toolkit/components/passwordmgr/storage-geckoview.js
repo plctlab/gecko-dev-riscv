@@ -8,18 +8,16 @@
 
 "use strict";
 
-const { ComponentUtils } = ChromeUtils.import(
-  "resource://gre/modules/ComponentUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { LoginManagerStorage_json } = ChromeUtils.import(
   "resource://gre/modules/storage-json.js"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   GeckoViewAutocomplete: "resource://gre/modules/GeckoViewAutocomplete.jsm",
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
   LoginEntry: "resource://gre/modules/GeckoViewAutocomplete.jsm",
@@ -31,12 +29,6 @@ class LoginManagerStorage_geckoview extends LoginManagerStorage_json {
   }
   get QueryInterface() {
     return ChromeUtils.generateQI(["nsILoginManagerStorage"]);
-  }
-
-  get _xpcom_factory() {
-    return ComponentUtils.generateSingletonFactory(
-      this.LoginManagerStorage_geckoview
-    );
   }
 
   get _crypto() {
@@ -76,7 +68,9 @@ class LoginManagerStorage_geckoview extends LoginManagerStorage_json {
   }
 
   recordPasswordUse(login) {
-    GeckoViewAutocomplete.onLoginPasswordUsed(LoginEntry.fromLoginInfo(login));
+    lazy.GeckoViewAutocomplete.onLoginPasswordUsed(
+      lazy.LoginEntry.fromLoginInfo(login)
+    );
   }
 
   getAllLogins() {
@@ -89,38 +83,44 @@ class LoginManagerStorage_geckoview extends LoginManagerStorage_json {
    * @resolve {nsILoginInfo[]}
    */
   async getAllLoginsAsync() {
-    let [logins, ids] = this._searchLogins({});
-    if (!logins.length) {
-      return [];
-    }
-
-    throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
+    return this._getLoginsAsync({});
   }
 
   async searchLoginsAsync(matchData) {
-    this.log("searchLoginsAsync:", matchData);
+    this.log(
+      `Searching for matching saved logins for origin: ${matchData.origin}`
+    );
+    return this._getLoginsAsync(matchData);
+  }
 
-    let originURI = Services.io.newURI(matchData.origin);
-    let baseHostname;
+  _baseHostnameFromOrigin(origin) {
+    if (!origin) {
+      return null;
+    }
+
+    let originURI = Services.io.newURI(origin);
     try {
-      baseHostname = Services.eTLD.getBaseDomain(originURI);
+      return Services.eTLD.getBaseDomain(originURI);
     } catch (ex) {
       if (ex.result == Cr.NS_ERROR_HOST_IS_IP_ADDRESS) {
         // `getBaseDomain` cannot handle IP addresses and `nsIURI` cannot return
         // IPv6 hostnames with the square brackets so use `URL.hostname`.
-        baseHostname = new URL(matchData.origin).hostname;
+        return new URL(origin).hostname;
       } else if (ex.result == Cr.NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS) {
-        baseHostname = originURI.asciiHost;
-      } else {
-        throw ex;
+        return originURI.asciiHost;
       }
+      throw ex;
     }
+  }
+
+  async _getLoginsAsync(matchData) {
+    let baseHostname = this._baseHostnameFromOrigin(matchData.origin);
 
     // Query all logins for the eTLD+1 and then filter the logins in _searchLogins
     // so that we can handle the logic for scheme upgrades, subdomains, etc.
     // Convert from the new shape to one which supports the legacy getters used
     // by _searchLogins.
-    let candidateLogins = await GeckoViewAutocomplete.fetchLogins(
+    let candidateLogins = await lazy.GeckoViewAutocomplete.fetchLogins(
       baseHostname
     ).catch(_ => {
       // No GV delegate is attached.
@@ -158,7 +158,7 @@ class LoginManagerStorage_geckoview extends LoginManagerStorage_json {
       }
     }
 
-    const [logins, ids] = this._searchLogins(
+    const [logins] = this._searchLogins(
       realMatchData,
       options,
       candidateLogins.map(this._vanillaLoginToStorageLogin)
@@ -252,7 +252,7 @@ XPCOMUtils.defineLazyGetter(
   LoginManagerStorage_geckoview.prototype,
   "log",
   () => {
-    let logger = LoginHelper.createLogger("Login storage");
+    let logger = lazy.LoginHelper.createLogger("Login storage");
     return logger.log.bind(logger);
   }
 );

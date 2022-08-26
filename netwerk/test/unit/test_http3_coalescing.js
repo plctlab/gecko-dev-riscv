@@ -18,10 +18,6 @@ const dns = Cc["@mozilla.org/network/dns-service;1"].getService(
 const certOverrideService = Cc[
   "@mozilla.org/security/certoverride;1"
 ].getService(Ci.nsICertOverrideService);
-const threadManager = Cc["@mozilla.org/thread-manager;1"].getService(
-  Ci.nsIThreadManager
-);
-const mainThread = threadManager.currentThread;
 
 const defaultOriginAttributes = {};
 
@@ -36,7 +32,7 @@ function setup() {
   h3Port = env.get("MOZHTTP3_PORT");
   Assert.notEqual(h3Port, null);
   Assert.notEqual(h3Port, "");
-  Services.prefs.setBoolPref("network.http.http3.enabled", true);
+  Services.prefs.setBoolPref("network.http.http3.enable", true);
 }
 
 setup();
@@ -46,7 +42,7 @@ registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("network.dns.echconfig.enabled");
   Services.prefs.clearUserPref("network.dns.echconfig.fallback_to_origin");
   Services.prefs.clearUserPref("network.dns.httpssvc.reset_exclustion_list");
-  Services.prefs.clearUserPref("network.http.http3.enabled");
+  Services.prefs.clearUserPref("network.http.http3.enable");
   Services.prefs.clearUserPref(
     "network.dns.httpssvc.http3_fast_fallback_timeout"
   );
@@ -56,16 +52,6 @@ registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("network.dns.localDomains");
   Services.prefs.clearUserPref("network.http.speculative-parallel-limit");
 });
-
-function makeChan(url) {
-  let chan = NetUtil.newChannel({
-    uri: url,
-    loadUsingSystemPrincipal: true,
-    contentPolicyType: Ci.nsIContentPolicy.TYPE_DOCUMENT,
-  }).QueryInterface(Ci.nsIHttpChannel);
-  chan.loadFlags = Ci.nsIChannel.LOAD_INITIAL_DOCUMENT_URI;
-  return chan;
-}
 
 function makeChan(url) {
   let chan = NetUtil.newChannel({
@@ -128,6 +114,7 @@ add_task(async function testH3CoalescingWithSpeculativeConnection() {
 add_task(async function testH3CoalescingWithoutSpeculativeConnection() {
   Services.prefs.setIntPref("network.http.speculative-parallel-limit", 0);
   Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
   await new Promise(resolve => setTimeout(resolve, 1000));
   await H3CoalescingTest("baz.h3_coalescing.org", "qux.h3_coalescing.org");
 });

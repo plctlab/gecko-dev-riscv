@@ -150,7 +150,7 @@ types.addType = function(name, typeObject = {}, options = {}) {
       toString() {
         return "[protocol type:" + name + "]";
       },
-      name: name,
+      name,
       primitive: !(typeObject.read || typeObject.write),
       read: identityWrite,
       write: identityWrite,
@@ -330,7 +330,9 @@ types.addActorType = function(name) {
         }
 
         const parentFront = ctx.marshallPool();
-        const targetFront = parentFront.targetFront;
+        const targetFront = parentFront.isTargetFront
+          ? parentFront
+          : parentFront.targetFront;
 
         // Use intermediate Class variable to please eslint requiring
         // a capital letter for all constructors.

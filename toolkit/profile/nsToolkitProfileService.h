@@ -8,6 +8,7 @@
 #ifndef nsToolkitProfileService_h
 #define nsToolkitProfileService_h
 
+#include "mozilla/Components.h"
 #include "mozilla/LinkedList.h"
 #include "nsIToolkitProfileService.h"
 #include "nsIToolkitProfile.h"
@@ -64,14 +65,6 @@ class nsToolkitProfileLock final : public nsIProfileLock {
   nsProfileLock mLock;
 };
 
-class nsToolkitProfileFactory final : public nsIFactory {
-  ~nsToolkitProfileFactory() = default;
-
- public:
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSIFACTORY
-};
-
 class nsToolkitProfileService final : public nsIToolkitProfileService {
  public:
   NS_DECL_ISUPPORTS
@@ -82,14 +75,13 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
                                 nsIToolkitProfile** aProfile, bool* aDidCreate,
                                 bool* aWasDefaultSelection);
   nsresult CreateResetProfile(nsIToolkitProfile** aNewProfile);
-  nsresult ApplyResetProfile(nsIToolkitProfile* aOldProfile,
-                             bool aDeleteOldProfile = true);
+  nsresult ApplyResetProfile(nsIToolkitProfile* aOldProfile);
   void CompleteStartup();
 
  private:
   friend class nsToolkitProfile;
-  friend class nsToolkitProfileFactory;
-  friend nsresult NS_NewToolkitProfileService(nsToolkitProfileService**);
+  friend already_AddRefed<nsToolkitProfileService>
+  NS_GetToolkitProfileService();
 
   nsToolkitProfileService();
   ~nsToolkitProfileService();
@@ -107,7 +99,6 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
   nsresult MaybeMakeDefaultDedicatedProfile(nsIToolkitProfile* aProfile,
                                             bool* aResult);
   bool IsSnapEnvironment();
-  bool IsWinPackageEnvironment();
   bool UseLegacyProfiles();
   nsresult CreateDefaultProfile(nsIToolkitProfile** aResult);
   void SetNormalDefault(nsIToolkitProfile* aProfile);
@@ -180,5 +171,7 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
     RefPtr<nsToolkitProfile> mCurrent;
   };
 };
+
+already_AddRefed<nsToolkitProfileService> NS_GetToolkitProfileService();
 
 #endif

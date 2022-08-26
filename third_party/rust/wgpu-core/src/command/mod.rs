@@ -3,33 +3,35 @@ mod bundle;
 mod clear;
 mod compute;
 mod draw;
+mod memory_init;
 mod query;
 mod render;
 mod transfer;
 
-use std::collections::hash_map::Entry;
-use std::ops::Range;
+use std::slice;
 
-pub use self::bundle::*;
-pub use self::compute::*;
-pub use self::draw::*;
-pub use self::query::*;
-pub use self::render::*;
-pub use self::transfer::*;
+pub(crate) use self::clear::clear_texture;
+pub use self::{
+    bundle::*, clear::ClearError, compute::*, draw::*, query::*, render::*, transfer::*,
+};
+
+use self::memory_init::CommandBufferTextureMemoryActions;
 
 use crate::error::{ErrorFormatter, PrettyError};
-use crate::FastHashMap;
+use crate::init_tracker::BufferInitTrackerAction;
+use crate::track::{Tracker, UsageScope};
 use crate::{
     hub::{Global, GlobalIdentityHandlerFactory, HalApi, Storage, Token},
     id,
-    init_tracker::{BufferInitTrackerAction, MemoryInitKind},
     resource::{Buffer, Texture},
-    track::{BufferState, ResourceTracker, TextureState, TrackerSet},
     Label, Stored,
 };
 
 use hal::CommandEncoder as _;
 use thiserror::Error;
+
+#[cfg(feature = "trace")]
+use crate::device::trace::Command as TraceCommand;
 
 const PUSH_CONSTANT_CLEAR_ARRAY: &[u32] = &[0_u32; 64];
 
@@ -57,6 +59,13 @@ impl<A: hal::Api> CommandEncoder<A> {
         }
     }
 
+    fn discard(&mut self) {
+        if self.is_open {
+            self.is_open = false;
+            unsafe { self.raw.discard_encoding() };
+        }
+    }
+
     fn open(&mut self) -> &mut A::CommandEncoder {
         if !self.is_open {
             self.is_open = true;
@@ -65,104 +74,35 @@ impl<A: hal::Api> CommandEncoder<A> {
         }
         &mut self.raw
     }
-}
 
-pub struct BakedCommands<A: hal::Api> {
-    pub(crate) encoder: A::CommandEncoder,
-    pub(crate) list: Vec<A::CommandBuffer>,
-    pub(crate) trackers: TrackerSet,
-    buffer_memory_init_actions: Vec<BufferInitTrackerAction>,
-}
-
-pub(crate) struct DestroyedBufferError(pub id::BufferId);
-
-impl<A: hal::Api> BakedCommands<A> {
-    pub(crate) fn initialize_buffer_memory(
-        &mut self,
-        device_tracker: &mut TrackerSet,
-        buffer_guard: &mut Storage<Buffer<A>, id::BufferId>,
-    ) -> Result<(), DestroyedBufferError> {
-        // Gather init ranges for each buffer so we can collapse them.
-        // It is not possible to do this at an earlier point since previously executed command buffer change the resource init state.
-        let mut uninitialized_ranges_per_buffer = FastHashMap::default();
-        for buffer_use in self.buffer_memory_init_actions.drain(..) {
-            let buffer = buffer_guard
-                .get_mut(buffer_use.id)
-                .map_err(|_| DestroyedBufferError(buffer_use.id))?;
-
-            let uninitialized_ranges = buffer.initialization_status.drain(buffer_use.range.clone());
-            match buffer_use.kind {
-                MemoryInitKind::ImplicitlyInitialized => {
-                    uninitialized_ranges.for_each(drop);
-                }
-                MemoryInitKind::NeedsInitializedMemory => {
-                    match uninitialized_ranges_per_buffer.entry(buffer_use.id) {
-                        Entry::Vacant(e) => {
-                            e.insert(
-                                uninitialized_ranges.collect::<Vec<Range<wgt::BufferAddress>>>(),
-                            );
-                        }
-                        Entry::Occupied(mut e) => {
-                            e.get_mut().extend(uninitialized_ranges);
-                        }
-                    }
-                }
-            }
-        }
-
-        for (buffer_id, mut ranges) in uninitialized_ranges_per_buffer {
-            // Collapse touching ranges.
-            ranges.sort_by(|a, b| a.start.cmp(&b.start));
-            for i in (1..ranges.len()).rev() {
-                assert!(ranges[i - 1].end <= ranges[i].start); // The memory init tracker made sure of this!
-                if ranges[i].start == ranges[i - 1].end {
-                    ranges[i - 1].end = ranges[i].end;
-                    ranges.swap_remove(i); // Ordering not important at this point
-                }
-            }
-
-            // Don't do use_replace since the buffer may already no longer have a ref_count.
-            // However, we *know* that it is currently in use, so the tracker must already know about it.
-            let transition = device_tracker.buffers.change_replace_tracked(
-                id::Valid(buffer_id),
-                (),
-                hal::BufferUses::COPY_DST,
-            );
-
-            let buffer = buffer_guard
-                .get_mut(buffer_id)
-                .map_err(|_| DestroyedBufferError(buffer_id))?;
-            let raw_buf = buffer.raw.as_ref().ok_or(DestroyedBufferError(buffer_id))?;
-
-            unsafe {
-                self.encoder
-                    .transition_buffers(transition.map(|pending| pending.into_hal(buffer)));
-            }
-
-            for range in ranges.iter() {
-                assert!(range.start % 4 == 0, "Buffer {:?} has an uninitialized range with a start not aligned to 4 (start was {})", raw_buf, range.start);
-                assert!(range.end % 4 == 0, "Buffer {:?} has an uninitialized range with an end not aligned to 4 (end was {})", raw_buf, range.end);
-
-                unsafe {
-                    self.encoder.clear_buffer(raw_buf, range.clone());
-                }
-            }
-        }
-
-        Ok(())
+    fn open_pass(&mut self, label: Option<&str>) {
+        self.is_open = true;
+        unsafe { self.raw.begin_encoding(label).unwrap() };
     }
 }
 
-pub struct CommandBuffer<A: hal::Api> {
+pub struct BakedCommands<A: HalApi> {
+    pub(crate) encoder: A::CommandEncoder,
+    pub(crate) list: Vec<A::CommandBuffer>,
+    pub(crate) trackers: Tracker<A>,
+    buffer_memory_init_actions: Vec<BufferInitTrackerAction>,
+    texture_memory_actions: CommandBufferTextureMemoryActions,
+}
+
+pub(crate) struct DestroyedBufferError(pub id::BufferId);
+pub(crate) struct DestroyedTextureError(pub id::TextureId);
+
+pub struct CommandBuffer<A: HalApi> {
     encoder: CommandEncoder<A>,
     status: CommandEncoderStatus,
     pub(crate) device_id: Stored<id::DeviceId>,
-    pub(crate) trackers: TrackerSet,
+    pub(crate) trackers: Tracker<A>,
     buffer_memory_init_actions: Vec<BufferInitTrackerAction>,
+    texture_memory_actions: CommandBufferTextureMemoryActions,
     limits: wgt::Limits,
-    support_clear_buffer_texture: bool,
+    support_clear_texture: bool,
     #[cfg(feature = "trace")]
-    pub(crate) commands: Option<Vec<crate::device::trace::Command>>,
+    pub(crate) commands: Option<Vec<TraceCommand>>,
 }
 
 impl<A: HalApi> CommandBuffer<A> {
@@ -184,10 +124,11 @@ impl<A: HalApi> CommandBuffer<A> {
             },
             status: CommandEncoderStatus::Recording,
             device_id,
-            trackers: TrackerSet::new(A::VARIANT),
+            trackers: Tracker::new(),
             buffer_memory_init_actions: Default::default(),
+            texture_memory_actions: Default::default(),
             limits,
-            support_clear_buffer_texture: features.contains(wgt::Features::CLEAR_COMMANDS),
+            support_clear_texture: features.contains(wgt::Features::CLEAR_TEXTURE),
             #[cfg(feature = "trace")]
             commands: if enable_tracing {
                 Some(Vec::new())
@@ -197,23 +138,52 @@ impl<A: HalApi> CommandBuffer<A> {
         }
     }
 
-    pub(crate) fn insert_barriers(
+    pub(crate) fn insert_barriers_from_tracker(
         raw: &mut A::CommandEncoder,
-        base: &mut TrackerSet,
-        head_buffers: &ResourceTracker<BufferState>,
-        head_textures: &ResourceTracker<TextureState>,
+        base: &mut Tracker<A>,
+        head: &Tracker<A>,
         buffer_guard: &Storage<Buffer<A>, id::BufferId>,
         texture_guard: &Storage<Texture<A>, id::TextureId>,
     ) {
         profiling::scope!("insert_barriers");
-        debug_assert_eq!(A::VARIANT, base.backend());
 
-        let buffer_barriers = base.buffers.merge_replace(head_buffers).map(|pending| {
-            let buf = &buffer_guard[pending.id];
+        base.buffers.set_from_tracker(&head.buffers);
+        base.textures
+            .set_from_tracker(&*texture_guard, &head.textures);
+
+        Self::drain_barriers(raw, base, buffer_guard, texture_guard);
+    }
+
+    pub(crate) fn insert_barriers_from_scope(
+        raw: &mut A::CommandEncoder,
+        base: &mut Tracker<A>,
+        head: &UsageScope<A>,
+        buffer_guard: &Storage<Buffer<A>, id::BufferId>,
+        texture_guard: &Storage<Texture<A>, id::TextureId>,
+    ) {
+        profiling::scope!("insert_barriers");
+
+        base.buffers.set_from_usage_scope(&head.buffers);
+        base.textures
+            .set_from_usage_scope(&*texture_guard, &head.textures);
+
+        Self::drain_barriers(raw, base, buffer_guard, texture_guard);
+    }
+
+    pub(crate) fn drain_barriers(
+        raw: &mut A::CommandEncoder,
+        base: &mut Tracker<A>,
+        buffer_guard: &Storage<Buffer<A>, id::BufferId>,
+        texture_guard: &Storage<Texture<A>, id::TextureId>,
+    ) {
+        profiling::scope!("drain_barriers");
+
+        let buffer_barriers = base.buffers.drain().map(|pending| {
+            let buf = unsafe { &buffer_guard.get_unchecked(pending.id) };
             pending.into_hal(buf)
         });
-        let texture_barriers = base.textures.merge_replace(head_textures).map(|pending| {
-            let tex = &texture_guard[pending.id];
+        let texture_barriers = base.textures.drain().map(|pending| {
+            let tex = unsafe { texture_guard.get_unchecked(pending.id) };
             pending.into_hal(tex)
         });
 
@@ -224,7 +194,7 @@ impl<A: HalApi> CommandBuffer<A> {
     }
 }
 
-impl<A: hal::Api> CommandBuffer<A> {
+impl<A: HalApi> CommandBuffer<A> {
     fn get_encoder_mut(
         storage: &mut Storage<Self, id::CommandEncoderId>,
         id: id::CommandEncoderId,
@@ -252,11 +222,12 @@ impl<A: hal::Api> CommandBuffer<A> {
             list: self.encoder.list,
             trackers: self.trackers,
             buffer_memory_init_actions: self.buffer_memory_init_actions,
+            texture_memory_actions: self.texture_memory_actions,
         }
     }
 }
 
-impl<A: hal::Api> crate::hub::Resource for CommandBuffer<A> {
+impl<A: HalApi> crate::hub::Resource for CommandBuffer<A> {
     const TYPE: &'static str = "CommandBuffer";
 
     fn life_guard(&self) -> &crate::LifeGuard {
@@ -277,6 +248,17 @@ pub struct BasePassRef<'a, C> {
     pub push_constant_data: &'a [u32],
 }
 
+/// A stream of commands for a render pass or compute pass.
+///
+/// This also contains side tables referred to by certain commands,
+/// like dynamic offsets for [`SetBindGroup`] or string data for
+/// [`InsertDebugMarker`].
+///
+/// Render passes use `BasePass<RenderCommand>`, whereas compute
+/// passes use `BasePass<ComputeCommand>`.
+///
+/// [`SetBindGroup`]: RenderCommand::SetBindGroup
+/// [`InsertDebugMarker`]: RenderCommand::InsertDebugMarker
 #[doc(hidden)]
 #[derive(Debug)]
 #[cfg_attr(
@@ -289,9 +271,26 @@ pub struct BasePassRef<'a, C> {
 )]
 pub struct BasePass<C> {
     pub label: Option<String>,
+
+    /// The stream of commands.
     pub commands: Vec<C>,
+
+    /// Dynamic offsets consumed by [`SetBindGroup`] commands in `commands`.
+    ///
+    /// Each successive `SetBindGroup` consumes the next
+    /// [`num_dynamic_offsets`] values from this list.
     pub dynamic_offsets: Vec<wgt::DynamicOffset>,
+
+    /// Strings used by debug instructions.
+    ///
+    /// Each successive [`PushDebugGroup`] or [`InsertDebugMarker`]
+    /// instruction consumes the next `len` bytes from this vector.
     pub string_data: Vec<u8>,
+
+    /// Data used by `SetPushConstant` instructions.
+    ///
+    /// See the documentation for [`RenderCommand::SetPushConstant`]
+    /// and [`ComputeCommand::SetPushConstant`] for details.
     pub push_constant_data: Vec<u32>,
 }
 
@@ -355,12 +354,12 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
                     cmd_buf.status = CommandEncoderStatus::Finished;
                     //Note: if we want to stop tracking the swapchain texture view,
                     // this is the place to do it.
-                    log::trace!("Command buffer {:?} {:#?}", encoder_id, cmd_buf.trackers);
+                    log::trace!("Command buffer {:?}", encoder_id);
                     None
                 }
                 CommandEncoderStatus::Finished => Some(CommandEncoderError::NotRecording),
                 CommandEncoderStatus::Error => {
-                    cmd_buf.encoder.close();
+                    cmd_buf.encoder.discard();
                     Some(CommandEncoderError::Invalid)
                 }
             },
@@ -382,8 +381,13 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
 
         let (mut cmd_buf_guard, _) = hub.command_buffers.write(&mut token);
         let cmd_buf = CommandBuffer::get_encoder_mut(&mut *cmd_buf_guard, encoder_id)?;
-        let cmd_buf_raw = cmd_buf.encoder.open();
 
+        #[cfg(feature = "trace")]
+        if let Some(ref mut list) = cmd_buf.commands {
+            list.push(TraceCommand::PushDebugGroup(label.to_string()));
+        }
+
+        let cmd_buf_raw = cmd_buf.encoder.open();
         unsafe {
             cmd_buf_raw.begin_debug_marker(label);
         }
@@ -402,8 +406,13 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
 
         let (mut cmd_buf_guard, _) = hub.command_buffers.write(&mut token);
         let cmd_buf = CommandBuffer::get_encoder_mut(&mut *cmd_buf_guard, encoder_id)?;
-        let cmd_buf_raw = cmd_buf.encoder.open();
 
+        #[cfg(feature = "trace")]
+        if let Some(ref mut list) = cmd_buf.commands {
+            list.push(TraceCommand::InsertDebugMarker(label.to_string()));
+        }
+
+        let cmd_buf_raw = cmd_buf.encoder.open();
         unsafe {
             cmd_buf_raw.insert_debug_marker(label);
         }
@@ -421,8 +430,13 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
 
         let (mut cmd_buf_guard, _) = hub.command_buffers.write(&mut token);
         let cmd_buf = CommandBuffer::get_encoder_mut(&mut *cmd_buf_guard, encoder_id)?;
-        let cmd_buf_raw = cmd_buf.encoder.open();
 
+        #[cfg(feature = "trace")]
+        if let Some(ref mut list) = cmd_buf.commands {
+            list.push(TraceCommand::PopDebugGroup);
+        }
+
+        let cmd_buf_raw = cmd_buf.encoder.open();
         unsafe {
             cmd_buf_raw.end_debug_marker();
         }
@@ -450,7 +464,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct StateChange<T> {
     last_state: Option<T>,
 }
@@ -464,11 +478,62 @@ impl<T: Copy + PartialEq> StateChange<T> {
         self.last_state = Some(new_state);
         already_set
     }
-    fn is_unset(&self) -> bool {
-        self.last_state.is_none()
-    }
     fn reset(&mut self) {
         self.last_state = None;
+    }
+}
+
+impl<T: Copy + PartialEq> Default for StateChange<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+struct BindGroupStateChange {
+    last_states: [StateChange<id::BindGroupId>; hal::MAX_BIND_GROUPS],
+}
+
+impl BindGroupStateChange {
+    fn new() -> Self {
+        Self {
+            last_states: [StateChange::new(); hal::MAX_BIND_GROUPS],
+        }
+    }
+
+    unsafe fn set_and_check_redundant(
+        &mut self,
+        bind_group_id: id::BindGroupId,
+        index: u32,
+        dynamic_offsets: &mut Vec<u32>,
+        offsets: *const wgt::DynamicOffset,
+        offset_length: usize,
+    ) -> bool {
+        // For now never deduplicate bind groups with dynamic offsets.
+        if offset_length == 0 {
+            // If this get returns None, that means we're well over the limit, so let the call through to get a proper error
+            if let Some(current_bind_group) = self.last_states.get_mut(index as usize) {
+                // Bail out if we're binding the same bind group.
+                if current_bind_group.set_and_check_redundant(bind_group_id) {
+                    return true;
+                }
+            }
+        } else {
+            // We intentionally remove the memory of this bind group if we have dynamic offsets,
+            // such that if you try to bind this bind group later with _no_ dynamic offsets it
+            // tries to bind it again and gives a proper validation error.
+            if let Some(current_bind_group) = self.last_states.get_mut(index as usize) {
+                current_bind_group.reset();
+            }
+            dynamic_offsets.extend_from_slice(slice::from_raw_parts(offsets, offset_length));
+        }
+        false
+    }
+}
+
+impl Default for BindGroupStateChange {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

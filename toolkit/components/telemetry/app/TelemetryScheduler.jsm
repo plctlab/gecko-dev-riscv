@@ -7,15 +7,14 @@
 var EXPORTED_SYMBOLS = ["TelemetryScheduler", "Policy"];
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetrySession } = ChromeUtils.import(
   "resource://gre/modules/TelemetrySession.jsm"
 );
 const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { clearTimeout, setTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
@@ -25,7 +24,9 @@ const { TelemetryPrioPing } = ChromeUtils.import(
   "resource://gre/modules/PrioPing.jsm"
 );
 
-XPCOMUtils.defineLazyServiceGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyServiceGetters(lazy, {
   idleService: ["@mozilla.org/widget/useridleservice;1", "nsIUserIdleService"],
 });
 
@@ -120,7 +121,7 @@ var TelemetryScheduler = {
     this._lastSessionCheckpointTime = now.getTime();
     this._rescheduleTimeout();
 
-    idleService.addIdleObserver(this, IDLE_TIMEOUT_SECONDS);
+    lazy.idleService.addIdleObserver(this, IDLE_TIMEOUT_SECONDS);
     Services.obs.addObserver(this, "wake_notification");
   },
 
@@ -143,7 +144,7 @@ var TelemetryScheduler = {
       this._schedulerTimer = null;
     }
 
-    idleService.removeIdleObserver(this, IDLE_TIMEOUT_SECONDS);
+    lazy.idleService.removeIdleObserver(this, IDLE_TIMEOUT_SECONDS);
     Services.obs.removeObserver(this, "wake_notification");
 
     this._shuttingDown = true;

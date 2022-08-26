@@ -5,7 +5,7 @@
 
 // Check evaluating and expanding getters in the console.
 const TEST_URI =
-  "data:text/html;charset=utf8,<h1>Object Inspector on Getters</h1>";
+  "data:text/html;charset=utf8,<!DOCTYPE html><h1>Object Inspector on Getters</h1>";
 const { ELLIPSIS } = require("devtools/shared/l10n");
 
 add_task(async function() {
@@ -56,7 +56,7 @@ add_task(async function() {
           },
           get myProxyGetter() {
             const handler = {
-              get: function(target, name) {
+              get(target, name) {
                 return name in target ? target[name] : 37;
               },
             };
@@ -82,7 +82,7 @@ add_task(async function() {
     );
   });
 
-  const node = await waitFor(() => findMessage(hud, "oi-test"));
+  const node = await waitFor(() => findConsoleAPIMessage(hud, "oi-test"));
   const oi = node.querySelector(".tree");
 
   expandObjectInspectorNode(oi);

@@ -17,6 +17,7 @@ import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
 import androidx.annotation.AnyThread
 import androidx.test.filters.MediumTest
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.view.PointerIcon
 import android.view.Surface
 import org.hamcrest.Matchers.*
 import org.json.JSONObject
@@ -24,6 +25,7 @@ import org.junit.Assume.assumeThat
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.*
+import org.mozilla.geckoview.GeckoDisplay.SurfaceInfo
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.NullDelegate
 
 
@@ -31,7 +33,7 @@ import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.NullDelegate
 @MediumTest
 class ContentDelegateTest : BaseSessionTest() {
     @Test fun titleChange() {
-        sessionRule.session.loadTestPath(TITLE_CHANGE_HTML_PATH)
+        mainSession.loadTestPath(TITLE_CHANGE_HTML_PATH)
 
         sessionRule.waitUntilCalled(object : ContentDelegate {
             @AssertCalled(count = 2)
@@ -46,7 +48,7 @@ class ContentDelegateTest : BaseSessionTest() {
         // disable test on pgo for frequently failing Bug 1543355
         assumeThat(sessionRule.env.isDebugBuild, equalTo(true))
 
-        sessionRule.session.loadTestPath(DOWNLOAD_HTML_PATH)
+        mainSession.loadTestPath(DOWNLOAD_HTML_PATH)
 
         sessionRule.waitUntilCalled(object : NavigationDelegate, ContentDelegate {
 
@@ -190,7 +192,7 @@ class ContentDelegateTest : BaseSessionTest() {
         val texture = SurfaceTexture(0)
         texture.setDefaultBufferSize(100, 100)
         val surface = Surface(texture)
-        display.surfaceChanged(surface, 100, 100)
+        display.surfaceChanged(SurfaceInfo.Builder(surface).size(100, 100).build())
         mainSession.loadTestPath(HELLO_HTML_PATH)
         sessionRule.waitUntilCalled(object : ContentDelegate {
             @AssertCalled(count = 1)
@@ -198,7 +200,7 @@ class ContentDelegateTest : BaseSessionTest() {
             }
         })
         display.surfaceDestroyed()
-        display.surfaceChanged(surface, 100, 100)
+        display.surfaceChanged(SurfaceInfo.Builder(surface).size(100, 100).build())
         sessionRule.waitUntilCalled(object : ContentDelegate {
             @AssertCalled(count = 1)
             override fun onFirstComposite(session: GeckoSession) {
@@ -269,6 +271,16 @@ class ContentDelegateTest : BaseSessionTest() {
                 assertThat("icon src should be absolute", iconSrc.isAbsolute, equalTo(true))
                 assertThat("icon should have sizes", icon.getString("sizes"),  not(isEmptyOrNullString()))
                 assertThat("icon type should match", icon.getString("type"), equalTo("image/gif"))
+            }
+        })
+    }
+
+    @Test fun previewImage() {
+        mainSession.loadTestPath(METATAGS_PATH)
+        mainSession.waitUntilCalled(object : ContentDelegate, ProgressDelegate {
+            @AssertCalled(count = 1)
+            override fun onPreviewImage(session: GeckoSession, previewImageUrl: String) {
+                assertThat("Preview image should match", previewImageUrl, equalTo("https://test.com/og-image-url"))
             }
         })
     }
@@ -344,6 +356,32 @@ class ContentDelegateTest : BaseSessionTest() {
         })
     }
 
+    @WithDisplay(width = 100, height = 100)
+    @Test fun setCursor() {
+        mainSession.loadTestPath(HELLO_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        mainSession.evaluateJS("document.body.style.cursor = 'wait'")
+        mainSession.synthesizeMouseMove(50, 50)
+
+        mainSession.waitUntilCalled(object : ContentDelegate {
+            @AssertCalled(count = 1)
+            override fun onPointerIconChange(session: GeckoSession, icon: PointerIcon) {
+                // PointerIcon has no compare method.
+            }
+        })
+
+        val delegate = mainSession.contentDelegate
+        mainSession.contentDelegate = null
+        mainSession.evaluateJS("document.body.style.cursor = 'text'")
+        for (i in 51..70) {
+            mainSession.synthesizeMouseMove(i, 50)
+            // No wait function since we remove content delegate.
+            mainSession.waitForJS("new Promise(resolve => window.setTimeout(resolve, 100))")
+        }
+        mainSession.contentDelegate = delegate
+    }
+
     /**
      * Preferences to induce wanted behaviour.
      */
@@ -368,7 +406,7 @@ class ContentDelegateTest : BaseSessionTest() {
             @AssertCalled(count = 1)
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The script did not complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Started"))
             }
         })
@@ -386,7 +424,7 @@ class ContentDelegateTest : BaseSessionTest() {
             @AssertCalled(count = 1)
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The script did not complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Started"))
             }
         })
@@ -410,7 +448,7 @@ class ContentDelegateTest : BaseSessionTest() {
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The delegate was informed of the hang repeatedly", scriptHungReportCount, greaterThan(1))
                 assertThat("The script did complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Finished"))
             }
         })
@@ -431,7 +469,7 @@ class ContentDelegateTest : BaseSessionTest() {
             @AssertCalled(count = 1, order = [2])
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The script did not complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Started"))
             }
         })
@@ -452,7 +490,7 @@ class ContentDelegateTest : BaseSessionTest() {
             @AssertCalled(count = 1, order = [2])
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The script did complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Finished"))
             }
         })
@@ -479,7 +517,7 @@ class ContentDelegateTest : BaseSessionTest() {
             @AssertCalled(count = 1, order = [3])
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 assertThat("The script did not complete.",
-                        sessionRule.session.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
+                        mainSession.evaluateJS("document.getElementById(\"content\").innerHTML") as String,
                         equalTo("Started"))
             }
         })

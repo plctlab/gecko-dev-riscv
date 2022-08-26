@@ -6,12 +6,13 @@
 
 const EXPORTED_SYMBOLS = ["ExperimentManager", "_ExperimentManager"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ClientEnvironment: "resource://normandy/lib/ClientEnvironment.jsm",
   ExperimentStore: "resource://nimbus/lib/ExperimentStore.jsm",
   NormandyUtils: "resource://normandy/lib/NormandyUtils.jsm",
@@ -19,10 +20,9 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   TelemetryEvents: "resource://normandy/lib/TelemetryEvents.jsm",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.jsm",
   FirstStartup: "resource://gre/modules/FirstStartup.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   const { Logger } = ChromeUtils.import(
     "resource://messaging-system/lib/Logger.jsm"
   );
@@ -33,7 +33,10 @@ const TELEMETRY_EVENT_OBJECT = "nimbus_experiment";
 const TELEMETRY_EXPERIMENT_ACTIVE_PREFIX = "nimbus-";
 const TELEMETRY_DEFAULT_EXPERIMENT_TYPE = "nimbus";
 
+const UPLOAD_ENABLED_PREF = "datareporting.healthreport.uploadEnabled";
 const STUDIES_OPT_OUT_PREF = "app.shield.optoutstudies.enabled";
+
+const STUDIES_ENABLED_CHANGED = "nimbus:studies-enabled-changed";
 
 function featuresCompat(branch) {
   if (!branch || (!branch.feature && !branch.features)) {
@@ -55,9 +58,19 @@ function featuresCompat(branch) {
 class _ExperimentManager {
   constructor({ id = "experimentmanager", store } = {}) {
     this.id = id;
-    this.store = store || new ExperimentStore();
+    this.store = store || new lazy.ExperimentStore();
     this.sessions = new Map();
+    // By default, no extra context.
+    this.extraContext = {};
+    Services.prefs.addObserver(UPLOAD_ENABLED_PREF, this);
     Services.prefs.addObserver(STUDIES_OPT_OUT_PREF, this);
+  }
+
+  get studiesEnabled() {
+    return (
+      Services.prefs.getBoolPref(UPLOAD_ENABLED_PREF) &&
+      Services.prefs.getBoolPref(STUDIES_OPT_OUT_PREF)
+    );
   }
 
   /**
@@ -72,7 +85,8 @@ class _ExperimentManager {
    */
   createTargetingContext() {
     let context = {
-      isFirstStartup: FirstStartup.state === FirstStartup.IN_PROGRESS,
+      isFirstStartup: lazy.FirstStartup.state === lazy.FirstStartup.IN_PROGRESS,
+      ...this.extraContext,
     };
     Object.defineProperty(context, "activeExperiments", {
       get: async () => {
@@ -80,19 +94,36 @@ class _ExperimentManager {
         return this.store.getAllActive().map(exp => exp.slug);
       },
     });
+    Object.defineProperty(context, "activeRollouts", {
+      get: async () => {
+        await this.store.ready();
+        return this.store.getAllRollouts().map(rollout => rollout.slug);
+      },
+    });
     return context;
   }
 
   /**
-   * Runs on startup, including before first run
+   * Runs on startup, including before first run.
+   *
+   * @param {object} extraContext extra targeting context provided by the
+   * ambient environment.
    */
-  async onStartup() {
+  async onStartup(extraContext = {}) {
     await this.store.init();
+    this.extraContext = extraContext;
+
     const restoredExperiments = this.store.getAllActive();
+    const restoredRollouts = this.store.getAllRollouts();
 
     for (const experiment of restoredExperiments) {
       this.setExperimentActive(experiment);
     }
+    for (const rollout of restoredRollouts) {
+      this.setExperimentActive(rollout);
+    }
+
+    this.observe();
   }
 
   /**
@@ -115,35 +146,113 @@ class _ExperimentManager {
     if (this.store.has(slug)) {
       this.updateEnrollment(recipe);
     } else if (isEnrollmentPaused) {
-      log.debug(`Enrollment is paused for "${slug}"`);
+      lazy.log.debug(`Enrollment is paused for "${slug}"`);
     } else if (!(await this.isInBucketAllocation(recipe.bucketConfig))) {
-      log.debug("Client was not enrolled because of the bucket sampling");
+      lazy.log.debug("Client was not enrolled because of the bucket sampling");
     } else {
       await this.enroll(recipe, source);
     }
   }
 
-  /**
-   * Runs when the all recipes been processed during an update, including at first run.
-   * @param {string} sourceToCheck
-   */
-  onFinalize(sourceToCheck) {
-    if (!sourceToCheck) {
-      throw new Error("When calling onFinalize, you must specify a source.");
-    }
-    const activeExperiments = this.store.getAllActive();
-
-    for (const experiment of activeExperiments) {
-      const { slug, source } = experiment;
+  _checkUnseenEnrollments(
+    enrollments,
+    sourceToCheck,
+    recipeMismatches,
+    invalidRecipes,
+    invalidBranches,
+    invalidFeatures
+  ) {
+    for (const enrollment of enrollments) {
+      const { slug, source } = enrollment;
       if (sourceToCheck !== source) {
         continue;
       }
       if (!this.sessions.get(source)?.has(slug)) {
-        log.debug(`Stopping study for recipe ${slug}`);
+        lazy.log.debug(`Stopping study for recipe ${slug}`);
         try {
-          this.unenroll(slug, "recipe-not-seen");
+          let reason;
+          if (recipeMismatches.includes(slug)) {
+            reason = "targeting-mismatch";
+          } else if (invalidRecipes.includes(slug)) {
+            reason = "invalid-recipe";
+          } else if (invalidBranches.has(slug) || invalidFeatures.has(slug)) {
+            reason = "invalid-branch";
+          } else {
+            reason = "recipe-not-seen";
+          }
+          this.unenroll(slug, reason);
         } catch (err) {
           Cu.reportError(err);
+        }
+      }
+    }
+  }
+
+  /**
+   * Removes stored enrollments that were not seen after syncing with Remote Settings
+   * Runs when the all recipes been processed during an update, including at first run.
+   * @param {string} sourceToCheck
+   * @param {object} options Extra context used in telemetry reporting
+   * @param {string[]} options.recipeMismatches
+   *         The list of experiments that do not match targeting.
+   * @param {string[]} options.invalidRecipes
+   *         The list of recipes that do not match
+   * @param {Map<string, string[]>} options.invalidBranches
+   *         A mapping of experiment slugs to a list of branches that failed
+   *         feature validation.
+   * @param {Map<string, string[]>} options.invalidFeatures
+   *        The mapping of experiment slugs to a list of invalid feature IDs.
+   */
+  onFinalize(
+    sourceToCheck,
+    {
+      recipeMismatches = [],
+      invalidRecipes = [],
+      invalidBranches = new Map(),
+      invalidFeatures = new Map(),
+      validationEnabled = true,
+    } = {}
+  ) {
+    if (!sourceToCheck) {
+      throw new Error("When calling onFinalize, you must specify a source.");
+    }
+    const activeExperiments = this.store.getAllActive();
+    const activeRollouts = this.store.getAllRollouts();
+    this._checkUnseenEnrollments(
+      activeExperiments,
+      sourceToCheck,
+      recipeMismatches,
+      invalidRecipes,
+      invalidBranches,
+      invalidFeatures
+    );
+    this._checkUnseenEnrollments(
+      activeRollouts,
+      sourceToCheck,
+      recipeMismatches,
+      invalidRecipes,
+      invalidBranches,
+      invalidFeatures
+    );
+
+    // If validation is disabled, then we will never send validation failed
+    // telemetry.
+    if (validationEnabled) {
+      for (const slug of invalidRecipes) {
+        this.sendValidationFailedTelemetry(slug, "invalid-recipe");
+      }
+      for (const [slug, branches] of invalidBranches.entries()) {
+        for (const branch of branches) {
+          this.sendValidationFailedTelemetry(slug, "invalid-branch", {
+            branch,
+          });
+        }
+      }
+      for (const [slug, featureIds] of invalidFeatures.entries()) {
+        for (const featureId of featureIds) {
+          this.sendValidationFailedTelemetry(slug, "invalid-feature", {
+            feature: featureId,
+          });
         }
       }
     }
@@ -159,20 +268,22 @@ class _ExperimentManager {
    */
   isInBucketAllocation(bucketConfig) {
     if (!bucketConfig) {
-      log.debug("Cannot enroll if recipe bucketConfig is not set.");
+      lazy.log.debug("Cannot enroll if recipe bucketConfig is not set.");
       return false;
     }
 
     let id;
     if (bucketConfig.randomizationUnit === "normandy_id") {
-      id = ClientEnvironment.userId;
+      id = lazy.ClientEnvironment.userId;
     } else {
       // Others not currently supported.
-      log.debug(`Invalid randomizationUnit: ${bucketConfig.randomizationUnit}`);
+      lazy.log.debug(
+        `Invalid randomizationUnit: ${bucketConfig.randomizationUnit}`
+      );
       return false;
     }
 
-    return Sampling.bucketSample(
+    return lazy.Sampling.bucketSample(
       [id, bucketConfig.namespace],
       bucketConfig.start,
       bucketConfig.count,
@@ -196,12 +307,17 @@ class _ExperimentManager {
       throw new Error(`An experiment with the slug "${slug}" already exists.`);
     }
 
+    let storeLookupByFeature = recipe.isRollout
+      ? this.store.getRolloutForFeature.bind(this.store)
+      : this.store.hasExperimentForFeature.bind(this.store);
     const branch = await this.chooseBranch(slug, branches);
     const features = featuresCompat(branch);
     for (let feature of features) {
-      if (this.store.hasExperimentForFeature(feature?.featureId)) {
-        log.debug(
-          `Skipping enrollment for "${slug}" because there is an existing experiment for its feature.`
+      if (storeLookupByFeature(feature?.featureId)) {
+        lazy.log.debug(
+          `Skipping enrollment for "${slug}" because there is an existing ${
+            recipe.isRollout ? "rollout" : "experiment"
+          } for this feature.`
         );
         this.sendFailureTelemetry("enrollFailed", slug, "feature-conflict");
 
@@ -219,6 +335,7 @@ class _ExperimentManager {
       userFacingName,
       userFacingDescription,
       featureIds,
+      isRollout,
     },
     branch,
     source,
@@ -229,7 +346,7 @@ class _ExperimentManager {
       slug,
       branch,
       active: true,
-      enrollmentId: NormandyUtils.generateUuid(),
+      enrollmentId: lazy.NormandyUtils.generateUuid(),
       experimentType,
       source,
       userFacingName,
@@ -238,17 +355,31 @@ class _ExperimentManager {
       featureIds,
     };
 
+    if (typeof isRollout !== "undefined") {
+      experiment.isRollout = isRollout;
+    }
+
     // Tag this as a forced enrollment. This prevents all unenrolling unless
     // manually triggered from about:studies
     if (options.force) {
       experiment.force = true;
     }
 
-    this.store.addExperiment(experiment);
-    this.setExperimentActive(experiment);
+    if (isRollout) {
+      experiment.experimentType = "rollout";
+      this.store.addEnrollment(experiment);
+      this.setExperimentActive(experiment);
+    } else {
+      this.store.addEnrollment(experiment);
+      this.setExperimentActive(experiment);
+    }
     this.sendEnrollmentTelemetry(experiment);
 
-    log.debug(`New experiment started: ${slug}, ${branch.slug}`);
+    lazy.log.debug(
+      `New ${isRollout ? "rollout" : "experiment"} started: ${slug}, ${
+        branch.slug
+      }`
+    );
 
     return experiment;
   }
@@ -263,26 +394,39 @@ class _ExperimentManager {
     const features = featuresCompat(branch);
     for (let feature of features) {
       let experiment = this.store.getExperimentForFeature(feature?.featureId);
+      let rollout = this.store.getRolloutForFeature(feature?.featureId);
       if (experiment) {
-        log.debug(
+        lazy.log.debug(
           `Existing experiment found for the same feature ${feature.featureId}, unenrolling.`
         );
 
         this.unenroll(experiment.slug, source);
       }
+      if (rollout) {
+        lazy.log.debug(
+          `Existing experiment found for the same feature ${feature.featureId}, unenrolling.`
+        );
+
+        this.unenroll(rollout.slug, source);
+      }
     }
 
     recipe.userFacingName = `${recipe.userFacingName} - Forced enrollment`;
 
-    return this._enroll(
+    const slug = `optin-${recipe.slug}`;
+    const experiment = this._enroll(
       {
         ...recipe,
-        slug: `optin-${recipe.slug}`,
+        slug,
       },
       branch,
       source,
       { force: true }
     );
+
+    Services.obs.notifyObservers(null, "nimbus:force-enroll", slug);
+
+    return experiment;
   }
 
   /**
@@ -292,23 +436,25 @@ class _ExperimentManager {
    */
   updateEnrollment(recipe) {
     /** @type Enrollment */
-    const experiment = this.store.get(recipe.slug);
+    const enrollment = this.store.get(recipe.slug);
 
     // Don't update experiments that were already unenrolled.
-    if (experiment.active === false) {
-      log.debug(`Enrollment ${recipe.slug} has expired, aborting.`);
-      return;
+    if (enrollment.active === false) {
+      lazy.log.debug(`Enrollment ${recipe.slug} has expired, aborting.`);
+      return false;
     }
 
     // Stay in the same branch, don't re-sample every time.
     const branch = recipe.branches.find(
-      branch => branch.slug === experiment.branch.slug
+      branch => branch.slug === enrollment.branch.slug
     );
 
     if (!branch) {
       // Our branch has been removed. Unenroll.
       this.unenroll(recipe.slug, "branch-removed");
     }
+
+    return true;
   }
 
   /**
@@ -318,42 +464,56 @@ class _ExperimentManager {
    * @param {string} reason
    */
   unenroll(slug, reason = "unknown") {
-    const experiment = this.store.get(slug);
-    if (!experiment) {
+    const enrollment = this.store.get(slug);
+    if (!enrollment) {
       this.sendFailureTelemetry("unenrollFailed", slug, "does-not-exist");
       throw new Error(`Could not find an experiment with the slug "${slug}"`);
     }
 
-    if (!experiment.active) {
+    if (!enrollment.active) {
       this.sendFailureTelemetry("unenrollFailed", slug, "already-unenrolled");
       throw new Error(
         `Cannot stop experiment "${slug}" because it is already expired`
       );
     }
 
+    lazy.TelemetryEnvironment.setExperimentInactive(slug);
+    // We also need to set the experiment inactive in the Glean Experiment API
+    Services.fog.setExperimentInactive(slug);
     this.store.updateExperiment(slug, { active: false });
 
-    TelemetryEnvironment.setExperimentInactive(slug);
-    TelemetryEvents.sendEvent("unenroll", TELEMETRY_EVENT_OBJECT, slug, {
+    lazy.TelemetryEvents.sendEvent("unenroll", TELEMETRY_EVENT_OBJECT, slug, {
       reason,
-      branch: experiment.branch.slug,
+      branch: enrollment.branch.slug,
       enrollmentId:
-        experiment.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+        enrollment.enrollmentId || lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+    });
+    // Sent Glean event equivalent
+    Glean.nimbusEvents.unenrollment.record({
+      experiment: slug,
+      branch: enrollment.branch.slug,
+      enrollment_id:
+        enrollment.enrollmentId || lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+      reason,
     });
 
-    log.debug(`Experiment unenrolled: ${slug}`);
+    lazy.log.debug(`Recipe unenrolled: ${slug}`);
   }
 
   /**
    * Unenroll from all active studies if user opts out.
    */
   observe(aSubject, aTopic, aPrefName) {
-    if (Services.prefs.getBoolPref(STUDIES_OPT_OUT_PREF)) {
-      return;
+    if (!this.studiesEnabled) {
+      for (const { slug } of this.store.getAllActive()) {
+        this.unenroll(slug, "studies-opt-out");
+      }
+      for (const { slug } of this.store.getAllRollouts()) {
+        this.unenroll(slug, "studies-opt-out");
+      }
     }
-    for (const { slug } of this.store.getAllActive()) {
-      this.unenroll(slug, "studies-opt-out");
-    }
+
+    Services.obs.notifyObservers(null, STUDIES_ENABLED_CHANGED);
   }
 
   /**
@@ -364,8 +524,36 @@ class _ExperimentManager {
    * @param {string} reason
    */
   sendFailureTelemetry(eventName, slug, reason) {
-    TelemetryEvents.sendEvent(eventName, TELEMETRY_EVENT_OBJECT, slug, {
+    lazy.TelemetryEvents.sendEvent(eventName, TELEMETRY_EVENT_OBJECT, slug, {
       reason,
+    });
+    if (eventName == "enrollFailed") {
+      Glean.nimbusEvents.enrollFailed.record({
+        experiment: slug,
+        reason,
+      });
+    } else if (eventName == "unenrollFailed") {
+      Glean.nimbusEvents.unenrollFailed.record({
+        experiment: slug,
+        reason,
+      });
+    }
+  }
+
+  sendValidationFailedTelemetry(slug, reason, extra) {
+    lazy.TelemetryEvents.sendEvent(
+      "validationFailed",
+      TELEMETRY_EVENT_OBJECT,
+      slug,
+      {
+        reason,
+        ...extra,
+      }
+    );
+    Glean.nimbusEvents.validationFailed.record({
+      experiment: slug,
+      reason,
+      ...extra,
     });
   }
 
@@ -374,10 +562,18 @@ class _ExperimentManager {
    * @param {Enrollment} experiment
    */
   sendEnrollmentTelemetry({ slug, branch, experimentType, enrollmentId }) {
-    TelemetryEvents.sendEvent("enroll", TELEMETRY_EVENT_OBJECT, slug, {
+    lazy.TelemetryEvents.sendEvent("enroll", TELEMETRY_EVENT_OBJECT, slug, {
       experimentType,
       branch: branch.slug,
-      enrollmentId: enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+      enrollmentId:
+        enrollmentId || lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+    });
+    Glean.nimbusEvents.enrollment.record({
+      experiment: slug,
+      branch: branch.slug,
+      enrollment_id:
+        enrollmentId || lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+      experiment_type: experimentType,
     });
   }
 
@@ -387,48 +583,22 @@ class _ExperimentManager {
    * @param {Enrollment} experiment
    */
   setExperimentActive(experiment) {
-    TelemetryEnvironment.setExperimentActive(
+    lazy.TelemetryEnvironment.setExperimentActive(
       experiment.slug,
       experiment.branch.slug,
       {
         type: `${TELEMETRY_EXPERIMENT_ACTIVE_PREFIX}${experiment.experimentType}`,
         enrollmentId:
-          experiment.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+          experiment.enrollmentId ||
+          lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
       }
     );
-  }
-
-  /**
-   * Returns identifier for Telemetry experiment environment
-   *
-   * @param {string} featureId e.g. "aboutwelcome"
-   * @returns {string} the identifier, e.g. "default-aboutwelcome"
-   */
-  getRemoteDefaultTelemetryIdentifierForFeature(featureId) {
-    return `default-${featureId}`;
-  }
-
-  /**
-   * Sets Telemetry when activating a remote default.
-   *
-   * @param {featureId} string The feature identifier e.g. "aboutwelcome"
-   * @param {configId} string The identifier of the active configuration
-   */
-  setRemoteDefaultActive(featureId, configId) {
-    TelemetryEnvironment.setExperimentActive(
-      this.getRemoteDefaultTelemetryIdentifierForFeature(featureId),
-      configId,
-      {
-        type: `${TELEMETRY_EXPERIMENT_ACTIVE_PREFIX}default`,
-        enrollmentId: TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
-      }
-    );
-  }
-
-  setRemoteDefaultInactive(featureId) {
-    TelemetryEnvironment.setExperimentInactive(
-      this.getRemoteDefaultTelemetryIdentifierForFeature(featureId)
-    );
+    // Report the experiment to the Glean Experiment API
+    Services.fog.setExperimentActive(experiment.slug, experiment.branch.slug, {
+      type: `${TELEMETRY_EXPERIMENT_ACTIVE_PREFIX}${experiment.experimentType}`,
+      enrollmentId:
+        experiment.enrollmentId || lazy.TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+    });
   }
 
   /**
@@ -466,8 +636,8 @@ class _ExperimentManager {
     }
 
     while (Object.keys(branchValues).length < branches.length + 1) {
-      const id = NormandyUtils.generateUuid();
-      const enrolls = await Sampling.bucketSample(
+      const id = lazy.NormandyUtils.generateUuid();
+      const enrolls = await lazy.Sampling.bucketSample(
         [id, namespace],
         start,
         count,
@@ -484,7 +654,7 @@ class _ExperimentManager {
 
         if (!Object.keys(branchValues).includes(pickedBranch)) {
           branchValues[pickedBranch] = id;
-          log.debug(`Found a value for "${pickedBranch}"`);
+          lazy.log.debug(`Found a value for "${pickedBranch}"`);
         }
       } else if (!branchValues.notInExperiment) {
         branchValues.notInExperiment = id;
@@ -501,7 +671,7 @@ class _ExperimentManager {
    * @returns {Promise<Branch>}
    * @memberof _ExperimentManager
    */
-  async chooseBranch(slug, branches, userId = ClientEnvironment.userId) {
+  async chooseBranch(slug, branches, userId = lazy.ClientEnvironment.userId) {
     const ratios = branches.map(({ ratio = 1 }) => ratio);
 
     // It's important that the input be:
@@ -512,7 +682,7 @@ class _ExperimentManager {
     //   receive users)
     const input = `${this.id}-${userId}-${slug}-branch`;
 
-    const index = await Sampling.ratioSample(input, ratios);
+    const index = await lazy.Sampling.ratioSample(input, ratios);
     return branches[index];
   }
 }

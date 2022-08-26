@@ -30,7 +30,7 @@
 #include "mozilla/dom/CoalescedTouchData.h"
 #include "mozilla/dom/CoalescedWheelData.h"
 #include "mozilla/dom/MessageManagerCallback.h"
-#include "mozilla/dom/VsyncChild.h"
+#include "mozilla/dom/VsyncMainChild.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventForwards.h"
@@ -38,13 +38,12 @@
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/CompositorOptions.h"
 #include "mozilla/layers/GeckoContentControllerTypes.h"
-#include "nsIWebBrowserChrome.h"
-#include "nsITopLevelNavigationDelegate.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "AudioChannelService.h"
 #include "PuppetWidget.h"
 #include "nsDeque.h"
 #include "nsIRemoteTab.h"
+#include "nsTHashSet.h"
 
 class nsBrowserStatusFilter;
 class nsIDOMWindow;
@@ -61,6 +60,8 @@ template <typename T>
 class nsPtrHashKey;
 
 namespace mozilla {
+enum class NativeKeyBindingsType : uint8_t;
+
 class AbstractThread;
 class PresShell;
 
@@ -85,9 +86,7 @@ class TabGroup;
 class ClonedMessageData;
 class CoalescedMouseData;
 class CoalescedWheelData;
-class ContentSessionStore;
-class SessionStoreChangeListener;
-class TabListener;
+class SessionStoreChild;
 class RequestData;
 class WebProgressData;
 
@@ -169,8 +168,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   using CoalescedMouseData = mozilla::dom::CoalescedMouseData;
   using CoalescedWheelData = mozilla::dom::CoalescedWheelData;
   using APZEventState = mozilla::layers::APZEventState;
-  using SetAllowedTouchBehaviorCallback =
-      mozilla::layers::SetAllowedTouchBehaviorCallback;
   using TouchBehaviorFlags = mozilla::layers::TouchBehaviorFlags;
 
   friend class PBrowserChild;
@@ -354,10 +351,10 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                             nsIContentSecurityPolicy* aCsp);
 
   mozilla::ipc::IPCResult RecvRealKeyEvent(
-      const mozilla::WidgetKeyboardEvent& aEvent);
+      const mozilla::WidgetKeyboardEvent& aEvent, const nsID& aUUID);
 
   mozilla::ipc::IPCResult RecvNormalPriorityRealKeyEvent(
-      const mozilla::WidgetKeyboardEvent& aEvent);
+      const mozilla::WidgetKeyboardEvent& aEvent, const nsID& aUUID);
 
   mozilla::ipc::IPCResult RecvMouseWheelEvent(
       const mozilla::WidgetWheelEvent& aEvent, const ScrollableLayerGuid& aGuid,
@@ -397,8 +394,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                                 aApzResponse);
   }
 
-  mozilla::ipc::IPCResult RecvUpdateEpoch(const uint32_t& aEpoch);
-
   mozilla::ipc::IPCResult RecvUpdateSHistory();
 
   mozilla::ipc::IPCResult RecvNativeSynthesisResponse(
@@ -419,10 +414,13 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvSetIsUnderHiddenEmbedderElement(
       const bool& aIsUnderHiddenEmbedderElement);
 
-  mozilla::ipc::IPCResult RecvInsertText(const nsString& aStringToInsert);
+  mozilla::ipc::IPCResult RecvInsertText(const nsAString& aStringToInsert);
+
+  mozilla::ipc::IPCResult RecvUpdateRemoteStyle(
+      const StyleImageRendering& aImageRendering);
 
   mozilla::ipc::IPCResult RecvNormalPriorityInsertText(
-      const nsString& aStringToInsert);
+      const nsAString& aStringToInsert);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvPasteTransferable(
@@ -430,13 +428,13 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       nsIPrincipal* aRequestingPrincipal,
       const nsContentPolicyType& aContentPolicyType);
 
-  mozilla::ipc::IPCResult RecvActivateFrameEvent(const nsString& aType,
+  mozilla::ipc::IPCResult RecvActivateFrameEvent(const nsAString& aType,
                                                  const bool& aCapture);
 
-  mozilla::ipc::IPCResult RecvLoadRemoteScript(const nsString& aURL,
+  mozilla::ipc::IPCResult RecvLoadRemoteScript(const nsAString& aURL,
                                                const bool& aRunInGlobalScope);
 
-  mozilla::ipc::IPCResult RecvAsyncMessage(const nsString& aMessage,
+  mozilla::ipc::IPCResult RecvAsyncMessage(const nsAString& aMessage,
                                            const ClonedMessageData& aData);
   mozilla::ipc::IPCResult RecvSwappedWithOtherRemoteLoader(
       const IPCTabContext& aContext);
@@ -445,26 +443,22 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const mozilla::ScreenIntMargin& aSafeAreaInsets);
 
 #ifdef ACCESSIBILITY
-  PDocAccessibleChild* AllocPDocAccessibleChild(PDocAccessibleChild*,
-                                                const uint64_t&,
-                                                const uint32_t&,
-                                                const IAccessibleHolder&);
+  PDocAccessibleChild* AllocPDocAccessibleChild(
+      PDocAccessibleChild*, const uint64_t&,
+      const MaybeDiscardedBrowsingContext&, const uint32_t&,
+      const IAccessibleHolder&);
   bool DeallocPDocAccessibleChild(PDocAccessibleChild*);
 #endif
 
-  PColorPickerChild* AllocPColorPickerChild(const nsString& aTitle,
-                                            const nsString& aInitialColor);
+  PColorPickerChild* AllocPColorPickerChild(const nsAString& aTitle,
+                                            const nsAString& aInitialColor);
 
   bool DeallocPColorPickerChild(PColorPickerChild* aActor);
 
-  PFilePickerChild* AllocPFilePickerChild(const nsString& aTitle,
+  PFilePickerChild* AllocPFilePickerChild(const nsAString& aTitle,
                                           const int16_t& aMode);
 
-  virtual PVsyncChild* AllocPVsyncChild();
-
-  virtual bool DeallocPVsyncChild(PVsyncChild* aActor);
-
-  RefPtr<VsyncChild> GetVsyncChild();
+  RefPtr<VsyncMainChild> GetVsyncChild();
 
   bool DeallocPFilePickerChild(PFilePickerChild* aActor);
 
@@ -476,14 +470,12 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   const EffectsInfo& GetEffectsInfo() const { return mEffectsInfo; }
 
-  hal::ScreenOrientation GetOrientation() const { return mOrientation; }
-
   void SetBackgroundColor(const nscolor& aColor);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual mozilla::ipc::IPCResult RecvUpdateEffects(
       const EffectsInfo& aEffects);
 
-  void RequestEditCommands(nsIWidget::NativeKeyBindingsType aType,
+  void RequestEditCommands(NativeKeyBindingsType aType,
                            const WidgetKeyboardEvent& aEvent,
                            nsTArray<CommandInt>& aCommands);
 
@@ -556,15 +548,15 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   mozilla::ipc::IPCResult RecvHandleAccessKey(const WidgetKeyboardEvent& aEvent,
                                               nsTArray<uint32_t>&& aCharCodes);
-
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvPrintPreview(const PrintData& aPrintData,
                                            const MaybeDiscardedBrowsingContext&,
                                            PrintPreviewResolver&& aCallback);
 
   mozilla::ipc::IPCResult RecvExitPrintPreview();
 
-  mozilla::ipc::IPCResult RecvPrint(const MaybeDiscardedBrowsingContext&,
-                                    const PrintData&);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult RecvPrint(
+      const MaybeDiscardedBrowsingContext&, const PrintData&);
 
   mozilla::ipc::IPCResult RecvUpdateNativeWindowHandle(
       const uintptr_t& aNewHandle);
@@ -610,9 +602,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const layers::GeckoContentController_TapType& aType,
       const LayoutDevicePoint& aPoint, const Modifiers& aModifiers,
       const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
-
-  void SetAllowedTouchBehavior(
-      uint64_t aInputBlockId, const nsTArray<TouchBehaviorFlags>& aFlags) const;
 
   bool UpdateFrame(const layers::RepaintRequest& aRequest);
   bool NotifyAPZStateChange(
@@ -683,7 +672,11 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
     mCancelContentJSEpoch = aEpoch;
   }
 
-  bool UpdateSessionStore();
+  void UpdateSessionStore();
+
+  mozilla::dom::SessionStoreChild* GetSessionStoreChild() {
+    return mSessionStoreChild;
+  }
 
 #ifdef XP_WIN
   // Check if the window this BrowserChild is associated with supports
@@ -786,8 +779,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                        nsIRequest* aRequest,
                                        WebProgressData& aWebProgressData,
                                        RequestData& aRequestData);
-  already_AddRefed<nsITopLevelNavigationDelegate>
-  GetTopLevelNavigationDelegate();
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   nsresult UpdateRemotePrintSettings(const embedding::PrintData& aPrintData);
@@ -813,13 +804,12 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   layers::LayersId mLayersId;
   CSSRect mUnscaledOuterRect;
   Maybe<bool> mLayersConnected;
+  Maybe<bool> mLayersConnectRequested;
   EffectsInfo mEffectsInfo;
-  hal::ScreenOrientation mOrientation;
 
-  RefPtr<VsyncChild> mVsyncChild;
+  RefPtr<VsyncMainChild> mVsyncChild;
 
   RefPtr<APZEventState> mAPZEventState;
-  SetAllowedTouchBehaviorCallback mSetAllowedTouchBehaviorCallback;
 
   // Position of client area relative to the outer window
   LayoutDeviceIntPoint mClientOffset;
@@ -906,8 +896,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   RefPtr<CoalescedTouchMoveFlusher> mCoalescedTouchMoveEventFlusher;
 
   RefPtr<layers::IAPZCTreeManager> mApzcTreeManager;
-  RefPtr<TabListener> mSessionStoreListener;
-  RefPtr<SessionStoreChangeListener> mSessionStoreChangeListener;
+  RefPtr<SessionStoreChild> mSessionStoreChild;
 
   // The most recently seen layer observer epoch in RecvSetDocShellIsActive.
   layers::LayersObserverEpoch mLayersObserverEpoch;
@@ -934,6 +923,9 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // Should only be accessed on main thread.
   Maybe<bool> mWindowSupportsProtectedMedia;
 #endif
+
+  // If set, resolve when we receive ChildToParentMatrix.
+  RefPtr<dom::Promise> mContentTransformPromise;
 
   DISALLOW_EVIL_CONSTRUCTORS(BrowserChild);
 };

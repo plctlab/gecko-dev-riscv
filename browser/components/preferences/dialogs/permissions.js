@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 var { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -182,7 +181,12 @@ var gPermissionManager = {
       capability == Ci.nsIPermissionManager.ALLOW_ACTION ||
       capability == Ci.nsIPermissionManager.DENY_ACTION ||
       capability == Ci.nsICookiePermission.ACCESS_SESSION ||
-      capability == Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION
+      // Bug 1753600 there are still a few legacy cookies around that have the capability 9,
+      // _getCapabilityL10nId will throw if it receives a capability of 9
+      // that is not in combination with the type https-only-load-insecure
+      (capability ==
+        Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION &&
+        this._type == "https-only-load-insecure")
     );
   },
 
@@ -346,23 +350,27 @@ var gPermissionManager = {
   },
 
   _createPermissionListItem(permission) {
+    let disabledByPolicy = this._permissionDisabledByPolicy(permission);
     let richlistitem = document.createXULElement("richlistitem");
     richlistitem.setAttribute("origin", permission.origin);
     let row = document.createXULElement("hbox");
-    row.setAttribute("flex", "1");
+    row.setAttribute("style", "-moz-box-flex: 1");
 
     let hbox = document.createXULElement("hbox");
     let website = document.createXULElement("label");
+    website.setAttribute("disabled", disabledByPolicy);
+    website.setAttribute("class", "website-name-value");
     website.setAttribute("value", permission.origin);
     hbox.setAttribute("width", "0");
     hbox.setAttribute("class", "website-name");
-    hbox.setAttribute("flex", "3");
+    hbox.setAttribute("style", "-moz-box-flex: 3");
     hbox.appendChild(website);
     row.appendChild(hbox);
 
     if (!this._hideStatusColumn) {
       hbox = document.createXULElement("hbox");
       let capability = document.createXULElement("label");
+      capability.setAttribute("disabled", disabledByPolicy);
       capability.setAttribute("class", "website-capability-value");
       document.l10n.setAttributes(
         capability,
@@ -370,7 +378,7 @@ var gPermissionManager = {
       );
       hbox.setAttribute("width", "0");
       hbox.setAttribute("class", "website-name");
-      hbox.setAttribute("flex", "1");
+      hbox.setAttribute("style", "-moz-box-flex: 1");
       hbox.appendChild(capability);
       row.appendChild(hbox);
     }
@@ -434,15 +442,31 @@ var gPermissionManager = {
     }
 
     let hasSelection = this._list.selectedIndex >= 0;
-    let hasRows = this._list.itemCount > 0;
-    this._removeButton.disabled = !hasSelection;
-    this._removeAllButton.disabled = !hasRows;
+
+    let disabledByPolicy = false;
+    if (Services.policies.status === Services.policies.ACTIVE && hasSelection) {
+      let origin = this._list.selectedItem.getAttribute("origin");
+      disabledByPolicy = this._permissionDisabledByPolicy(
+        this._permissions.get(origin)
+      );
+    }
+
+    this._removeButton.disabled = !hasSelection || disabledByPolicy;
+    let disabledItems = this._list.querySelectorAll(
+      "label.website-name-value[disabled='true']"
+    );
+
+    this._removeAllButton.disabled =
+      this._list.itemCount == disabledItems.length;
   },
 
   onPermissionDelete() {
     let richlistitem = this._list.selectedItem;
     let origin = richlistitem.getAttribute("origin");
     let permission = this._permissions.get(origin);
+    if (this._permissionDisabledByPolicy(permission)) {
+      return;
+    }
 
     this._removePermission(permission);
 
@@ -451,6 +475,9 @@ var gPermissionManager = {
 
   onAllPermissionsDelete() {
     for (let permission of this._permissions.values()) {
+      if (this._permissionDisabledByPolicy(permission)) {
+        continue;
+      }
       this._removePermission(permission);
     }
 
@@ -511,6 +538,17 @@ var gPermissionManager = {
     this._list.appendChild(frag);
 
     this._setRemoveButtonState();
+  },
+
+  _permissionDisabledByPolicy(permission) {
+    let permissionObject = Services.perms.getPermissionObject(
+      permission.principal,
+      this._type,
+      false
+    );
+    return (
+      permissionObject?.expireType == Ci.nsIPermissionManager.EXPIRE_POLICY
+    );
   },
 
   _sortPermissions(list, frag, column) {

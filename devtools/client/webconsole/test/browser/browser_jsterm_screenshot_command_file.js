@@ -29,7 +29,12 @@ add_task(async function() {
   info("Test :screenshot to file");
   const file = FileUtils.getFile("TmpD", ["TestScreenshotFile.png"]);
   const command = `:screenshot ${file.path} ${dpr}`;
-  await executeAndWaitForMessage(hud, command, `Saved to ${file.path}`);
+  await executeAndWaitForMessageByType(
+    hud,
+    command,
+    `Saved to ${file.path}`,
+    ".console-api"
+  );
 
   const fileExists = file.exists();
   if (!fileExists) {
@@ -40,7 +45,7 @@ add_task(async function() {
 
   info("Create an image using the downloaded file as source");
   const image = new Image();
-  image.src = OS.Path.toFileURI(file.path);
+  image.src = PathUtils.toFileURI(file.path);
   await once(image, "load");
 
   // The page has the following structure
@@ -82,10 +87,11 @@ add_task(async function() {
   });
 
   info("Test :screenshot to file default filename");
-  const message = await executeAndWaitForMessage(
+  const message = await executeAndWaitForMessageByType(
     hud,
     `:screenshot ${dpr}`,
-    `Saved to`
+    `Saved to`,
+    ".console-api"
   );
   const date = new Date();
   const monthString = (date.getMonth() + 1).toString().padStart(2, "0");
@@ -107,6 +113,6 @@ add_task(async function() {
   );
 
   info("Remove the downloaded screenshot file and cleanup downloads");
-  await OS.File.remove(file.path);
+  await IOUtils.remove(file.path);
   await resetDownloads();
 });

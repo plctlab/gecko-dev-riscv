@@ -6,15 +6,10 @@
 
 var EXPORTED_SYMBOLS = ["GoogleTranslator"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { PromiseUtils } = ChromeUtils.import(
   "resource://gre/modules/PromiseUtils.jsm"
 );
 const { httpRequest } = ChromeUtils.import("resource://gre/modules/Http.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser"]);
 
 // The maximum amount of net data allowed per request on Google's API.
 const MAX_REQUEST_DATA = 5000; // XXX This is the Bing value

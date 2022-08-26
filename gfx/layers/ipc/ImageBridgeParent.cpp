@@ -15,7 +15,6 @@
 #include "mozilla/HalTypes.h"   // for hal::THREAD_PRIORITY_COMPOSITOR
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/MessageChannel.h"  // for MessageChannel, etc
-#include "mozilla/ipc/Transport.h"       // for Transport
 #include "mozilla/media/MediaSystemResourceManagerParent.h"  // for MediaSystemResourceManagerParent
 #include "mozilla/layers/BufferTexture.h"
 #include "mozilla/layers/CompositableTransactionParent.h"
@@ -201,7 +200,8 @@ mozilla::ipc::IPCResult ImageBridgeParent::RecvUpdate(
     RefPtr<CompositableHost> compositable =
         FindCompositable(edit.compositable());
     if (!compositable ||
-        !ReceiveCompositableUpdate(edit.detail(), WrapNotNull(compositable))) {
+        !ReceiveCompositableUpdate(edit.detail(), WrapNotNull(compositable),
+                                   edit.compositable())) {
       return IPC_FAIL_NO_REASON(this);
     }
     uint32_t dropped = compositable->GetDroppedFrames();
@@ -289,10 +289,10 @@ mozilla::ipc::IPCResult ImageBridgeParent::RecvReleaseCompositable(
 }
 
 PTextureParent* ImageBridgeParent::AllocPTextureParent(
-    const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+    const SurfaceDescriptor& aSharedData, ReadLockDescriptor& aReadLock,
     const LayersBackend& aLayersBackend, const TextureFlags& aFlags,
     const uint64_t& aSerial, const wr::MaybeExternalImageId& aExternalImageId) {
-  return TextureHost::CreateIPDLActor(this, aSharedData, aReadLock,
+  return TextureHost::CreateIPDLActor(this, aSharedData, std::move(aReadLock),
                                       aLayersBackend, aFlags, aSerial,
                                       aExternalImageId);
 }
@@ -381,22 +381,18 @@ already_AddRefed<ImageBridgeParent> ImageBridgeParent::GetInstance(
   return bridge.forget();
 }
 
-bool ImageBridgeParent::AllocShmem(size_t aSize,
-                                   ipc::SharedMemory::SharedMemoryType aType,
-                                   ipc::Shmem* aShmem) {
+bool ImageBridgeParent::AllocShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (mClosed) {
     return false;
   }
-  return PImageBridgeParent::AllocShmem(aSize, aType, aShmem);
+  return PImageBridgeParent::AllocShmem(aSize, aShmem);
 }
 
-bool ImageBridgeParent::AllocUnsafeShmem(
-    size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-    ipc::Shmem* aShmem) {
+bool ImageBridgeParent::AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (mClosed) {
     return false;
   }
-  return PImageBridgeParent::AllocUnsafeShmem(aSize, aType, aShmem);
+  return PImageBridgeParent::AllocUnsafeShmem(aSize, aShmem);
 }
 
 bool ImageBridgeParent::DeallocShmem(ipc::Shmem& aShmem) {
@@ -422,12 +418,6 @@ void ImageBridgeParent::NotifyNotUsed(PTextureParent* aTexture,
     MOZ_ASSERT(texture->GetFlags() & TextureFlags::RECYCLE);
 
     Maybe<FileDescriptor> fenceFd = Some(FileDescriptor());
-    auto* compositor = texture->GetProvider()
-                           ? texture->GetProvider()->AsCompositorOGL()
-                           : nullptr;
-    if (compositor) {
-      fenceFd = Some(compositor->GetReleaseFence());
-    }
 
     auto* wrTexture = texture->AsWebRenderTextureHost();
     if (wrTexture) {
@@ -476,13 +466,7 @@ void ImageBridgeParent::NotifyBufferNotUsedOfCompositorBridge(
   MOZ_ASSERT(aTexture->GetAndroidHardwareBuffer());
 
 #ifdef MOZ_WIDGET_ANDROID
-  auto* compositor = aTexture->GetProvider()
-                         ? aTexture->GetProvider()->AsCompositorOGL()
-                         : nullptr;
   Maybe<FileDescriptor> fenceFd = Some(FileDescriptor());
-  if (compositor) {
-    fenceFd = Some(compositor->GetReleaseFence());
-  }
 
   auto* wrTexture = aTexture->AsWebRenderTextureHost();
   if (wrTexture) {

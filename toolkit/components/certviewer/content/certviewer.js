@@ -2,16 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/remote-page */
 
 "use strict";
 
 import { normalizeToKebabCase } from "./components/utils.js";
 
-import "chrome://global/content/certviewer/pvutils_bundle.js";
-import "chrome://global/content/certviewer/asn1js_bundle.js";
-import "chrome://global/content/certviewer/pkijs_bundle.js";
-import "chrome://global/content/certviewer/certDecoder.js";
+import "chrome://global/content/certviewer/pvutils_bundle.jsm";
+import "chrome://global/content/certviewer/asn1js_bundle.jsm";
+import "chrome://global/content/certviewer/pkijs_bundle.jsm";
+import "chrome://global/content/certviewer/certDecoder.jsm";
 
 const { Integer, fromBER } = globalThis.asn1js.asn1js;
 const { Certificate } = globalThis.pkijs.pkijs;

@@ -24,7 +24,7 @@
 #include "vm/FrameIter.h"             // js::FrameIter
 #include "vm/JSContext.h"
 #include "vm/Opcodes.h"
-#include "wasm/WasmInstance.h"
+#include "wasm/WasmProcess.h"
 
 #include "jit/JSJitFrameIter-inl.h"
 #include "vm/Compartment-inl.h"
@@ -42,13 +42,9 @@ using JS::Value;
 
 void InterpreterFrame::initExecuteFrame(JSContext* cx, HandleScript script,
                                         AbstractFramePtr evalInFramePrev,
-                                        HandleValue newTargetValue,
                                         HandleObject envChain) {
   flags_ = 0;
   script_ = script;
-
-  Value* dstvp = (Value*)this - 1;
-  dstvp[0] = newTargetValue;
 
   envChain_ = envChain.get();
   prev_ = nullptr;
@@ -259,7 +255,7 @@ bool InterpreterFrame::checkReturn(JSContext* cx, HandleValue thisv,
   return true;
 }
 
-bool InterpreterFrame::pushVarEnvironment(JSContext* cx, HandleScope scope) {
+bool InterpreterFrame::pushVarEnvironment(JSContext* cx, Handle<Scope*> scope) {
   return js::PushVarEnvironmentObject(cx, scope, this);
 }
 
@@ -336,9 +332,6 @@ void InterpreterFrame::trace(JSTracer* trc, Value* sp, jsbytecode* pc) {
     // Trace arguments.
     unsigned argc = std::max(numActualArgs(), numFormalArgs());
     TraceRootRange(trc, argc + isConstructing(), argv_, "fp argv");
-  } else {
-    // Trace newTarget.
-    TraceRoot(trc, ((Value*)this) - 1, "stack newTarget");
   }
 
   JSScript* script = this->script();
@@ -418,21 +411,20 @@ InterpreterFrame* InterpreterStack::pushInvokeFrame(
 }
 
 InterpreterFrame* InterpreterStack::pushExecuteFrame(
-    JSContext* cx, HandleScript script, HandleValue newTargetValue,
-    HandleObject envChain, AbstractFramePtr evalInFrame) {
+    JSContext* cx, HandleScript script, HandleObject envChain,
+    AbstractFramePtr evalInFrame) {
   LifoAlloc::Mark mark = allocator_.mark();
 
-  unsigned nvars = 1 /* newTarget */ + script->nslots();
+  unsigned nvars = script->nslots();
   uint8_t* buffer =
       allocateFrame(cx, sizeof(InterpreterFrame) + nvars * sizeof(Value));
   if (!buffer) {
     return nullptr;
   }
 
-  InterpreterFrame* fp =
-      reinterpret_cast<InterpreterFrame*>(buffer + 1 * sizeof(Value));
+  InterpreterFrame* fp = reinterpret_cast<InterpreterFrame*>(buffer);
   fp->mark_ = mark;
-  fp->initExecuteFrame(cx, script, evalInFrame, newTargetValue, envChain);
+  fp->initExecuteFrame(cx, script, evalInFrame, envChain);
   fp->initLocals();
 
   return fp;
@@ -517,19 +509,21 @@ void JS::ProfilingFrameIterator::settleFrames() {
     new (storage()) wasm::ProfilingFrameIterator(fp);
     kind_ = Kind::Wasm;
     MOZ_ASSERT(!wasmIter().done());
+    maybeSetEndStackAddress(wasmIter().endStackAddress());
     return;
   }
 
-  if (isWasm() && wasmIter().done() && wasmIter().unwoundIonCallerFP()) {
-    uint8_t* fp = wasmIter().unwoundIonCallerFP();
+  if (isWasm() && wasmIter().done() && wasmIter().unwoundJitCallerFP()) {
+    uint8_t* fp = wasmIter().unwoundJitCallerFP();
     iteratorDestroy();
-    // Using this ctor will skip the first ion->wasm frame, which is
+    // Using this ctor will skip the first jit->wasm frame, which is
     // needed because the profiling iterator doesn't know how to unwind
     // when the callee has no script.
     new (storage())
         jit::JSJitProfilingFrameIterator((jit::CommonFrameLayout*)fp);
     kind_ = Kind::JSJit;
     MOZ_ASSERT(!jsJitIter().done());
+    maybeSetEndStackAddress(jsJitIter().endStackAddress());
     return;
   }
 }
@@ -539,6 +533,7 @@ void JS::ProfilingFrameIterator::settle() {
   while (iteratorDone()) {
     iteratorDestroy();
     activation_ = activation_->prevProfiling();
+    endStackAddress_ = nullptr;
     if (!activation_) {
       return;
     }
@@ -563,11 +558,13 @@ void JS::ProfilingFrameIterator::iteratorConstruct(const RegisterState& state) {
   if (activation->hasWasmExitFP() || wasm::InCompiledCode(state.pc)) {
     new (storage()) wasm::ProfilingFrameIterator(*activation, state);
     kind_ = Kind::Wasm;
+    maybeSetEndStackAddress(wasmIter().endStackAddress());
     return;
   }
 
-  new (storage()) jit::JSJitProfilingFrameIterator(cx_, state.pc);
+  new (storage()) jit::JSJitProfilingFrameIterator(cx_, state.pc, state.sp);
   kind_ = Kind::JSJit;
+  maybeSetEndStackAddress(jsJitIter().endStackAddress());
 }
 
 void JS::ProfilingFrameIterator::iteratorConstruct() {
@@ -582,12 +579,14 @@ void JS::ProfilingFrameIterator::iteratorConstruct() {
   if (activation->hasWasmExitFP()) {
     new (storage()) wasm::ProfilingFrameIterator(*activation);
     kind_ = Kind::Wasm;
+    maybeSetEndStackAddress(wasmIter().endStackAddress());
     return;
   }
 
   auto* fp = (jit::ExitFrameLayout*)activation->jsExitFP();
   new (storage()) jit::JSJitProfilingFrameIterator(fp);
   kind_ = Kind::JSJit;
+  maybeSetEndStackAddress(jsJitIter().endStackAddress());
 }
 
 void JS::ProfilingFrameIterator::iteratorDestroy() {
@@ -629,6 +628,9 @@ JS::ProfilingFrameIterator::getPhysicalFrameAndEntry(
     jit::JitcodeGlobalEntry* entry) const {
   void* stackAddr = stackAddress();
 
+  MOZ_DIAGNOSTIC_ASSERT(endStackAddress_);
+  MOZ_DIAGNOSTIC_ASSERT(stackAddr >= endStackAddress_);
+
   if (isWasm()) {
     Frame frame;
     frame.kind = Frame_Wasm;
@@ -636,7 +638,7 @@ JS::ProfilingFrameIterator::getPhysicalFrameAndEntry(
     frame.returnAddress_ = nullptr;
     frame.activation = activation_;
     frame.label = nullptr;
-    frame.endStackAddress = activation_->asJit()->jsOrWasmExitFP();
+    frame.endStackAddress = endStackAddress_;
     frame.interpreterScript = nullptr;
     // TODO: get the realm ID of wasm frames. Bug 1596235.
     frame.realmID = 0;
@@ -702,7 +704,7 @@ JS::ProfilingFrameIterator::getPhysicalFrameAndEntry(
     frame.realmID = 0;
   }
   frame.activation = activation_;
-  frame.endStackAddress = activation_->asJit()->jsOrWasmExitFP();
+  frame.endStackAddress = endStackAddress_;
   return mozilla::Some(frame);
 }
 

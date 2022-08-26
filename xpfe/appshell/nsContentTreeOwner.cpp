@@ -192,6 +192,13 @@ nsContentTreeOwner::GetPrimaryRemoteTab(nsIRemoteTab** aTab) {
 }
 
 NS_IMETHODIMP
+nsContentTreeOwner::GetPrimaryContentBrowsingContext(
+    mozilla::dom::BrowsingContext** aBc) {
+  NS_ENSURE_STATE(mAppWindow);
+  return mAppWindow->GetPrimaryContentBrowsingContext(aBc);
+}
+
+NS_IMETHODIMP
 nsContentTreeOwner::GetPrimaryContentSize(int32_t* aWidth, int32_t* aHeight) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetPrimaryContentSize(aWidth, aHeight);
@@ -235,7 +242,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
   int32_t index;
 
   // Set X
-  index = persistString.Find("screenX");
+  index = persistString.Find(u"screenX");
   if (!aPersistPosition && index >= 0) {
     persistString.Cut(index, 7);
     saveString = true;
@@ -244,7 +251,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
     saveString = true;
   }
   // Set Y
-  index = persistString.Find("screenY");
+  index = persistString.Find(u"screenY");
   if (!aPersistPosition && index >= 0) {
     persistString.Cut(index, 7);
     saveString = true;
@@ -253,7 +260,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
     saveString = true;
   }
   // Set CX
-  index = persistString.Find("width");
+  index = persistString.Find(u"width");
   if (!aPersistSize && index >= 0) {
     persistString.Cut(index, 5);
     saveString = true;
@@ -262,7 +269,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
     saveString = true;
   }
   // Set CY
-  index = persistString.Find("height");
+  index = persistString.Find(u"height");
   if (!aPersistSize && index >= 0) {
     persistString.Cut(index, 6);
     saveString = true;
@@ -271,7 +278,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
     saveString = true;
   }
   // Set SizeMode
-  index = persistString.Find("sizemode");
+  index = persistString.Find(u"sizemode");
   if (!aPersistSizeMode && (index >= 0)) {
     persistString.Cut(index, 8);
     saveString = true;
@@ -300,18 +307,17 @@ nsContentTreeOwner::GetPersistence(bool* aPersistPosition, bool* aPersistSize,
 
   // data structure doesn't quite match the question, but it's close enough
   // for what we want (since this method is never actually called...)
-  if (aPersistPosition)
-    *aPersistPosition =
-        persistString.Find("screenX") >= 0 || persistString.Find("screenY") >= 0
-            ? true
-            : false;
-  if (aPersistSize)
+  if (aPersistPosition) {
+    *aPersistPosition = persistString.Find(u"screenX") >= 0 ||
+                        persistString.Find(u"screenY") >= 0;
+  }
+  if (aPersistSize) {
     *aPersistSize =
-        persistString.Find("width") >= 0 || persistString.Find("height") >= 0
-            ? true
-            : false;
-  if (aPersistSizeMode)
-    *aPersistSizeMode = persistString.Find("sizemode") >= 0 ? true : false;
+        persistString.Find(u"width") >= 0 || persistString.Find(u"height") >= 0;
+  }
+  if (aPersistSizeMode) {
+    *aPersistSizeMode = persistString.Find(u"sizemode") >= 0;
+  }
 
   return NS_OK;
 }
@@ -390,10 +396,8 @@ NS_IMETHODIMP nsContentTreeOwner::Destroy() {
   return mAppWindow->Destroy();
 }
 
-NS_IMETHODIMP nsContentTreeOwner::GetUnscaledDevicePixelsPerCSSPixel(
-    double* aScale) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->GetUnscaledDevicePixelsPerCSSPixel(aScale);
+double nsContentTreeOwner::GetWidgetCSSToDeviceScale() {
+  return mAppWindow ? mAppWindow->GetWidgetCSSToDeviceScale() : 1.0;
 }
 
 NS_IMETHODIMP nsContentTreeOwner::GetDevicePixelsPerDesktopPixel(
@@ -521,9 +525,9 @@ NS_IMETHODIMP nsContentTreeOwner::SetTitle(const nsAString& aTitle) {
 NS_IMETHODIMP
 nsContentTreeOwner::ProvideWindow(
     nsIOpenWindowInfo* aOpenWindowInfo, uint32_t aChromeFlags,
-    bool aCalledFromJS, bool aWidthSpecified, nsIURI* aURI,
-    const nsAString& aName, const nsACString& aFeatures, bool aForceNoOpener,
-    bool aForceNoReferrer, nsDocShellLoadState* aLoadState, bool* aWindowIsNew,
+    bool aCalledFromJS, nsIURI* aURI, const nsAString& aName,
+    const nsACString& aFeatures, bool aForceNoOpener, bool aForceNoReferrer,
+    bool aIsPopupRequested, nsDocShellLoadState* aLoadState, bool* aWindowIsNew,
     dom::BrowsingContext** aReturn) {
   NS_ENSURE_ARG_POINTER(aOpenWindowInfo);
 
@@ -545,7 +549,7 @@ nsContentTreeOwner::ProvideWindow(
 #endif
 
   int32_t openLocation = nsWindowWatcher::GetWindowOpenLocation(
-      parent->GetDOMWindow(), aChromeFlags, aCalledFromJS, aWidthSpecified,
+      parent->GetDOMWindow(), aChromeFlags, aCalledFromJS,
       aOpenWindowInfo->GetIsForPrinting());
 
   if (openLocation != nsIBrowserDOMWindow::OPEN_NEWTAB &&

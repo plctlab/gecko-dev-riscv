@@ -22,11 +22,12 @@
 #include "frontend/SourceNotes.h"  // js::SrcNote
 #include "frontend/TypedIndex.h"   // js::frontend::TypedIndex
 
-#include "js/AllocPolicy.h"            // js::SystemAllocPolicy
-#include "js/TypeDecls.h"              // JSContext,jsbytecode
-#include "js/UniquePtr.h"              // js::UniquePtr
-#include "util/EnumFlags.h"            // js::EnumFlags
-#include "util/TrailingArray.h"        // js::TrailingArray
+#include "js/AllocPolicy.h"      // js::SystemAllocPolicy
+#include "js/TypeDecls.h"        // JSContext,jsbytecode
+#include "js/UniquePtr.h"        // js::UniquePtr
+#include "util/EnumFlags.h"      // js::EnumFlags
+#include "util/TrailingArray.h"  // js::TrailingArray
+#include "vm/ErrorContext.h"
 #include "vm/GeneratorAndAsyncKind.h"  // GeneratorKind, FunctionAsyncKind
 #include "vm/StencilEnums.h"  // js::{TryNoteKind,ImmutableScriptFlagsEnum,MutableScriptFlagsEnum}
 
@@ -205,6 +206,11 @@ struct SourceExtent {
     return SourceExtent(0, len, 0, len, lineno, column);
   }
 
+  // FunctionKey is an encoded position of a function within the source text
+  // that is unique and reproducible.
+  using FunctionKey = uint32_t;
+  static constexpr FunctionKey NullFunctionKey = 0;
+
   uint32_t sourceStart = 0;
   uint32_t sourceEnd = 0;
   uint32_t toStringStart = 0;
@@ -213,6 +219,14 @@ struct SourceExtent {
   // Line and column of |sourceStart_| position.
   uint32_t lineno = 1;  // 1-indexed.
   uint32_t column = 0;  // Count of Code Points
+
+  FunctionKey toFunctionKey() const {
+    // In eval("x=>1"), the arrow function will have a sourceStart of 0 which
+    // conflicts with the NullFunctionKey, so shift all keys by 1 instead.
+    auto result = sourceStart + 1;
+    MOZ_ASSERT(result != NullFunctionKey);
+    return result;
+  }
 };
 
 class ImmutableScriptFlags : public EnumFlags<ImmutableScriptFlagsEnum> {
@@ -290,6 +304,7 @@ class MutableScriptFlags : public EnumFlags<MutableScriptFlagsEnum> {
   _(ImmutableFlags, needsArgsObj, NeedsArgsObj)                               \
   _(ImmutableFlags, hasMappedArgsObj, HasMappedArgsObj)                       \
   _(ImmutableFlags, isInlinableLargeFunction, IsInlinableLargeFunction)       \
+  _(ImmutableFlags, functionHasNewTargetBinding, FunctionHasNewTargetBinding) \
                                                                               \
   GeneratorKind generatorKind() const {                                       \
     return isGenerator() ? GeneratorKind::Generator                           \
@@ -507,9 +522,20 @@ class alignas(uint32_t) ImmutableScriptData final : public TrailingArray {
       mozilla::Span<const uint32_t> resumeOffsets,
       mozilla::Span<const ScopeNote> scopeNotes,
       mozilla::Span<const TryNote> tryNotes);
+  static js::UniquePtr<ImmutableScriptData> new_(
+      ErrorContext* ec, uint32_t mainOffset, uint32_t nfixed, uint32_t nslots,
+      GCThingIndex bodyScopeIndex, uint32_t numICEntries, bool isFunction,
+      uint16_t funLength, mozilla::Span<const jsbytecode> code,
+      mozilla::Span<const SrcNote> notes,
+      mozilla::Span<const uint32_t> resumeOffsets,
+      mozilla::Span<const ScopeNote> scopeNotes,
+      mozilla::Span<const TryNote> tryNotes);
 
   static js::UniquePtr<ImmutableScriptData> new_(
       JSContext* cx, uint32_t codeLength, uint32_t noteLength,
+      uint32_t numResumeOffsets, uint32_t numScopeNotes, uint32_t numTryNotes);
+  static js::UniquePtr<ImmutableScriptData> new_(
+      ErrorContext* ec, uint32_t codeLength, uint32_t noteLength,
       uint32_t numResumeOffsets, uint32_t numScopeNotes, uint32_t numTryNotes);
 
   static js::UniquePtr<ImmutableScriptData> new_(JSContext* cx,
@@ -684,6 +710,8 @@ class SharedImmutableScriptData {
       delete;
 
   static bool shareScriptData(JSContext* cx,
+                              RefPtr<SharedImmutableScriptData>& sisd);
+  static bool shareScriptData(JSContext* cx, ErrorContext* ec,
                               RefPtr<SharedImmutableScriptData>& sisd);
 
   size_t immutableDataLength() const { return isd_->immutableData().Length(); }

@@ -4,8 +4,10 @@
 
 "use strict";
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PanelMultiView",
   "resource:///modules/PanelMultiView.jsm"
 );
@@ -199,6 +201,7 @@ class TabsPanel extends TabsListBase {
         if (!this.listenersRegistered && event.target == this.view) {
           this.panelMultiView = this.view.panelMultiView;
           this._populate(event);
+          this.gBrowser.translateTabContextMenu();
         }
         break;
       case "command":
@@ -225,7 +228,7 @@ class TabsPanel extends TabsListBase {
 
   _selectTab(tab) {
     super._selectTab(tab);
-    PanelMultiView.hidePopup(this.view.closest("panel"));
+    lazy.PanelMultiView.hidePopup(this.view.closest("panel"));
   }
 
   _setupListeners() {

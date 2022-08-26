@@ -10,9 +10,21 @@ import { Localized } from "./MSLocalized";
 // For default colorway , theme value passed to handle action
 // includes just variation.id e.g. Light, Dark, Automatic
 export const VariationsCircle = props => {
-  let { variations, colorway, colorwayText, activeTheme, setVariation } = props;
+  const {
+    activeTheme,
+    colorway,
+    colorwayText,
+    nextColor,
+    setVariation,
+    transition,
+    variations,
+  } = props;
   return (
-    <div className={`colorway-variations ${colorway}`}>
+    <div
+      className={`colorway-variations ${colorway} ${transition}`}
+      next={nextColor}
+    >
+      <div className="variations-disc" />
       <Localized text={colorwayText}>
         <div className="colorway-text" />
       </Localized>
@@ -29,7 +41,6 @@ export const VariationsCircle = props => {
                 name="variationSelect"
                 className="sr-only input"
                 onClick={setVariation}
-                data-l10n-attrs="aria-description"
               />
             </Localized>
             <Localized text={label}>
@@ -47,64 +58,79 @@ export const VariationsCircle = props => {
 };
 
 // Return colorway as "default" for default theme variations Automatic, Light, Dark
+// and Alpenglow theme which is not supported in Colorway picker
 // For themes other then default, theme names exist in
 // format colorway-variationId inside LIGHT_WEIGHT_THEMES in AboutWelcomeParent
-function computeColorWay(themeName, systemVariations) {
-  if (!themeName) {
-    return "default";
-  }
-
-  let colorway = null;
-  let defaultTheme = systemVariations.find(
-    variation => themeName === variation.id
-  );
-  if (defaultTheme) {
-    colorway = "default";
-  } else {
-    [colorway] = themeName.split("-");
-  }
-  return colorway;
-}
-
-export function computeColorWayStateFromActiveTheme(props) {
-  const { activeTheme } = props;
-  const { colorways, systemVariations } = props.content.tiles;
-  let colorwayId = computeColorWay(activeTheme, systemVariations);
-
-  return {
-    colorwayId,
-    colorwayText: colorways.find(colorway => colorway.id === colorwayId)?.label,
-  };
+export function computeColorWay(themeName, systemVariations) {
+  return !themeName ||
+    themeName === "alpenglow" ||
+    systemVariations.find(variation => themeName === variation.id)
+    ? "default"
+    : themeName.split("-")[0];
 }
 
 export function Colorways(props) {
   let {
     colorways,
-    defaultVariationId,
-    systemDefaultVariationId,
+    defaultVariationIndex,
     systemVariations,
     variations,
   } = props.content.tiles;
 
   // This sets a default value
-  const [{ colorwayId, colorwayText }, setState] = useState(
-    computeColorWayStateFromActiveTheme(props)
-  );
+  const activeId = computeColorWay(props.activeTheme, systemVariations);
+  const [colorwayId, setState] = useState(activeId);
 
   // Update state any time activeTheme changes.
   useEffect(() => {
-    setState(computeColorWayStateFromActiveTheme(props));
+    setState(computeColorWay(props.activeTheme, systemVariations));
   }, [props.activeTheme]);
 
-  // Called on click of Colorway circle that sets colorway state
-  // used to pass selected colorway to variation circle and
-  // call handleAction passing 'colorway-defaultvariationId' as event target value
+  // Allow "in" style to render to actually transition towards regular state.
+  const [transition, setTransition] = useState("");
+  useEffect(() => {
+    if (transition === "in") {
+      // Figure out the variation to activate based on the active theme. Check
+      // if it's a system variant then colorway variant falling back to default.
+      let variationIndex = systemVariations.findIndex(
+        ({ id }) => id === props.activeTheme
+      );
+      if (variationIndex < 0) {
+        variationIndex = variations.findIndex(({ id }) =>
+          props.activeTheme.includes(id)
+        );
+      }
+      if (variationIndex < 0) {
+        // This content config default assumes it's been selected correctly to
+        // index into both `systemVariations` or `variations` (also configured).
+        variationIndex = defaultVariationIndex;
+      }
+
+      // Simulate a color click event now that we're ready to transition in.
+      props.handleAction({
+        currentTarget: {
+          value:
+            colorwayId === "default"
+              ? systemVariations[variationIndex].id
+              : `${colorwayId}-${variations[variationIndex].id}`,
+        },
+      });
+
+      // Trigger the transition from "in" to normal.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => setTransition(""))
+      );
+    }
+  }, [transition]);
+
+  // Called on click of Colorway circle that sets the next colorway state and
+  // starts transitions if not already started.
   function handleColorwayClick(event) {
-    setState({
-      colorwayId: event.currentTarget.dataset.colorway,
-      colorwayText: JSON.stringify(event.currentTarget.dataset.label),
-    });
-    props.handleAction(event);
+    setState(event.currentTarget.dataset.colorway);
+    if (transition !== "out") {
+      setTransition("out");
+      setTimeout(() => setTransition("in"), 500);
+    }
   }
 
   return (
@@ -129,36 +155,33 @@ export function Colorways(props) {
                 <Localized
                   text={typeof description === "object" ? description : {}}
                 >
-                  <input
-                    type="radio"
-                    data-colorway={id}
-                    data-label={JSON.stringify(label)}
-                    value={
-                      id === "default"
-                        ? systemDefaultVariationId
-                        : `${id}-${defaultVariationId}`
-                    }
-                    name="theme"
-                    checked={computeColorWay(
-                      props.activeTheme,
-                      systemVariations
-                    )?.includes(id)}
-                    className="sr-only input"
-                    onClick={handleColorwayClick}
-                    data-l10n-attrs="aria-description"
+                  <span
+                    className="sr-only colorway label"
+                    id={`${id}-label`}
                     data-l10n-args={JSON.stringify({
                       colorwayName: label,
                     })}
                   />
                 </Localized>
+                <Localized
+                  text={typeof description === "object" ? description : {}}
+                >
+                  <input
+                    type="radio"
+                    data-colorway={id}
+                    name="theme"
+                    checked={colorwayId === id}
+                    className="sr-only input"
+                    onClick={handleColorwayClick}
+                    data-l10n-args={JSON.stringify({
+                      colorwayName: label,
+                    })}
+                    aria-labelledby={`${id}-label`}
+                  />
+                </Localized>
                 <div
                   className={`icon colorway ${
-                    computeColorWay(
-                      props.activeTheme,
-                      systemVariations
-                    )?.includes(id)
-                      ? " selected"
-                      : ""
+                    colorwayId === id ? "selected" : ""
                   } ${id}`}
                 />
               </label>
@@ -167,9 +190,13 @@ export function Colorways(props) {
         </fieldset>
       </div>
       <VariationsCircle
-        variations={colorwayId === "default" ? systemVariations : variations}
-        colorway={colorwayId}
-        colorwayText={colorwayText}
+        nextColor={colorwayId}
+        transition={transition}
+        variations={activeId === "default" ? systemVariations : variations}
+        colorway={activeId}
+        colorwayText={
+          colorways.find(colorway => colorway.id === activeId)?.label
+        }
         setVariation={props.handleAction}
         activeTheme={props.activeTheme}
       />

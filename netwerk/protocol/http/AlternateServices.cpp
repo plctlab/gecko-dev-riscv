@@ -23,6 +23,7 @@
 #include "mozilla/dom/PContent.h"
 #include "mozilla/SyncRunnable.h"
 #include "mozilla/net/AltSvcTransactionParent.h"
+#include "mozilla/net/AltSvcTransactionChild.h"
 
 /* RFC 7838 Alternative Services
    http://httpwg.org/http-extensions/opsec.html
@@ -158,11 +159,10 @@ void AltSvcMapping::ProcessHeader(
       continue;
     }
 
-    uint32_t spdyIndex;
     SpdyInformation* spdyInfo = gHttpHandler->SpdyInfo();
-    if (!(NS_SUCCEEDED(spdyInfo->GetNPNIndex(npnToken, &spdyIndex)) &&
-          spdyInfo->ProtocolEnabled(spdyIndex)) &&
-        !(isHttp3 && gHttpHandler->IsHttp3Enabled() &&
+    if (!(npnToken.Equals(spdyInfo->VersionString) &&
+          StaticPrefs::network_http_http2_enabled()) &&
+        !(isHttp3 && StaticPrefs::network_http_http3_enable() &&
           !gHttpHandler->IsHttp3Excluded(hostname.IsEmpty() ? originHost
                                                             : hostname))) {
       LOG(("Alt Svc unknown protocol %s, ignoring", npnToken.get()));
@@ -505,7 +505,7 @@ template <class Validator>
 AltSvcTransaction<Validator>::AltSvcTransaction(
     nsHttpConnectionInfo* ci, nsIInterfaceRequestor* callbacks, uint32_t caps,
     Validator* aValidator, bool aIsHttp3)
-    : SpeculativeTransaction(ci, callbacks, caps & ~NS_HTTP_ALLOW_KEEPALIVE),
+    : SpeculativeTransaction(ci, callbacks, caps),
       mValidator(aValidator),
       mIsHttp3(aIsHttp3),
       mRunning(true),
@@ -514,6 +514,8 @@ AltSvcTransaction<Validator>::AltSvcTransaction(
       mValidatedResult(false) {
   MOZ_ASSERT_IF(nsIOService::UseSocketProcess(), XRE_IsSocketProcess());
   MOZ_ASSERT_IF(!nsIOService::UseSocketProcess(), XRE_IsParentProcess());
+  // We don't want to let this transaction use consistent connection.
+  mCaps &= ~NS_HTTP_ALLOW_KEEPALIVE;
 }
 
 template <class Validator>
@@ -746,11 +748,10 @@ class WellKnownChecker {
 
     if (NS_FAILED(gHttpHandler->NewChannelId(channelId)) ||
         NS_FAILED(chan->Init(uri, caps, nullptr, 0, nullptr, channelId,
-                             contentPolicyType)) ||
+                             contentPolicyType, loadInfo)) ||
         NS_FAILED(chan->SetAllowAltSvc(false)) ||
         NS_FAILED(chan->SetRedirectMode(
             nsIHttpChannelInternal::REDIRECT_MODE_ERROR)) ||
-        NS_FAILED(chan->SetLoadInfo(loadInfo)) ||
         NS_FAILED(chan->GetLoadFlags(&flags))) {
       return NS_ERROR_FAILURE;
     }
@@ -833,8 +834,8 @@ TransactionObserver::OnDataAvailable(nsIRequest* aRequest,
             aStream->Read(handle.Elements() + oldLen, aCount, &amtRead))) {
       MOZ_ASSERT(oldLen + amtRead <= newLen);
       handle.Finish(oldLen + amtRead, false);
-      LOG(("TransactionObserver onDataAvailable %p read %d of .wk [%d]\n", this,
-           amtRead, mWKResponse.Length()));
+      LOG(("TransactionObserver onDataAvailable %p read %d of .wk [%zd]\n",
+           this, amtRead, mWKResponse.Length()));
     } else {
       LOG(("TransactionObserver onDataAvailable %p read error\n", this));
     }
@@ -934,7 +935,7 @@ already_AddRefed<AltSvcMapping> AltSvcCache::LookupMapping(
   }
 
   if (rv->IsHttp3() &&
-      (!gHttpHandler->IsHttp3Enabled() ||
+      (!StaticPrefs::network_http_http3_enable() ||
        !gHttpHandler->IsHttp3VersionSupported(rv->NPNToken()) ||
        gHttpHandler->IsHttp3Excluded(rv->AlternateHost()))) {
     // If Http3 is disabled or the version not supported anymore, remove the
@@ -1312,6 +1313,8 @@ AltSvcOverride::GetAllow1918(bool* allow) {
   *allow = true;
   return NS_OK;
 }
+
+template class AltSvcTransaction<AltSvcTransactionChild>;
 
 NS_IMPL_ISUPPORTS(AltSvcOverride, nsIInterfaceRequestor,
                   nsISpeculativeConnectionOverrider)

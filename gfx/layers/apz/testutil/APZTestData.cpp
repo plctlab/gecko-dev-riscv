@@ -51,6 +51,8 @@ struct APZTestDataToJSConverter {
                ConvertBucket);
     ConvertList(aFrom.mHitResults, aOutTo.mHitResults.Construct(),
                 ConvertHitResult);
+    ConvertList(aFrom.mSampledResults, aOutTo.mSampledResults.Construct(),
+                ConvertSampledResult);
     ConvertMap(aFrom.mAdditionalData, aOutTo.mAdditionalData.Construct(),
                ConvertAdditionalDataEntry);
   }
@@ -100,9 +102,18 @@ struct APZTestDataToJSConverter {
     aOutHitResult.mLayersId.Construct() = aResult.layersId.mId;
     aOutHitResult.mScrollId.Construct() = aResult.scrollId;
   }
+
+  static void ConvertSampledResult(const APZTestData::SampledResult& aResult,
+                                   dom::APZSampledResult& aOutSampledResult) {
+    aOutSampledResult.mScrollOffsetX.Construct() = aResult.scrollOffset.x;
+    aOutSampledResult.mScrollOffsetY.Construct() = aResult.scrollOffset.y;
+    aOutSampledResult.mLayersId.Construct() = aResult.layersId.mId;
+    aOutSampledResult.mScrollId.Construct() = aResult.scrollId;
+    aOutSampledResult.mSampledTimeStamp.Construct() = aResult.sampledTimeStamp;
+  }
 };
 
-bool APZTestData::ToJS(JS::MutableHandleValue aOutValue,
+bool APZTestData::ToJS(JS::MutableHandle<JS::Value> aOutValue,
                        JSContext* aContext) const {
   dom::APZTestData result;
   APZTestDataToJSConverter::ConvertAPZTestData(*this, result);

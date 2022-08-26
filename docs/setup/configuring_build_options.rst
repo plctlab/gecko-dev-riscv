@@ -196,7 +196,7 @@ There are many options recognized by the configure script which are
 special-purpose options intended for embedders or other special
 situations, and should not be used to build the full suite/XUL
 applications. The full list of options can be obtained by running
-``./configure --help``.
+``./mach configure -- --help``.
 
 .. warning::
 
@@ -290,7 +290,7 @@ Localization
 ^^^^^^^^^^^^
 
 ``mk_add_options MOZ_CO_LOCALES=ISOcode``
-   TBD. 
+   TBD.
 ``ac_add_options --enable-ui-locale=ISOcode``
    TBD.
 ``ac_add_options --with-l10n-base=/path/to/base/dir``

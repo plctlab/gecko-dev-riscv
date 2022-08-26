@@ -89,7 +89,9 @@ class FilterInstance {
    *   frame space (i.e. relative to its origin, the top-left corner of its
    *   border box).
    */
-  static void PaintFilteredFrame(nsIFrame* aFilteredFrame, gfxContext* aCtx,
+  static void PaintFilteredFrame(nsIFrame* aFilteredFrame,
+                                 Span<const StyleFilter> aFilterChain,
+                                 gfxContext* aCtx,
                                  const SVGFilterPaintCallback& aPaintCallback,
                                  const nsRegion* aDirtyArea,
                                  imgDrawingParams& aImgParams,
@@ -127,12 +129,15 @@ class FilterInstance {
 
   /**
    * Try to build WebRender filters for a frame if the filters applied to it are
-   * supported.
+   * supported. aInitialized is set to true if the filter has been initialized
+   * and false otherwise (e.g. a bad url). If aInitialized is false the filter
+   * the filter contents should not be drawn.
    */
   static bool BuildWebRenderFilters(
       nsIFrame* aFilteredFrame,
       mozilla::Span<const mozilla::StyleFilter> aFilters,
-      WrFiltersHolder& aWrFilters, mozilla::Maybe<nsRect>& aPostFilterClip);
+      WrFiltersHolder& aWrFilters, mozilla::Maybe<nsRect>& aPostFilterClip,
+      bool& aInitialized);
 
  private:
   /**
@@ -173,7 +178,8 @@ class FilterInstance {
   static bool BuildWebRenderFiltersImpl(
       nsIFrame* aFilteredFrame,
       mozilla::Span<const mozilla::StyleFilter> aFilters,
-      WrFiltersHolder& aWrFilters, mozilla::Maybe<nsRect>& aPostFilterClip);
+      WrFiltersHolder& aWrFilters, mozilla::Maybe<nsRect>& aPostFilterClip,
+      bool& aInitialized);
 
   /**
    * Returns true if the filter instance was created successfully.
@@ -363,8 +369,8 @@ class FilterInstance {
   /**
    * The scale factors between user space and filter space.
    */
-  gfxSize mUserSpaceToFilterSpaceScale;
-  gfxSize mFilterSpaceToUserSpaceScale;
+  gfx::MatrixScalesDouble mUserSpaceToFilterSpaceScale;
+  gfx::MatrixScalesDouble mFilterSpaceToUserSpaceScale;
 
   /**
    * Pre-filter paint bounds of the element that is being filtered, in filter

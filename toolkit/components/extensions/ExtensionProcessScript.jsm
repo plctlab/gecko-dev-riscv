@@ -12,28 +12,29 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionProcessScript", "ExtensionAPIRequestHandler"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ExtensionChild: "resource://gre/modules/ExtensionChild.jsm",
   ExtensionCommon: "resource://gre/modules/ExtensionCommon.jsm",
   ExtensionContent: "resource://gre/modules/ExtensionContent.jsm",
   ExtensionPageChild: "resource://gre/modules/ExtensionPageChild.jsm",
+  ExtensionWorkerChild: "resource://gre/modules/ExtensionWorkerChild.jsm",
+  Schemas: "resource://gre/modules/Schemas.jsm",
 });
 
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
 
-XPCOMUtils.defineLazyGetter(this, "console", () =>
-  ExtensionCommon.getConsole()
-);
-
-const { DefaultWeakMap, getInnerWindowID } = ExtensionUtils;
+const { DefaultWeakMap } = ExtensionUtils;
 
 const { sharedData } = Services.cpmm;
 
@@ -44,13 +45,13 @@ function getData(extension, key = "") {
 // We need to avoid touching Services.appinfo here in order to prevent
 // the wrong version from being cached during xpcshell test startup.
 // eslint-disable-next-line mozilla/use-services
-XPCOMUtils.defineLazyGetter(this, "isContentProcess", () => {
+XPCOMUtils.defineLazyGetter(lazy, "isContentProcess", () => {
   return Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT;
 });
 
-XPCOMUtils.defineLazyGetter(this, "isContentScriptProcess", () => {
+XPCOMUtils.defineLazyGetter(lazy, "isContentScriptProcess", () => {
   return (
-    isContentProcess ||
+    lazy.isContentProcess ||
     !WebExtensionPolicy.useRemoteWebExtensions ||
     // Thunderbird still loads some content in the parent process.
     AppConstants.MOZ_APP_NAME == "thunderbird"
@@ -58,72 +59,28 @@ XPCOMUtils.defineLazyGetter(this, "isContentScriptProcess", () => {
 });
 
 var extensions = new DefaultWeakMap(policy => {
-  return new ExtensionChild.BrowserExtensionContent(policy);
+  return new lazy.ExtensionChild.BrowserExtensionContent(policy);
 });
 
 var pendingExtensions = new Map();
 
 var ExtensionManager;
 
-class ExtensionGlobal {
-  constructor(global) {
-    this.global = global;
-    this.global.addMessageListener("Extension:SetFrameData", this);
-
-    this.frameData = null;
-  }
-
-  get messageFilterStrict() {
-    return {
-      innerWindowID: getInnerWindowID(this.global.content),
-    };
-  }
-
-  getFrameData(force = false) {
-    if (!this.frameData && force) {
-      this.frameData = this.global.sendSyncMessage(
-        "Extension:GetTabAndWindowId"
-      )[0];
-    }
-    return this.frameData;
-  }
-
-  receiveMessage({ target, messageName, recipient, data, name }) {
-    switch (name) {
-      case "Extension:SetFrameData":
-        if (this.frameData) {
-          Object.assign(this.frameData, data);
-        } else {
-          this.frameData = data;
-        }
-        if (data.viewType && WebExtensionPolicy.isExtensionProcess) {
-          ExtensionPageChild.expectViewLoad(this.global, data.viewType);
-        }
-    }
-  }
-}
-
 ExtensionManager = {
-  // WeakMap<WebExtensionPolicy, Map<string, WebExtensionContentScript>>
+  // WeakMap<WebExtensionPolicy, Map<number, WebExtensionContentScript>>
   registeredContentScripts: new DefaultWeakMap(policy => new Map()),
-
-  globals: new WeakMap(),
 
   init() {
     Services.cpmm.addMessageListener("Extension:Startup", this);
     Services.cpmm.addMessageListener("Extension:Shutdown", this);
     Services.cpmm.addMessageListener("Extension:FlushJarCache", this);
-    Services.cpmm.addMessageListener("Extension:RegisterContentScript", this);
+    Services.cpmm.addMessageListener("Extension:RegisterContentScripts", this);
     Services.cpmm.addMessageListener(
       "Extension:UnregisterContentScripts",
       this
     );
-
-    // eslint-disable-next-line mozilla/balanced-listeners
-    Services.obs.addObserver(
-      global => this.globals.set(global, new ExtensionGlobal(global)),
-      "tab-content-frameloader-created"
-    );
+    Services.cpmm.addMessageListener("Extension:UpdateContentScripts", this);
+    Services.cpmm.addMessageListener("Extension:UpdatePermissions", this);
 
     this.updateStubExtensions();
 
@@ -279,7 +236,7 @@ ExtensionManager = {
               extensions.get(policy).shutdown();
             }
 
-            if (isContentProcess) {
+            if (lazy.isContentProcess) {
               policy.active = false;
             }
           }
@@ -290,38 +247,37 @@ ExtensionManager = {
           ExtensionUtils.flushJarCache(data.path);
           break;
 
-        case "Extension:RegisterContentScript": {
+        case "Extension:RegisterContentScripts": {
           let policy = WebExtensionPolicy.getByID(data.id);
 
           if (policy) {
             const registeredContentScripts = this.registeredContentScripts.get(
               policy
             );
-            const type =
-              "userScriptOptions" in data.options
-                ? "userScript"
-                : "contentScript";
 
-            if (registeredContentScripts.has(data.scriptId)) {
-              Cu.reportError(
-                new Error(
-                  `Registering ${type} ${data.scriptId} on ${data.id} more than once`
-                )
-              );
-            } else {
-              const script = new WebExtensionContentScript(
-                policy,
-                data.options
-              );
+            for (const { scriptId, options } of data.scripts) {
+              const type =
+                "userScriptOptions" in options ? "userScript" : "contentScript";
 
-              // If the script is a userScript, add the additional userScriptOptions
-              // property to the WebExtensionContentScript instance.
-              if (type === "userScript") {
-                script.userScriptOptions = data.options.userScriptOptions;
+              if (registeredContentScripts.has(scriptId)) {
+                Cu.reportError(
+                  new Error(
+                    `Registering ${type} ${scriptId} on ${data.id} more than once`
+                  )
+                );
+              } else {
+                const script = new WebExtensionContentScript(policy, options);
+
+                // If the script is a userScript, add the additional
+                // userScriptOptions property to the WebExtensionContentScript
+                // instance.
+                if (type === "userScript") {
+                  script.userScriptOptions = options.userScriptOptions;
+                }
+
+                policy.registerContentScript(script);
+                registeredContentScripts.set(scriptId, script);
               }
-
-              policy.registerContentScript(script);
-              registeredContentScripts.set(data.scriptId, script);
             }
           }
           break;
@@ -345,6 +301,59 @@ ExtensionManager = {
           }
           break;
         }
+
+        case "Extension:UpdateContentScripts": {
+          let policy = WebExtensionPolicy.getByID(data.id);
+
+          if (policy) {
+            const registeredContentScripts = this.registeredContentScripts.get(
+              policy
+            );
+
+            for (const { scriptId, options } of data.scripts) {
+              const oldScript = registeredContentScripts.get(scriptId);
+              const newScript = new WebExtensionContentScript(policy, options);
+
+              policy.unregisterContentScript(oldScript);
+              policy.registerContentScript(newScript);
+              registeredContentScripts.set(scriptId, newScript);
+            }
+          }
+          break;
+        }
+
+        case "Extension:UpdatePermissions": {
+          let policy = WebExtensionPolicy.getByID(data.id);
+          if (!policy) {
+            break;
+          }
+          // In the parent process, Extension.jsm updates the policy.
+          if (lazy.isContentProcess) {
+            lazy.ExtensionCommon.updateAllowedOrigins(
+              policy,
+              data.origins,
+              data.add
+            );
+
+            if (data.permissions.length) {
+              let perms = new Set(policy.permissions);
+              for (let perm of data.permissions) {
+                if (data.add) {
+                  perms.add(perm);
+                } else {
+                  perms.delete(perm);
+                }
+              }
+              policy.permissions = perms;
+            }
+          }
+
+          if (data.permissions.length && extensions.has(policy)) {
+            // Notify ChildApiManager of permission changes.
+            extensions.get(policy).emit("update-permissions");
+          }
+          break;
+        }
       }
     } catch (e) {
       Cu.reportError(e);
@@ -356,11 +365,6 @@ ExtensionManager = {
 var ExtensionProcessScript = {
   extensions,
 
-  getFrameData(global, force) {
-    let extGlobal = ExtensionManager.globals.get(global);
-    return extGlobal && extGlobal.getFrameData(force);
-  },
-
   initExtension(extension) {
     return ExtensionManager.initExtensionPolicy(extension);
   },
@@ -368,9 +372,9 @@ var ExtensionProcessScript = {
   initExtensionDocument(policy, doc, privileged) {
     let extension = extensions.get(policy);
     if (privileged) {
-      ExtensionPageChild.initExtensionContext(extension, doc.defaultView);
+      lazy.ExtensionPageChild.initExtensionContext(extension, doc.defaultView);
     } else {
-      ExtensionContent.initExtensionContext(extension, doc.defaultView);
+      lazy.ExtensionContent.initExtensionContext(extension, doc.defaultView);
     }
   },
 
@@ -382,25 +386,136 @@ var ExtensionProcessScript = {
   },
 
   preloadContentScript(contentScript) {
-    if (isContentScriptProcess) {
-      ExtensionContent.contentScripts.get(contentScript).preload();
+    if (lazy.isContentScriptProcess) {
+      lazy.ExtensionContent.contentScripts.get(contentScript).preload();
     }
   },
 
   loadContentScript(contentScript, window) {
-    return ExtensionContent.contentScripts
+    return lazy.ExtensionContent.contentScripts
       .get(contentScript)
       .injectInto(window);
   },
 };
 
 var ExtensionAPIRequestHandler = {
+  initExtensionWorker(policy, serviceWorkerInfo) {
+    let extension = extensions.get(policy);
+
+    if (!extension) {
+      throw new Error(`Extension instance not found for addon ${policy.id}`);
+    }
+
+    lazy.ExtensionWorkerChild.initExtensionWorkerContext(
+      extension,
+      serviceWorkerInfo
+    );
+  },
+
+  onExtensionWorkerLoaded(policy, serviceWorkerDescriptorId) {
+    lazy.ExtensionWorkerChild.notifyExtensionWorkerContextLoaded(
+      serviceWorkerDescriptorId,
+      policy
+    );
+  },
+
+  onExtensionWorkerDestroyed(policy, serviceWorkerDescriptorId) {
+    lazy.ExtensionWorkerChild.destroyExtensionWorkerContext(
+      serviceWorkerDescriptorId
+    );
+  },
+
   handleAPIRequest(policy, request) {
-    // TODO: to be actually implemented in the "part3" patches that follows,
-    // this patch does only contain a placeholder method, which is
-    // replaced with a mock in the set of unit tests defined in this
-    // patch.
-    throw new Error("Not implemented");
+    let context;
+
+    try {
+      let extension = extensions.get(policy);
+
+      if (!extension) {
+        throw new Error(`Extension instance not found for addon ${policy.id}`);
+      }
+
+      context = this.getExtensionContextForAPIRequest({
+        extension,
+        request,
+      });
+
+      if (!context) {
+        throw new Error(
+          `Extension context not found for API request: ${request}`
+        );
+      }
+
+      // Add a property to the request object for the normalizedArgs.
+      request.normalizedArgs = this.validateAndNormalizeRequestArgs({
+        context,
+        request,
+      });
+
+      return context.childManager.handleWebIDLAPIRequest(request);
+    } catch (error) {
+      // Propagate errors related to parameter validation when the error object
+      // belongs to the extension context that initiated the call.
+      if (context?.Error && error instanceof context.Error) {
+        return {
+          type: Ci.mozIExtensionAPIRequestResult.EXTENSION_ERROR,
+          value: error,
+        };
+      }
+      // Do not propagate errors that are not meant to be accessible to the
+      // extension, report it to the console and just throw the generic
+      // "An unexpected error occurred".
+      Cu.reportError(error);
+      return {
+        type: Ci.mozIExtensionAPIRequestResult.EXTENSION_ERROR,
+        value: new Error("An unexpected error occurred"),
+      };
+    }
+  },
+
+  getExtensionContextForAPIRequest({ extension, request }) {
+    if (request.serviceWorkerInfo) {
+      return lazy.ExtensionWorkerChild.getExtensionWorkerContext(
+        extension,
+        request.serviceWorkerInfo
+      );
+    }
+
+    return null;
+  },
+
+  validateAndNormalizeRequestArgs({ context, request }) {
+    if (
+      !lazy.Schemas.checkPermissions(request.apiNamespace, context.extension)
+    ) {
+      throw new context.Error(
+        `Not enough privileges to access ${request.apiNamespace}`
+      );
+    }
+    if (request.requestType === "getProperty") {
+      return [];
+    }
+
+    if (request.apiObjectType) {
+      // skip parameter validation on request targeting an api object,
+      // even the JS-based implementation of the API objects are not
+      // going through the same kind of Schema based validation that
+      // the API namespaces methods and events go through.
+      //
+      // TODO(Bug 1728535): validate and normalize also this request arguments
+      // as a low priority follow up.
+      return request.args;
+    }
+
+    const { apiNamespace, apiName, args } = request;
+    // Validate and normalize parameters, set the normalized args on the
+    // mozIExtensionAPIRequest normalizedArgs property.
+    return lazy.Schemas.checkParameters(
+      context.childManager,
+      apiNamespace,
+      apiName,
+      args
+    );
   },
 };
 

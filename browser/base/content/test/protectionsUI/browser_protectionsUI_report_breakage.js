@@ -23,7 +23,7 @@ let { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
 
-add_task(async function setup() {
+add_setup(async function() {
   await UrlClassifierTestUtils.addTestTrackers();
 
   registerCleanupFunction(() => {
@@ -327,7 +327,6 @@ async function testReportBreakageSubmit(url, tags, error, hasException) {
         "network.http.referer.defaultPolicy",
         "network.http.referer.defaultPolicy.pbmode",
         "network.cookie.cookieBehavior",
-        "network.cookie.lifetimePolicy",
         "privacy.annotate_channels.strict_list.enabled",
         "privacy.restrict3rdpartystorage.expiration",
         "privacy.trackingprotection.fingerprinting.enabled",

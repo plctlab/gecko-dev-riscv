@@ -413,23 +413,15 @@ class StoreBuffer {
     } Hasher;
   };
 
-  // The GC runs tasks that may access the storebuffer in parallel and so must
-  // take a lock. The mutator may only access the storebuffer from the main
-  // thread.
-  inline void CheckAccess() const {
 #ifdef DEBUG
-    if (JS::RuntimeHeapIsBusy()) {
-      MOZ_ASSERT(!CurrentThreadIsGCMarking());
-      lock_.assertOwnedByCurrentThread();
-    } else {
-      MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
-    }
+  void checkAccess() const;
+#else
+  void checkAccess() const {}
 #endif
-  }
 
   template <typename Buffer, typename Edge>
   void unput(Buffer& buffer, const Edge& edge) {
-    CheckAccess();
+    checkAccess();
     if (!isEnabled()) {
       return;
     }
@@ -439,7 +431,7 @@ class StoreBuffer {
 
   template <typename Buffer, typename Edge>
   void put(Buffer& buffer, const Edge& edge) {
-    CheckAccess();
+    checkAccess();
     if (!isEnabled()) {
       return;
     }
@@ -449,7 +441,7 @@ class StoreBuffer {
     }
   }
 
-  Mutex lock_;
+  Mutex lock_ MOZ_UNANNOTATED;
 
   MonoTypeBuffer<ValueEdge> bufferVal;
   MonoTypeBuffer<StringPtrEdge> bufStrCell;
@@ -667,7 +659,7 @@ MOZ_ALWAYS_INLINE void PostWriteBarrier(T** vp, T* prev, T* next) {
     return;
   }
 
-  MOZ_ASSERT(!IsInsideNursery(next));
+  MOZ_ASSERT_IF(next, !IsInsideNursery(next));
 }
 
 // Used when we don't have a specific edge to put in the store buffer.

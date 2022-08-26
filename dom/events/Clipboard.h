@@ -8,12 +8,14 @@
 #define mozilla_dom_Clipboard_h_
 
 #include "nsString.h"
+#include "nsStringFwd.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/Logging.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/DataTransfer.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 enum ClipboardReadType {
   eRead,
@@ -44,6 +46,9 @@ class Clipboard : public DOMEventTargetHelper {
                                       nsIPrincipal& aSubjectPrincipal,
                                       ErrorResult& aRv);
 
+  // See documentation of the corresponding .webidl file.
+  void OnUserReactedToPasteMenuPopup(bool aAllowed);
+
   static LogModule* GetClipboardLog();
 
   // Check if the Clipboard.readText API should be enabled for this context.
@@ -63,13 +68,64 @@ class Clipboard : public DOMEventTargetHelper {
   //  or reading from the clipboard.
   static bool IsTestingPrefEnabled();
 
+  static bool IsTestingPrefEnabledOrHasReadPermission(
+      nsIPrincipal& aSubjectPrincipal);
+
+  // @return the remaining work to fill aPromise.
+  already_AddRefed<nsIRunnable> CheckReadTextPermissionAndHandleRequest(
+      Promise& aPromise, nsIPrincipal& aSubjectPrincipal);
+
+  // @return the remaining work to fill aPromise.
+  already_AddRefed<nsIRunnable> HandleReadTextRequestWhichRequiresPasteButton(
+      Promise& aPromise);
+
   already_AddRefed<Promise> ReadHelper(nsIPrincipal& aSubjectPrincipal,
                                        ClipboardReadType aClipboardReadType,
                                        ErrorResult& aRv);
 
   ~Clipboard();
+
+  class ReadTextRequest final {
+   public:
+    explicit ReadTextRequest(Promise& aPromise) : mPromise{&aPromise} {}
+
+    // Clears the request too.
+    already_AddRefed<nsIRunnable> Answer();
+
+    void MaybeRejectWithNotAllowedError(const nsACString& aMessage);
+
+   private:
+    // Not cycle-collected, because it's nulled when the request is answered or
+    // destructed.
+    RefPtr<Promise> mPromise;
+  };
+
+  AutoTArray<UniquePtr<ReadTextRequest>, 1> mReadTextRequests;
+
+  class TransientUserPasteState final {
+   public:
+    enum class Value {
+      Initial,
+      WaitingForUserReactionToPasteMenuPopup,
+      TransientlyForbiddenByUser,
+      TransientlyAllowedByUser,
+    };
+
+    // @param aWindowContext requires valid transient user gesture activation.
+    Value RefreshAndGet(WindowContext& aWindowContext);
+
+    void OnStartWaitingForUserReactionToPasteMenuPopup(
+        const TimeStamp& aUserGestureStart);
+    void OnUserReactedToPasteMenuPopup(bool aAllowed);
+
+   private:
+    TimeStamp mUserGestureStart;
+
+    Value mValue = Value::Initial;
+  };
+
+  TransientUserPasteState mTransientUserPasteState;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 #endif  // mozilla_dom_Clipboard_h_

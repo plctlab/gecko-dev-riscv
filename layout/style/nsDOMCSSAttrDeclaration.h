@@ -11,6 +11,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/DocGroup.h"
+#include "mozilla/ServoTypes.h"
 #include "nsDOMCSSDeclaration.h"
 
 struct RawServoUnlockedDeclarationBlock;
@@ -59,7 +60,7 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
                         nsIPrincipal* aSubjectPrincipal,
                         mozilla::ErrorResult& aRv) override;
 
-  static void MutationClosureFunction(void* aData);
+  static void MutationClosureFunction(void* aData, nsCSSPropertyID);
 
   void GetPropertyChangeClosure(
       mozilla::DeclarationBlockMutationClosure* aClosure,
@@ -67,7 +68,7 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
     if (!mIsSMILOverride) {
       aClosure->function = MutationClosureFunction;
       aClosure->data = aClosureData;
-      aClosureData->mClosure = MutationClosureFunction;
+      aClosureData->mShouldBeCalled = true;
       aClosureData->mElement = mElement;
     }
   }

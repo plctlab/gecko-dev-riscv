@@ -9,7 +9,6 @@ var EXPORTED_SYMBOLS = ["MockRegistrar"];
 const Cm = Components.manager;
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 var logger = Log.repository.getLogger("MockRegistrar");
 
 var MockRegistrar = Object.freeze({
@@ -35,41 +34,45 @@ var MockRegistrar = Object.freeze({
    * @return           The CID of the mock.
    */
   register(contractID, mock, args) {
-    let originalCID = this._originalCIDs.get(contractID);
-    if (!originalCID) {
-      originalCID = this.registrar.contractIDToCID(contractID);
-      this._originalCIDs.set(contractID, originalCID);
-    }
+    let originalCID;
+    let originalFactory;
+    try {
+      originalCID = this._originalCIDs.get(contractID);
+      if (!originalCID) {
+        originalCID = this.registrar.contractIDToCID(contractID);
+        this._originalCIDs.set(contractID, originalCID);
+      }
 
-    let originalFactory = Cm.getClassObject(originalCID, Ci.nsIFactory);
+      originalFactory = Cm.getClassObject(originalCID, Ci.nsIFactory);
+    } catch (e) {
+      // There's no original factory. Ignore and just register the new
+      // one.
+    }
 
     let cid = Services.uuid.generateUUID();
 
     let factory = {
-      createInstance(outer, iid) {
-        if (outer) {
-          throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-        }
-
+      createInstance(iid) {
         let wrappedMock;
         if (mock.prototype && mock.prototype.constructor) {
           wrappedMock = Object.create(mock.prototype);
           mock.apply(wrappedMock, args);
+        } else if (typeof mock == "function") {
+          wrappedMock = mock();
         } else {
           wrappedMock = mock;
         }
 
-        try {
-          let genuine = originalFactory.createInstance(outer, iid);
-          wrappedMock._genuine = genuine;
-        } catch (ex) {
-          logger.info("Creating original instance failed", ex);
+        if (originalFactory) {
+          try {
+            let genuine = originalFactory.createInstance(iid);
+            wrappedMock._genuine = genuine;
+          } catch (ex) {
+            logger.info("Creating original instance failed", ex);
+          }
         }
 
         return wrappedMock.QueryInterface(iid);
-      },
-      lockFactory(lock) {
-        throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
       },
       QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
     };
@@ -88,6 +91,13 @@ var MockRegistrar = Object.freeze({
     });
 
     return cid;
+  },
+
+  registerJSM(contractID, jsm, symbol) {
+    return this.register(contractID, () => {
+      let exports = ChromeUtils.import(jsm);
+      return new exports[symbol]();
+    });
   },
 
   /**

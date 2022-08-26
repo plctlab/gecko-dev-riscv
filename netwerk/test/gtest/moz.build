@@ -10,12 +10,14 @@ UNIFIED_SOURCES += [
     "TestBufferedInputStream.cpp",
     "TestCommon.cpp",
     "TestCookie.cpp",
+    "TestDNSPacket.cpp",
     "TestHeaders.cpp",
     "TestHttpAuthUtils.cpp",
     "TestHttpChannel.cpp",
     "TestHttpResponseHead.cpp",
     "TestInputStreamTransport.cpp",
     "TestIsValidIp.cpp",
+    "TestLinkHeader.cpp",
     "TestMIMEInputStream.cpp",
     "TestMozURL.cpp",
     "TestProtocolProxyService.cpp",
@@ -31,14 +33,10 @@ if CONFIG["OS_TARGET"] == "WINNT":
         "TestNamedPipeService.cpp",
     ]
 
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-shadow"]
-
 # skip the test on windows10-aarch64
 if not (CONFIG["OS_TARGET"] == "WINNT" and CONFIG["CPU_ARCH"] == "aarch64"):
     UNIFIED_SOURCES += [
         "TestPACMan.cpp",
-        "TestPartiallySeekableInputStream.cpp",
         "TestURIMutator.cpp",
     ]
 
@@ -78,5 +76,3 @@ include("/ipc/chromium/chromium-config.mozbuild")
 FINAL_LIBRARY = "xul-gtest"
 
 LOCAL_INCLUDES += ["!/xpcom", "/xpcom/components"]
-
-REQUIRES_UNIFIED_BUILD = True

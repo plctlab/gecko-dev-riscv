@@ -11,9 +11,6 @@ const { LoginManagerParent } = ChromeUtils.import(
 const { LoginManagerPrompter } = ChromeUtils.import(
   "resource://gre/modules/LoginManagerPrompter.jsm"
 );
-const { PopupNotifications } = ChromeUtils.import(
-  "resource://gre/modules/PopupNotifications.jsm"
-);
 
 const { TestUtils } = ChromeUtils.import(
   "resource://testing-common/TestUtils.jsm"
@@ -199,7 +196,7 @@ function assertLoginProperties(actualLogin, expected) {
   equal(actualLogin.password, expected.password, "Compare password");
 }
 
-add_task(async function setup() {
+add_setup(async () => {
   // Get a profile for storage.
   do_get_profile();
 

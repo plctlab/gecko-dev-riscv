@@ -4,15 +4,15 @@
 
 "use strict";
 
-// Avoid leaks by using tmp for imports...
-var tmp = {};
-ChromeUtils.import("resource:///modules/CustomizableUI.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/AppConstants.jsm", tmp);
-ChromeUtils.import(
-  "resource://testing-common/CustomizableUITestUtils.jsm",
-  tmp
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
-var { CustomizableUI, AppConstants, CustomizableUITestUtils } = tmp;
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  CustomizableUI: "resource:///modules/CustomizableUI.jsm",
+  CustomizableUITestUtils:
+    "resource://testing-common/CustomizableUITestUtils.jsm",
+});
 
 var EventUtils = {};
 Services.scriptloader.loadSubScript(
@@ -45,15 +45,15 @@ function createDummyXULButton(id, label, win = window) {
 
 var gAddedToolbars = new Set();
 
-function createToolbarWithPlacements(id, placements = []) {
+function createToolbarWithPlacements(id, placements = [], properties = {}) {
   gAddedToolbars.add(id);
   let tb = document.createXULElement("toolbar");
   tb.id = id;
   tb.setAttribute("customizable", "true");
-  CustomizableUI.registerArea(id, {
-    type: CustomizableUI.TYPE_TOOLBAR,
-    defaultPlacements: placements,
-  });
+
+  properties.type = CustomizableUI.TYPE_TOOLBAR;
+  properties.defaultPlacements = placements;
+  CustomizableUI.registerArea(id, properties);
   gNavToolbox.appendChild(tb);
   CustomizableUI.registerToolbarNode(tb);
   return tb;

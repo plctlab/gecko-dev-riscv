@@ -5,13 +5,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-include protocol PCompositorBridge;
+include protocol PCanvasManager;
+include "mozilla/layers/LayersMessageUtils.h";
 
 using mozilla::layers::CompositableHandle from "mozilla/layers/LayersTypes.h";
 using mozilla::layers::SurfaceDescriptor from "mozilla/layers/LayersTypes.h";
 using std::string from "string";
 using mozilla::uvec2 from "mozilla/dom/WebGLIpdl.h";
-using mozilla::webgl::Int32Vector from "mozilla/dom/WebGLIpdl.h";
+using mozilla::uvec3 from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::CompileResult from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::ContextLossReason from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::FrontBufferSnapshotIpc from "mozilla/dom/WebGLIpdl.h";
@@ -20,22 +21,31 @@ using mozilla::webgl::InitContextDesc from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::InitContextResult from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::Int32Vector from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::LinkResult from "mozilla/dom/WebGLIpdl.h";
-using mozilla::webgl::ShaderPrecisionFormat from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::OpaqueFramebufferOptions from "mozilla/dom/WebGLIpdl.h";
+using mozilla::webgl::PackingInfo from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::ReadPixelsDesc from "mozilla/dom/WebGLIpdl.h";
 using mozilla::webgl::ReadPixelsResultIpc from "mozilla/dom/WebGLIpdl.h";
+using mozilla::webgl::ShaderPrecisionFormat from "mozilla/dom/WebGLIpdl.h";
+[MoveOnly] using mozilla::webgl::TexUnpackBlobDesc from "mozilla/dom/WebGLIpdl.h";
 
 namespace mozilla {
 namespace dom {
+
+union ReadPixelsBuffer {
+  // The buffer needs to be allocated, and the value specifies the maximum size.
+  uint64_t;
+  // The buffer is a pre-allocated Shmem.
+  Shmem;
+};
 
 /**
  * Represents the connection between a WebGLChild actor that issues WebGL
  * command from the content process, and a WebGLParent in the compositor
  * process that runs the commands.
  */
-[RefCounted] sync protocol PWebGL
+sync protocol PWebGL
 {
-  manager PCompositorBridge;
+  manager PCanvasManager;
 
 parent:
   sync Initialize(InitContextDesc desc)
@@ -47,11 +57,14 @@ parent:
 
   async DispatchCommands(Shmem commands, uint64_t size);
 
+  async TexImage(uint32_t level, uint32_t respecFormat, uvec3 offset,
+                 PackingInfo pi, TexUnpackBlobDesc src);
+
   // -
 
   sync GetBufferSubData(uint32_t target, uint64_t srcByteOffset, uint64_t byteSize) returns (Shmem ret);
   sync GetFrontBufferSnapshot() returns (FrontBufferSnapshotIpc ret);
-  sync ReadPixels(ReadPixelsDesc desc, uint64_t maxBytes) returns (ReadPixelsResultIpc ret);
+  sync ReadPixels(ReadPixelsDesc desc, ReadPixelsBuffer buffer) returns (ReadPixelsResultIpc ret);
 
   // -
 

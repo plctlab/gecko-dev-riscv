@@ -13,7 +13,7 @@ use std::thread;
 use crate::{
     api::units::*, api::ColorDepth, api::ColorF, api::ExternalImageId, api::ImageRendering, api::YuvRangedColorSpace,
     Compositor, CompositorCapabilities, CompositorSurfaceTransform, NativeSurfaceId, NativeSurfaceInfo, NativeTileId,
-    profiler, MappableCompositor, SWGLCompositeSurfaceInfo,
+    profiler, MappableCompositor, SWGLCompositeSurfaceInfo, WindowVisibility,
 };
 
 pub struct SwTile {
@@ -72,8 +72,8 @@ impl SwTile {
         clip_rect: &DeviceIntRect,
     ) -> Option<DeviceIntRect> {
         let bounds = self.local_bounds(surface);
-        let device_rect = transform.outer_transformed_box2d(&bounds.to_f32())?.round_out().to_i32();
-        device_rect.intersection(clip_rect)
+        let device_rect = transform.outer_transformed_box2d(&bounds.to_f32())?.round_out();
+        Some(device_rect.intersection(&clip_rect.to_f32())?.to_i32())
     }
 
     /// Determine if the tile's bounds may overlap the dependency rect if it were
@@ -97,12 +97,12 @@ impl SwTile {
         surface: &SwSurface,
         transform: &CompositorSurfaceTransform,
         clip_rect: &DeviceIntRect,
-    ) -> Option<(DeviceIntRect, DeviceIntRect, bool)> {
+    ) -> Option<(DeviceIntRect, DeviceIntRect, bool, bool)> {
         // Offset the valid rect to the appropriate surface origin.
         let valid = self.local_bounds(surface);
         // The destination rect is the valid rect transformed and then clipped.
-        let dest_rect = transform.outer_transformed_box2d(&valid.to_f32())?.round_out().to_i32();
-        if !dest_rect.intersects(clip_rect) {
+        let dest_rect = transform.outer_transformed_box2d(&valid.to_f32())?.round_out();
+        if !dest_rect.intersects(&clip_rect.to_f32()) {
             return None;
         }
         // To get a valid source rect, we need to inverse transform the clipped destination rect to find out the effect
@@ -110,11 +110,17 @@ impl SwTile {
         // a source rect that is now relative to the surface origin rather than absolute.
         let inv_transform = transform.inverse()?;
         let src_rect = inv_transform
-            .outer_transformed_box2d(&dest_rect.to_f32())?
+            .outer_transformed_box2d(&dest_rect)?
             .round()
-            .to_i32()
-            .translate(-valid.min.to_vector());
-        Some((src_rect, dest_rect, transform.m22 < 0.0))
+            .translate(-valid.min.to_vector().to_f32());
+        // Ensure source and dest rects when transformed from Box2D to Rect formats will still fit in an i32.
+        // If p0=i32::MIN and p1=i32::MAX, then evaluating the size with p1-p0 will overflow an i32 and not
+        // be representable. 
+        if src_rect.size().try_cast::<i32>().is_none() ||
+           dest_rect.size().try_cast::<i32>().is_none() {
+            return None;
+        }
+        Some((src_rect.try_cast()?, dest_rect.try_cast()?, transform.m11 < 0.0, transform.m22 < 0.0))
     }
 }
 
@@ -157,8 +163,8 @@ impl SwSurface {
         clip_rect: &DeviceIntRect,
     ) -> Option<DeviceIntRect> {
         let bounds = self.local_bounds();
-        let device_rect = transform.outer_transformed_box2d(&bounds.to_f32())?.round_out().to_i32();
-        device_rect.intersection(clip_rect)
+        let device_rect = transform.outer_transformed_box2d(&bounds.to_f32())?.round_out();
+        Some(device_rect.intersection(&clip_rect.to_f32())?.to_i32())
     }
 }
 
@@ -198,6 +204,7 @@ struct SwCompositeJob {
     dst_rect: DeviceIntRect,
     clipped_dst: DeviceIntRect,
     opaque: bool,
+    flip_x: bool,
     flip_y: bool,
     filter: ImageRendering,
     /// The total number of bands for this job
@@ -232,6 +239,7 @@ impl SwCompositeJob {
                     self.dst_rect.width(),
                     self.dst_rect.height(),
                     self.opaque,
+                    self.flip_x,
                     self.flip_y,
                     image_rendering_to_gl_filter(self.filter),
                     band_clip.min.x,
@@ -264,6 +272,7 @@ impl SwCompositeJob {
                     self.dst_rect.min.y,
                     self.dst_rect.width(),
                     self.dst_rect.height(),
+                    self.flip_x,
                     self.flip_y,
                     band_clip.min.x,
                     band_clip.min.y,
@@ -519,6 +528,7 @@ impl SwCompositeThread {
         dst_rect: DeviceIntRect,
         clip_rect: DeviceIntRect,
         opaque: bool,
+        flip_x: bool,
         flip_y: bool,
         filter: ImageRendering,
         mut graph_node: SwCompositeGraphNodeRef,
@@ -543,6 +553,7 @@ impl SwCompositeThread {
             dst_rect,
             clipped_dst,
             opaque,
+            flip_x,
             flip_y,
             filter,
             num_bands,
@@ -717,7 +728,10 @@ pub struct SwCompositor {
     /// This depth texture must be big enough to accommodate the largest used
     /// tile size for any surface. The maximum requested tile size is tracked
     /// to ensure that this depth texture is at least that big.
-    depth_id: u32,
+    /// This is initialized when the first surface is created and freed when
+    /// the last surface is destroyed, to ensure compositors with no surfaces
+    /// are not holding on to extra memory.
+    depth_id: Option<u32>,
     /// Instance of the SwComposite thread, only created if we are not relying
     /// on a native RenderCompositor.
     composite_thread: Option<Arc<SwCompositeThread>>,
@@ -733,7 +747,6 @@ impl SwCompositor {
         compositor: Box<dyn MappableCompositor>,
         use_native_compositor: bool,
     ) -> Self {
-        let depth_id = gl.gen_textures(1)[0];
         // Only create the SwComposite thread if we're not using a native render
         // compositor. Thus, we are compositing into the main software framebuffer,
         // which benefits from compositing asynchronously while updating tiles.
@@ -755,7 +768,7 @@ impl SwCompositor {
                 y: 0,
             },
             max_tile_size: DeviceIntSize::zero(),
-            depth_id,
+            depth_id: None,
             composite_thread,
             locked_framebuffer: None,
             is_compositing: false,
@@ -950,7 +963,7 @@ impl SwCompositor {
         job_queue: &mut SwCompositeJobQueue,
     ) {
         if let Some(ref composite_thread) = self.composite_thread {
-            if let Some((src_rect, dst_rect, flip_y)) = tile.composite_rects(surface, transform, clip_rect) {
+            if let Some((src_rect, dst_rect, flip_x, flip_y)) = tile.composite_rects(surface, transform, clip_rect) {
                 let source = if surface.external_image.is_some() {
                     // If the surface has an attached external image, lock any textures supplied in the descriptor.
                     match surface.composite_surface {
@@ -991,6 +1004,7 @@ impl SwCompositor {
                         dst_rect,
                         *clip_rect,
                         surface.is_opaque,
+                        flip_x,
                         flip_y,
                         filter,
                         tile.graph_node.clone(),
@@ -1143,6 +1157,9 @@ impl Compositor for SwCompositor {
             self.max_tile_size.width.max(tile_size.width),
             self.max_tile_size.height.max(tile_size.height),
         );
+        if self.depth_id.is_none() {
+            self.depth_id = Some(self.gl.gen_textures(1)[0]);
+        }
         self.surfaces.insert(id, SwSurface::new(tile_size, is_opaque));
     }
 
@@ -1154,12 +1171,21 @@ impl Compositor for SwCompositor {
             .insert(id, SwSurface::new(DeviceIntSize::zero(), is_opaque));
     }
 
+    fn create_backdrop_surface(&mut self, _id: NativeSurfaceId, _color: ColorF) {
+        unreachable!("Not implemented.")
+    }
+
     fn destroy_surface(&mut self, id: NativeSurfaceId) {
         if let Some(surface) = self.surfaces.remove(&id) {
             self.deinit_surface(&surface);
         }
         if self.use_native_compositor {
             self.compositor.destroy_surface(id);
+        }
+        if self.surfaces.is_empty() {
+            if let Some(depth_id) = self.depth_id.take() {
+                self.gl.delete_textures(&[depth_id]);
+            }
         }
     }
 
@@ -1172,7 +1198,9 @@ impl Compositor for SwCompositor {
             self.deinit_surface(surface);
         }
 
-        self.gl.delete_textures(&[self.depth_id]);
+        if let Some(depth_id) = self.depth_id.take() {
+            self.gl.delete_textures(&[depth_id]);
+        }
 
         if self.use_native_compositor {
             self.compositor.deinit();
@@ -1187,6 +1215,10 @@ impl Compositor for SwCompositor {
             let mut tile = SwTile::new(id.x, id.y);
             tile.color_id = self.gl.gen_textures(1)[0];
             tile.fbo_id = self.gl.gen_framebuffers(1)[0];
+            let mut prev_fbo = [0];
+            unsafe {
+                self.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut prev_fbo);
+            }
             self.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, tile.fbo_id);
             self.gl.framebuffer_texture_2d(
                 gl::DRAW_FRAMEBUFFER,
@@ -1199,10 +1231,10 @@ impl Compositor for SwCompositor {
                 gl::DRAW_FRAMEBUFFER,
                 gl::DEPTH_ATTACHMENT,
                 gl::TEXTURE_2D,
-                self.depth_id,
+                self.depth_id.expect("depth texture should be initialized"),
                 0,
             );
-            self.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, 0);
+            self.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, prev_fbo[0] as gl::GLuint);
 
             surface.tiles.push(tile);
         }
@@ -1290,7 +1322,7 @@ impl Compositor for SwCompositor {
                 // last time it was supplied, instead simply reusing the buffer if the max
                 // tile size is not bigger than what was previously allocated.
                 self.gl.set_texture_buffer(
-                    self.depth_id,
+                    self.depth_id.expect("depth texture should be initialized"),
                     gl::DEPTH_COMPONENT,
                     valid_rect.width(),
                     valid_rect.height(),
@@ -1493,5 +1525,9 @@ impl Compositor for SwCompositor {
 
     fn get_capabilities(&self) -> CompositorCapabilities {
         self.compositor.get_capabilities()
+    }
+
+    fn get_window_visibility(&self) -> WindowVisibility {
+        self.compositor.get_window_visibility()
     }
 }

@@ -8,10 +8,10 @@
 
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/gfx/Types.h"
+#include "mozilla/intl/UnicodeScriptCodes.h"
 #include "nsTArray.h"
 #include "nsString.h"
 #include "nsCOMPtr.h"
-#include "nsUnicodeScriptCodes.h"
 
 #include "gfxTelemetry.h"
 #include "gfxTypes.h"
@@ -22,9 +22,11 @@
 #include "mozilla/RefPtr.h"
 #include "GfxInfoCollector.h"
 
+#include "mozilla/Maybe.h"
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "mozilla/layers/MemoryPressureObserver.h"
+#include "mozilla/layers/OverlayInfo.h"
 
 class gfxASurface;
 class gfxFont;
@@ -45,6 +47,7 @@ typedef struct FT_LibraryRec_* FT_Library;
 namespace mozilla {
 struct StyleFontFamilyList;
 class LogModule;
+class VsyncDispatcher;
 namespace layers {
 class FrameStats;
 }
@@ -54,6 +57,7 @@ class SourceSurface;
 class DataSourceSurface;
 class ScaledFont;
 class VsyncSource;
+class SoftwareVsyncSource;
 class ContentDeviceData;
 class GPUDeviceData;
 class FeatureState;
@@ -138,6 +142,8 @@ inline const char* GetBackendName(mozilla::gfx::BackendType aBackend) {
       return "webrender text";
     case mozilla::gfx::BackendType::NONE:
       return "none";
+    case mozilla::gfx::BackendType::WEBGL:
+      return "webgl";
     case mozilla::gfx::BackendType::BACKEND_LAST:
       return "invalid";
   }
@@ -184,7 +190,7 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::IntSize IntSize;
   typedef mozilla::gfx::SourceSurface SourceSurface;
-  typedef mozilla::unicode::Script Script;
+  typedef mozilla::intl::Script Script;
 
   /**
    * Return a pointer to the current active platform.
@@ -311,10 +317,10 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   void GetAzureBackendInfo(mozilla::widget::InfoObject& aObj);
   void GetApzSupportInfo(mozilla::widget::InfoObject& aObj);
-  void GetTilesSupportInfo(mozilla::widget::InfoObject& aObj);
   void GetFrameStats(mozilla::widget::InfoObject& aObj);
   void GetCMSSupportInfo(mozilla::widget::InfoObject& aObj);
   void GetDisplayInfo(mozilla::widget::InfoObject& aObj);
+  void GetOverlayInfo(mozilla::widget::InfoObject& aObj);
 
   // Get the default content backend that will be used with the default
   // compositor. If the compositor is known when calling this function,
@@ -491,7 +497,9 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   // Check whether format is supported on a platform (if unclear, returns true).
   // Default implementation checks for "common" formats that we support across
   // all platforms, but individual platform implementations may override.
-  virtual bool IsFontFormatSupported(uint32_t aFormatFlags);
+  virtual bool IsFontFormatSupported(
+      mozilla::StyleFontFaceSourceFormatKeyword aFormatHint,
+      mozilla::StyleFontFaceSourceTechFlags aTechFlags);
 
   virtual bool DidRenderingDeviceReset(
       DeviceResetReason* aResetReason = nullptr) {
@@ -604,7 +612,7 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   virtual void FontsPrefsChanged(const char* aPref);
 
-  int32_t GetBidiNumeralOption();
+  uint32_t GetBidiNumeralOption();
 
   /**
    * Force all presContexts to reflow (and reframe if needed).
@@ -630,6 +638,9 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
    */
   RefPtr<mozilla::gfx::DrawTarget> ScreenReferenceDrawTarget();
 
+  static RefPtr<mozilla::gfx::DrawTarget>
+  ThreadLocalScreenReferenceDrawTarget();
+
   virtual mozilla::gfx::SurfaceFormat Optimal2DFormatForContent(
       gfxContentType aContent);
 
@@ -638,11 +649,6 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   virtual gfxImageFormat GetOffscreenFormat() {
     return mozilla::gfx::SurfaceFormat::X8R8G8B8_UINT32;
   }
-
-  /**
-   * Returns whether the current process should use tiling for layers.
-   */
-  virtual bool UsesTiling() const;
 
   /**
    * Returns a logger if one is available and logging is enabled
@@ -657,14 +663,11 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   static bool UsesOffMainThreadCompositing();
 
   /**
-   * Get the hardware vsync source for each platform.
-   * Should only exist and be valid on the parent process
+   * Returns the global vsync dispatcher. There is only one global vsync
+   * dispatcher and it stays around for the entire lifetime of the process.
+   * Must only be called in the parent process.
    */
-  virtual mozilla::gfx::VsyncSource* GetHardwareVsync() {
-    MOZ_ASSERT(mVsyncSource != nullptr);
-    MOZ_ASSERT(XRE_IsParentProcess());
-    return mVsyncSource;
-  }
+  RefPtr<mozilla::VsyncDispatcher> GetGlobalVsyncDispatcher();
 
   /**
    * True if layout rendering should use ASAP mode, which means
@@ -691,7 +694,7 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   /**
    * Update the frame rate (called e.g. after pref changes).
    */
-  static void ReInitFrameRate();
+  static void ReInitFrameRate(const char* aPrefIgnored, void* aDataIgnored);
 
   /**
    * Update force subpixel AA quality setting (called after pref
@@ -773,9 +776,11 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
    */
   virtual void ImportGPUDeviceData(const mozilla::gfx::GPUDeviceData& aData);
 
-  bool HasVariationFontSupport() const { return mHasVariationFontSupport; }
+  void SetOverlayInfo(const mozilla::layers::OverlayInfo& aInfo) {
+    mOverlayInfo = mozilla::Some(aInfo);
+  }
 
-  bool HasNativeColrFontSupport() const { return mHasNativeColrFontSupport; }
+  static bool HasVariationFontSupport();
 
   // you probably want to use gfxVars::UseWebRender() instead of this
   static bool WebRenderPrefEnabled();
@@ -785,9 +790,13 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   static const char* WebRenderResourcePathOverride();
 
   // Returns true if we would like to keep the GPU process if possible.
+  // If aCrashAfterFinalFallback is true then crash if we have already
+  // exhausted all of our fallback options. Otherwise we remain on the final
+  // fallback configuration.
   static bool FallbackFromAcceleration(mozilla::gfx::FeatureStatus aStatus,
                                        const char* aMessage,
-                                       const nsACString& aFailureId);
+                                       const nsACString& aFailureId,
+                                       bool aCrashAfterFinalFallback = false);
 
   void NotifyFrameStats(nsTArray<mozilla::layers::FrameStats>&& aFrameStats);
 
@@ -809,8 +818,11 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   virtual void InitAcceleration();
   virtual void InitWebRenderConfig();
+  void InitHardwareVideoConfig();
   virtual void InitWebGLConfig();
   virtual void InitWebGPUConfig();
+  virtual void InitWindowOcclusionConfig();
+  void InitBackdropFilterConfig();
 
   virtual void GetPlatformDisplayInfo(mozilla::widget::InfoObject& aObj) {}
 
@@ -819,11 +831,18 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
    */
   virtual void WillShutdown();
 
-  /**
-   * Initialized hardware vsync based on each platform.
-   */
+  // Return a hardware vsync source for this platform.
+  already_AddRefed<mozilla::gfx::VsyncSource> GetGlobalHardwareVsyncSource();
+
+  // Return a software vsync source (which uses a timer internally).
+  // Can be used as a fallback for platforms without hardware vsync,
+  // and when the layout.frame_rate pref is set to a non-negative value.
+  already_AddRefed<mozilla::gfx::VsyncSource> GetSoftwareVsyncSource();
+
+  // Create the platform-specific global vsync source. Can fall back to
+  // GetSoftwareVsyncSource().
   virtual already_AddRefed<mozilla::gfx::VsyncSource>
-  CreateHardwareVsyncSource();
+  CreateGlobalHardwareVsyncSource() = 0;
 
   // Returns whether or not layers should be accelerated by default on this
   // platform.
@@ -899,33 +918,25 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   virtual bool CanUseHardwareVideoDecoding();
 
-  virtual bool CheckVariationFontSupport() = 0;
-
   int8_t mAllowDownloadableFonts;
-  int8_t mGraphiteShapingEnabled;
-  int8_t mOpenTypeSVGEnabled;
-
-  int8_t mBidiNumeralOption;
-
-  // whether to always search font cmaps globally
-  // when doing system font fallback
-  int8_t mFallbackUsesCmaps;
 
   // Whether the platform supports rendering OpenType font variations
-  bool mHasVariationFontSupport;
+  static std::atomic<int8_t> sHasVariationFontSupport;
 
-  // Whether the platform font APIs have native support for COLR fonts.
-  // Set to true during initialization on platforms that implement this.
-  bool mHasNativeColrFontSupport = false;
+  // The global vsync dispatcher. Only non-null in the parent process.
+  // Its underlying VsyncSource is either mGlobalHardwareVsyncSource
+  // or mSoftwareVsyncSource.
+  RefPtr<mozilla::VsyncDispatcher> mVsyncDispatcher;
 
-  // max character limit for words in word cache
-  int32_t mWordCacheCharLimit;
+  // Cached software vsync source. Only non-null in the parent process,
+  // and only after the first time GetHardwareVsyncSource has been called.
+  RefPtr<mozilla::gfx::VsyncSource> mGlobalHardwareVsyncSource;
 
-  // max number of entries in word cache
-  int32_t mWordCacheMaxEntries;
-
-  // Hardware vsync source. Only valid on parent process
-  RefPtr<mozilla::gfx::VsyncSource> mVsyncSource;
+  // Cached software vsync source. Only non-null in the parent process,
+  // and only after the first time GetSoftwareVsyncSource has been called.
+  // Used as a fallback source if hardware vsync is not available,
+  // or when the layout.frame_rate pref is set.
+  RefPtr<mozilla::gfx::SoftwareVsyncSource> mSoftwareVsyncSource;
 
   RefPtr<mozilla::gfx::DrawTarget> mScreenReferenceDrawTarget;
 
@@ -958,14 +969,6 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   static void InitializeCMS();
   static void ShutdownCMS();
-
-  /**
-   * Calling this function will compute and set the ideal tile size for the
-   * platform. This will only have an effect in the parent process; child
-   * processes should be updated via SetTileSize to match the value computed in
-   * the parent.
-   */
-  void ComputeTileSize();
 
   /**
    * This uses nsIScreenManager to determine the screen size and color depth
@@ -1001,10 +1004,10 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   mozilla::widget::GfxInfoCollector<gfxPlatform> mAzureCanvasBackendCollector;
   mozilla::widget::GfxInfoCollector<gfxPlatform> mApzSupportCollector;
-  mozilla::widget::GfxInfoCollector<gfxPlatform> mTilesInfoCollector;
   mozilla::widget::GfxInfoCollector<gfxPlatform> mFrameStatsCollector;
   mozilla::widget::GfxInfoCollector<gfxPlatform> mCMSInfoCollector;
   mozilla::widget::GfxInfoCollector<gfxPlatform> mDisplayInfoCollector;
+  mozilla::widget::GfxInfoCollector<gfxPlatform> mOverlayInfoCollector;
 
   nsTArray<mozilla::layers::FrameStats> mFrameStats;
 
@@ -1014,6 +1017,8 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   int32_t mScreenDepth;
   mozilla::gfx::IntSize mScreenSize;
+
+  mozilla::Maybe<mozilla::layers::OverlayInfo> mOverlayInfo;
 
   // An instance of gfxSkipChars which is empty. It is used as the
   // basis for error-case iterators.

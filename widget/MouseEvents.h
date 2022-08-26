@@ -117,9 +117,6 @@ class WidgetMouseEventBase : public WidgetInputEvent {
     MOZ_CRASH("WidgetMouseEventBase must not be most-subclass");
   }
 
-  // ID of the canvas HitRegion
-  nsString mRegion;
-
   // Finger or touch pressure of event. It ranges between 0.0 and 1.0.
   float mPressure;
 
@@ -591,7 +588,7 @@ class WidgetWheelEvent : public WidgetMouseEventBase {
   enum ScrollType : uint8_t {
     SCROLL_DEFAULT,
     SCROLL_SYNCHRONOUSLY,
-    SCROLL_ASYNCHRONOUSELY,
+    SCROLL_ASYNCHRONOUSLY,
     SCROLL_SMOOTHLY
   };
   ScrollType mScrollType;

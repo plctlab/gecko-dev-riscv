@@ -4,7 +4,7 @@ schema: 1
 bugzilla:
   # Bugzilla product and component for this directory and subdirectories
   product: Core
-  component: "ImageLib"
+  component: "Graphics: ImageLib"
 
 # Document the source of externally hosted code
 origin:
@@ -20,11 +20,11 @@ origin:
 
   # Human-readable identifier for this version/release
   # Generally "version NNN", "tag SSS", "bookmark SSS"
-  release: commit e2397743fe092df68b760d358253773699a16c93 (2021-06-09T08:56:32Z).
+  release: commit f13e3b956eb226561ac79427893ec0afd66f91a8 (2022-02-15T18:19:21Z).
 
   # Revision to pull in
   # Must be a long or short commit SHA (long preferred)
-  revision: e2397743fe092df68b760d358253773699a16c93
+  revision: f13e3b956eb226561ac79427893ec0afd66f91a8
 
   # The package's license, where possible using the mnemonic from
   # https://spdx.org/licenses/
@@ -35,9 +35,10 @@ origin:
   license-file: LICENSE
 
 vendoring:
-  url: https://github.com/google/highway.git
+  url: https://github.com/google/highway
   source-hosting: github
   vendor-directory: third_party/highway
 
   exclude:
     - g3doc/
+

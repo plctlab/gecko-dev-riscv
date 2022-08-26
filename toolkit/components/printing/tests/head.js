@@ -5,14 +5,17 @@ const { MockFilePicker } = SpecialPowers;
 let pickerMocked = false;
 
 class PrintHelper {
-  static async withTestPage(testFn, pagePathname) {
-    await SpecialPowers.pushPrefEnv({
-      set: [["print.tab_modal.enabled", true]],
-    });
-
-    let pageUrl = pagePathname
-      ? this.getTestPageUrl(pagePathname)
-      : this.defaultTestPageUrl;
+  static async withTestPage(testFn, pagePathname, useHTTPS = false) {
+    let pageUrl = "";
+    if (pagePathname) {
+      pageUrl = useHTTPS
+        ? this.getTestPageUrlHTTPS(pagePathname)
+        : this.getTestPageUrl(pagePathname);
+    } else {
+      pageUrl = useHTTPS
+        ? this.defaultTestPageUrlHTTPS
+        : this.defaultTestPageUrl;
+    }
     info("withTestPage: " + pageUrl);
     let isPdf = pageUrl.endsWith(".pdf");
 
@@ -52,6 +55,10 @@ class PrintHelper {
     return taskReturn;
   }
 
+  static async withTestPageHTTPS(testFn, pagePathname) {
+    return this.withTestPage(testFn, pagePathname, /* useHttps */ true);
+  }
+
   static resetPrintPrefs() {
     for (let name of Services.prefs.getChildList("print.")) {
       Services.prefs.clearUserPref(name);
@@ -68,8 +75,20 @@ class PrintHelper {
     return testPath + pathName;
   }
 
+  static getTestPageUrlHTTPS(pathName) {
+    const testPath = getRootDirectory(gTestPath).replace(
+      "chrome://mochitests/content",
+      "https://example.com"
+    );
+    return testPath + pathName;
+  }
+
   static get defaultTestPageUrl() {
     return this.getTestPageUrl("simplifyArticleSample.html");
+  }
+
+  static get defaultTestPageUrlHTTPS() {
+    return this.getTestPageUrlHTTPS("simplifyArticleSample.html");
   }
 
   static createMockPaper(paperProperties = {}) {
@@ -233,7 +252,14 @@ class PrintHelper {
     });
 
     // Mock PrintEventHandler with our Promises.
-    this.win.PrintEventHandler._showPrintDialog = () => showSystemDialogPromise;
+    this.win.PrintEventHandler._showPrintDialog = (
+      dialogSvc,
+      haveSelection,
+      settings
+    ) => {
+      this.systemDialogOpenedWithSelection = haveSelection;
+      return showSystemDialogPromise;
+    };
     this.win.PrintEventHandler._doPrint = (bc, settings) => {
       this._printedSettings = settings;
       return printPromise;
@@ -262,11 +288,12 @@ class PrintHelper {
       ).fallbackPaperList;
     }
 
-    let defaultSettings = PSSVC.newPrintSettings;
+    let defaultSettings = PSSVC.createNewPrintSettings();
     defaultSettings.printerName = name;
     defaultSettings.toFileName = "";
     defaultSettings.outputFormat = Ci.nsIPrintSettings.kOutputFormatNative;
-    defaultSettings.printToFile = false;
+    defaultSettings.outputDestination =
+      Ci.nsIPrintSettings.kOutputDestinationPrinter;
     defaultSettings.paperSizeUnit = paperSizeUnit;
     if (paperId) {
       defaultSettings.paperId = paperId;

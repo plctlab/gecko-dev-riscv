@@ -40,6 +40,7 @@
 #include "mozilla/dom/MemoryReportTypes.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 
 #ifdef XP_WIN
@@ -54,6 +55,7 @@
 #endif
 
 using namespace mozilla;
+using namespace mozilla::ipc;
 using namespace dom;
 
 #if defined(MOZ_MEMORY)
@@ -441,6 +443,10 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
       base = SHARED_REGION_BASE_ARM;
       size = SHARED_REGION_SIZE_ARM;
       break;
+    case CPU_TYPE_ARM64:
+      base = SHARED_REGION_BASE_ARM64;
+      size = SHARED_REGION_SIZE_ARM64;
+      break;
     case CPU_TYPE_I386:
       base = SHARED_REGION_BASE_I386;
       size = SHARED_REGION_SIZE_I386;
@@ -471,15 +477,16 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
   // Roughly based on libtop_update_vm_regions in
   // http://www.opensource.apple.com/source/top/top-100.1.2/libtop.c
   size_t privatePages = 0;
-  mach_vm_size_t size = 0;
-  for (mach_vm_address_t addr = MACH_VM_MIN_ADDRESS;; addr += size) {
-    vm_region_top_info_data_t info;
-    mach_msg_type_number_t infoCount = VM_REGION_TOP_INFO_COUNT;
-    mach_port_t objectName;
+  mach_vm_size_t topSize = 0;
+  for (mach_vm_address_t addr = MACH_VM_MIN_ADDRESS;; addr += topSize) {
+    vm_region_top_info_data_t topInfo;
+    mach_msg_type_number_t topInfoCount = VM_REGION_TOP_INFO_COUNT;
+    mach_port_t topObjectName;
 
     kern_return_t kr = mach_vm_region(
-        aPort ? aPort : mach_task_self(), &addr, &size, VM_REGION_TOP_INFO,
-        reinterpret_cast<vm_region_info_t>(&info), &infoCount, &objectName);
+        aPort ? aPort : mach_task_self(), &addr, &topSize, VM_REGION_TOP_INFO,
+        reinterpret_cast<vm_region_info_t>(&topInfo), &topInfoCount,
+        &topObjectName);
     if (kr == KERN_INVALID_ADDRESS) {
       // Done iterating VM regions.
       break;
@@ -487,26 +494,51 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
       return NS_ERROR_FAILURE;
     }
 
-    if (InSharedRegion(addr, cpu_type) && info.share_mode != SM_PRIVATE) {
+    if (InSharedRegion(addr, cpu_type) && topInfo.share_mode != SM_PRIVATE) {
       continue;
     }
 
-    switch (info.share_mode) {
+    switch (topInfo.share_mode) {
       case SM_LARGE_PAGE:
         // NB: Large pages are not shareable and always resident.
       case SM_PRIVATE:
-        privatePages += info.private_pages_resident;
-        privatePages += info.shared_pages_resident;
+        privatePages += topInfo.private_pages_resident;
+        privatePages += topInfo.shared_pages_resident;
         break;
       case SM_COW:
-        privatePages += info.private_pages_resident;
-        if (info.ref_count == 1) {
+        privatePages += topInfo.private_pages_resident;
+        if (topInfo.ref_count == 1) {
           // Treat copy-on-write pages as private if they only have one
           // reference.
-          privatePages += info.shared_pages_resident;
+          privatePages += topInfo.shared_pages_resident;
         }
         break;
-      case SM_SHARED:
+      case SM_SHARED: {
+        // Using mprotect() or similar to protect a page in the middle of a
+        // mapping can create aliased mappings. They look like shared mappings
+        // to the VM_REGION_TOP_INFO interface, so re-check with
+        // VM_REGION_EXTENDED_INFO.
+
+        mach_vm_size_t exSize = 0;
+        vm_region_extended_info_data_t exInfo;
+        mach_msg_type_number_t exInfoCount = VM_REGION_EXTENDED_INFO_COUNT;
+        mach_port_t exObjectName;
+        kr = mach_vm_region(aPort ? aPort : mach_task_self(), &addr, &exSize,
+                            VM_REGION_EXTENDED_INFO,
+                            reinterpret_cast<vm_region_info_t>(&exInfo),
+                            &exInfoCount, &exObjectName);
+        if (kr == KERN_INVALID_ADDRESS) {
+          // Done iterating VM regions.
+          break;
+        } else if (kr != KERN_SUCCESS) {
+          return NS_ERROR_FAILURE;
+        }
+
+        if (exInfo.share_mode == SM_PRIVATE_ALIASED) {
+          privatePages += exInfo.pages_resident;
+        }
+        break;
+      }
       default:
         break;
     }
@@ -1206,8 +1238,10 @@ class JemallocHeapReporter final : public nsIMemoryReporter {
   NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
                             nsISupports* aData, bool aAnonymize) override {
     jemalloc_stats_t stats;
-    jemalloc_bin_stats_t bin_stats[JEMALLOC_MAX_STATS_BINS];
-    jemalloc_stats(&stats, bin_stats);
+    const size_t num_bins = jemalloc_stats_num_bins();
+    nsTArray<jemalloc_bin_stats_t> bin_stats(num_bins);
+    bin_stats.SetLength(num_bins);
+    jemalloc_stats(&stats, bin_stats.Elements());
 
     // clang-format off
     MOZ_COLLECT_REPORT(
@@ -1225,9 +1259,7 @@ class JemallocHeapReporter final : public nsIMemoryReporter {
     // because KIND_HEAP memory means "counted in heap-allocated", which
     // this is not.
     for (auto& bin : bin_stats) {
-      if (!bin.size) {
-        continue;
-      }
+      MOZ_ASSERT(bin.size);
       nsPrintfCString path("explicit/heap-overhead/bin-unused/bin-%zu",
           bin.size);
       aHandleReport->Callback(EmptyCString(), path, KIND_NONHEAP, UNITS_BYTES,
@@ -1675,8 +1707,11 @@ NS_IMETHODIMP
 nsMemoryReporterManager::CollectReports(nsIHandleReportCallback* aHandleReport,
                                         nsISupports* aData, bool aAnonymize) {
   size_t n = MallocSizeOf(this);
-  n += mStrongReporters->ShallowSizeOfIncludingThis(MallocSizeOf);
-  n += mWeakReporters->ShallowSizeOfIncludingThis(MallocSizeOf);
+  {
+    mozilla::MutexAutoLock autoLock(mMutex);
+    n += mStrongReporters->ShallowSizeOfIncludingThis(MallocSizeOf);
+    n += mWeakReporters->ShallowSizeOfIncludingThis(MallocSizeOf);
+  }
 
   MOZ_COLLECT_REPORT("explicit/memory-reporter-manager", KIND_HEAP, UNITS_BYTES,
                      n, "Memory used by the memory reporter infrastructure.");
@@ -1748,6 +1783,7 @@ nsMemoryReporterManager::GetReportsExtended(
   return rv;
 }
 
+// MainThread only
 nsresult nsMemoryReporterManager::StartGettingReports() {
   PendingProcessesState* s = mPendingProcessesState;
   nsresult rv;
@@ -1801,10 +1837,21 @@ nsresult nsMemoryReporterManager::StartGettingReports() {
     }
   }
 
-  if (!mIsRegistrationBlocked && net::gIOService) {
+  if (!IsRegistrationBlocked() && net::gIOService) {
     if (RefPtr<MemoryReportingProcess> proc =
             net::gIOService->GetSocketProcessMemoryReporter()) {
       s->mChildrenPending.AppendElement(proc.forget());
+    }
+  }
+
+  if (RefPtr<UtilityProcessManager> utility =
+          UtilityProcessManager::GetIfExists()) {
+    for (RefPtr<UtilityProcessParent>& parent :
+         utility->GetAllProcessesProcessParent()) {
+      if (RefPtr<MemoryReportingProcess> proc =
+              utility->GetProcessMemoryReporter(parent)) {
+        s->mChildrenPending.AppendElement(proc.forget());
+      }
     }
   }
 
@@ -1899,6 +1946,7 @@ nsMemoryReporterManager::GetReportsForThisProcessExtended(
   return NS_OK;
 }
 
+// MainThread only
 NS_IMETHODIMP
 nsMemoryReporterManager::EndReport() {
   if (--mPendingReportersState->mReportsPending == 0) {

@@ -68,8 +68,8 @@ already_AddRefed<PermissionStatus> CreatePermissionStatus(
 already_AddRefed<Promise> Permissions::Query(JSContext* aCx,
                                              JS::Handle<JSObject*> aPermission,
                                              ErrorResult& aRv) {
-  if (!mWindow) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
+  if (!mWindow || !mWindow->IsFullyActive()) {
+    aRv.ThrowInvalidStateError("The document is not fully active.");
     return nullptr;
   }
 
@@ -148,7 +148,7 @@ already_AddRefed<Promise> Permissions::Revoke(JSContext* aCx,
     // to the parent; `ContentParent::RecvRemovePermission` will call
     // `RemovePermission`.
     ContentChild::GetSingleton()->SendRemovePermission(
-        IPC::Principal(document->NodePrincipal()), permissionType, &rv);
+        document->NodePrincipal(), permissionType, &rv);
   }
 
   if (NS_WARN_IF(NS_FAILED(rv))) {

@@ -10,7 +10,10 @@
 #include "nsTArray.h"
 
 #include <stdint.h>
-#include <gdk/gdk.h>
+
+typedef struct _GdkDisplay GdkDisplay;
+typedef struct _GdkDevice GdkDevice;
+typedef union _GdkEvent GdkEvent;
 
 namespace mozilla::widget {
 
@@ -27,6 +30,29 @@ bool GdkIsX11Display(GdkDisplay* display);
 
 bool GdkIsWaylandDisplay();
 bool GdkIsX11Display();
+
+GdkDevice* GdkGetPointer();
+
+// Sets / returns the last mouse press event we processed.
+void SetLastMousePressEvent(GdkEvent*);
+GdkEvent* GetLastMousePressEvent();
+
+// Return the snap's instance name, or null when not running as a snap.
+const char* GetSnapInstanceName();
+inline bool IsRunningUnderSnap() { return !!GetSnapInstanceName(); }
+bool IsRunningUnderFlatpak();
+inline bool IsRunningUnderFlatpakOrSnap() {
+  return IsRunningUnderFlatpak() || IsRunningUnderSnap();
+}
+
+enum class PortalKind {
+  FilePicker,
+  MimeHandler,
+  Settings,
+  Location,
+  OpenUri,
+};
+bool ShouldUsePortal(PortalKind);
 
 // Parse text/uri-list
 nsTArray<nsCString> ParseTextURIList(const nsACString& data);

@@ -4,18 +4,18 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyGetter(this, "gDOMBundle", () =>
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "gDOMBundle", () =>
   Services.strings.createBundle("chrome://global/locale/dom/dom.properties")
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["crypto"]);
-
-const EXPORTED_SYMBOLS = ["PushCrypto"];
+// getCryptoParamsFromHeaders is exported for test purposes.
+const EXPORTED_SYMBOLS = ["PushCrypto", "getCryptoParamsFromHeaders"];
 
 const UTF8 = new TextEncoder("utf-8");
 
@@ -75,7 +75,7 @@ class CryptoError extends Error {
    */
   format(scope) {
     let params = [scope, ...this.params].map(String);
-    return gDOMBundle.formatStringFromName(this.property, params);
+    return lazy.gDOMBundle.formatStringFromName(this.property, params);
   }
 }
 

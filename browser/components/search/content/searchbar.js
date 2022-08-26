@@ -102,12 +102,10 @@
       window.addEventListener("unload", this.destroy);
 
       this.FormHistory = ChromeUtils.import(
-        "resource://gre/modules/FormHistory.jsm",
-        {}
+        "resource://gre/modules/FormHistory.jsm"
       ).FormHistory;
-      this.SearchSuggestionController = ChromeUtils.import(
-        "resource://gre/modules/SearchSuggestionController.jsm",
-        {}
+      this.SearchSuggestionController = ChromeUtils.importESModule(
+        "resource://gre/modules/SearchSuggestionController.sys.mjs"
       ).SearchSuggestionController;
 
       Services.obs.addObserver(this.observer, "browser-search-engine-modified");
@@ -323,7 +321,7 @@
         }
       } else {
         if (
-          (aEvent instanceof KeyboardEvent &&
+          (KeyboardEvent.isInstance(aEvent) &&
             (aEvent.altKey || aEvent.getModifierState("AltGraph"))) ^
             newTabPref &&
           !gBrowser.selectedTab.isEmpty
@@ -331,7 +329,7 @@
           where = "tab";
         }
         if (
-          aEvent instanceof MouseEvent &&
+          MouseEvent.isInstance(aEvent) &&
           (aEvent.button == 1 || aEvent.getModifierState("Accel"))
         ) {
           where = "tab";
@@ -427,6 +425,9 @@
       // null parameter below specifies HTML response for search
       let params = {
         postData: submission.postData,
+        globalHistoryOptions: {
+          triggeringSearchEngine: engine.name,
+        },
       };
       if (aParams) {
         for (let key in aParams) {
@@ -807,11 +808,19 @@
         this.handleSearchCommand(event, engine);
       };
 
+      this.textbox.onbeforeinput = event => {
+        if (event.data && this._needBrowserFocusAtEnterKeyUp) {
+          // Ignore char key input while processing enter key.
+          event.preventDefault();
+        }
+      };
+
       this.textbox.onkeyup = event => {
-        if (
-          event.keyCode === KeyEvent.DOM_VK_RETURN &&
-          this._needBrowserFocusAtEnterKeyUp
-        ) {
+        // Pressing Enter key while pressing Meta key, and next, even when
+        // releasing Enter key before releasing Meta key, the keyup event is not
+        // fired. Therefore, if Enter keydown is detecting, continue the post
+        // processing for Enter key when any keyup event is detected.
+        if (this._needBrowserFocusAtEnterKeyUp) {
           this._needBrowserFocusAtEnterKeyUp = false;
           gBrowser.selectedBrowser.focus();
         }

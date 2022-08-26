@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-
 // This component is used for handling dragover and drop of urls.
 //
 // It checks to see whether a drop of a url is allowed. For instance, a url
@@ -103,7 +100,7 @@ ContentAreaDropListener.prototype = {
     if (files && i < files.length) {
       this._addLink(
         links,
-        OS.Path.toFileURI(files[i].mozFullPath),
+        PathUtils.toFileURI(files[i].mozFullPath),
         files[i].name,
         "application/x-moz-file"
       );
@@ -145,9 +142,7 @@ ContentAreaDropListener.prototype = {
     }
     let uri = info.fixedURI;
 
-    let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-      Ci.nsIScriptSecurityManager
-    );
+    let secMan = Services.scriptSecurityManager;
     let flags = secMan.STANDARD;
     if (disallowInherit) {
       flags |= secMan.DISALLOW_INHERIT_PRINCIPAL;
@@ -193,22 +188,13 @@ ContentAreaDropListener.prototype = {
       // TODO: Investigate and describe the difference between them,
       //       or use only one principal. (Bug 1367038)
       if (fallbackToSystemPrincipal) {
-        let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-          Ci.nsIScriptSecurityManager
-        );
-        return secMan.getSystemPrincipal();
-      } else {
-        principalURISpec = "file:///";
+        return Services.scriptSecurityManager.getSystemPrincipal();
       }
+
+      principalURISpec = "file:///";
     }
-    let ioService = Cc["@mozilla.org/network/io-service;1"].getService(
-      Ci.nsIIOService
-    );
-    let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-      Ci.nsIScriptSecurityManager
-    );
-    return secMan.createContentPrincipal(
-      ioService.newURI(principalURISpec),
+    return Services.scriptSecurityManager.createContentPrincipal(
+      Services.io.newURI(principalURISpec),
       {}
     );
   },
@@ -286,21 +272,6 @@ ContentAreaDropListener.prototype = {
     }
 
     return true;
-  },
-
-  dropLink(aEvent, aName, aDisallowInherit) {
-    aName.value = "";
-    let links = this.dropLinks(aEvent, aDisallowInherit);
-    let url = "";
-    if (links.length > 0) {
-      url = links[0].url;
-      let name = links[0].name;
-      if (name) {
-        aName.value = name;
-      }
-    }
-
-    return url;
   },
 
   dropLinks(aEvent, aDisallowInherit) {

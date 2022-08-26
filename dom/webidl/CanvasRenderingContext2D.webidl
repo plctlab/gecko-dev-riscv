@@ -33,6 +33,7 @@ typedef (HTMLImageElement or
 typedef (HTMLOrSVGImageElement or
          HTMLCanvasElement or
          HTMLVideoElement or
+         OffscreenCanvas or
          ImageBitmap) CanvasImageSource;
 
 [Exposed=Window]
@@ -43,10 +44,13 @@ interface CanvasRenderingContext2D {
   readonly attribute HTMLCanvasElement? canvas;
 
   // Mozilla-specific stuff
-  // FIXME Bug 768048 mozCurrentTransform/mozCurrentTransformInverse should return a WebIDL array.
-  [Throws]
+  [Deprecated="MozCurrentTransform",
+   Pref="dom.mozCurrentTransform.enabled",
+   Throws]
   attribute object mozCurrentTransform; // [ m11, m12, m21, m22, dx, dy ], i.e. row major
-  [Throws]
+  [Deprecated="MozCurrentTransformInverse",
+   Pref="dom.mozCurrentTransform.enabled",
+   Throws]
   attribute object mozCurrentTransformInverse;
 
   [SetterThrows]
@@ -141,7 +145,6 @@ CanvasRenderingContext2D includes CanvasImageData;
 CanvasRenderingContext2D includes CanvasPathDrawingStyles;
 CanvasRenderingContext2D includes CanvasTextDrawingStyles;
 CanvasRenderingContext2D includes CanvasPathMethods;
-CanvasRenderingContext2D includes CanvasHitRegions;
 
 
 interface mixin CanvasState {
@@ -301,6 +304,8 @@ interface mixin CanvasTextDrawingStyles {
   attribute UTF8String font; // (default 10px sans-serif)
   attribute DOMString textAlign; // "start", "end", "left", "right", "center" (default: "start")
   attribute DOMString textBaseline; // "top", "hanging", "middle", "alphabetic", "ideographic", "bottom" (default: "alphabetic")
+  attribute DOMString direction; // "ltr", "rtl", "inherit" (default: "inherit")
+  attribute DOMString fontKerning; // "auto", "normal", "none" (default: "auto")
 };
 
 interface mixin CanvasPathMethods {
@@ -330,14 +335,8 @@ interface mixin CanvasPathMethods {
   void ellipse(double x, double y, double radiusX, double radiusY, double rotation, double startAngle, double endAngle, optional boolean anticlockwise = false);
 };
 
-interface mixin CanvasHitRegions {
-  // hit regions
-  [Pref="canvas.hitregions.enabled", Throws] void addHitRegion(optional HitRegionOptions options = {});
-  [Pref="canvas.hitregions.enabled"] void removeHitRegion(DOMString id);
-  [Pref="canvas.hitregions.enabled"] void clearHitRegions();
-};
-
-[Exposed=Window]
+[Exposed=(Window,Worker),
+ Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread"]
 interface CanvasGradient {
   // opaque object
   [Throws]
@@ -345,7 +344,8 @@ interface CanvasGradient {
   void addColorStop(float offset, UTF8String color);
 };
 
-[Exposed=Window]
+[Exposed=(Window,Worker),
+ Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread"]
 interface CanvasPattern {
   // opaque object
   // [Throws, LenientFloat] - could not do this overload because of bug 1020975
@@ -355,7 +355,7 @@ interface CanvasPattern {
   void setTransform(optional DOMMatrix2DInit matrix = {});
 };
 
-[Exposed=Window]
+[Exposed=(Window,Worker)]
 interface TextMetrics {
 
   // x-direction
@@ -396,7 +396,8 @@ interface TextMetrics {
 };
 
 [Pref="canvas.path.enabled",
- Exposed=Window]
+ Func="mozilla::dom::OffscreenCanvas::PrefEnabledOnWorkerThread",
+ Exposed=(Window,Worker)]
 interface Path2D
 {
   constructor();

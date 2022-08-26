@@ -139,7 +139,12 @@ function original_app_path(test_name) {
 }
 
 function tampered_app_path(test_name) {
-  return FileUtils.getFile("TmpD", ["test_signed_app-" + test_name + ".zip"]);
+  return new FileUtils.File(
+    PathUtils.join(
+      Services.dirsvc.get("TmpD", Ci.nsIFile).path,
+      `test_signed_app-${test_name}.zip`
+    )
+  );
 }
 
 var hashTestcases = [
@@ -685,7 +690,7 @@ var coseTestcasesProd = [
 ];
 
 for (let policy of cosePolicies) {
-  for (let testcase of coseTestcasesStage) {
+  for (let testcase of [...coseTestcasesStage, ...coseTestcasesProd]) {
     add_signature_test(policy, function() {
       certdb.openSignedAppFileAsync(
         testcase.root,

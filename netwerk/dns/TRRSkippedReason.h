@@ -51,6 +51,50 @@ enum class TRRSkippedReason : uint32_t {
   ODOH_DECRYPTION_FAILED = 36,  // Failed to decrypt DNS packets.
 };
 
+inline bool IsRelevantTRRSkipReason(TRRSkippedReason aReason) {
+  // - TRR_REQ_MODE_DISABLED - these requests are intentionally skipping TRR.
+  //     These include DNS queries used to bootstrap the TRR connection,
+  //     captive portal checks, connectivity checks, etc.
+  //     Since we don't want to use TRR for these connections, we don't need
+  //     to include them with other relevant skip reasons.
+  // - TRR_DISABLED_FLAG - This reason is used when retrying failed connections,
+  //    sync DNS resolves on the main thread, or requests coming from
+  //    webextensions that choose to skip TRR
+  // - TRR_EXCLUDED - This reason is used when a certain domain is excluded
+  //    from TRR because it is explicitly set by the user, or because it
+  //    is part of the user's DNS suffix list, indicating a host that is likely
+  //    to be on the local network.
+  if (aReason == TRRSkippedReason::TRR_REQ_MODE_DISABLED ||
+      aReason == TRRSkippedReason::TRR_DISABLED_FLAG ||
+      aReason == TRRSkippedReason::TRR_EXCLUDED) {
+    return false;
+  }
+  return true;
+}
+
+inline bool IsBlockedTRRRequest(TRRSkippedReason aReason) {
+  // See TRR::MaybeBlockRequest. These are the reasons that could block sending
+  // TRR requests.
+  return (aReason == TRRSkippedReason::TRR_EXCLUDED ||
+          aReason == TRRSkippedReason::TRR_MODE_NOT_ENABLED ||
+          aReason == TRRSkippedReason::TRR_HOST_BLOCKED_TEMPORARY);
+}
+
+inline bool IsNonRecoverableTRRSkipReason(TRRSkippedReason aReason) {
+  // These are non-recoverable reasons and we'll fallback to native without
+  // retrying.
+  return (aReason == TRRSkippedReason::TRR_NXDOMAIN ||
+          aReason == TRRSkippedReason::TRR_NO_ANSWERS ||
+          aReason == TRRSkippedReason::TRR_DISABLED_FLAG ||
+          aReason == TRRSkippedReason::TRR_RCODE_FAIL);
+}
+
+inline bool IsFailedConfirmationOrNoConnectivity(TRRSkippedReason aReason) {
+  // TRR is in non-confirmed state now, so we don't try to use TRR at all.
+  return (aReason == TRRSkippedReason::TRR_NOT_CONFIRMED ||
+          aReason == TRRSkippedReason::TRR_NO_CONNECTIVITY);
+}
+
 }  // namespace net
 }  // namespace mozilla
 

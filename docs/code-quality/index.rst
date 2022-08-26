@@ -38,11 +38,6 @@ In this document, we try to list these all tools.
      - `bug 712350 <https://bugzilla.mozilla.org/show_bug.cgi?id=712350>`__
      -
      - https://clang-analyzer.llvm.org/
-   * - Coverity
-     -
-     - `bug 1230156 <https://bugzilla.mozilla.org/show_bug.cgi?id=1230156>`__
-     -
-     -
    * - cpp virtual final
      -
      -
@@ -146,11 +141,11 @@ In this document, we try to list these all tools.
      - Meta bug
      - More info
      - Upstream
-   * - Infer
-     -
-     - `bug 1175203 <https://bugzilla.mozilla.org/show_bug.cgi?id=1175203>`__
-     -
-     - https://github.com/facebook/infer
+   * - Spotless
+     - Yes
+     - `bug 1571899 <https://bugzilla.mozilla.org/show_bug.cgi?id=1571899>`__
+     - :ref:`Spotless`
+     - https://github.com/diffplug/spotless
 
 .. list-table:: Others
    :widths: 20 20 20 20 20
@@ -176,9 +171,13 @@ In this document, we try to list these all tools.
      -
      - :ref:`Codespell`
      - https://github.com/codespell-project/codespell
+   * - Fluent Lint
+     - No
+     -
+     - :ref:`Fluent Lint`
+     -
    * - YAML linter
+     - No
      -
-     -
-     -
+     - :ref:`yamllint`
      - https://github.com/adrienverge/yamllint
-

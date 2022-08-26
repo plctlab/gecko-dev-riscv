@@ -14,9 +14,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union  # noqa
 
+from . import __version__
 from . import metrics
 from . import pings
+from . import tags
 from . import util
+from .util import DictWrapper
 
 
 def kotlin_datatypes_filter(value: util.JSONType) -> str:
@@ -28,6 +31,8 @@ def kotlin_datatypes_filter(value: util.JSONType) -> str:
       - dicts to use mapOf
       - sets to use setOf
       - enums to use the like-named Kotlin enum
+      - Rate objects to a CommonMetricData initializer
+        (for external Denominators' Numerators lists)
     """
 
     class KotlinEncoder(json.JSONEncoder):
@@ -53,7 +58,8 @@ def kotlin_datatypes_filter(value: util.JSONType) -> str:
                     first = False
                 yield ")"
             elif isinstance(value, enum.Enum):
-                yield (value.__class__.__name__ + "." + util.Camelize(value.name))
+                # UniFFI generates SCREAMING_CASE enum variants.
+                yield (value.__class__.__name__ + "." + util.screaming_case(value.name))
             elif isinstance(value, set):
                 yield "setOf("
                 first = True
@@ -62,6 +68,17 @@ def kotlin_datatypes_filter(value: util.JSONType) -> str:
                         yield ", "
                     yield from self.iterencode(subvalue)
                     first = False
+                yield ")"
+            elif isinstance(value, metrics.Rate):
+                yield "CommonMetricData("
+                first = True
+                for arg_name in util.common_metric_args:
+                    if hasattr(value, arg_name):
+                        if not first:
+                            yield ", "
+                        yield f"{util.camelize(arg_name)} = "
+                        yield from self.iterencode(getattr(value, arg_name))
+                        first = False
                 yield ")"
             else:
                 yield from super().iterencode(value)
@@ -130,6 +147,29 @@ def class_name(obj_type: str) -> str:
     return util.Camelize(obj_type) + "MetricType"
 
 
+def generate_build_date(date: Optional[str]) -> str:
+    """
+    Generate the build timestamp.
+    """
+
+    ts = util.build_date(date)
+
+    data = [
+        str(ts.year),
+        # In Java the first month of the year in calendars is JANUARY which is 0.
+        # In Python it's 1-based
+        str(ts.month - 1),
+        str(ts.day),
+        str(ts.hour),
+        str(ts.minute),
+        str(ts.second),
+    ]
+    components = ", ".join(data)
+
+    # DatetimeMetricType takes a `Calendar` instance.
+    return f'Calendar.getInstance(TimeZone.getTimeZone("GMT+0")).also {{ cal -> cal.set({components}) }}'  # noqa
+
+
 def output_gecko_lookup(
     objs: metrics.ObjectTree, output_dir: Path, options: Optional[Dict[str, Any]] = None
 ) -> None:
@@ -176,9 +216,7 @@ def output_gecko_lookup(
     #   },
     #   "other-type": {}
     # }
-    gecko_metrics: OrderedDict[
-        str, OrderedDict[str, List[Dict[str, str]]]
-    ] = OrderedDict()
+    gecko_metrics: Dict[str, Dict[str, List[Dict[str, str]]]] = DictWrapper()
 
     # Define scalar-like types.
     SCALAR_LIKE_TYPES = ["boolean", "string", "quantity"]
@@ -188,8 +226,10 @@ def output_gecko_lookup(
         # Glean SDK and GeckoView. See bug 1566356 for more context.
         for metric in category_val.values():
             # This is not a Gecko metric, skip it.
-            if isinstance(metric, pings.Ping) or not getattr(
-                metric, "gecko_datapoint", False
+            if (
+                isinstance(metric, pings.Ping)
+                or isinstance(metric, tags.Tag)
+                or not getattr(metric, "gecko_datapoint", False)
             ):
                 continue
 
@@ -219,6 +259,7 @@ def output_gecko_lookup(
     with filepath.open("w", encoding="utf-8") as fd:
         fd.write(
             template.render(
+                parser_version=__version__,
                 gecko_metrics=gecko_metrics,
                 namespace=namespace,
                 glean_namespace=glean_namespace,
@@ -247,6 +288,11 @@ def output_kotlin(
         - `with_buildinfo`: If "true" a `GleanBuildInfo.kt` file is generated.
           Otherwise generation of that file is skipped.
           Defaults to "true".
+        - `build_date`: If set to `0` a static unix epoch time will be used.
+                        If set to a ISO8601 datetime string (e.g. `2022-01-03T17:30:00`)
+                        it will use that date.
+                        Other values will throw an error.
+                        If not set it will use the current date & time.
     """
     if options is None:
         options = {}
@@ -255,6 +301,7 @@ def output_kotlin(
     glean_namespace = options.get("glean_namespace", "mozilla.components.service.glean")
     namespace_package = namespace[: namespace.rfind(".")]
     with_buildinfo = options.get("with_buildinfo", "true").lower() == "true"
+    build_date = options.get("build_date", None)
 
     # Write out the special "build info" object
     template = util.get_jinja2_template(
@@ -262,14 +309,17 @@ def output_kotlin(
     )
 
     if with_buildinfo:
+        build_date = generate_build_date(build_date)
         # This filename needs to start with "Glean" so it can never clash with a
         # metric category
         with (output_dir / "GleanBuildInfo.kt").open("w", encoding="utf-8") as fd:
             fd.write(
                 template.render(
+                    parser_version=__version__,
                     namespace=namespace,
                     namespace_package=namespace_package,
                     glean_namespace=glean_namespace,
+                    build_date=build_date,
                 )
             )
             fd.write("\n")
@@ -298,10 +348,13 @@ def output_kotlin(
         with filepath.open("w", encoding="utf-8") as fd:
             fd.write(
                 template.render(
+                    parser_version=__version__,
                     category_name=category_key,
                     objs=category_val,
                     obj_types=obj_types,
-                    extra_args=util.extra_args,
+                    common_metric_args=util.common_metric_args,
+                    extra_metric_args=util.extra_metric_args,
+                    ping_args=util.ping_args,
                     namespace=namespace,
                     has_labeled_metrics=has_labeled_metrics,
                     glean_namespace=glean_namespace,

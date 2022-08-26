@@ -37,6 +37,7 @@
 #include "nsCRT.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentPolicyUtils.h"
+#include "nsContentSecurityManager.h"
 #include "nsContentUtils.h"
 #include "nsHttpChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
@@ -399,47 +400,83 @@ class imgMemoryReporter final : public nsIMemoryReporter {
                                     /* aRadix = */ 16);
       }
 
-      if (counter.Key().SVGContext()) {
-        const SVGImageContext& context = counter.Key().SVGContext().ref();
-        surfacePathPrefix.AppendLiteral(", svgContext:[ ");
-        if (context.GetViewportSize()) {
-          const CSSIntSize& size = context.GetViewportSize().ref();
-          surfacePathPrefix.AppendLiteral("viewport=(");
-          surfacePathPrefix.AppendInt(size.width);
-          surfacePathPrefix.AppendLiteral("x");
-          surfacePathPrefix.AppendInt(size.height);
-          surfacePathPrefix.AppendLiteral(") ");
+      if (counter.Key().Region()) {
+        const ImageIntRegion& region = counter.Key().Region().ref();
+        const gfx::IntRect& rect = region.Rect();
+        surfacePathPrefix.AppendLiteral(", region:[ rect=(");
+        surfacePathPrefix.AppendInt(rect.x);
+        surfacePathPrefix.AppendLiteral(",");
+        surfacePathPrefix.AppendInt(rect.y);
+        surfacePathPrefix.AppendLiteral(") ");
+        surfacePathPrefix.AppendInt(rect.width);
+        surfacePathPrefix.AppendLiteral("x");
+        surfacePathPrefix.AppendInt(rect.height);
+        if (region.IsRestricted()) {
+          const gfx::IntRect& restrict = region.Restriction();
+          if (restrict == rect) {
+            surfacePathPrefix.AppendLiteral(", restrict=rect");
+          } else {
+            surfacePathPrefix.AppendLiteral(", restrict=(");
+            surfacePathPrefix.AppendInt(restrict.x);
+            surfacePathPrefix.AppendLiteral(",");
+            surfacePathPrefix.AppendInt(restrict.y);
+            surfacePathPrefix.AppendLiteral(") ");
+            surfacePathPrefix.AppendInt(restrict.width);
+            surfacePathPrefix.AppendLiteral("x");
+            surfacePathPrefix.AppendInt(restrict.height);
+          }
         }
-        if (context.GetPreserveAspectRatio()) {
-          nsAutoString aspect;
-          context.GetPreserveAspectRatio()->ToString(aspect);
-          surfacePathPrefix.AppendLiteral("preserveAspectRatio=(");
-          LossyAppendUTF16toASCII(aspect, surfacePathPrefix);
-          surfacePathPrefix.AppendLiteral(") ");
-        }
-        if (context.GetContextPaint()) {
-          const SVGEmbeddingContextPaint* paint = context.GetContextPaint();
-          surfacePathPrefix.AppendLiteral("contextPaint=(");
-          if (paint->GetFill()) {
-            surfacePathPrefix.AppendLiteral(" fill=");
-            surfacePathPrefix.AppendInt(paint->GetFill()->ToABGR(), 16);
-          }
-          if (paint->GetFillOpacity() != 1.0) {
-            surfacePathPrefix.AppendLiteral(" fillOpa=");
-            surfacePathPrefix.AppendFloat(paint->GetFillOpacity());
-          }
-          if (paint->GetStroke()) {
-            surfacePathPrefix.AppendLiteral(" stroke=");
-            surfacePathPrefix.AppendInt(paint->GetStroke()->ToABGR(), 16);
-          }
-          if (paint->GetStrokeOpacity() != 1.0) {
-            surfacePathPrefix.AppendLiteral(" strokeOpa=");
-            surfacePathPrefix.AppendFloat(paint->GetStrokeOpacity());
-          }
-          surfacePathPrefix.AppendLiteral(" ) ");
+        if (region.GetExtendMode() != gfx::ExtendMode::CLAMP) {
+          surfacePathPrefix.AppendLiteral(", extendMode=");
+          surfacePathPrefix.AppendInt(int32_t(region.GetExtendMode()));
         }
         surfacePathPrefix.AppendLiteral("]");
       }
+
+      const SVGImageContext& context = counter.Key().SVGContext();
+      surfacePathPrefix.AppendLiteral(", svgContext:[ ");
+      if (context.GetViewportSize()) {
+        const CSSIntSize& size = context.GetViewportSize().ref();
+        surfacePathPrefix.AppendLiteral("viewport=(");
+        surfacePathPrefix.AppendInt(size.width);
+        surfacePathPrefix.AppendLiteral("x");
+        surfacePathPrefix.AppendInt(size.height);
+        surfacePathPrefix.AppendLiteral(") ");
+      }
+      if (context.GetPreserveAspectRatio()) {
+        nsAutoString aspect;
+        context.GetPreserveAspectRatio()->ToString(aspect);
+        surfacePathPrefix.AppendLiteral("preserveAspectRatio=(");
+        LossyAppendUTF16toASCII(aspect, surfacePathPrefix);
+        surfacePathPrefix.AppendLiteral(") ");
+      }
+      if (auto scheme = context.GetColorScheme()) {
+        surfacePathPrefix.AppendLiteral("colorScheme=");
+        surfacePathPrefix.AppendInt(int32_t(*scheme));
+        surfacePathPrefix.AppendLiteral(" ");
+      }
+      if (context.GetContextPaint()) {
+        const SVGEmbeddingContextPaint* paint = context.GetContextPaint();
+        surfacePathPrefix.AppendLiteral("contextPaint=(");
+        if (paint->GetFill()) {
+          surfacePathPrefix.AppendLiteral(" fill=");
+          surfacePathPrefix.AppendInt(paint->GetFill()->ToABGR(), 16);
+        }
+        if (paint->GetFillOpacity() != 1.0) {
+          surfacePathPrefix.AppendLiteral(" fillOpa=");
+          surfacePathPrefix.AppendFloat(paint->GetFillOpacity());
+        }
+        if (paint->GetStroke()) {
+          surfacePathPrefix.AppendLiteral(" stroke=");
+          surfacePathPrefix.AppendInt(paint->GetStroke()->ToABGR(), 16);
+        }
+        if (paint->GetStrokeOpacity() != 1.0) {
+          surfacePathPrefix.AppendLiteral(" strokeOpa=");
+          surfacePathPrefix.AppendFloat(paint->GetStrokeOpacity());
+        }
+        surfacePathPrefix.AppendLiteral(" ) ");
+      }
+      surfacePathPrefix.AppendLiteral("]");
 
       surfacePathPrefix.AppendLiteral(")/");
 
@@ -633,34 +670,29 @@ static void NewRequestAndEntry(bool aForcePrincipalCheckForCacheEntry,
 
 static bool ShouldRevalidateEntry(imgCacheEntry* aEntry, nsLoadFlags aFlags,
                                   bool aHasExpired) {
-  bool bValidateEntry = false;
-
   if (aFlags & nsIRequest::LOAD_BYPASS_CACHE) {
     return false;
   }
-
   if (aFlags & nsIRequest::VALIDATE_ALWAYS) {
-    bValidateEntry = true;
-  } else if (aEntry->GetMustValidate()) {
-    bValidateEntry = true;
-  } else if (aHasExpired) {
+    return true;
+  }
+  if (aEntry->GetMustValidate()) {
+    return true;
+  }
+  if (aHasExpired) {
     // The cache entry has expired...  Determine whether the stale cache
     // entry can be used without validation...
-    if (aFlags &
-        (nsIRequest::VALIDATE_NEVER | nsIRequest::VALIDATE_ONCE_PER_SESSION)) {
-      // VALIDATE_NEVER and VALIDATE_ONCE_PER_SESSION allow stale cache
-      // entries to be used unless they have been explicitly marked to
-      // indicate that revalidation is necessary.
-      bValidateEntry = false;
-
-    } else if (!(aFlags & nsIRequest::LOAD_FROM_CACHE)) {
-      // LOAD_FROM_CACHE allows a stale cache entry to be used... Otherwise,
-      // the entry must be revalidated.
-      bValidateEntry = true;
+    if (aFlags & (nsIRequest::LOAD_FROM_CACHE | nsIRequest::VALIDATE_NEVER |
+                  nsIRequest::VALIDATE_ONCE_PER_SESSION)) {
+      // LOAD_FROM_CACHE, VALIDATE_NEVER and VALIDATE_ONCE_PER_SESSION allow
+      // stale cache entries to be used unless they have been explicitly marked
+      // to indicate that revalidation is necessary.
+      return false;
     }
+    // Entry is expired, revalidate.
+    return true;
   }
-
-  return bValidateEntry;
+  return false;
 }
 
 /* Call content policies on cached images that went through a redirect */
@@ -827,14 +859,10 @@ static nsresult NewImageChannel(
   //
 
   nsSecurityFlags securityFlags =
-      aCORSMode == CORS_NONE
-          ? nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT
-          : nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT;
-  if (aCORSMode == CORS_ANONYMOUS) {
-    securityFlags |= nsILoadInfo::SEC_COOKIES_SAME_ORIGIN;
-  } else if (aCORSMode == CORS_USE_CREDENTIALS) {
-    securityFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
-  }
+      nsContentSecurityManager::ComputeSecurityFlags(
+          aCORSMode, nsContentSecurityManager::CORSSecurityMapping::
+                         CORS_NONE_MAPS_TO_INHERITED_CONTEXT);
+
   securityFlags |= nsILoadInfo::SEC_ALLOW_CHROME;
 
   // Note we are calling NS_NewChannelWithTriggeringPrincipal() here with a
@@ -964,7 +992,8 @@ imgCacheEntry::imgCacheEntry(imgLoader* loader, imgRequest* request,
       // PutIntoCache will set this to false.
       mEvicted(true),
       mHasNoProxies(true),
-      mForcePrincipalCheck(forcePrincipalCheck) {}
+      mForcePrincipalCheck(forcePrincipalCheck),
+      mHasNotified(false) {}
 
 imgCacheEntry::~imgCacheEntry() {
   LOG_FUNC(gImgLog, "imgCacheEntry::~imgCacheEntry()");
@@ -1385,7 +1414,7 @@ imgLoader::RemoveEntriesFromBaseDomainInAllProcesses(
   }
 
   for (auto* cp : ContentParent::AllProcesses(ContentParent::eLive)) {
-    Unused << cp->SendClearImageCacheFromBaseDomain(nsCString(aBaseDomain));
+    Unused << cp->SendClearImageCacheFromBaseDomain(aBaseDomain);
   }
 
   return RemoveEntriesInternal(nullptr, &aBaseDomain);
@@ -1869,6 +1898,46 @@ bool imgLoader::ValidateRequestWithNewChannel(
   return true;
 }
 
+void imgLoader::NotifyObserversForCachedImage(
+    imgCacheEntry* aEntry, imgRequest* request, nsIURI* aURI,
+    nsIReferrerInfo* aReferrerInfo, Document* aLoadingDocument,
+    nsIPrincipal* aTriggeringPrincipal, CORSMode aCORSMode) {
+  if (aEntry->HasNotified()) {
+    return;
+  }
+
+  nsCOMPtr<nsIObserverService> obsService = services::GetObserverService();
+
+  if (!obsService->HasObservers("http-on-image-cache-response")) {
+    return;
+  }
+
+  aEntry->SetHasNotified();
+
+  nsCOMPtr<nsIChannel> newChannel;
+  bool forcePrincipalCheck;
+  nsresult rv =
+      NewImageChannel(getter_AddRefs(newChannel), &forcePrincipalCheck, aURI,
+                      nullptr, aCORSMode, aReferrerInfo, nullptr, 0,
+                      nsIContentPolicy::TYPE_INTERNAL_IMAGE,
+                      aTriggeringPrincipal, aLoadingDocument, mRespectPrivacy);
+  if (NS_FAILED(rv)) {
+    return;
+  }
+
+  RefPtr<HttpBaseChannel> httpBaseChannel = do_QueryObject(newChannel);
+  if (httpBaseChannel) {
+    httpBaseChannel->SetDummyChannelForImageCache();
+    newChannel->SetContentType(nsDependentCString(request->GetMimeType()));
+    RefPtr<mozilla::image::Image> image = request->GetImage();
+    if (image) {
+      newChannel->SetContentLength(aEntry->GetDataSize());
+    }
+    obsService->NotifyObservers(newChannel, "http-on-image-cache-response",
+                                nullptr);
+  }
+}
+
 bool imgLoader::ValidateEntry(
     imgCacheEntry* aEntry, nsIURI* aURI, nsIURI* aInitialDocumentURI,
     nsIReferrerInfo* aReferrerInfo, nsILoadGroup* aLoadGroup,
@@ -2017,6 +2086,12 @@ bool imgLoader::ValidateEntry(
         aNewChannelCreated);
   }
 
+  if (!validateRequest) {
+    NotifyObserversForCachedImage(aEntry, request, aURI, aReferrerInfo,
+                                  aLoadingDocument, aTriggeringPrincipal,
+                                  aCORSMode);
+  }
+
   return !validateRequest;
 }
 
@@ -2141,15 +2216,6 @@ void imgLoader::RemoveFromUncachedImages(imgRequest* aRequest) {
   mUncachedImages.Remove(aRequest);
 }
 
-bool imgLoader::PreferLoadFromCache(nsIURI* aURI) const {
-  // If we are trying to load an image from a protocol that doesn't support
-  // caching (e.g. thumbnails via the moz-page-thumb:// protocol, or icons via
-  // the moz-extension:// protocol), load it directly from the cache to prevent
-  // re-decoding the image. See Bug 1373258.
-  // TODO: Bug 1406134
-  return aURI->SchemeIs("moz-page-thumb") || aURI->SchemeIs("moz-extension");
-}
-
 #define LOAD_FLAGS_CACHE_MASK \
   (nsIRequest::LOAD_BYPASS_CACHE | nsIRequest::LOAD_FROM_CACHE)
 
@@ -2271,9 +2337,6 @@ nsresult imgLoader::LoadImage(
   // Get the default load flags from the loadgroup (if possible)...
   if (aLoadGroup) {
     aLoadGroup->GetLoadFlags(&requestFlags);
-    if (PreferLoadFromCache(aURI)) {
-      requestFlags |= nsIRequest::LOAD_FROM_CACHE;
-    }
   }
   //
   // Merge the default load flags with those passed in via aLoadFlags.
@@ -2613,10 +2676,6 @@ nsresult imgLoader::LoadImageWithChannel(nsIChannel* channel,
 
   nsLoadFlags requestFlags = nsIRequest::LOAD_NORMAL;
   channel->GetLoadFlags(&requestFlags);
-
-  if (PreferLoadFromCache(uri)) {
-    requestFlags |= nsIRequest::LOAD_FROM_CACHE;
-  }
 
   RefPtr<imgCacheEntry> entry;
 

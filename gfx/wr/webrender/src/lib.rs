@@ -57,8 +57,6 @@ macro_rules! matches {
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
-extern crate cstr;
-#[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
@@ -76,6 +74,7 @@ extern crate svg_fmt;
 
 #[macro_use]
 mod profiler;
+mod telemetry;
 
 mod batch;
 mod border;
@@ -122,6 +121,7 @@ mod scene_building;
 mod screen_capture;
 mod segment;
 mod spatial_node;
+mod surface;
 mod texture_pack;
 mod texture_cache;
 mod tile_cache;
@@ -203,19 +203,18 @@ extern crate webrender_build;
 #[doc(hidden)]
 pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities, CompositorSurfaceTransform};
 pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo, PartialPresentCompositor};
-pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo};
+pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo, WindowVisibility};
 pub use crate::device::{UploadMethod, VertexUsageHint, get_gl_target, get_unoptimized_shader_source};
 pub use crate::device::{ProgramBinary, ProgramCache, ProgramCacheObserver, FormatDesc};
 pub use crate::device::Device;
-pub use crate::frame_builder::ChasePrimitive;
-pub use crate::prim_store::PrimitiveDebugId;
 pub use crate::profiler::{ProfilerHooks, set_profiler_hooks};
 pub use crate::renderer::{
-    AsyncPropertySampler, CpuProfile, DebugFlags, GpuProfile, GraphicsApi,
-    GraphicsApiInfo, PipelineInfo, Renderer, RendererError, RendererOptions, RenderResults,
-    RendererStats, SceneBuilderHooks, Shaders, SharedShaders, ShaderPrecacheFlags,
-    MAX_VERTEX_TEXTURE_WIDTH, ONE_TIME_USAGE_HINT,
+    CpuProfile, DebugFlags, GpuProfile, GraphicsApi,
+    GraphicsApiInfo, PipelineInfo, Renderer, RendererError, RenderResults,
+    RendererStats, Shaders, SharedShaders, ShaderPrecacheFlags,
+    MAX_VERTEX_TEXTURE_WIDTH,
 };
+pub use crate::renderer::init::{WebRenderOptions, create_webrender_instance, AsyncPropertySampler, SceneBuilderHooks, ONE_TIME_USAGE_HINT};
 pub use crate::hit_test::SharedHitTester;
 pub use crate::internal_types::FastHashMap;
 pub use crate::screen_capture::{AsyncScreenshotHandle, RecordedFrameHandle};
@@ -223,8 +222,8 @@ pub use crate::texture_cache::TextureCacheConfig;
 pub use api as webrender_api;
 pub use webrender_build::shader::ProgramSourceDigest;
 pub use crate::picture::{TileDescriptor, TileId, InvalidationReason};
-pub use crate::picture::{PrimitiveCompareResult, PrimitiveCompareResultDetail, CompareHelperResult};
-pub use crate::picture::{TileNode, TileNodeKind, TileSerializer, TileCacheInstanceSerializer, TileOffset, TileCacheLoggerUpdateLists};
+pub use crate::picture::{PrimitiveCompareResult, CompareHelperResult};
+pub use crate::picture::{TileNode, TileNodeKind, TileOffset};
 pub use crate::intern::ItemUid;
 pub use crate::render_api::*;
 pub use crate::tile_cache::{PictureCacheDebugInfo, DirtyTileDebugInfo, TileDebugInfo, SliceDebugInfo};

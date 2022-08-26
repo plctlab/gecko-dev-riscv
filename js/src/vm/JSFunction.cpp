@@ -30,7 +30,6 @@
 #include "builtin/Symbol.h"
 #include "frontend/BytecodeCompilation.h"
 #include "frontend/BytecodeCompiler.h"
-#include "frontend/TokenStream.h"
 #include "gc/Marking.h"
 #include "gc/Policy.h"
 #include "jit/Ion.h"
@@ -50,6 +49,7 @@
 #include "vm/AsyncFunction.h"
 #include "vm/AsyncIteration.h"
 #include "vm/BooleanObject.h"
+#include "vm/ErrorContext.h"           // MainThreadErrorContext
 #include "vm/FunctionFlags.h"          // js::FunctionFlags
 #include "vm/GeneratorAndAsyncKind.h"  // js::GeneratorKind, js::FunctionAsyncKind
 #include "vm/GlobalObject.h"
@@ -67,6 +67,10 @@
 #include "vm/WellKnownAtom.h"  // js_*_str
 #include "vm/WrapperObject.h"
 #include "wasm/AsmJS.h"
+#ifdef ENABLE_RECORD_TUPLE
+#  include "vm/RecordType.h"
+#  include "vm/TupleType.h"
+#endif
 
 #include "debugger/DebugAPI-inl.h"
 #include "vm/FrameIter-inl.h"  // js::FrameIter::unaliasedForEachActual
@@ -188,6 +192,14 @@ bool ArgumentsGetterImpl(JSContext* cx, const CallArgs& args) {
   RootedFunction fun(cx, &args.thisv().toObject().as<JSFunction>());
   if (!ArgumentsRestrictions(cx, fun)) {
     return false;
+  }
+
+  // Function.arguments isn't standard (not even Annex B), so it isn't
+  // worth the effort to guarantee that we can always recover it from
+  // an Ion frame. Always return null for differential fuzzing.
+  if (js::SupportDifferentialTesting()) {
+    args.rval().setNull();
+    return true;
   }
 
   // Return null if this function wasn't found on the stack.
@@ -379,8 +391,8 @@ static bool ResolveInterpretedFunctionPrototype(JSContext* cx,
     return false;
   }
 
-  RootedPlainObject proto(cx,
-                          NewPlainObjectWithProto(cx, objProto, TenuredObject));
+  Rooted<PlainObject*> proto(
+      cx, NewPlainObjectWithProto(cx, objProto, TenuredObject));
   if (!proto) {
     return false;
   }
@@ -643,12 +655,22 @@ inline void JSFunction::trace(JSTracer* trc) {
   if (isInterpreted() && hasBaseScript()) {
     if (BaseScript* script = baseScript()) {
       TraceManuallyBarrieredEdge(trc, &script, "script");
-      // Self-hosted scripts are shared with workers but are never
-      // relocated. Skip unnecessary writes to prevent the possible data race.
+      // Self-hosted scripts are shared with workers but are never relocated.
+      // Skip unnecessary writes to prevent the possible data race.
       if (baseScript() != script) {
-        setFixedSlot(NativeJitInfoOrInterpretedScriptSlot,
-                     JS::PrivateValue(script));
+        HeapSlot& slot = getFixedSlotRef(NativeJitInfoOrInterpretedScriptSlot);
+        slot.unbarrieredSet(JS::PrivateValue(script));
       }
+    }
+  }
+  // wasm/asm.js exported functions need to keep WasmInstantObject alive,
+  // access it via WASM_INSTANCE_SLOT extended slot.
+  if (isAsmJSNative() || isWasm()) {
+    const Value& v = getExtendedSlot(FunctionExtended::WASM_INSTANCE_SLOT);
+    if (!v.isUndefined()) {
+      js::wasm::Instance* instance =
+          static_cast<js::wasm::Instance*>(v.toPrivate());
+      instance->trace(trc);
     }
   }
 }
@@ -664,7 +686,7 @@ static JSObject* CreateFunctionConstructor(JSContext* cx, JSProtoKey key) {
   RootedObject functionCtor(
       cx, NewFunctionWithProto(
               cx, Function, 1, FunctionFlags::NATIVE_CTOR, nullptr,
-              HandlePropertyName(cx->names().Function), functionProto,
+              Handle<PropertyName*>(cx->names().Function), functionProto,
               gc::AllocKind::FUNCTION, TenuredObject));
   if (!functionCtor) {
     return nullptr;
@@ -686,7 +708,7 @@ static JSObject* CreateFunctionPrototype(JSContext* cx, JSProtoKey key) {
 
   return NewFunctionWithProto(
       cx, FunctionPrototype, 0, FunctionFlags::NATIVE_FUN, nullptr,
-      HandlePropertyName(cx->names().empty), objectProto,
+      Handle<PropertyName*>(cx->names().empty), objectProto,
       gc::AllocKind::FUNCTION, TenuredObject);
 }
 
@@ -799,6 +821,7 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
     // can be matched as the 'PropertyName' grammar production.
     if (fun->explicitName() && !fun->isBoundFunction() &&
         (fun->kind() == FunctionFlags::NormalFunction ||
+         fun->kind() == FunctionFlags::Wasm ||
          fun->kind() == FunctionFlags::ClassConstructor)) {
       if (!out.append(' ')) {
         return nullptr;
@@ -956,7 +979,7 @@ bool js::fun_call(JSContext* cx, unsigned argc, Value* vp) {
     iargs[i].set(args[i + 1]);
   }
 
-  return Call(cx, func, args.get(0), iargs, args.rval());
+  return Call(cx, func, args.get(0), iargs, args.rval(), CallReason::FunCall);
 }
 
 // ES5 15.3.4.3
@@ -1008,7 +1031,7 @@ bool js::fun_apply(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   // Step 9.
-  return Call(cx, fval, args[0], args2, args.rval());
+  return Call(cx, fval, args[0], args2, args.rval(), CallReason::FunCall);
 }
 
 static const JSFunctionSpec function_methods[] = {
@@ -1030,7 +1053,6 @@ static const JSClassOps JSFunctionClassOps = {
     fun_mayResolve,  // mayResolve
     nullptr,         // finalize
     nullptr,         // call
-    nullptr,         // hasInstance
     nullptr,         // construct
     fun_trace,       // trace
 };
@@ -1398,7 +1420,9 @@ bool JSFunction::delazifyLazilyInterpretedFunction(JSContext* cx,
   }
 
   // Finally, compile the script if it really doesn't exist.
-  if (!frontend::DelazifyCanonicalScriptedFunction(cx, fun)) {
+  MainThreadErrorContext ec(cx);
+  if (!frontend::DelazifyCanonicalScriptedFunction(
+          cx, &ec, cx->stackLimitForCurrentPrincipal(), fun)) {
     // The frontend shouldn't fail after linking the function and the
     // non-lazy script together.
     MOZ_ASSERT(fun->baseScript() == lazy);
@@ -1526,7 +1550,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
       .setNoScriptRval(false)
       .setIntroductionInfo(introducerFilename, introductionType, lineno,
                            pcOffset)
-      .setdeferDebugMetadata();
+      .setDeferDebugMetadata();
 
   JSStringBuilder sb(cx);
 
@@ -1581,9 +1605,10 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
 
   // Remember the position of ")".
   Maybe<uint32_t> parameterListEnd = Some(uint32_t(sb.length()));
-  MOZ_ASSERT(FunctionConstructorMedialSigils[0] == ')');
+  static_assert(FunctionConstructorMedialSigils[0] == ')');
 
-  if (!sb.append(FunctionConstructorMedialSigils)) {
+  if (!sb.append(FunctionConstructorMedialSigils.data(),
+                 FunctionConstructorMedialSigils.length())) {
     return false;
   }
 
@@ -1595,7 +1620,8 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
     }
   }
 
-  if (!sb.append(FunctionConstructorFinalBrace)) {
+  if (!sb.append(FunctionConstructorFinalBrace.data(),
+                 FunctionConstructorFinalBrace.length())) {
     return false;
   }
 
@@ -1610,8 +1636,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   }
 
   // Block this call if security callbacks forbid it.
-  Handle<GlobalObject*> global = cx->global();
-  if (!GlobalObject::isRuntimeCodeGenEnabled(cx, functionText, global)) {
+  if (!cx->isRuntimeCodeGenEnabled(JS::RuntimeCode::JS, functionText)) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_CSP_BLOCKED_FUNCTION);
     return false;
@@ -1663,8 +1688,10 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
 
   RootedValue undefValue(cx);
   RootedScript funScript(cx, JS_GetFunctionScript(cx, fun));
-  if (funScript && !UpdateDebugMetadata(cx, funScript, options, undefValue,
-                                        nullptr, maybeScript, maybeScript)) {
+  JS::InstantiateOptions instantiateOptions(options);
+  if (funScript &&
+      !UpdateDebugMetadata(cx, funScript, instantiateOptions, undefValue,
+                           nullptr, maybeScript, maybeScript)) {
     return false;
   }
 
@@ -1842,7 +1869,7 @@ Shape* GlobalObject::createFunctionShapeWithDefaultProto(JSContext* cx,
 
 JSFunction* js::NewFunctionWithProto(
     JSContext* cx, Native native, unsigned nargs, FunctionFlags flags,
-    HandleObject enclosingEnv, HandleAtom atom, HandleObject proto,
+    HandleObject enclosingEnv, Handle<JSAtom*> atom, HandleObject proto,
     gc::AllocKind allocKind /* = AllocKind::FUNCTION */,
     NewObjectKind newKind /* = GenericObject */) {
   MOZ_ASSERT(allocKind == gc::AllocKind::FUNCTION ||
@@ -1854,7 +1881,7 @@ JSFunction* js::NewFunctionWithProto(
 
   const JSClass* clasp = FunctionClassForAllocKind(allocKind);
 
-  RootedShape shape(cx);
+  Rooted<Shape*> shape(cx);
   if (!proto) {
     bool extended = (allocKind == gc::AllocKind::FUNCTION_EXTENDED);
     shape = GlobalObject::getFunctionShapeWithDefaultProto(cx, extended);
@@ -1947,6 +1974,7 @@ bool js::CanReuseScriptForClone(JS::Realm* realm, HandleFunction fun,
 
 static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
                                            HandleObject proto) {
+  MOZ_ASSERT(cx->realm() == fun->realm());
   MOZ_ASSERT(proto);
 
   const JSClass* clasp = fun->getClass();
@@ -1955,7 +1983,7 @@ static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
 
   // If |fun| also has |proto| as prototype (the common case) we can reuse its
   // shape for the clone. This works because |fun| isn't exposed to script.
-  RootedShape shape(cx);
+  Rooted<Shape*> shape(cx);
   if (fun->staticPrototype() == proto) {
     MOZ_ASSERT(fun->shape()->propMapLength() == 0);
     MOZ_ASSERT(fun->shape()->objectFlags().isEmpty());
@@ -1982,19 +2010,8 @@ static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
   clone->setArgCount(fun->nargs());
   clone->setFlags(flags);
 
-  JSAtom* atom = fun->displayAtom();
-  if (atom) {
-    cx->markAtom(atom);
-  }
-  clone->initAtom(atom);
-
-  if (allocKind == gc::AllocKind::FUNCTION_EXTENDED) {
-    MOZ_ASSERT(fun->isExtended());
-    MOZ_ASSERT(fun->compartment() == cx->compartment());
-    for (unsigned i = 0; i < FunctionExtended::NUM_EXTENDED_SLOTS; i++) {
-      clone->initExtendedSlot(i, fun->getExtendedSlot(i));
-    }
-  }
+  // Note: |clone| and |fun| are same-zone so we don't need to call markAtom.
+  clone->initAtom(fun->displayAtom());
 
   return clone;
 }
@@ -2024,6 +2041,16 @@ JSFunction* js::CloneFunctionReuseScript(JSContext* cx, HandleFunction fun,
     clone->initEnvironment(enclosingEnv);
   }
 
+#ifdef DEBUG
+  // Assert extended slots don't need to be copied.
+  if (fun->isExtended()) {
+    for (unsigned i = 0; i < FunctionExtended::NUM_EXTENDED_SLOTS; i++) {
+      MOZ_ASSERT(fun->getExtendedSlot(i).isUndefined());
+      MOZ_ASSERT(clone->getExtendedSlot(i).isUndefined());
+    }
+  }
+#endif
+
   return clone;
 }
 
@@ -2042,6 +2069,11 @@ JSFunction* js::CloneAsmJSModuleFunction(JSContext* cx, HandleFunction fun) {
   MOZ_ASSERT(fun->native() == InstantiateAsmJS);
   MOZ_ASSERT(!fun->hasJitInfo());
   clone->initNative(InstantiateAsmJS, nullptr);
+
+  JSObject* moduleObj =
+      &fun->getExtendedSlot(FunctionExtended::ASMJS_MODULE_SLOT).toObject();
+  clone->initExtendedSlot(FunctionExtended::ASMJS_MODULE_SLOT,
+                          ObjectValue(*moduleObj));
 
   return clone;
 }
@@ -2177,7 +2209,7 @@ bool js::SetFunctionName(JSContext* cx, HandleFunction fun, HandleValue name,
 JSFunction* js::DefineFunction(
     JSContext* cx, HandleObject obj, HandleId id, Native native, unsigned nargs,
     unsigned flags, gc::AllocKind allocKind /* = AllocKind::FUNCTION */) {
-  RootedAtom atom(cx, IdToFunctionName(cx, id));
+  Rooted<JSAtom*> atom(cx, IdToFunctionName(cx, id));
   if (!atom) {
     return nullptr;
   }
@@ -2215,6 +2247,11 @@ void js::ReportIncompatibleMethod(JSContext* cx, const CallArgs& args,
                  !thisv.toObject().staticPrototype() ||
                  thisv.toObject().staticPrototype()->getClass() != clasp);
       break;
+#  ifdef ENABLE_RECORD_TUPLE
+    case ValueType::ExtendedPrimitive:
+      MOZ_CRASH("ExtendedPrimitive is not supported yet");
+      break;
+#  endif
     case ValueType::String:
       MOZ_ASSERT(clasp != &StringObject::class_);
       break;

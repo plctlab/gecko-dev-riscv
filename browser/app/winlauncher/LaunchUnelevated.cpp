@@ -14,6 +14,7 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/ShellHeaderOnlyUtils.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
+#include "../BrowserDefines.h"
 #include "nsWindowsHelpers.h"
 
 #include <windows.h>
@@ -123,7 +124,7 @@ namespace mozilla {
 // way to ensure that the child process runs as the original user in the active
 // session; an elevated process could be running with different credentials than
 // those of the session.
-// See https://blogs.msdn.microsoft.com/oldnewthing/20131118-00/?p=2643
+// See https://devblogs.microsoft.com/oldnewthing/20131118-00/?p=2643
 
 LauncherVoidResult LaunchUnelevated(int aArgc, wchar_t* aArgv[]) {
   // We need COM to talk to Explorer. Using ProcessRuntime so that
@@ -134,18 +135,61 @@ LauncherVoidResult LaunchUnelevated(int aArgc, wchar_t* aArgv[]) {
     return LAUNCHER_ERROR_FROM_HRESULT(mscom.GetHResult());
   }
 
-  // Omit argv[0] because ShellExecute doesn't need it in params
-  UniquePtr<wchar_t[]> cmdLine(MakeCommandLine(aArgc - 1, aArgv + 1));
+  // Omit the original argv[0] because ShellExecute doesn't need it. Insert
+  // ATTEMPTING_DEELEVATION_FLAG so that we know not to attempt to restart
+  // ourselves if deelevation fails.
+  UniquePtr<wchar_t[]> cmdLine = [&]() {
+    constexpr wchar_t const* kTagArg = L"--" ATTEMPTING_DEELEVATION_FLAG;
+
+    // This should have already been checked, but just in case...
+    EnsureBrowserCommandlineSafe(aArgc, aArgv);
+
+    if (mozilla::CheckArg(aArgc, aArgv, "osint", nullptr, CheckArgFlag::None)) {
+      // If the command line contains -osint, we have to arrange things in a
+      // particular order.
+      //
+      // (We can't just replace -osint with kTagArg, unfortunately: there is
+      // code in the browser which behaves differently in the presence of an
+      // `-osint` tag, but which will not have had a chance to react to this.
+      // See, _e.g._, bug 1243603.)
+      auto const aArgvCopy = MakeUnique<wchar_t const*[]>(aArgc + 1);
+      aArgvCopy[0] = aArgv[1];
+      aArgvCopy[1] = kTagArg;
+      for (int i = 2; i < aArgc; ++i) {
+        aArgvCopy[i] = aArgv[i];
+      }
+      aArgvCopy[aArgc] = nullptr;  // because argv[argc] is NULL
+      return MakeCommandLine(aArgc, aArgvCopy.get(), 0, nullptr);
+    } else {
+      // Otherwise, just tack it on at the end.
+      constexpr wchar_t const* const kTagArgArray[] = {kTagArg};
+      return MakeCommandLine(aArgc - 1, aArgv + 1, 1, kTagArgArray);
+    }
+  }();
   if (!cmdLine) {
     return LAUNCHER_ERROR_GENERIC();
   }
 
-  _bstr_t exe(aArgv[0]);
+  _bstr_t cmd;
+
+  UniquePtr<wchar_t[]> packageFamilyName = mozilla::GetPackageFamilyName();
+  if (packageFamilyName) {
+    int cmdLen =
+        // 22 for the prefix + suffix + null terminator below
+        22 + wcslen(packageFamilyName.get());
+    wchar_t appCmd[cmdLen];
+    swprintf(appCmd, cmdLen, L"shell:appsFolder\\%s!App",
+             packageFamilyName.get());
+    cmd = appCmd;
+  } else {
+    cmd = aArgv[0];
+  }
+
   _variant_t args(cmdLine.get());
   _variant_t operation(L"open");
   _variant_t directory;
   _variant_t showCmd(SW_SHOWNORMAL);
-  return ShellExecuteByExplorer(exe, args, operation, directory, showCmd);
+  return ShellExecuteByExplorer(cmd, args, operation, directory, showCmd);
 }
 
 LauncherResult<ElevationState> GetElevationState(

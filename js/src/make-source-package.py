@@ -176,10 +176,11 @@ rsync_filter_list = """
 
 + /.cargo/config.in
 
++ /third_party/function2/**
 - /third_party/python/gyp
 + /third_party/python/**
 + /third_party/rust/**
-
++ /third_party/intgemm/**
 + /layout/tools/reftest/reftest/**
 
 + /testing/mach_commands.py
@@ -196,6 +197,8 @@ rsync_filter_list = """
 
 + /toolkit/crashreporter/tools/symbolstore.py
 + /toolkit/mozapps/installer/package-name.mk
+
++ /xpcom/geckoprocesstypes_generator/**
 
 # SpiderMonkey itself
 
@@ -224,7 +227,6 @@ be run over the binaries before deploying them.
 
 Building with default options may be performed as follows:
 
-  ./mach create-mach-environment
   ./mach build
 
 This will produce a debug build (much more suitable for developing against the
@@ -281,7 +283,7 @@ def is_mozjs_cargo_member(line):
 def is_mozjs_crates_io_local_patch(line):
     """Checks if the line in patch.crates-io is mozjs-related"""
 
-    return 'path = "js' in line
+    return any(f'path = "{p}' in line for p in ("js", "build", "third_party/rust"))
 
 
 def clean():

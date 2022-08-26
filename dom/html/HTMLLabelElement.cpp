@@ -187,12 +187,13 @@ Result<bool, nsresult> HTMLLabelElement::PerformAccesskey(
     return Err(NS_ERROR_ABORT);
   }
 
-  nsPresContext* presContext = GetPresContext(eForUncomposedDoc);
+  RefPtr<nsPresContext> presContext = GetPresContext(eForUncomposedDoc);
   if (!presContext) {
     return Err(NS_ERROR_UNEXPECTED);
   }
 
   // Click on it if the users prefs indicate to do so.
+  AutoHandlingUserInputStatePusher userInputStatePusher(aIsTrustedEvent);
   AutoPopupStatePusher popupStatePusher(
       aIsTrustedEvent ? PopupBlocker::openAllowed : PopupBlocker::openAbused);
   DispatchSimulatedClick(this, aIsTrustedEvent, presContext);

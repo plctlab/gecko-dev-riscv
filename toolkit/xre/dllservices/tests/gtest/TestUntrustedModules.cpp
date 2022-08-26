@@ -22,15 +22,15 @@ class ModuleLoadCounter final {
   nsTHashMap<nsStringCaseInsensitiveHashKey, int> mCounters;
 
  public:
-  template <int N>
+  template <size_t N>
   ModuleLoadCounter(const nsString (&aNames)[N], const int (&aCounts)[N])
       : mCounters(N) {
-    for (int i = 0; i < N; ++i) {
+    for (size_t i = 0; i < N; ++i) {
       mCounters.InsertOrUpdate(aNames[i], aCounts[i]);
     }
   }
 
-  template <int N>
+  template <size_t N>
   bool Remains(const nsString (&aNames)[N], const int (&aCounts)[N]) {
     EXPECT_EQ(mCounters.Count(), N);
     if (mCounters.Count() != N) {
@@ -38,15 +38,17 @@ class ModuleLoadCounter final {
     }
 
     bool result = true;
-    for (int i = 0; i < N; ++i) {
+    for (size_t i = 0; i < N; ++i) {
       auto entry = mCounters.Lookup(aNames[i]);
       if (!entry) {
-        wprintf(L"%s is not registered.\n", aNames[i].get());
+        wprintf(L"%s is not registered.\n",
+                static_cast<const wchar_t*>(aNames[i].get()));
         result = false;
       } else if (*entry != aCounts[i]) {
         // We can return false, but let's print out all unmet modules
         // which may be helpful to investigate test failures.
-        wprintf(L"%s:%4d\n", aNames[i].get(), *entry);
+        wprintf(L"%s:%4d\n", static_cast<const wchar_t*>(aNames[i].get()),
+                *entry);
         result = false;
       }
     }
@@ -90,47 +92,51 @@ class UntrustedModulesCollector {
     mData.clear();
     int pendingQueries = 0;
 
-    EXPECT_TRUE(SpinEventLoopUntil([this, &pendingQueries, &aChecker, &rv]() {
-      // Some of expected loaded modules are still missing
-      // after kMaximumPendingQueries queries were submitted.
-      // Giving up here to avoid an infinite loop.
-      if (pendingQueries >= kMaximumPendingQueries) {
-        rv = NS_ERROR_ABORT;
-        return true;
-      }
+    EXPECT_TRUE(SpinEventLoopUntil(
+        "xre:UntrustedModulesCollector"_ns,
+        [this, &pendingQueries, &aChecker, &rv]() {
+          // Some of expected loaded modules are still missing
+          // after kMaximumPendingQueries queries were submitted.
+          // Giving up here to avoid an infinite loop.
+          if (pendingQueries >= kMaximumPendingQueries) {
+            rv = NS_ERROR_ABORT;
+            return true;
+          }
 
-      ++pendingQueries;
+          ++pendingQueries;
 
-      RefPtr<DllServices> dllSvc(DllServices::Get());
-      dllSvc->GetUntrustedModulesData()->Then(
-          GetMainThreadSerialEventTarget(), __func__,
-          [this, &pendingQueries,
-           &aChecker](Maybe<UntrustedModulesData>&& aResult) {
-            EXPECT_GT(pendingQueries, 0);
-            --pendingQueries;
+          RefPtr<DllServices> dllSvc(DllServices::Get());
+          dllSvc->GetUntrustedModulesData()->Then(
+              GetMainThreadSerialEventTarget(), __func__,
+              [this, &pendingQueries,
+               &aChecker](Maybe<UntrustedModulesData>&& aResult) {
+                EXPECT_GT(pendingQueries, 0);
+                --pendingQueries;
 
-            if (aResult.isSome()) {
-              wprintf(L"Received data. (pendingQueries=%d)\n", pendingQueries);
-              for (const auto& evt : aResult.ref().mEvents) {
-                aChecker.Decrement(evt.mRequestedDllName);
-              }
-              EXPECT_TRUE(mData.emplaceBack(std::move(aResult.ref())));
-            }
-          },
-          [&pendingQueries, &rv](nsresult aReason) {
-            EXPECT_GT(pendingQueries, 0);
-            --pendingQueries;
+                if (aResult.isSome()) {
+                  wprintf(L"Received data. (pendingQueries=%d)\n",
+                          pendingQueries);
+                  for (auto item : aResult.ref().mEvents) {
+                    aChecker.Decrement(item->mEvent.mRequestedDllName);
+                  }
+                  EXPECT_TRUE(mData.emplaceBack(std::move(aResult.ref())));
+                }
+              },
+              [&pendingQueries, &rv](nsresult aReason) {
+                EXPECT_GT(pendingQueries, 0);
+                --pendingQueries;
 
-            wprintf(L"GetUntrustedModulesData() failed - %08x\n", aReason);
-            EXPECT_TRUE(false);
-            rv = aReason;
-          });
+                wprintf(L"GetUntrustedModulesData() failed - %08x\n", aReason);
+                EXPECT_TRUE(false);
+                rv = aReason;
+              });
 
-      // Keep calling GetUntrustedModulesData() until we meet the condition.
-      return aChecker.IsDone();
-    }));
+          // Keep calling GetUntrustedModulesData() until we meet the condition.
+          return aChecker.IsDone();
+        }));
 
     EXPECT_TRUE(SpinEventLoopUntil(
+        "xre:UntrustedModulesCollector(pendingQueries)"_ns,
         [&pendingQueries]() { return pendingQueries <= 0; }));
 
     return rv;
@@ -173,7 +179,8 @@ class UntrustedModulesFixture : public TelemetryTestFixture {
       kLoadCountBeforeDllServices + kLoadCountAfterDllServices;
   static const nsString kTestModules[];
 
-  static void ValidateUntrustedModules(const UntrustedModulesData& aData);
+  static void ValidateUntrustedModules(const UntrustedModulesData& aData,
+                                       bool aIsTruncatedData = false);
 
   static void LoadAndFree(const nsAString& aLeaf) {
     nsModuleHandle dll(::LoadLibraryW(PrependWorkingDir(aLeaf).get()));
@@ -203,7 +210,7 @@ class UntrustedModulesFixture : public TelemetryTestFixture {
     ModuleLoadCounter waitForOne({kTestModules[0]}, {1});
     EXPECT_TRUE(NS_SUCCEEDED(collector.Collect(waitForOne)));
     EXPECT_TRUE(waitForOne.Remains({kTestModules[0]}, {0}));
-    EXPECT_EQ(collector.Data().length(), 1);
+    EXPECT_EQ(collector.Data().length(), 1U);
 
     // Cannot "return collector.Data()[0]" as copy ctor is deleted.
     return UntrustedModulesData(std::move(collector.Data()[0]));
@@ -218,19 +225,19 @@ class UntrustedModulesFixture : public TelemetryTestFixture {
     EXPECT_TRUE(!!serializer);
     aDataFetcher(serializer);
 
-    JS::RootedValue jsval(cx.GetJSContext());
+    JS::Rooted<JS::Value> jsval(cx.GetJSContext());
     serializer.GetObject(&jsval);
 
     nsAutoString json;
     EXPECT_TRUE(nsContentUtils::StringifyJSON(cx.GetJSContext(), &jsval, json));
 
-    JS::RootedObject re(
+    JS::Rooted<JSObject*> re(
         cx.GetJSContext(),
         JS::NewUCRegExpObject(cx.GetJSContext(), aPattern, aPatternLength,
                               JS::RegExpFlag::Global));
     EXPECT_TRUE(!!re);
 
-    JS::RootedValue matchResult(cx.GetJSContext(), JS::NullValue());
+    JS::Rooted<JS::Value> matchResult(cx.GetJSContext(), JS::NullValue());
     size_t idx = 0;
     EXPECT_TRUE(JS::ExecuteRegExpNoStatics(cx.GetJSContext(), re, json.get(),
                                            json.Length(), &idx, true,
@@ -240,7 +247,7 @@ class UntrustedModulesFixture : public TelemetryTestFixture {
     EXPECT_TRUE(matchResult.isBoolean() && matchResult.toBoolean());
     if (!matchResult.isBoolean() || !matchResult.toBoolean()) {
       // If match failed, print out the actual JSON kindly.
-      wprintf(L"JSON: %s\n", json.get());
+      wprintf(L"JSON: %s\n", static_cast<const wchar_t*>(json.get()));
       wprintf(L"RE: %s\n", aPattern);
     }
   }
@@ -256,7 +263,7 @@ INIT_ONCE UntrustedModulesFixture::sInitLoadOnce = INIT_ONCE_STATIC_INIT;
 UntrustedModulesCollector UntrustedModulesFixture::sInitLoadDataCollector;
 
 void UntrustedModulesFixture::ValidateUntrustedModules(
-    const UntrustedModulesData& aData) {
+    const UntrustedModulesData& aData, bool aIsTruncatedData) {
   // This defines a list of modules which are listed on our blocklist and
   // thus its loading status is not expected to be Status::Loaded.
   // Although the UntrustedModulesFixture test does not touch any of them,
@@ -282,7 +289,8 @@ void UntrustedModulesFixture::ValidateUntrustedModules(
   }
 
   size_t numBlockedEvents = 0;
-  for (const auto& evt : aData.mEvents) {
+  for (auto item : aData.mEvents) {
+    const auto& evt = item->mEvent;
     const nsDependentSubstring leafName =
         nt::GetLeafName(evt.mModule->mResolvedNtName);
     const nsAutoString leafNameStr(leafName.Data(), leafName.Length());
@@ -301,7 +309,7 @@ void UntrustedModulesFixture::ValidateUntrustedModules(
             &match)) {
       EXPECT_EQ(loadStatus, kKnownModules[match].mStatus);
     } else {
-      EXPECT_EQ(evt.mLoadStatus, 0);
+      EXPECT_EQ(evt.mLoadStatus, 0U);
     }
 
     if (BinarySearchIf(
@@ -322,15 +330,20 @@ void UntrustedModulesFixture::ValidateUntrustedModules(
 
   // No check for the mXULLoadDurationMS field because the field has a value
   // in CCov build GTest, but it is empty in non-CCov build (bug 1681936).
-  EXPECT_GT(aData.mEvents.length(), 0);
-  if (numBlockedEvents == aData.mEvents.length()) {
-    // If all loading events were blocked, the stacks are empty.
-    EXPECT_EQ(aData.mStacks.GetModuleCount(), 0);
+  EXPECT_EQ(aData.mNumEvents, aData.mEvents.length());
+  EXPECT_GT(aData.mNumEvents, 0U);
+  if (aIsTruncatedData) {
+    EXPECT_EQ(aData.mStacks.GetModuleCount(), 0U);
+    EXPECT_LE(aData.mNumEvents, UntrustedModulesData::kMaxEvents);
+  } else if (numBlockedEvents == aData.mNumEvents) {
+    // If all loading events were blocked or aData is truncated,
+    // the stacks are empty.
+    EXPECT_EQ(aData.mStacks.GetModuleCount(), 0U);
   } else {
-    EXPECT_GT(aData.mStacks.GetModuleCount(), 0);
+    EXPECT_GT(aData.mStacks.GetModuleCount(), 0U);
   }
-  EXPECT_EQ(aData.mSanitizationFailures, 0);
-  EXPECT_EQ(aData.mTrustTestFailures, 0);
+  EXPECT_EQ(aData.mSanitizationFailures, 0U);
+  EXPECT_EQ(aData.mTrustTestFailures, 0U);
 }
 
 BOOL CALLBACK UntrustedModulesFixture::InitialModuleLoadOnce(PINIT_ONCE, void*,
@@ -342,7 +355,7 @@ BOOL CALLBACK UntrustedModulesFixture::InitialModuleLoadOnce(PINIT_ONCE, void*,
   }
 
   RefPtr<DllServices> dllSvc(DllServices::Get());
-  dllSvc->StartUntrustedModulesProcessor();
+  dllSvc->StartUntrustedModulesProcessor(true);
 
   for (int i = 0; i < kLoadCountAfterDllServices; ++i) {
     for (const auto& mod : kTestModules) {
@@ -421,22 +434,20 @@ TEST_F(UntrustedModulesFixture, Serialize) {
 }
 
 TEST_F(UntrustedModulesFixture, Backup) {
-  using BackupType = UntrustedModulesBackupService::BackupType;
-
   RefPtr<UntrustedModulesBackupService> backupSvc(
       UntrustedModulesBackupService::Get());
-  for (int i = 0; i < 5; ++i) {
-    backupSvc->Backup(BackupType::Staging, CollectSingleData());
+  for (int i = 0; i < 100; ++i) {
+    backupSvc->Backup(CollectSingleData());
   }
 
   backupSvc->SettleAllStagingData();
-  EXPECT_TRUE(backupSvc->Ref(BackupType::Staging).IsEmpty());
+  EXPECT_TRUE(backupSvc->Staging().IsEmpty());
 
-  for (const auto& entry : backupSvc->Ref(BackupType::Settled)) {
+  for (const auto& entry : backupSvc->Settled()) {
     const RefPtr<UntrustedModulesDataContainer>& container = entry.GetData();
     EXPECT_TRUE(!!container);
     const UntrustedModulesData& data = container->mData;
     EXPECT_EQ(entry.GetKey(), ProcessHashKey(data.mProcessType, data.mPid));
-    ValidateUntrustedModules(data);
+    ValidateUntrustedModules(data, /*aIsTruncatedData*/ true);
   }
 }

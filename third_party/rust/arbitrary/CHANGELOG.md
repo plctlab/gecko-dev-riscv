@@ -26,6 +26,82 @@ Released YYYY-MM-DD.
 
 * TODO (or remove section if none)
 
+--------------------------------------------------------------------------------
+
+## 1.1.3
+
+Released 2022-06-23.
+
+### Fixed
+
+* Fixed some potential (but highly unlikely) name-clashes inside
+  `derive(Arbitrary)`'s generated
+  code. [#111](https://github.com/rust-fuzz/arbitrary/pull/111)
+* Fixed an edge case where `derive(Arbitrary)` for recursive types that detected
+  an overflow would not reset the overflow
+  detection. [#111](https://github.com/rust-fuzz/arbitrary/pull/111)
+
+--------------------------------------------------------------------------------
+
+## 1.1.2
+
+Released 2022-06-16.
+
+### Fixed
+
+* Fixed a warning inside `derive(Arbitrary)`-generated
+  code. [#110](https://github.com/rust-fuzz/arbitrary/pull/110)
+
+--------------------------------------------------------------------------------
+
+## 1.1.1
+
+Released 2022-06-14.
+
+### Fixed
+
+* Fixed a stack overflow when using `derive(Arbitrary)` with recursive types and
+  empty inputs. [#109](https://github.com/rust-fuzz/arbitrary/pull/109)
+
+--------------------------------------------------------------------------------
+
+## 1.1.0
+
+Released 2022-02-09.
+
+### Added
+
+* Added the `Unstructured::ratio` method to generate a boolean that is `true` at
+  the given rate.
+
+* Added the `Unstructured::arbitrary_loop` method to call a function an
+  arbitrary number of times.
+
+--------------------------------------------------------------------------------
+
+## 1.0.3
+
+Released 2021-11-20.
+
+### Fixed
+
+* Fixed documentation for `Unstructured::fill_bytes`. We forgot to update this
+  way back in [#53](https://github.com/rust-fuzz/arbitrary/pull/53) when the
+  behavior changed.
+
+--------------------------------------------------------------------------------
+
+## 1.0.2
+
+Released 2021-08-25.
+
+### Added
+
+* `Arbitrary` impls for `HashMap`s and `HashSet`s with custom `Hasher`s
+  [#87](https://github.com/rust-fuzz/arbitrary/pull/87)
+
+--------------------------------------------------------------------------------
+
 ## 1.0.1
 
 Released 2021-05-20.

@@ -2,7 +2,7 @@ toolkit.jar:
 %  content global %content/global/ contentaccessible=yes
 *  content/global/license.html
    content/global/minimal-xul.css
-*  content/global/xul.css
+   content/global/xul.css
    content/global/autocomplete.css
    content/global/aboutAbout.js
    content/global/aboutAbout.html
@@ -36,9 +36,11 @@ toolkit.jar:
    content/global/aboutUrlClassifier.js
    content/global/aboutUrlClassifier.xhtml
    content/global/aboutUrlClassifier.css
+#ifndef ANDROID
    content/global/plugins.html
    content/global/plugins.css
    content/global/plugins.js
+#endif
 *   content/global/buildconfig.html
    content/global/buildconfig.css
    content/global/contentAreaUtils.js
@@ -101,6 +103,7 @@ toolkit.jar:
    content/global/elements/stringbundle.js     (widgets/stringbundle.js)
    content/global/elements/tabbox.js           (widgets/tabbox.js)
    content/global/elements/text.js             (widgets/text.js)
+   content/global/elements/textrecognition.js  (widgets/textrecognition.js)
    content/global/elements/toolbarbutton.js    (widgets/toolbarbutton.js)
    content/global/elements/videocontrols.js    (widgets/videocontrols.js)
    content/global/elements/tree.js             (widgets/tree.js)
@@ -112,4 +115,5 @@ toolkit.jar:
    content/global/gmp-sources/widevinecdm.json (gmp-sources/widevinecdm.json)
 
 # Third party files
-   content/global/third_party/d3/d3.js         (/third_party/js/d3/d3.js)
+   content/global/third_party/d3/d3.js                (/third_party/js/d3/d3.js)
+   content/global/third_party/cfworker/json-schema.js (/third_party/js/cfworker/json-schema.js)

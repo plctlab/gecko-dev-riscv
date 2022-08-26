@@ -23,16 +23,13 @@ class SharedCertVerifier : public mozilla::psm::CertVerifier {
   SharedCertVerifier(OcspDownloadConfig odc, OcspStrictConfig osc,
                      mozilla::TimeDuration ocspSoftTimeout,
                      mozilla::TimeDuration ocspHardTimeout,
-                     uint32_t certShortLifetimeInDays, SHA1Mode sha1Mode,
-                     BRNameMatchingPolicy::Mode nameMatchingMode,
+                     uint32_t certShortLifetimeInDays,
                      NetscapeStepUpPolicy netscapeStepUpPolicy,
                      CertificateTransparencyMode ctMode, CRLiteMode crliteMode,
-                     uint64_t crliteCTMergeDelaySeconds,
                      const Vector<EnterpriseCert>& thirdPartyCerts)
       : mozilla::psm::CertVerifier(
             odc, osc, ocspSoftTimeout, ocspHardTimeout, certShortLifetimeInDays,
-            sha1Mode, nameMatchingMode, netscapeStepUpPolicy, ctMode,
-            crliteMode, crliteCTMergeDelaySeconds, thirdPartyCerts) {}
+            netscapeStepUpPolicy, ctMode, crliteMode, thirdPartyCerts) {}
 };
 
 }  // namespace psm

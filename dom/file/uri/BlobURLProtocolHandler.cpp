@@ -87,7 +87,7 @@ struct DataInfo {
 
 // The mutex is locked whenever gDataTable is changed, or if gDataTable
 // is accessed off-main-thread.
-static StaticMutex sMutex;
+static StaticMutex sMutex MOZ_UNANNOTATED;
 
 // All changes to gDataTable must happen on the main thread, while locking
 // sMutex. Reading from gDataTable on the main thread may happen without
@@ -148,16 +148,15 @@ void BroadcastBlobURLRegistration(const nsACString& aURI,
     return;
   }
 
-  dom::ContentChild* cc = dom::ContentChild::GetSingleton();
-
   IPCBlob ipcBlob;
-  nsresult rv = IPCBlobUtils::Serialize(aBlobImpl, cc, ipcBlob);
+  nsresult rv = IPCBlobUtils::Serialize(aBlobImpl, ipcBlob);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
 
+  dom::ContentChild* cc = dom::ContentChild::GetSingleton();
   Unused << NS_WARN_IF(!cc->SendStoreAndBroadcastBlobURLRegistration(
-      nsCString(aURI), ipcBlob, IPC::Principal(aPrincipal), aAgentClusterId));
+      nsCString(aURI), ipcBlob, aPrincipal, aAgentClusterId));
 }
 
 void BroadcastBlobURLUnregistration(const nsCString& aURI,
@@ -170,8 +169,10 @@ void BroadcastBlobURLUnregistration(const nsCString& aURI,
   }
 
   dom::ContentChild* cc = dom::ContentChild::GetSingleton();
-  Unused << NS_WARN_IF(!cc->SendUnstoreAndBroadcastBlobURLUnregistration(
-      aURI, IPC::Principal(aPrincipal)));
+  if (cc) {
+    Unused << NS_WARN_IF(
+        !cc->SendUnstoreAndBroadcastBlobURLUnregistration(aURI, aPrincipal));
+  }
 }
 
 class BlobURLsReporter final : public nsIMemoryReporter {
@@ -312,7 +313,7 @@ class BlobURLsReporter final : public nsIMemoryReporter {
     // GetCurrentJSStack() hand out the JSContext it found.
     JSContext* cx = frame ? nsContentUtils::GetCurrentJSContext() : nullptr;
 
-    for (uint32_t i = 0; frame; ++i) {
+    while (frame) {
       nsString fileNameUTF16;
       frame->GetFilename(cx, fileNameUTF16);
 
@@ -466,7 +467,7 @@ class ReleasingTimerHolder final : public Runnable,
   explicit ReleasingTimerHolder(const nsACString& aURI)
       : Runnable("ReleasingTimerHolder"), mURI(aURI) {}
 
-  ~ReleasingTimerHolder() = default;
+  ~ReleasingTimerHolder() override = default;
 
   void RevokeURI() {
     // Remove the shutting down blocker

@@ -292,6 +292,48 @@ static void StreamMetaPlatformSampleUnits(PSLockRef aLock,
   aWriter.StringProperty("threadCPUDelta", "ns");
 }
 
+/* static */
+uint64_t RunningTimes::ConvertRawToJson(uint64_t aRawValue) {
+  return aRawValue;
+}
+
+namespace mozilla::profiler {
+bool GetCpuTimeSinceThreadStartInNs(
+    uint64_t* aResult, const mozilla::profiler::PlatformData& aPlatformData) {
+  Maybe<clockid_t> maybeCid = aPlatformData.GetClockId();
+  if (MOZ_UNLIKELY(!maybeCid)) {
+    return false;
+  }
+
+  timespec t;
+  if (clock_gettime(*maybeCid, &t) != 0) {
+    return false;
+  }
+
+  *aResult = uint64_t(t.tv_sec) * 1'000'000'000u + uint64_t(t.tv_nsec);
+  return true;
+}
+}  // namespace mozilla::profiler
+
+static RunningTimes GetProcessRunningTimesDiff(
+    PSLockRef aLock, RunningTimes& aPreviousRunningTimesToBeUpdated) {
+  AUTO_PROFILER_STATS(GetProcessRunningTimes);
+
+  RunningTimes newRunningTimes;
+  {
+    AUTO_PROFILER_STATS(GetProcessRunningTimes_clock_gettime);
+    if (timespec ts; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
+      newRunningTimes.SetThreadCPUDelta(uint64_t(ts.tv_sec) * 1'000'000'000u +
+                                        uint64_t(ts.tv_nsec));
+    }
+    newRunningTimes.SetPostMeasurementTimeStamp(TimeStamp::Now());
+  };
+
+  const RunningTimes diff = newRunningTimes - aPreviousRunningTimesToBeUpdated;
+  aPreviousRunningTimesToBeUpdated = newRunningTimes;
+  return diff;
+}
+
 static RunningTimes GetThreadRunningTimesDiff(
     PSLockRef aLock,
     ThreadRegistration::UnlockedRWForLockedProfiler& aThreadData) {
@@ -327,6 +369,39 @@ static RunningTimes GetThreadRunningTimesDiff(
   const RunningTimes diff = newRunningTimes - previousRunningTimes;
   previousRunningTimes = newRunningTimes;
   return diff;
+}
+
+static void DiscardSuspendedThreadRunningTimes(
+    PSLockRef aLock,
+    ThreadRegistration::UnlockedRWForLockedProfiler& aThreadData) {
+  AUTO_PROFILER_STATS(DiscardSuspendedThreadRunningTimes);
+
+  // On Linux, suspending a thread uses a signal that makes that thread work
+  // to handle it. So we want to discard any added running time since the call
+  // to GetThreadRunningTimesDiff, which is done by overwriting the thread's
+  // PreviousThreadRunningTimesRef() with the current running time now.
+
+  const mozilla::profiler::PlatformData& platformData =
+      aThreadData.PlatformDataCRef();
+  Maybe<clockid_t> maybeCid = platformData.GetClockId();
+
+  if (MOZ_UNLIKELY(!maybeCid)) {
+    // No clock id -> Nothing to measure.
+    return;
+  }
+
+  ProfiledThreadData* profiledThreadData =
+      aThreadData.GetProfiledThreadData(aLock);
+  MOZ_ASSERT(profiledThreadData);
+  RunningTimes& previousRunningTimes =
+      profiledThreadData->PreviousThreadRunningTimesRef();
+
+  if (timespec ts; clock_gettime(*maybeCid, &ts) == 0) {
+    previousRunningTimes.ResetThreadCPUDelta(
+        uint64_t(ts.tv_sec) * 1'000'000'000u + uint64_t(ts.tv_nsec));
+  } else {
+    previousRunningTimes.ClearThreadCPUDelta();
+  }
 }
 
 template <typename Func>
@@ -432,16 +507,14 @@ static void* ThreadEntry(void* aArg) {
 }
 
 SamplerThread::SamplerThread(PSLockRef aLock, uint32_t aActivityGeneration,
-                             double aIntervalMilliseconds,
-                             bool aStackWalkEnabled,
-                             bool aNoTimerResolutionChange)
+                             double aIntervalMilliseconds, uint32_t aFeatures)
     : mSampler(aLock),
       mActivityGeneration(aActivityGeneration),
       mIntervalMicroseconds(
           std::max(1, int(floor(aIntervalMilliseconds * 1000 + 0.5)))) {
 #if defined(USE_LUL_STACKWALK)
   lul::LUL* lul = CorePS::Lul();
-  if (!lul && aStackWalkEnabled) {
+  if (!lul && ProfilerFeature::HasStackWalk(aFeatures)) {
     CorePS::SetLul(MakeUnique<lul::LUL>(logging_sink_for_LUL));
     // Read all the unwind info currently available.
     lul = CorePS::Lul();
@@ -528,36 +601,21 @@ void SamplerThread::Stop(PSLockRef aLock) {
 //
 // We provide no paf_child() function to run in the child after forking. This
 // is fine because we always immediately exec() after fork(), and exec()
-// clobbers all process state. (At one point we did have a paf_child()
-// function, but it caused problems related to locking gPSMutex. See bug
-// 1348374.)
+// clobbers all process state. Also, we don't want the sampler to resume in the
+// child process between fork() and exec(), it would be wasteful.
 //
 // Unfortunately all this is only doable on non-Android because Bionic doesn't
 // have pthread_atfork.
 
-// In the parent, before the fork, record IsSamplingPaused, and then pause.
-static void paf_prepare() {
-  MOZ_RELEASE_ASSERT(CorePS::Exists());
+// In the parent, before the fork, increase gSkipSampling to ensure that
+// profiler sampling loops will be skipped. There could be one in progress now,
+// causing a small delay, but further sampling will be skipped, allowing `fork`
+// to complete.
+static void paf_prepare() { ++gSkipSampling; }
 
-  PSAutoLock lock;
-
-  if (ActivePS::Exists(lock)) {
-    ActivePS::SetWasSamplingPaused(lock, ActivePS::IsSamplingPaused(lock));
-    ActivePS::SetIsSamplingPaused(lock, true);
-  }
-}
-
-// In the parent, after the fork, return IsSamplingPaused to the pre-fork state.
-static void paf_parent() {
-  MOZ_RELEASE_ASSERT(CorePS::Exists());
-
-  PSAutoLock lock;
-
-  if (ActivePS::Exists(lock)) {
-    ActivePS::SetIsSamplingPaused(lock, ActivePS::WasSamplingPaused(lock));
-    ActivePS::SetWasSamplingPaused(lock, false);
-  }
-}
+// In the parent, after the fork, decrease gSkipSampling to let the sampler
+// resume sampling (unless other places have made it non-zero as well).
+static void paf_parent() { --gSkipSampling; }
 
 static void PlatformInit(PSLockRef aLock) {
   // Set up the fork handlers.

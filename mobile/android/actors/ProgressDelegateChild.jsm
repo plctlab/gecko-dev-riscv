@@ -6,11 +6,9 @@ const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const EXPORTED_SYMBOLS = ["ProgressDelegateChild"];
 
@@ -18,11 +16,6 @@ class ProgressDelegateChild extends GeckoViewActorChild {
   // eslint-disable-next-line complexity
   handleEvent(aEvent) {
     debug`handleEvent: ${aEvent.type}`;
-    if (!this.isContentWindow) {
-      // This not a GeckoView-controlled window
-      return;
-    }
-
     switch (aEvent.type) {
       case "DOMContentLoaded": // fall-through
       case "MozAfterPaint": // fall-through

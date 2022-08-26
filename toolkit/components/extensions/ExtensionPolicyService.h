@@ -72,7 +72,9 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
   WebExtensionPolicy* GetByURL(const extensions::URLInfo& aURL);
 
   WebExtensionPolicy* GetByHost(const nsACString& aHost) const {
-    return mExtensionHosts.GetWeak(aHost);
+    nsAutoCString host;
+    ToLowerCase(aHost, host);
+    return mExtensionHosts.GetWeak(host);
   }
 
   void GetAll(nsTArray<RefPtr<WebExtensionPolicy>>& aResult);
@@ -120,6 +122,7 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
   nsCOMPtr<nsIObserverService> mObs;
 
   nsString mDefaultCSP;
+  nsString mDefaultCSPV3;
 };
 
 }  // namespace mozilla

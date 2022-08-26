@@ -749,7 +749,6 @@ function getChartsFromToolId(id) {
     case "MEMORY":
     case "NETMONITOR":
     case "OPTIONS":
-    case "PAINTFLASHING":
     case "RESPONSIVE":
     case "STORAGE":
     case "STYLEEDITOR":
@@ -792,10 +791,10 @@ function getChartsFromToolId(id) {
   }
 
   return {
-    useTimedEvent: useTimedEvent,
-    timerHist: timerHist,
-    countHist: countHist,
-    countScalar: countScalar,
+    useTimedEvent,
+    timerHist,
+    countHist,
+    countScalar,
   };
 }
 

@@ -35,10 +35,10 @@ pref("devtools.webconsole.input.editor", false);
 pref("devtools.webconsole.input.autocomplete", true);
 pref("devtools.webconsole.input.eagerEvaluation", true);
 pref("devtools.browserconsole.contentMessages", true);
+pref("devtools.browserconsole.enableNetworkMonitoring", false);
 pref("devtools.webconsole.input.editorWidth", 800);
 pref("devtools.webconsole.input.editorOnboarding", true);
 pref("devtools.webconsole.input.context", false);
-pref("devtools.contenttoolbox.webconsole.input.context", false);
 
 global.loader = {
   lazyServiceGetter: () => {},
@@ -58,6 +58,10 @@ global.loader = {
       "devtools/client/shared/telemetry",
       "devtools/client/shared/screenshot",
       "devtools/client/shared/focus",
+      "devtools/shared/commands/target/legacy-target-watchers/legacy-processes-watcher",
+      "devtools/shared/commands/target/legacy-target-watchers/legacy-workers-watcher",
+      "devtools/shared/commands/target/legacy-target-watchers/legacy-sharedworkers-watcher",
+      "devtools/shared/commands/target/legacy-target-watchers/legacy-serviceworkers-watcher",
     ];
     if (!excluded.includes(path)) {
       if (!Array.isArray(names)) {
@@ -65,8 +69,13 @@ global.loader = {
       }
 
       for (const name of names) {
-        const module = require(path);
-        global[name] = destruct ? module[name] : module;
+        Object.defineProperty(global, name, {
+          get() {
+            const module = require(path);
+            return destruct ? module[name] : module;
+          },
+          configurable: true,
+        });
       }
     }
   },
@@ -96,6 +105,7 @@ global.ChromeUtils = {
   defineModuleGetter: () => {},
 };
 
+global.Cu = { isInAutomation: true };
 global.define = function() {};
 
 // Used for the HTMLTooltip component.
@@ -175,8 +185,19 @@ requireHacker.global_hook("default", (path, module) => {
   return undefined;
 });
 
+// There's an issue in React 16 that only occurs when MessageChannel is available (Node 15+),
+// which prevents the nodeJS process to exit (See https://github.com/facebook/react/issues/20756)
+// Due to our setup, using https://github.com/facebook/react/issues/20756#issuecomment-780927519
+// does not fix the issue, so we directly replicate the fix.
+// XXX: This should be removed when we update to React 17.
+const MessageChannel = global.MessageChannel;
+delete global.MessageChannel;
+
 // Configure enzyme with React 16 adapter. This needs to be done after we set the
 // requireHack hook so `require()` calls in Enzyme are handled as well.
 const Enzyme = require("enzyme");
 const Adapter = require("enzyme-adapter-react-16");
 Enzyme.configure({ adapter: new Adapter() });
+
+// Put back MessageChannel on the global, in case any of the test would use it.
+global.MessageChannel = MessageChannel;

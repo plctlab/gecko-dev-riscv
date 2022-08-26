@@ -23,6 +23,9 @@ const {
 } = require("devtools/shared/specs/targets/window-global");
 const { tabDescriptorSpec } = require("devtools/shared/specs/descriptors/tab");
 const Targets = require("devtools/server/actors/targets/index");
+const {
+  createContentProcessSessionContext,
+} = require("devtools/server/actors/watcher/session-context");
 
 var gTestGlobals = new Set();
 DevToolsServer.addTestGlobal = function(global) {
@@ -81,11 +84,11 @@ function TestTabList(connection) {
 TestTabList.prototype = {
   constructor: TestTabList,
   destroy() {},
-  getList: function() {
+  getList() {
     return Promise.resolve([...this._descriptorActors]);
   },
   // Helper method only available for the xpcshell implementation of tablist.
-  getTargetActorForTab: function(title) {
+  getTargetActorForTab(title) {
     const descriptorActor = this._descriptorActors.find(d => d.title === title);
     if (!descriptorActor) {
       return null;
@@ -110,7 +113,7 @@ exports.createRootActor = function createRootActor(connection) {
 };
 
 const TestDescriptorActor = protocol.ActorClassWithSpec(tabDescriptorSpec, {
-  initialize: function(conn, targetActor) {
+  initialize(conn, targetActor) {
     protocol.Actor.prototype.initialize.call(this, conn);
     this.conn = conn;
     this._targetActor = targetActor;
@@ -147,14 +150,15 @@ const TestDescriptorActor = protocol.ActorClassWithSpec(tabDescriptorSpec, {
 });
 
 const TestTargetActor = protocol.ActorClassWithSpec(windowGlobalTargetSpec, {
-  initialize: function(conn, global) {
+  initialize(conn, global) {
     protocol.Actor.prototype.initialize.call(this, conn);
     this.conn = conn;
+
+    this.sessionContext = createContentProcessSessionContext();
     this._global = global;
     this._global.wrappedJSObject = global;
     this.threadActor = new ThreadActor(this, this._global);
     this.conn.addActor(this.threadActor);
-    this._attached = false;
     this._extraActors = {};
     // This is a hack in order to enable threadActor to be accessed from getFront
     this._extraActors.threadActor = this.threadActor;
@@ -188,8 +192,12 @@ const TestTargetActor = protocol.ActorClassWithSpec(windowGlobalTargetSpec, {
     return this._sourcesManager;
   },
 
-  form: function() {
-    const response = { actor: this.actorID, title: this.title };
+  form() {
+    const response = {
+      actor: this.actorID,
+      title: this.title,
+      threadActor: this.threadActor.actorID,
+    };
 
     // Walk over target-scoped actors and add them to a new LazyPool.
     const actorPool = new LazyPool(this.conn);
@@ -206,28 +214,19 @@ const TestTargetActor = protocol.ActorClassWithSpec(windowGlobalTargetSpec, {
     return { ...response, ...actors };
   },
 
-  attach: function(request) {
-    this._attached = true;
-
-    return { threadActor: this.threadActor.actorID };
-  },
-
-  detach: function(request) {
-    if (!this._attached) {
-      return { error: "wrongState" };
-    }
+  detach(request) {
     this.threadActor.destroy();
     return { type: "detached" };
   },
 
-  reload: function(request) {
+  reload(request) {
     this.sourcesManager.reset();
     this.threadActor.clearDebuggees();
     this.threadActor.dbg.addDebuggees();
     return {};
   },
 
-  removeActorByName: function(name) {
+  removeActorByName(name) {
     const actor = this._extraActors[name];
     if (this._descriptorActorPool) {
       this._descriptorActorPool.removeActor(actor);

@@ -12,9 +12,13 @@
  * browser window is ready (i.e. fired browser-delayed-startup-finished event)
  **/
 
-const { Cc, Ci } = require("chrome");
 const Services = require("Services");
 const { gDevTools } = require("devtools/client/framework/devtools");
+const {
+  getTheme,
+  addThemeObserver,
+  removeThemeObserver,
+} = require("devtools/client/shared/theme");
 
 // Load toolbox lazily as it needs gDevTools to be fully initialized
 loader.lazyRequireGetter(
@@ -161,7 +165,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
   updateDevtoolsThemeAttribute(win) {
     // Set an attribute on root element of each window to make it possible
     // to change colors based on the selected devtools theme.
-    let devtoolsTheme = Services.prefs.getCharPref("devtools.theme");
+    let devtoolsTheme = getTheme();
     if (devtoolsTheme != "dark") {
       devtoolsTheme = "light";
     }
@@ -185,11 +189,6 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
             this.updateCommandAvailability(win);
           }
         }
-        if (prefName === "devtools.theme") {
-          for (const win of this._trackedBrowserWindows) {
-            this.updateDevtoolsThemeAttribute(win);
-          }
-        }
         break;
       case "quit-application":
         gDevToolsBrowser.destroy({ shuttingDown: true });
@@ -204,14 +203,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
     }
   },
 
-  _prefObserverRegistered: false,
-
-  ensurePrefObserver() {
-    if (!this._prefObserverRegistered) {
-      this._prefObserverRegistered = true;
-      Services.prefs.addObserver("devtools.", this);
-    }
-  },
+  _observersRegistered: false,
 
   /**
    * This function is for the benefit of Tools:{toolId} commands,
@@ -392,6 +384,11 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
         // Display a new toolbox in a new window
         const toolbox = await gDevTools.showToolbox(descriptor, {
           hostType: Toolbox.HostType.WINDOW,
+          hostOptions: {
+            // Will be used by the WINDOW host to decide whether to create a
+            // private window or not.
+            browserContentToolboxOpener: gBrowser.ownerGlobal,
+          },
         });
 
         // Ensure closing the connection in order to cleanup
@@ -423,7 +420,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
    * @return {Promise} promise that resolves when the stylesheet is loaded (or rejects
    *         if it fails to load).
    */
-  loadBrowserStyleSheet: function(win) {
+  loadBrowserStyleSheet(win) {
     if (this._browserStyleSheets.has(win)) {
       return Promise.resolve();
     }
@@ -453,91 +450,23 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
 
     this.updateCommandAvailability(win);
     this.updateDevtoolsThemeAttribute(win);
-    this.ensurePrefObserver();
+    if (!this._observersRegistered) {
+      this._observersRegistered = true;
+      Services.prefs.addObserver("devtools.", this);
+      this._onThemeChanged = this._onThemeChanged.bind(this);
+      addThemeObserver(this._onThemeChanged);
+    }
+
     win.addEventListener("unload", this);
 
     const tabContainer = win.gBrowser.tabContainer;
     tabContainer.addEventListener("TabSelect", this);
   },
 
-  /**
-   * Hook the JS debugger tool to the "Debug Script" button of the slow script
-   * dialog.
-   */
-  setSlowScriptDebugHandler() {
-    const debugService = Cc["@mozilla.org/dom/slow-script-debug;1"].getService(
-      Ci.nsISlowScriptDebug
-    );
-
-    async function slowScriptDebugHandler(tab, callback) {
-      gDevTools
-        .showToolboxForTab(tab, { toolId: "jsdebugger" })
-        .then(toolbox => {
-          const threadFront = toolbox.threadFront;
-
-          // Break in place, which means resuming the debuggee thread and pausing
-          // right before the next step happens.
-          switch (threadFront.state) {
-            case "paused":
-              // When the debugger is already paused.
-              threadFront.resumeThenPause();
-              callback();
-              break;
-            case "attached":
-              // When the debugger is already open.
-              threadFront.interrupt().then(() => {
-                threadFront.resumeThenPause();
-                callback();
-              });
-              break;
-            case "resuming":
-              // The debugger is newly opened.
-              threadFront.once("resumed", () => {
-                threadFront.interrupt().then(() => {
-                  threadFront.resumeThenPause();
-                  callback();
-                });
-              });
-              break;
-            default:
-              throw Error(
-                "invalid thread front state in slow script debug handler: " +
-                  threadFront.state
-              );
-          }
-        });
+  _onThemeChanged() {
+    for (const win of this._trackedBrowserWindows) {
+      this.updateDevtoolsThemeAttribute(win);
     }
-
-    debugService.activationHandler = function(window) {
-      const chromeWindow = window.browsingContext.topChromeWindow;
-
-      let setupFinished = false;
-      slowScriptDebugHandler(chromeWindow.gBrowser.selectedTab, () => {
-        setupFinished = true;
-      });
-
-      // Don't return from the interrupt handler until the debugger is brought
-      // up; no reason to continue executing the slow script.
-      const utils = window.windowUtils;
-      utils.enterModalState();
-      Services.tm.spinEventLoopUntil(
-        "devtools-browser.js:debugService.activationHandler",
-        () => {
-          return setupFinished;
-        }
-      );
-      utils.leaveModalState();
-    };
-
-    debugService.remoteActivationHandler = function(browser, callback) {
-      const chromeWindow = browser.ownerDocument.defaultView;
-      const tab = chromeWindow.gBrowser.getTabForBrowser(browser);
-      chromeWindow.gBrowser.selected = tab;
-
-      slowScriptDebugHandler(tab, function() {
-        callback.finishDebuggerStartup();
-      }).catch(console.error);
-    };
   },
 
   /**
@@ -736,6 +665,7 @@ var gDevToolsBrowser = (exports.gDevToolsBrowser = {
    */
   destroy({ shuttingDown }) {
     Services.prefs.removeObserver("devtools.", gDevToolsBrowser);
+    removeThemeObserver(this._onThemeChanged);
     Services.obs.removeObserver(
       gDevToolsBrowser,
       "browser-delayed-startup-finished"
@@ -767,8 +697,6 @@ gDevTools.on("tool-registered", function(toolId) {
     gDevToolsBrowser._addToolToWindows(toolDefinition);
   }
 });
-
-gDevToolsBrowser.setSlowScriptDebugHandler();
 
 gDevTools.on("tool-unregistered", function(toolId) {
   gDevToolsBrowser._removeToolFromWindows(toolId);

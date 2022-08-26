@@ -19,7 +19,7 @@
 #include <type_traits>  // std::enable_if_t
 
 #include "js/AllocPolicy.h"     // ReportOutOfMemory
-#include "js/CompileOptions.h"  // JS::ReadOnlyCompileOptions
+#include "js/CompileOptions.h"  // JS::DecodeOptions
 #include "js/Transcoding.h"  // JS::TranscodeResult, JS::TranscodeBuffer, JS::TranscodeRange, IsTranscodingBytecodeAligned, IsTranscodingBytecodeOffsetAligned
 #include "js/TypeDecls.h"    // JS::Latin1Char
 #include "js/UniquePtr.h"    // UniquePtr
@@ -28,14 +28,6 @@
 struct JSContext;
 
 namespace js {
-
-class ScriptSource;
-
-namespace frontend {
-struct CompilationStencil;
-struct ExtensibleCompilationStencil;
-struct CompilationStencilMerger;
-}  // namespace frontend
 
 enum XDRMode { XDR_ENCODE, XDR_DECODE };
 
@@ -90,9 +82,7 @@ class XDRBuffer<XDR_ENCODE> : public XDRBufferBase {
     return true;
   }
 
-#ifdef DEBUG
   bool isAligned32() { return cursor_ % 4 == 0; }
-#endif
 
   const uint8_t* read(size_t n) {
     MOZ_CRASH("Should never read in encode mode");
@@ -114,6 +104,8 @@ class XDRBuffer<XDR_DECODE> : public XDRBufferBase {
   XDRBuffer(JSContext* cx, const JS::TranscodeRange& range)
       : XDRBufferBase(cx), buffer_(range) {}
 
+  // This isn't used by XDRStencilDecoder.
+  // Defined just for XDRState, shared with XDRStencilEncoder.
   XDRBuffer(JSContext* cx, JS::TranscodeBuffer& buffer, size_t cursor = 0)
       : XDRBufferBase(cx, cursor), buffer_(buffer.begin(), buffer.length()) {}
 
@@ -131,9 +123,7 @@ class XDRBuffer<XDR_DECODE> : public XDRBufferBase {
     return true;
   }
 
-#ifdef DEBUG
   bool isAligned32() { return cursor_ % 4 == 0; }
-#endif
 
   const uint8_t* read(size_t n) {
     MOZ_ASSERT(cursor_ < buffer_.length());
@@ -243,9 +233,7 @@ class XDRState : public XDRCoderBase {
     return mozilla::Ok();
   }
 
-#ifdef DEBUG
   bool isAligned32() { return buf->isAligned32(); }
-#endif
 
   XDRResult readData(const uint8_t** pptr, size_t length) {
     const uint8_t* ptr = buf->read(length);
@@ -427,94 +415,6 @@ class XDRState : public XDRCoderBase {
   // NOTE: Throws if string longer than JSString::MAX_LENGTH.
   XDRResult codeCharsZ(XDRTranscodeString<char>& buffer);
   XDRResult codeCharsZ(XDRTranscodeString<char16_t>& buffer);
-};
-
-/*
- * The structure of the Stencil XDR buffer is:
- *
- * 1. Header
- *   a. Version
- *   b. ScriptSource
- *   d. Alignment padding
- * 2. Stencil
- *   a. CompilationStencil
- */
-
-/*
- * The stencil decoder accepts `range` as input.
- *
- * The decoded stencils are outputted to the default-initialized
- * `stencil` parameter of `codeStencil` method.
- *
- * The decoded stencils borrow the input `buffer`/`range`, and the consumer
- * has to keep the buffer alive while the decoded stencils are alive.
- */
-class XDRStencilDecoder : public XDRState<XDR_DECODE> {
-  using Base = XDRState<XDR_DECODE>;
-
- public:
-  XDRStencilDecoder(JSContext* cx, JS::TranscodeBuffer& buffer, size_t cursor)
-      : Base(cx, buffer, cursor) {
-    MOZ_ASSERT(JS::IsTranscodingBytecodeAligned(buffer.begin()));
-    MOZ_ASSERT(JS::IsTranscodingBytecodeOffsetAligned(cursor));
-  }
-
-  XDRStencilDecoder(JSContext* cx, const JS::TranscodeRange& range)
-      : Base(cx, range) {
-    MOZ_ASSERT(JS::IsTranscodingBytecodeAligned(range.begin().get()));
-  }
-
-  XDRResult codeStencil(const JS::ReadOnlyCompileOptions& options,
-                        frontend::CompilationStencil& stencil);
-
-  const JS::ReadOnlyCompileOptions& options() {
-    MOZ_ASSERT(options_);
-    return *options_;
-  }
-
- private:
-  const JS::ReadOnlyCompileOptions* options_ = nullptr;
-};
-
-class XDRIncrementalStencilEncoder;
-
-class XDRStencilEncoder : public XDRState<XDR_ENCODE> {
-  using Base = XDRState<XDR_ENCODE>;
-
- public:
-  XDRStencilEncoder(JSContext* cx, JS::TranscodeBuffer& buffer)
-      : Base(cx, buffer, buffer.length()) {
-    // NOTE: If buffer is empty, buffer.begin() doesn't point valid buffer.
-    MOZ_ASSERT_IF(!buffer.empty(),
-                  JS::IsTranscodingBytecodeAligned(buffer.begin()));
-    MOZ_ASSERT(JS::IsTranscodingBytecodeOffsetAligned(buffer.length()));
-  }
-
- private:
-  XDRResult codeStencil(const RefPtr<ScriptSource>& source,
-                        const frontend::CompilationStencil& stencil);
-  friend class XDRIncrementalStencilEncoder;
-
- public:
-  XDRResult codeStencil(const frontend::CompilationStencil& stencil);
-};
-
-class XDRIncrementalStencilEncoder {
-  frontend::CompilationStencilMerger* merger_ = nullptr;
-
- public:
-  XDRIncrementalStencilEncoder() = default;
-
-  ~XDRIncrementalStencilEncoder();
-
-  XDRResult linearize(JSContext* cx, JS::TranscodeBuffer& buffer,
-                      js::ScriptSource* ss);
-
-  XDRResult setInitial(
-      JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-      UniquePtr<frontend::ExtensibleCompilationStencil>&& initial);
-  XDRResult addDelazification(
-      JSContext* cx, const frontend::CompilationStencil& delazification);
 };
 
 } /* namespace js */

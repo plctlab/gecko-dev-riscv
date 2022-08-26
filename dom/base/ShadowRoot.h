@@ -68,8 +68,7 @@ class ShadowRoot final : public DocumentFragment,
   // child from the currently-assigned slot, if any.
   void MaybeUnslotHostChild(nsIContent&);
 
-  // Loop through this tree (including slot assigned elements, nested shadow
-  // trees) to find the first focusable element.
+  // Find the first focusable element in this tree.
   Element* GetFirstFocusable(bool aWithMouse) const;
 
   // Shadow DOM v1
@@ -186,10 +185,7 @@ class ShadowRoot final : public DocumentFragment,
 
   JSObject* WrapNode(JSContext*, JS::Handle<JSObject*> aGivenProto) final;
 
-  void NodeInfoChanged(Document* aOldDoc) override {
-    DocumentFragment::NodeInfoChanged(aOldDoc);
-    ClearAdoptedStyleSheets();
-  }
+  void NodeInfoChanged(Document* aOldDoc) override;
 
   void AddToIdTable(Element* aElement, nsAtom* aId);
   void RemoveFromIdTable(Element* aElement, nsAtom* aId);

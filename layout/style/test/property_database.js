@@ -757,18 +757,16 @@ var invalidNonUrlImageValues = [
   "-webkit-linear-gradient(top right red, blue)",
   "-webkit-linear-gradient(bottom red, blue)",
 
-  // Linear-gradient with calc expression containing mixed units or division
-  // by zero (bug 1363349)
+  // Linear-gradient with calc expression containing mixed units
+  // (bug 1363349)
   "-webkit-gradient(linear, calc(5 + 5%) top, calc(10 + 10) top, from(blue), to(lime))",
   "-webkit-gradient(linear, left calc(25 - 10%), right calc(75% + 10%), from(blue), to(lime))",
-  "-webkit-gradient(linear, calc(1 / 0) 2, 3 4)",
 
-  // Radial-gradient with calc expression containing mixed units, division
-  // by zero, or a percentage in the radius (bug 1363349)
+  // Radial-gradient with calc expression containing mixed units, or a
+  // percentage in the radius (bug 1363349)
   "-webkit-gradient(radial, 1 2, 0, 3 4, calc(1% + 5%), from(blue), to(lime))",
   "-webkit-gradient(radial, 1 2, calc(1 + 2), 3 4, calc(1 + 5%), from(blue), to(lime))",
   "-webkit-gradient(radial, calc(0 + 1) calc(1 + 1), calc(1% + 2%), calc(1 + 2) 4, calc(1 + 5), from(blue), to(lime))",
-  "-webkit-gradient(radial, 1 2, calc(8 / 0), 3 4, 9)",
 
   // Linear syntax that's invalid for both -webkit & unprefixed, but valid
   // for -moz:
@@ -1685,6 +1683,25 @@ var gCSSProperties = {
     alias_for: "appearance",
     subproperties: ["appearance"],
   },
+  "aspect-ratio": {
+    domProp: "aspectRatio",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: [
+      "1",
+      "1.0",
+      "1 / 2",
+      "1/2",
+      "16.2 / 9.5",
+      "1/0",
+      "0/1",
+      "0 / 0",
+      "auto 1",
+      "0 auto",
+    ],
+    invalid_values: ["none", "1 test", "1 / auto", "auto / 1"],
+  },
   "border-inline": {
     domProp: "borderInline",
     inherited: false,
@@ -2543,13 +2560,20 @@ var gCSSProperties = {
     alias_for: "box-sizing",
     subproperties: ["box-sizing"],
   },
-  "color-adjust": {
-    domProp: "colorAdjust",
+  "print-color-adjust": {
+    domProp: "printColorAdjust",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["economy"],
     other_values: ["exact"],
     invalid_values: [],
+  },
+  "color-adjust": {
+    domProp: "colorAdjust",
+    inherited: true,
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    alias_for: "print-color-adjust",
+    subproperties: ["print-color-adjust"],
   },
   columns: {
     domProp: "columns",
@@ -2770,7 +2794,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       "calc(5 + 5)",
       "calc(5 * 5)",
       "calc(5em * 5em)",
@@ -4049,7 +4072,7 @@ var gCSSProperties = {
       "color",
       "luminosity",
     ],
-    invalid_values: ["none", "10px", "multiply multiply"],
+    invalid_values: ["none", "10px", "multiply multiply", "plus-lighter"],
   },
   "background-clip": {
     /*
@@ -6119,6 +6142,7 @@ var gCSSProperties = {
     domProp: "lineHeight",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     applies_to_first_letter: true,
     applies_to_first_line: true,
     applies_to_placeholder: true,
@@ -6807,14 +6831,12 @@ var gCSSProperties = {
       "auto",
       "scroll",
       "hidden",
-      "-moz-hidden-unscrollable",
       "clip",
       "auto auto",
       "auto scroll",
       "hidden scroll",
       "auto hidden",
       "clip clip",
-      "-moz-hidden-unscrollable -moz-hidden-unscrollable",
     ],
     invalid_values: [
       "clip -moz-scrollbars-none",
@@ -6834,13 +6856,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: [
-      "auto",
-      "scroll",
-      "hidden",
-      "clip",
-      "-moz-hidden-unscrollable",
-    ],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
   },
   "overflow-y": {
@@ -6854,13 +6870,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: [
-      "auto",
-      "scroll",
-      "hidden",
-      "clip",
-      "-moz-hidden-unscrollable",
-    ],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
   },
   "overflow-inline": {
@@ -6875,7 +6885,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
   },
   "overflow-block": {
@@ -6890,8 +6900,16 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
+  },
+  "overflow-clip-margin": {
+    domProp: "overflowClipMargin",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["0px"],
+    other_values: ["1px", "2em", "calc(10px + 1vh)"],
+    invalid_values: ["-10px"],
   },
   padding: {
     domProp: "padding",
@@ -7219,6 +7237,14 @@ var gCSSProperties = {
     initial_values: ["auto"],
     other_values: ["smooth"],
     invalid_values: ["none", "1px"],
+  },
+  "scroll-snap-stop": {
+    domProp: "scrollSnapStop",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: ["always"],
+    invalid_values: ["auto", "none", "1px"],
   },
   "scroll-snap-type": {
     domProp: "scrollSnapType",
@@ -8464,7 +8490,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       /* If we ever support division by values, which is
        * complicated for the reasons described in
        * http://lists.w3.org/Archives/Public/www-style/2010Jan/0007.html
@@ -9039,6 +9064,7 @@ var gCSSProperties = {
       "saturation",
       "color",
       "luminosity",
+      "plus-lighter",
     ],
     invalid_values: [],
   },
@@ -9775,7 +9801,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       // If we ever support division by values, which is
       // complicated for the reasons described in
       // http://lists.w3.org/Archives/Public/www-style/2010Jan/0007.html
@@ -11630,6 +11655,20 @@ if (IsCSSPropertyPrefEnabled("layout.css.caption-side-non-standard.enabled")) {
   );
 }
 
+{
+  const enabled = IsCSSPropertyPrefEnabled(
+    "layout.css.overflow-moz-hidden-unscrollable.enabled"
+  );
+  for (let p of ["overflow", "overflow-x", "overflow-y"]) {
+    let prop = gCSSProperties[p];
+    let values = enabled ? prop.other_values : prop.invalid_values;
+    values.push("-moz-hidden-unscrollable");
+    if (p == "overflow") {
+      values.push("-moz-hidden-unscrollable -moz-hidden-unscrollable");
+    }
+  }
+}
+
 if (IsCSSPropertyPrefEnabled("layout.css.individual-transform.enabled")) {
   gCSSProperties.rotate = {
     domProp: "rotate",
@@ -11747,156 +11786,165 @@ if (IsCSSPropertyPrefEnabled("layout.css.individual-transform.enabled")) {
   };
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.touch_action.enabled")) {
-  gCSSProperties["touch-action"] = {
-    domProp: "touchAction",
+gCSSProperties["touch-action"] = {
+  domProp: "touchAction",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: [
+    "none",
+    "pan-x",
+    "pan-y",
+    "pinch-zoom",
+    "pan-x pan-y",
+    "pan-y pan-x",
+    "pinch-zoom pan-x",
+    "pinch-zoom pan-y",
+    "pan-x pinch-zoom",
+    "pan-y pinch-zoom",
+    "pinch-zoom pan-x pan-y",
+    "pinch-zoom pan-y pan-x",
+    "pan-x pinch-zoom pan-y",
+    "pan-y pinch-zoom pan-x",
+    "pan-x pan-y pinch-zoom",
+    "pan-y pan-x pinch-zoom",
+    "manipulation",
+  ],
+  invalid_values: [
+    "zoom",
+    "pinch",
+    "tap",
+    "10px",
+    "2",
+    "auto pan-x",
+    "pan-x auto",
+    "none pan-x",
+    "pan-x none",
+    "auto pan-y",
+    "pan-y auto",
+    "none pan-y",
+    "pan-y none",
+    "pan-x pan-x",
+    "pan-y pan-y",
+    "auto pinch-zoom",
+    "pinch-zoom auto",
+    "none pinch-zoom",
+    "pinch-zoom none",
+    "pinch-zoom pinch-zoom",
+    "pan-x pan-y none",
+    "pan-x none pan-y",
+    "none pan-x pan-y",
+    "pan-y pan-x none",
+    "pan-y none pan-x",
+    "none pan-y pan-x",
+    "pan-x pinch-zoom none",
+    "pan-x none pinch-zoom",
+    "none pan-x pinch-zoom",
+    "pinch-zoom pan-x none",
+    "pinch-zoom none pan-x",
+    "none pinch-zoom pan-x",
+    "pinch-zoom pan-y none",
+    "pinch-zoom none pan-y",
+    "none pinch-zoom pan-y",
+    "pan-y pinch-zoom none",
+    "pan-y none pinch-zoom",
+    "none pan-y pinch-zoom",
+    "pan-x pan-y auto",
+    "pan-x auto pan-y",
+    "auto pan-x pan-y",
+    "pan-y pan-x auto",
+    "pan-y auto pan-x",
+    "auto pan-y pan-x",
+    "pan-x pinch-zoom auto",
+    "pan-x auto pinch-zoom",
+    "auto pan-x pinch-zoom",
+    "pinch-zoom pan-x auto",
+    "pinch-zoom auto pan-x",
+    "auto pinch-zoom pan-x",
+    "pinch-zoom pan-y auto",
+    "pinch-zoom auto pan-y",
+    "auto pinch-zoom pan-y",
+    "pan-y pinch-zoom auto",
+    "pan-y auto pinch-zoom",
+    "auto pan-y pinch-zoom",
+    "pan-x pan-y zoom",
+    "pan-x zoom pan-y",
+    "zoom pan-x pan-y",
+    "pan-y pan-x zoom",
+    "pan-y zoom pan-x",
+    "zoom pan-y pan-x",
+    "pinch-zoom pan-y zoom",
+    "pinch-zoom zoom pan-y",
+    "zoom pinch-zoom pan-y",
+    "pan-y pinch-zoom zoom",
+    "pan-y zoom pinch-zoom",
+    "zoom pan-y pinch-zoom",
+    "pan-x pinch-zoom zoom",
+    "pan-x zoom pinch-zoom",
+    "zoom pan-x pinch-zoom",
+    "pinch-zoom pan-x zoom",
+    "pinch-zoom zoom pan-x",
+    "zoom pinch-zoom pan-x",
+    "pan-x pan-y pan-x",
+    "pan-x pan-x pan-y",
+    "pan-y pan-x pan-x",
+    "pan-y pan-x pan-y",
+    "pan-y pan-y pan-x",
+    "pan-x pan-y pan-y",
+    "pan-x pinch-zoom pan-x",
+    "pan-x pan-x pinch-zoom",
+    "pinch-zoom pan-x pan-x",
+    "pinch-zoom pan-x pinch-zoom",
+    "pinch-zoom pinch-zoom pan-x",
+    "pan-x pinch-zoom pinch-zoom",
+    "pinch-zoom pan-y pinch-zoom",
+    "pinch-zoom pinch-zoom pan-y",
+    "pan-y pinch-zoom pinch-zoom",
+    "pan-y pinch-zoom pan-y",
+    "pan-y pan-y pinch-zoom",
+    "pinch-zoom pan-y pan-y",
+    "manipulation none",
+    "none manipulation",
+    "manipulation auto",
+    "auto manipulation",
+    "manipulation zoom",
+    "zoom manipulation",
+    "manipulation manipulation",
+    "manipulation pan-x",
+    "pan-x manipulation",
+    "manipulation pan-y",
+    "pan-y manipulation",
+    "manipulation pinch-zoom",
+    "pinch-zoom manipulation",
+    "manipulation pan-x pan-y",
+    "pan-x manipulation pan-y",
+    "pan-x pan-y manipulation",
+    "manipulation pan-y pan-x",
+    "pan-y manipulation pan-x",
+    "pan-y pan-x manipulation",
+    "manipulation pinch-zoom pan-y",
+    "pinch-zoom manipulation pan-y",
+    "pinch-zoom pan-y manipulation",
+    "manipulation pan-y pinch-zoom",
+    "pan-y manipulation pinch-zoom",
+    "pan-y pinch-zoom manipulation",
+    "manipulation pan-x pinch-zoom",
+    "pan-x manipulation pinch-zoom",
+    "pan-x pinch-zoom manipulation",
+    "manipulation pinch-zoom pan-x",
+    "pinch-zoom manipulation pan-x",
+    "pinch-zoom pan-x manipulation",
+  ],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.named-pages.enabled")) {
+  gCSSProperties["page"] = {
+    domProp: "page",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["auto"],
-    other_values: [
-      "none",
-      "pan-x",
-      "pan-y",
-      "pinch-zoom",
-      "pan-x pan-y",
-      "pan-y pan-x",
-      "pinch-zoom pan-x",
-      "pinch-zoom pan-y",
-      "pan-x pinch-zoom",
-      "pan-y pinch-zoom",
-      "pinch-zoom pan-x pan-y",
-      "pinch-zoom pan-y pan-x",
-      "pan-x pinch-zoom pan-y",
-      "pan-y pinch-zoom pan-x",
-      "pan-x pan-y pinch-zoom",
-      "pan-y pan-x pinch-zoom",
-      "manipulation",
-    ],
-    invalid_values: [
-      "zoom",
-      "pinch",
-      "tap",
-      "10px",
-      "2",
-      "auto pan-x",
-      "pan-x auto",
-      "none pan-x",
-      "pan-x none",
-      "auto pan-y",
-      "pan-y auto",
-      "none pan-y",
-      "pan-y none",
-      "pan-x pan-x",
-      "pan-y pan-y",
-      "auto pinch-zoom",
-      "pinch-zoom auto",
-      "none pinch-zoom",
-      "pinch-zoom none",
-      "pinch-zoom pinch-zoom",
-      "pan-x pan-y none",
-      "pan-x none pan-y",
-      "none pan-x pan-y",
-      "pan-y pan-x none",
-      "pan-y none pan-x",
-      "none pan-y pan-x",
-      "pan-x pinch-zoom none",
-      "pan-x none pinch-zoom",
-      "none pan-x pinch-zoom",
-      "pinch-zoom pan-x none",
-      "pinch-zoom none pan-x",
-      "none pinch-zoom pan-x",
-      "pinch-zoom pan-y none",
-      "pinch-zoom none pan-y",
-      "none pinch-zoom pan-y",
-      "pan-y pinch-zoom none",
-      "pan-y none pinch-zoom",
-      "none pan-y pinch-zoom",
-      "pan-x pan-y auto",
-      "pan-x auto pan-y",
-      "auto pan-x pan-y",
-      "pan-y pan-x auto",
-      "pan-y auto pan-x",
-      "auto pan-y pan-x",
-      "pan-x pinch-zoom auto",
-      "pan-x auto pinch-zoom",
-      "auto pan-x pinch-zoom",
-      "pinch-zoom pan-x auto",
-      "pinch-zoom auto pan-x",
-      "auto pinch-zoom pan-x",
-      "pinch-zoom pan-y auto",
-      "pinch-zoom auto pan-y",
-      "auto pinch-zoom pan-y",
-      "pan-y pinch-zoom auto",
-      "pan-y auto pinch-zoom",
-      "auto pan-y pinch-zoom",
-      "pan-x pan-y zoom",
-      "pan-x zoom pan-y",
-      "zoom pan-x pan-y",
-      "pan-y pan-x zoom",
-      "pan-y zoom pan-x",
-      "zoom pan-y pan-x",
-      "pinch-zoom pan-y zoom",
-      "pinch-zoom zoom pan-y",
-      "zoom pinch-zoom pan-y",
-      "pan-y pinch-zoom zoom",
-      "pan-y zoom pinch-zoom",
-      "zoom pan-y pinch-zoom",
-      "pan-x pinch-zoom zoom",
-      "pan-x zoom pinch-zoom",
-      "zoom pan-x pinch-zoom",
-      "pinch-zoom pan-x zoom",
-      "pinch-zoom zoom pan-x",
-      "zoom pinch-zoom pan-x",
-      "pan-x pan-y pan-x",
-      "pan-x pan-x pan-y",
-      "pan-y pan-x pan-x",
-      "pan-y pan-x pan-y",
-      "pan-y pan-y pan-x",
-      "pan-x pan-y pan-y",
-      "pan-x pinch-zoom pan-x",
-      "pan-x pan-x pinch-zoom",
-      "pinch-zoom pan-x pan-x",
-      "pinch-zoom pan-x pinch-zoom",
-      "pinch-zoom pinch-zoom pan-x",
-      "pan-x pinch-zoom pinch-zoom",
-      "pinch-zoom pan-y pinch-zoom",
-      "pinch-zoom pinch-zoom pan-y",
-      "pan-y pinch-zoom pinch-zoom",
-      "pan-y pinch-zoom pan-y",
-      "pan-y pan-y pinch-zoom",
-      "pinch-zoom pan-y pan-y",
-      "manipulation none",
-      "none manipulation",
-      "manipulation auto",
-      "auto manipulation",
-      "manipulation zoom",
-      "zoom manipulation",
-      "manipulation manipulation",
-      "manipulation pan-x",
-      "pan-x manipulation",
-      "manipulation pan-y",
-      "pan-y manipulation",
-      "manipulation pinch-zoom",
-      "pinch-zoom manipulation",
-      "manipulation pan-x pan-y",
-      "pan-x manipulation pan-y",
-      "pan-x pan-y manipulation",
-      "manipulation pan-y pan-x",
-      "pan-y manipulation pan-x",
-      "pan-y pan-x manipulation",
-      "manipulation pinch-zoom pan-y",
-      "pinch-zoom manipulation pan-y",
-      "pinch-zoom pan-y manipulation",
-      "manipulation pan-y pinch-zoom",
-      "pan-y manipulation pinch-zoom",
-      "pan-y pinch-zoom manipulation",
-      "manipulation pan-x pinch-zoom",
-      "pan-x manipulation pinch-zoom",
-      "pan-x pinch-zoom manipulation",
-      "manipulation pinch-zoom pan-x",
-      "pinch-zoom manipulation pan-x",
-      "pinch-zoom pan-x manipulation",
-    ],
+    other_values: ["page", "small_page", "large_page", "A4"],
+    invalid_values: ["page1 page2", "auto page", "1cm"],
   };
 }
 
@@ -12846,6 +12894,124 @@ if (IsCSSPropertyPrefEnabled("layout.css.webkit-line-clamp.enabled")) {
   };
 }
 
+if (IsCSSPropertyPrefEnabled("layout.css.hyphenate-character.enabled")) {
+  gCSSProperties["hyphenate-character"] = {
+    domProp: "hyphenateCharacter",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_placeholder: true,
+    initial_values: ["auto"],
+    other_values: ['"="', '"/-/"', '"\1400"', '""'],
+    invalid_values: ["none", "auto auto", "1400", "U+1400"],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.content-visibility.enabled")) {
+  gCSSProperties["content-visibility"] = {
+    domProp: "contentVisibility",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["visible"],
+    other_values: ["auto", "invisible"],
+    invalid_values: ["partially-visible", "auto auto", "visible invisible"],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.contain-intrinsic-size.enabled")) {
+  gCSSProperties["contain-intrinsic-width"] = {
+    domProp: "containIntrinsicWidth",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-height"] = {
+    domProp: "containIntrinsicHeight",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-block-size"] = {
+    domProp: "containIntrinsicBlockSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-inline-size"] = {
+    domProp: "containIntrinsicInlineSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+
+  gCSSProperties["contain-intrinsic-size"] = {
+    domProp: "containIntrinsicSize",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["contain-intrinsic-width", "contain-intrinsic-height"],
+    initial_values: ["none"],
+    other_values: ["1em 1em", "1px 1px", "auto 1px auto 1px", "1px auto 1px"],
+    invalid_values: ["auto auto", "-1px -1px", "1px, auto none"],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.container-queries.enabled")) {
+  gCSSProperties["container-type"] = {
+    domProp: "containerType",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "style",
+      "inline-size",
+      "block-size",
+      "size",
+      "style inline-size",
+      "block-size style",
+      "size style",
+    ],
+    invalid_values: [
+      "none style",
+      "none inline-size",
+      "inline-size none",
+      "style none",
+      "style style",
+      "inline-size style inline-size",
+      "inline-size block-size",
+      "size inline-size",
+      "size block-size",
+    ],
+  };
+  gCSSProperties["container-name"] = {
+    domProp: "containerName",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["foo bar", "foo", "baz bazz", "foo foo"],
+    invalid_values: ["foo unset", "none bar", "foo initial", "initial foo"],
+  };
+  gCSSProperties["container"] = {
+    domProp: "container",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["container-type", "container-name"],
+    initial_values: ["none"],
+    other_values: ["size", "size / foo bar", "inline-size style / foo"],
+    invalid_values: ["foo / size", "foo bar / size"],
+  };
+}
+
 if (false) {
   // TODO These properties are chrome-only, and are not exposed via CSSOM.
   // We may still want to find a way to test them. See bug 1206999.
@@ -13285,6 +13451,35 @@ if (IsCSSPropertyPrefEnabled("layout.css.step-position-jump.enabled")) {
   );
 }
 
+if (IsCSSPropertyPrefEnabled("layout.css.linear-easing-function.enabled")) {
+  let linear_function_other_values = [
+    "linear()",
+    "linear(0.5)",
+    "linear(0, 1)",
+    "linear(0 0% 50%, 1 50% 100%)",
+  ];
+
+  let linear_function_invalid_values = ["linear(0% 0 100%)", "linear(0,)"];
+  gCSSProperties["animation-timing-function"].other_values.push(
+    ...linear_function_other_values
+  );
+  gCSSProperties["animation-timing-function"].invalid_values.push(
+    ...linear_function_invalid_values
+  );
+
+  gCSSProperties["transition-timing-function"].other_values.push(
+    ...linear_function_other_values
+  );
+  gCSSProperties["transition-timing-function"].invalid_values.push(
+    ...linear_function_invalid_values
+  );
+
+  gCSSProperties["animation"].other_values.push(
+    "1s 2s linear() bounce",
+    "4s linear(0, 0.5 25% 75%, 1 100% 100%)"
+  );
+}
+
 if (
   IsCSSPropertyPrefEnabled("layout.css.backdrop-filter.enabled") &&
   IsWebRenderEnabled()
@@ -13308,28 +13503,6 @@ if (IsCSSPropertyPrefEnabled("layout.css.zoom-transform-hack.enabled")) {
     initial_values: ["normal", "1.0", "0", "0%", "100%"],
     other_values: ["10%", "2", "2.5"],
     invalid_values: ["0 0", "foo", "10px"],
-  };
-}
-
-if (IsCSSPropertyPrefEnabled("layout.css.aspect-ratio.enabled")) {
-  gCSSProperties["aspect-ratio"] = {
-    domProp: "aspectRatio",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: [
-      "1",
-      "1.0",
-      "1 / 2",
-      "1/2",
-      "16.2 / 9.5",
-      "1/0",
-      "0/1",
-      "0 / 0",
-      "auto 1",
-      "0 auto",
-    ],
-    invalid_values: ["none", "1 test", "1 / auto", "auto / 1"],
   };
 }
 
@@ -13402,13 +13575,31 @@ if (IsCSSPropertyPrefEnabled("layout.css.color-scheme.enabled")) {
   };
 }
 
+if (IsCSSPropertyPrefEnabled("layout.css.animation-composition.enabled")) {
+  gCSSProperties["animation-composition"] = {
+    domProp: "animationComposition",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
+    initial_values: ["replace"],
+    other_values: [
+      "add",
+      "accumulate",
+      "replace, add",
+      "add, accumulate",
+      "replace, add, accumulate",
+    ],
+    invalid_values: ["all", "none"],
+  };
+}
+
 if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
   // Basically, web-platform-tests should cover most cases, so here we only
   // put some basic test cases.
   gCSSProperties["animation"].subproperties.push("animation-timeline");
   gCSSProperties["animation"].initial_values.push(
     "none none 0s 0s ease normal running 1.0 auto",
-    "auto"
+    "none none auto"
   );
   gCSSProperties["animation"].other_values.push(
     "none none 0s 0s cubic-bezier(0.25, 0.1, 0.25, 1.0) normal running 1.0 auto",
@@ -13419,6 +13610,9 @@ if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
     "1s bounce timeline, 2s",
     "1s bounce none, 2s none auto"
   );
+
+  gCSSProperties["-moz-animation"].subproperties.push("animation-timeline");
+  gCSSProperties["-webkit-animation"].subproperties.push("animation-timeline");
 
   gCSSProperties["animation-timeline"] = {
     domProp: "animationTimeline",
@@ -13434,7 +13628,44 @@ if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
       "color",
       "bounce, bubble, opacity",
       "foobar",
-      "auto",
+      "\\32bounce",
+      "-bounce",
+      "-\\32bounce",
+      "\\32 0bounce",
+      "-\\32 0bounce",
+      "\\2bounce",
+      "-\\2bounce",
+      "scroll()",
+      "scroll(block)",
+      "scroll(inline)",
+      "scroll(horizontal)",
+      "scroll(vertical)",
+      "scroll(root)",
+      "scroll(nearest)",
+      "scroll(inline nearest)",
+      "scroll(vertical root)",
+    ],
+    invalid_values: [
+      "bounce, initial",
+      "initial, bounce",
+      "bounce, inherit",
+      "inherit, bounce",
+      "bounce, unset",
+      "unset, bounce",
+    ],
+  };
+
+  gCSSProperties["scroll-timeline-name"] = {
+    domProp: "scrollTimelineName",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "all",
+      "ball",
+      "mall",
+      "color",
+      "foobar",
       "\\32bounce",
       "-bounce",
       "-\\32bounce",
@@ -13444,12 +13675,62 @@ if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
       "-\\2bounce",
     ],
     invalid_values: [
-      "bounce, initial",
-      "initial, bounce",
-      "bounce, inherit",
-      "inherit, bounce",
-      "bounce, unset",
-      "unset, bounce",
+      "auto",
+      "bounce, abc",
+      "abc bounce",
+      "10px",
+      "rgb(1, 2, 3)",
+    ],
+  };
+
+  gCSSProperties["scroll-timeline-axis"] = {
+    domProp: "scrollTimelineAxis",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["block"],
+    other_values: ["inline", "vertical", "horizontal"],
+    invalid_values: ["auto", "none", "abc"],
+  };
+
+  gCSSProperties["scroll-timeline"] = {
+    domProp: "scrollTimeline",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["scroll-timeline-name", "scroll-timeline-axis"],
+    initial_values: ["none block", "block none", "block", "none"],
+    other_values: [
+      "bounce inline",
+      "bounce vertical",
+      "horizontal bounce",
+      "inline \\32bounce",
+      "block -bounce",
+      "vertical \\32 0bounce",
+      "horizontal -\\32 0bounce",
+    ],
+    invalid_values: ["", "bounce bounce"],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.scrollbar-gutter.enabled")) {
+  gCSSProperties["scrollbar-gutter"] = {
+    domProp: "scrollbarGutter",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: ["stable", "stable both-edges", "both-edges stable"],
+    invalid_values: [
+      "auto stable",
+      "auto both-edges",
+      "both-edges",
+      "stable mirror",
+      // The following values are from scrollbar-gutter extension in CSS
+      // Overflow 4 https://drafts.csswg.org/css-overflow-4/#sbg-ext.
+      "always",
+      "always both-edges",
+      "always force",
+      "always both-edges force",
+      "stable both-edges force",
+      "match-parent",
     ],
   };
 }

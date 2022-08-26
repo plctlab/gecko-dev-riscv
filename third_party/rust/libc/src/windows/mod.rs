@@ -27,6 +27,8 @@ pub type wchar_t = u16;
 
 pub type clock_t = i32;
 
+pub type errno_t = ::c_int;
+
 cfg_if! {
     if #[cfg(all(target_arch = "x86", target_env = "gnu"))] {
         pub type time_t = i32;
@@ -275,6 +277,16 @@ impl ::Clone for fpos_t {
     }
 }
 
+// Special handling for all print and scan type functions because of https://github.com/rust-lang/libc/issues/2860
+#[cfg_attr(
+    all(windows, target_env = "msvc"),
+    link(name = "legacy_stdio_definitions")
+)]
+extern "C" {
+    pub fn printf(format: *const c_char, ...) -> ::c_int;
+    pub fn fprintf(stream: *mut FILE, format: *const c_char, ...) -> ::c_int;
+}
+
 extern "C" {
     pub fn isalnum(c: c_int) -> c_int;
     pub fn isalpha(c: c_int) -> c_int;
@@ -319,6 +331,7 @@ extern "C" {
     pub fn perror(s: *const c_char);
     pub fn atoi(s: *const c_char) -> c_int;
     pub fn strtod(s: *const c_char, endp: *mut *mut c_char) -> c_double;
+    pub fn strtof(s: *const c_char, endp: *mut *mut c_char) -> c_float;
     pub fn strtol(s: *const c_char, endp: *mut *mut c_char, base: c_int) -> c_long;
     pub fn strtoul(s: *const c_char, endp: *mut *mut c_char, base: c_int) -> c_ulong;
     pub fn calloc(nobj: size_t, size: size_t) -> *mut c_void;
@@ -371,6 +384,8 @@ extern "C" {
 
     #[link_name = "_gmtime64_s"]
     pub fn gmtime_s(destTime: *mut tm, srcTime: *const time_t) -> ::c_int;
+    #[link_name = "_localtime64_s"]
+    pub fn localtime_s(tmDest: *mut tm, sourceTime: *const time_t) -> ::errno_t;
     #[link_name = "_time64"]
     pub fn time(destTime: *mut time_t) -> time_t;
     #[link_name = "_chmod"]
@@ -492,6 +507,8 @@ extern "C" {
     pub fn wsetlocale(category: ::c_int, locale: *const wchar_t) -> *mut wchar_t;
     #[link_name = "_aligned_malloc"]
     pub fn aligned_malloc(size: size_t, alignment: size_t) -> *mut c_void;
+    #[link_name = "_aligned_free"]
+    pub fn aligned_free(ptr: *mut ::c_void);
 }
 
 extern "system" {

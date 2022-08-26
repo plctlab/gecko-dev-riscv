@@ -136,8 +136,10 @@ async function addJsonViewTab(
 function clickJsonNode(selector) {
   info("Expanding node: '" + selector + "'");
 
-  const browser = gBrowser.selectedBrowser;
-  return BrowserTestUtils.synthesizeMouseAtCenter(selector, {}, browser);
+  // eslint-disable-next-line no-shadow
+  return ContentTask.spawn(gBrowser.selectedBrowser, selector, selector => {
+    content.document.querySelector(selector).click();
+  });
 }
 
 /**
@@ -146,9 +148,17 @@ function clickJsonNode(selector) {
 function selectJsonViewContentTab(name) {
   info("Selecting tab: '" + name + "'");
 
-  const browser = gBrowser.selectedBrowser;
-  const selector = ".tabs-menu .tabs-menu-item." + name + " a";
-  return BrowserTestUtils.synthesizeMouseAtCenter(selector, {}, browser);
+  // eslint-disable-next-line no-shadow
+  return ContentTask.spawn(gBrowser.selectedBrowser, name, async name => {
+    const selector = ".tabs-menu .tabs-menu-item." + CSS.escape(name) + " a";
+    const element = content.document.querySelector(selector);
+    is(element.getAttribute("aria-selected"), "false", "Tab not selected yet");
+    await new Promise(resolve => {
+      content.addEventListener("TabChanged", resolve, { once: true });
+      element.click();
+    });
+    is(element.getAttribute("aria-selected"), "true", "Tab is now selected");
+  });
 }
 
 function getElementCount(selector) {

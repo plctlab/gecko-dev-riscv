@@ -16,11 +16,14 @@
 
 const { Ci } = require("chrome");
 const { DevToolsServer } = require("devtools/server/devtools-server");
-const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.jsm");
+const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.sys.mjs");
 const protocol = require("devtools/shared/protocol");
 const {
   workerDescriptorSpec,
 } = require("devtools/shared/specs/descriptors/worker");
+const {
+  createWorkerSessionContext,
+} = require("devtools/server/actors/watcher/session-context");
 
 loader.lazyRequireGetter(
   this,
@@ -42,7 +45,7 @@ const WorkerDescriptorActor = protocol.ActorClassWithSpec(
     initialize(conn, dbg) {
       protocol.Actor.prototype.initialize.call(this, conn);
       this._dbg = dbg;
-      this._attached = false;
+
       this._threadActor = null;
       this._transport = null;
 
@@ -50,6 +53,9 @@ const WorkerDescriptorActor = protocol.ActorClassWithSpec(
         onClose: this._onWorkerClose.bind(this),
         onError: this._onWorkerError.bind(this),
       };
+
+      this._dbg.addListener(this._dbgListener);
+      this._attached = true;
     },
 
     form() {
@@ -80,22 +86,6 @@ const WorkerDescriptorActor = protocol.ActorClassWithSpec(
         }
       }
       return form;
-    },
-
-    attach() {
-      if (this._dbg.isClosed) {
-        return { error: "closed" };
-      }
-
-      if (!this._attached) {
-        this._dbg.addListener(this._dbgListener);
-        this._attached = true;
-      }
-
-      return {
-        type: "attached",
-        url: this._dbg.url,
-      };
     },
 
     detach() {
@@ -133,7 +123,9 @@ const WorkerDescriptorActor = protocol.ActorClassWithSpec(
           this.conn,
           this._dbg,
           this.actorID,
-          {}
+          {
+            sessionContext: createWorkerSessionContext(),
+          }
         );
 
         this._threadActor = workerTargetForm.threadActor;

@@ -150,6 +150,7 @@ nsresult imgFrame::InitForDecoder(const nsIntSize& aImageSize,
   // warn for properties related to bad content.
   if (!SurfaceCache::IsLegalSize(aImageSize)) {
     NS_WARNING("Should have legal image size");
+    MonitorAutoLock lock(mMonitor);
     mAborted = true;
     return NS_ERROR_FAILURE;
   }
@@ -181,6 +182,8 @@ nsresult imgFrame::InitForDecoder(const nsIntSize& aImageSize,
   }
 
   mNonPremult = aNonPremult;
+
+  MonitorAutoLock lock(mMonitor);
   mShouldRecycle = aShouldRecycle;
 
   MOZ_ASSERT(!mRawSurface, "Called imgFrame::InitForDecoder() twice?");
@@ -297,6 +300,7 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
   // warn for properties related to bad content.
   if (!SurfaceCache::IsLegalSize(aSize)) {
     NS_WARNING("Should have legal image size");
+    MonitorAutoLock lock(mMonitor);
     mAborted = true;
     return NS_ERROR_FAILURE;
   }
@@ -308,6 +312,7 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
 
   bool canUseDataSurface = Factory::DoesBackendSupportDataDrawtarget(aBackend);
   if (canUseDataSurface) {
+    MonitorAutoLock lock(mMonitor);
     // It's safe to use data surfaces for content on this platform, so we can
     // get away with using volatile buffers.
     MOZ_ASSERT(!mRawSurface, "Called imgFrame::InitWithDrawable() twice?");
@@ -331,7 +336,12 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
     // surface instead.  This means if someone later calls RawAccessRef(), we
     // may have to do an expensive readback, but we warned callers about that in
     // the documentation for this method.
-    MOZ_ASSERT(!mOptSurface, "Called imgFrame::InitWithDrawable() twice?");
+#ifdef DEBUG
+    {
+      MonitorAutoLock lock(mMonitor);
+      MOZ_ASSERT(!mOptSurface, "Called imgFrame::InitWithDrawable() twice?");
+    }
+#endif
 
     if (gfxPlatform::GetPlatform()->SupportsAzureContentForType(aBackend)) {
       target = gfxPlatform::GetPlatform()->CreateDrawTargetForBackend(
@@ -343,6 +353,7 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
   }
 
   if (!target || !target->IsValid()) {
+    MonitorAutoLock lock(mMonitor);
     mAborted = true;
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -354,6 +365,7 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
                              ImageRegion::Create(ThebesRect(GetRect())),
                              mFormat, aSamplingFilter, aImageFlags);
 
+  MonitorAutoLock lock(mMonitor);
   if (canUseDataSurface && !mRawSurface) {
     NS_WARNING("Failed to create SourceSurfaceSharedData");
     mAborted = true;
@@ -365,17 +377,14 @@ nsresult imgFrame::InitWithDrawable(gfxDrawable* aDrawable,
     // imgFrame's perspective.
     mOptSurface = target->Snapshot();
   } else {
-    FinalizeSurface();
+    FinalizeSurfaceInternal();
   }
 
   // If we reach this point, we should regard ourselves as complete.
   mDecoded = GetRect();
   mFinished = true;
 
-#ifdef DEBUG
-  MonitorAutoLock lock(mMonitor);
   MOZ_ASSERT(AreAllPixelsWritten());
-#endif
 
   return NS_OK;
 }
@@ -513,23 +522,39 @@ nsresult imgFrame::ImageUpdatedInternal(const nsIntRect& aUpdateRect) {
 }
 
 void imgFrame::Finish(Opacity aFrameOpacity /* = Opacity::SOME_TRANSPARENCY */,
-                      bool aFinalize /* = true */) {
+                      bool aFinalize /* = true */,
+                      bool aOrientationSwapsWidthAndHeight /* = false */) {
   MonitorAutoLock lock(mMonitor);
 
   IntRect frameRect(GetRect());
   if (!mDecoded.IsEqualEdges(frameRect)) {
     // The decoder should have produced rows starting from either the bottom or
     // the top of the image. We need to calculate the region for which we have
-    // not yet invalidated.
+    // not yet invalidated. And if the orientation swaps width and height then
+    // its from the left or right.
     IntRect delta(0, 0, frameRect.width, 0);
-    if (mDecoded.y == 0) {
-      delta.y = mDecoded.height;
-      delta.height = frameRect.height - mDecoded.height;
-    } else if (mDecoded.y + mDecoded.height == frameRect.height) {
-      delta.height = frameRect.height - mDecoded.y;
+    if (!aOrientationSwapsWidthAndHeight) {
+      delta.width = frameRect.width;
+      if (mDecoded.y == 0) {
+        delta.y = mDecoded.height;
+        delta.height = frameRect.height - mDecoded.height;
+      } else if (mDecoded.y + mDecoded.height == frameRect.height) {
+        delta.height = frameRect.height - mDecoded.y;
+      } else {
+        MOZ_ASSERT_UNREACHABLE("Decoder only updated middle of image!");
+        delta = frameRect;
+      }
     } else {
-      MOZ_ASSERT_UNREACHABLE("Decoder only updated middle of image!");
-      delta = frameRect;
+      delta.height = frameRect.height;
+      if (mDecoded.x == 0) {
+        delta.x = mDecoded.width;
+        delta.width = frameRect.width - mDecoded.width;
+      } else if (mDecoded.x + mDecoded.width == frameRect.width) {
+        delta.width = frameRect.width - mDecoded.x;
+      } else {
+        MOZ_ASSERT_UNREACHABLE("Decoder only updated middle of image!");
+        delta = frameRect;
+      }
     }
 
     ImageUpdatedInternal(delta);
@@ -680,7 +705,6 @@ void imgFrame::AddSizeOfExcludingThis(MallocSizeOf aMallocSizeOf,
   MonitorAutoLock lock(mMonitor);
 
   AddSizeOfCbData metadata;
-  metadata.mSurface = mOptSurface ? mOptSurface.get() : mRawSurface.get();
   metadata.mFinished = mFinished;
 
   if (mOptSurface) {

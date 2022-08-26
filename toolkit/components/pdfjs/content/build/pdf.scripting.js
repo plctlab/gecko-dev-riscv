@@ -1,8 +1,8 @@
 /**
  * @licstart The following is the entire license notice for the
- * Javascript code in this page
+ * JavaScript code in this page
  *
- * Copyright 2021 Mozilla Foundation
+ * Copyright 2022 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
  * limitations under the License.
  *
  * @licend The above is the entire license notice for the
- * Javascript code in this page
+ * JavaScript code in this page
  */
 
 (function webpackUniversalModuleDefinition(root, factory) {
@@ -29,7 +29,7 @@
 		exports["pdfjs-dist/build/pdf.scripting"] = factory();
 	else
 		root.pdfjsScripting = factory();
-})(this, function() {
+})(globalThis, () => {
 return /******/ (() => { // webpackBootstrap
 /******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ([
@@ -156,13 +156,12 @@ function initSandbox(params) {
       }
 
       const wrapped = new Proxy(field, proxyHandler);
-
-      doc._addField(name, wrapped);
-
       const _object = {
         obj: field,
         wrapped
       };
+
+      doc._addField(name, _object);
 
       for (const object of objs) {
         appObjects[object.id] = _object;
@@ -465,7 +464,6 @@ class Field extends _pdf_object.PDFObject {
     this.required = data.required;
     this.richText = data.richText;
     this.richValue = data.richValue;
-    this.rotation = data.rotation;
     this.style = data.style;
     this.submitName = data.submitName;
     this.textFont = data.textFont;
@@ -490,9 +488,9 @@ class Field extends _pdf_object.PDFObject {
     this._kidIds = data.kidIds || null;
     this._fieldType = (0, _common.getFieldType)(this._actions);
     this._siblings = data.siblings || null;
+    this._rotation = data.rotation || 0;
     this._globalEval = data.globalEval;
     this._appObjects = data.appObjects;
-    this.valueAsString = data.valueAsString || this._value;
   }
 
   get currentValueIndices() {
@@ -594,6 +592,26 @@ class Field extends _pdf_object.PDFObject {
     throw new Error("field.page is read-only");
   }
 
+  get rotation() {
+    return this._rotation;
+  }
+
+  set rotation(angle) {
+    angle = Math.floor(angle);
+
+    if (angle % 90 !== 0) {
+      throw new Error("Invalid rotation: must be a multiple of 90");
+    }
+
+    angle %= 360;
+
+    if (angle < 0) {
+      angle += 360;
+    }
+
+    this._rotation = angle;
+  }
+
   get textColor() {
     return this._textColor;
   }
@@ -641,7 +659,12 @@ class Field extends _pdf_object.PDFObject {
     if (this._isChoice) {
       if (this.multipleSelection) {
         const values = new Set(value);
-        this._currentValueIndices.length = 0;
+
+        if (Array.isArray(this._currentValueIndices)) {
+          this._currentValueIndices.length = 0;
+        } else {
+          this._currentValueIndices = [];
+        }
 
         this._items.forEach(({
           displayValue
@@ -659,16 +682,10 @@ class Field extends _pdf_object.PDFObject {
   }
 
   get valueAsString() {
-    if (this._valueAsString === undefined) {
-      this._valueAsString = this._value ? this._value.toString() : "";
-    }
-
-    return this._valueAsString;
+    return (this._value ?? "").toString();
   }
 
-  set valueAsString(val) {
-    this._valueAsString = val ? val.toString() : "";
-  }
+  set valueAsString(_) {}
 
   browseForFileToSubmit() {
     if (this._browseForFileToSubmit) {
@@ -790,7 +807,7 @@ class Field extends _pdf_object.PDFObject {
     }
 
     if (this._children === null) {
-      this._children = this._document.obj._getChildren(this._fieldPath);
+      this._children = this._document.obj._getChildren(this._fieldPath).map(child => child.wrapped);
     }
 
     return this._children;
@@ -925,6 +942,10 @@ class Field extends _pdf_object.PDFObject {
 
   _isButton() {
     return false;
+  }
+
+  _reset() {
+    this.value = this.defaultValue;
   }
 
   _runActions(event) {
@@ -1096,9 +1117,9 @@ exports.CheckboxField = CheckboxField;
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
+exports.FieldType = void 0;
 exports.createActionsMap = createActionsMap;
 exports.getFieldType = getFieldType;
-exports.FieldType = void 0;
 const FieldType = {
   none: 0,
   number: 1,
@@ -1330,7 +1351,8 @@ class ColorConverters {
   }
 
   static CMYK_HTML(components) {
-    return this.RGB_HTML(this.CMYK_RGB(components));
+    const rgb = this.CMYK_RGB(components).slice(1);
+    return this.RGB_HTML(rgb);
   }
 
   static RGB_CMYK([r, g, b]) {
@@ -1396,17 +1418,23 @@ class AForm {
   }
 
   _parseDate(cFormat, cDate) {
-    const ddate = Date.parse(cDate);
+    let date = null;
 
-    if (isNaN(ddate)) {
-      try {
-        return this._util.scand(cFormat, cDate);
-      } catch (error) {
-        return null;
+    try {
+      date = this._util.scand(cFormat, cDate);
+    } catch (error) {}
+
+    if (!date) {
+      date = Date.parse(cDate);
+
+      if (isNaN(date)) {
+        date = null;
+      } else {
+        date = new Date(date);
       }
-    } else {
-      return new Date(ddate);
     }
+
+    return date;
   }
 
   AFMergeChange(event = globalThis.event) {
@@ -1757,6 +1785,10 @@ class AForm {
     for (const cField of cFields) {
       const field = this._document.getField(cField);
 
+      if (!field) {
+        continue;
+      }
+
       const number = this.AFMakeNumber(field.value);
 
       if (number !== null) {
@@ -1781,12 +1813,7 @@ class AForm {
     }
 
     psf = this.AFMakeNumber(psf);
-
-    if (psf === null) {
-      throw new Error("Invalid psf in AFSpecial_Format");
-    }
-
-    let formatStr = "";
+    let formatStr;
 
     switch (psf) {
       case 0:
@@ -1824,10 +1851,15 @@ class AForm {
 
     const event = globalThis.event;
     const value = this.AFMergeChange(event);
+
+    if (!value) {
+      return;
+    }
+
     const checkers = new Map([["9", char => char >= "0" && char <= "9"], ["A", char => "a" <= char && char <= "z" || "A" <= char && char <= "Z"], ["O", char => "a" <= char && char <= "z" || "A" <= char && char <= "Z" || "0" <= char && char <= "9"], ["X", char => true]]);
 
     function _checkValidity(_value, _cMask) {
-      for (let i = 0, ii = value.length; i < ii; i++) {
+      for (let i = 0, ii = _value.length; i < ii; i++) {
         const mask = _cMask.charAt(i);
 
         const char = _value.charAt(i);
@@ -1844,10 +1876,6 @@ class AForm {
       }
 
       return true;
-    }
-
-    if (!value) {
-      return;
     }
 
     const err = `${_constants.GlobalConstants.IDS_INVALID_VALUE} = "${cMask}"`;
@@ -1891,17 +1919,7 @@ class AForm {
 
   AFSpecial_Keystroke(psf) {
     const event = globalThis.event;
-
-    if (!event.value) {
-      return;
-    }
-
     psf = this.AFMakeNumber(psf);
-
-    if (psf === null) {
-      throw new Error("Invalid psf in AFSpecial_Keystroke");
-    }
-
     let formatStr;
 
     switch (psf) {
@@ -1914,9 +1932,9 @@ class AForm {
         break;
 
       case 2:
-        const finalLen = event.value.length + event.change.length + event.selStart - event.selEnd;
+        const value = this.AFMergeChange(event);
 
-        if (finalLen >= 8) {
+        if (value.length > 8 || value.startsWith("(")) {
           formatStr = "(999) 999-9999";
         } else {
           formatStr = "999-9999";
@@ -1986,8 +2004,8 @@ var _thermometer = __w_pdfjs_require__(12);
 
 const VIEWER_TYPE = "PDF.js";
 const VIEWER_VARIATION = "Full";
-const VIEWER_VERSION = "10.0";
-const FORMS_VERSION = undefined;
+const VIEWER_VERSION = 21.00720099;
+const FORMS_VERSION = 21.00720099;
 
 class App extends _pdf_object.PDFObject {
   constructor(data) {
@@ -2400,7 +2418,7 @@ class App extends _pdf_object.PDFObject {
   addToolButton() {}
 
   alert(cMsg, nIcon = 0, nType = 0, cTitle = "PDF.js", oDoc = null, oCheckbox = null) {
-    if (typeof cMsg === "object") {
+    if (cMsg && typeof cMsg === "object") {
       nType = cMsg.nType;
       cMsg = cMsg.cMsg;
     }
@@ -2508,7 +2526,7 @@ class App extends _pdf_object.PDFObject {
   removeToolButton() {}
 
   response(cQuestion, cTitle = "", cDefault = "", bPassword = "", cLabel = "") {
-    if (typeof cQuestion === "object") {
+    if (cQuestion && typeof cQuestion === "object") {
       cDefault = cQuestion.cDefault;
       cQuestion = cQuestion.cQuestion;
     }
@@ -2519,7 +2537,7 @@ class App extends _pdf_object.PDFObject {
   }
 
   setInterval(cExpr, nMilliseconds = 0) {
-    if (typeof cExpr === "object") {
+    if (cExpr && typeof cExpr === "object") {
       nMilliseconds = cExpr.nMilliseconds || 0;
       cExpr = cExpr.cExpr;
     }
@@ -2540,7 +2558,7 @@ class App extends _pdf_object.PDFObject {
   }
 
   setTimeOut(cExpr, nMilliseconds = 0) {
-    if (typeof cExpr === "object") {
+    if (cExpr && typeof cExpr === "object") {
       nMilliseconds = cExpr.nMilliseconds || 0;
       cExpr = cExpr.cExpr;
     }
@@ -2592,8 +2610,8 @@ class Event {
     this.richChange = data.richChange || [];
     this.richChangeEx = data.richChangeEx || [];
     this.richValue = data.richValue || [];
-    this.selEnd = data.selEnd || -1;
-    this.selStart = data.selStart || -1;
+    this.selEnd = data.selEnd ?? -1;
+    this.selStart = data.selStart ?? -1;
     this.shift = data.shift || false;
     this.source = data.source || null;
     this.target = data.target || null;
@@ -2613,10 +2631,15 @@ class EventDispatcher {
     this._calculationOrder = calculationOrder;
     this._objects = objects;
     this._document.obj._eventDispatcher = this;
+    this._isCalculating = false;
   }
 
   mergeChange(event) {
     let value = event.value;
+
+    if (Array.isArray(value)) {
+      return value;
+    }
 
     if (typeof value !== "string") {
       value = value.toString();
@@ -2640,9 +2663,21 @@ class EventDispatcher {
       }
 
       if (id === "doc") {
+        if (event.name === "Open") {
+          this.formatAll();
+        }
+
         this._document.obj._dispatchDocEvent(event.name);
       } else if (id === "page") {
         this._document.obj._dispatchPageEvent(event.name, baseEvent.actions, baseEvent.pageNumber);
+      } else if (id === "app" && baseEvent.name === "ResetForm") {
+        for (const fieldId of baseEvent.ids) {
+          const obj = this._objects[fieldId];
+
+          if (obj) {
+            obj.obj._reset();
+          }
+        }
       }
 
       return;
@@ -2688,52 +2723,100 @@ class EventDispatcher {
 
       case "Action":
         this.runActions(source, source, event, name);
-
-        if (this._document.obj.calculate) {
-          this.runCalculate(source, event);
-        }
-
+        this.runCalculate(source, event);
         return;
     }
 
     this.runActions(source, source, event, name);
 
-    if (name === "Keystroke") {
-      if (event.rc) {
-        if (event.willCommit) {
-          this.runValidation(source, event);
-        } else if (event.change !== savedChange.change || event.selStart !== savedChange.selStart || event.selEnd !== savedChange.selEnd) {
-          source.wrapped.value = this.mergeChange(event);
+    if (name !== "Keystroke") {
+      return;
+    }
+
+    if (event.rc) {
+      if (event.willCommit) {
+        this.runValidation(source, event);
+      } else {
+        const value = source.obj.value = this.mergeChange(event);
+        let selStart, selEnd;
+
+        if (event.selStart !== savedChange.selStart || event.selEnd !== savedChange.selEnd) {
+          selStart = event.selStart;
+          selEnd = event.selEnd;
+        } else {
+          selEnd = selStart = savedChange.selStart + event.change.length;
         }
-      } else if (!event.willCommit) {
+
         source.obj._send({
           id: source.obj._id,
-          value: savedChange.value,
-          selRange: [savedChange.selStart, savedChange.selEnd]
+          siblings: source.obj._siblings,
+          value,
+          selRange: [selStart, selEnd]
+        });
+      }
+    } else if (!event.willCommit) {
+      source.obj._send({
+        id: source.obj._id,
+        siblings: source.obj._siblings,
+        value: savedChange.value,
+        selRange: [savedChange.selStart, savedChange.selEnd]
+      });
+    } else {
+      source.obj._send({
+        id: source.obj._id,
+        siblings: source.obj._siblings,
+        value: "",
+        formattedValue: null,
+        selRange: [0, 0]
+      });
+    }
+  }
+
+  formatAll() {
+    const event = globalThis.event = new Event({});
+
+    for (const source of Object.values(this._objects)) {
+      event.value = source.obj.value;
+
+      if (this.runActions(source, source, event, "Format")) {
+        source.obj._send({
+          id: source.obj._id,
+          siblings: source.obj._siblings,
+          formattedValue: event.value?.toString?.()
         });
       }
     }
   }
 
   runValidation(source, event) {
-    const hasRan = this.runActions(source, source, event, "Validate");
+    const didValidateRun = this.runActions(source, source, event, "Validate");
 
     if (event.rc) {
-      if (hasRan) {
-        source.wrapped.value = event.value;
-        source.wrapped.valueAsString = event.value;
-      } else {
-        source.obj.value = event.value;
-        source.obj.valueAsString = event.value;
+      source.obj.value = event.value;
+      this.runCalculate(source, event);
+      const savedValue = event.value = source.obj.value;
+      let formattedValue = null;
+
+      if (this.runActions(source, source, event, "Format")) {
+        formattedValue = event.value?.toString?.();
       }
 
-      if (this._document.obj.calculate) {
-        this.runCalculate(source, event);
-      }
+      source.obj._send({
+        id: source.obj._id,
+        siblings: source.obj._siblings,
+        value: savedValue,
+        formattedValue
+      });
 
-      event.value = source.obj.value;
-      this.runActions(source, source, event, "Format");
-      source.wrapped.valueAsString = event.value;
+      event.value = savedValue;
+    } else if (didValidateRun) {
+      source.obj._send({
+        id: source.obj._id,
+        siblings: source.obj._siblings,
+        value: "",
+        formattedValue: null,
+        selRange: [0, 0]
+      });
     }
   }
 
@@ -2747,18 +2830,27 @@ class EventDispatcher {
   }
 
   calculateNow() {
-    if (!this._calculationOrder) {
+    if (!this._calculationOrder || this._isCalculating || !this._document.obj.calculate) {
       return;
     }
 
+    this._isCalculating = true;
     const first = this._calculationOrder[0];
     const source = this._objects[first];
     globalThis.event = new Event({});
-    this.runCalculate(source, globalThis.event);
+
+    try {
+      this.runCalculate(source, globalThis.event);
+    } catch (error) {
+      this._isCalculating = false;
+      throw error;
+    }
+
+    this._isCalculating = false;
   }
 
   runCalculate(source, event) {
-    if (!this._calculationOrder) {
+    if (!this._calculationOrder || !this._document.obj.calculate) {
       return;
     }
 
@@ -2768,11 +2860,12 @@ class EventDispatcher {
       }
 
       if (!this._document.obj.calculate) {
-        continue;
+        break;
       }
 
       event.value = null;
       const target = this._objects[targetId];
+      let savedValue = target.obj.value;
       this.runActions(source, target, event, "Calculate");
 
       if (!event.rc) {
@@ -2780,22 +2873,33 @@ class EventDispatcher {
       }
 
       if (event.value !== null) {
-        target.wrapped.value = event.value;
+        target.obj.value = event.value;
       }
 
       event.value = target.obj.value;
       this.runActions(target, target, event, "Validate");
 
       if (!event.rc) {
+        if (target.obj.value !== savedValue) {
+          target.wrapped.value = savedValue;
+        }
+
         continue;
       }
 
-      event.value = target.obj.value;
-      this.runActions(target, target, event, "Format");
+      savedValue = event.value = target.obj.value;
+      let formattedValue = null;
 
-      if (event.value !== null) {
-        target.wrapped.valueAsString = event.value;
+      if (this.runActions(target, target, event, "Format")) {
+        formattedValue = event.value?.toString?.();
       }
+
+      target.obj._send({
+        id: target.obj._id,
+        siblings: target.obj._siblings,
+        value: savedValue,
+        formattedValue
+      });
     }
   }
 
@@ -3066,6 +3170,7 @@ class Doc extends _pdf_object.PDFObject {
     this._numPages = data.numPages || 1;
     this._pageNum = data.pageNum || 0;
     this._producer = data.Producer || "";
+    this._securityHandler = data.EncryptFilterName || null;
     this._subject = data.Subject || "";
     this._title = data.Title || "";
     this._URL = data.URL || "";
@@ -3517,7 +3622,7 @@ class Doc extends _pdf_object.PDFObject {
   }
 
   get securityHandler() {
-    return null;
+    return this._securityHandler;
   }
 
   set securityHandler(_) {
@@ -3768,8 +3873,8 @@ class Doc extends _pdf_object.PDFObject {
 
   getDataObjectContents() {}
 
-  getField(cName) {
-    if (typeof cName === "object") {
+  _getField(cName) {
+    if (cName && typeof cName === "object") {
       cName = cName.cName;
     }
 
@@ -3816,6 +3921,16 @@ class Doc extends _pdf_object.PDFObject {
     return null;
   }
 
+  getField(cName) {
+    const field = this._getField(cName);
+
+    if (!field) {
+      return null;
+    }
+
+    return field.wrapped;
+  }
+
   _getChildren(fieldName) {
     const len = fieldName.length;
     const children = [];
@@ -3841,7 +3956,7 @@ class Doc extends _pdf_object.PDFObject {
   getLinks() {}
 
   getNthFieldName(nIndex) {
-    if (typeof nIndex === "object") {
+    if (nIndex && typeof nIndex === "object") {
       nIndex = nIndex.nIndex;
     }
 
@@ -3923,7 +4038,7 @@ class Doc extends _pdf_object.PDFObject {
   openDataObject() {}
 
   print(bUI = true, nStart = 0, nEnd = -1, bSilent = false, bShrinkToFit = false, bPrintAsImage = false, bReverse = false, bAnnotations = true, printParams = null) {
-    if (typeof bUI === "object") {
+    if (bUI && typeof bUI === "object") {
       nStart = bUI.nStart;
       nEnd = bUI.nEnd;
       bSilent = bUI.bSilent;
@@ -3980,35 +4095,56 @@ class Doc extends _pdf_object.PDFObject {
   replacePages() {}
 
   resetForm(aFields = null) {
-    if (aFields && !Array.isArray(aFields) && typeof aFields === "object") {
+    if (aFields && typeof aFields === "object") {
       aFields = aFields.aFields;
     }
 
+    if (aFields && !Array.isArray(aFields)) {
+      aFields = [aFields];
+    }
+
     let mustCalculate = false;
+    let fieldsToReset;
 
     if (aFields) {
+      fieldsToReset = [];
+
       for (const fieldName of aFields) {
         if (!fieldName) {
           continue;
         }
 
-        const field = this.getField(fieldName);
+        if (typeof fieldName !== "string") {
+          fieldsToReset = null;
+          break;
+        }
+
+        const field = this._getField(fieldName);
 
         if (!field) {
           continue;
         }
 
-        field.value = field.defaultValue;
-        field.valueAsString = field.value;
+        fieldsToReset.push(field);
         mustCalculate = true;
       }
-    } else {
-      mustCalculate = this._fields.size !== 0;
+    }
 
-      for (const field of this._fields.values()) {
-        field.value = field.defaultValue;
-        field.valueAsString = field.value;
-      }
+    if (!fieldsToReset) {
+      fieldsToReset = this._fields.values();
+      mustCalculate = this._fields.size !== 0;
+    }
+
+    for (const field of fieldsToReset) {
+      field.obj.value = field.obj.defaultValue;
+
+      this._send({
+        id: field.obj._id,
+        siblings: field.obj._siblings,
+        value: field.obj.defaultValue,
+        formattedValue: null,
+        selRange: [0, 0]
+      });
     }
 
     if (mustCalculate) {
@@ -4694,6 +4830,10 @@ class Util extends _pdf_object.PDFObject {
   }
 
   scand(cFormat, cDate) {
+    if (typeof cDate !== "string") {
+      return new Date(cDate);
+    }
+
     if (cDate === "") {
       return new Date();
     }
@@ -4852,16 +4992,16 @@ class Util extends _pdf_object.PDFObject {
 
     const [re, actions] = this._scandCache.get(cFormat);
 
-    const matches = new RegExp(re, "g").exec(cDate);
+    const matches = new RegExp(`^${re}$`, "g").exec(cDate);
 
     if (!matches || matches.length !== actions.length + 1) {
       return null;
     }
 
     const data = {
-      year: 0,
+      year: 2000,
       month: 0,
-      day: 0,
+      day: 1,
       hours: 0,
       minutes: 0,
       seconds: 0,
@@ -4932,8 +5072,8 @@ Object.defineProperty(exports, "initSandbox", ({
 
 var _initialization = __w_pdfjs_require__(1);
 
-const pdfjsVersion = '2.11.298';
-const pdfjsBuild = 'd370a281c';
+const pdfjsVersion = '2.16.71';
+const pdfjsBuild = '518115fdd';
 })();
 
 /******/ 	return __webpack_exports__;

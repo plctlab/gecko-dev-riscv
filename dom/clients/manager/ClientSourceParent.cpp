@@ -116,19 +116,23 @@ IPCResult ClientSourceParent::RecvExecutionReady(
 };
 
 IPCResult ClientSourceParent::RecvFreeze() {
+#ifdef FUZZING_SNAPSHOT
+  if (mFrozen) {
+    return IPC_FAIL(this, "Freezing when already frozen");
+  }
+#endif
   MOZ_DIAGNOSTIC_ASSERT(!mFrozen);
   mFrozen = true;
-
-  // Frozen clients should not be observable.  Act as if the client has
-  // been destroyed.
-  for (ClientHandleParent* handle : mHandleList.Clone()) {
-    Unused << ClientHandleParent::Send__delete__(handle);
-  }
 
   return IPC_OK();
 }
 
 IPCResult ClientSourceParent::RecvThaw() {
+#ifdef FUZZING_SNAPSHOT
+  if (!mFrozen) {
+    return IPC_FAIL(this, "Thawing when not already frozen");
+  }
+#endif
   MOZ_DIAGNOSTIC_ASSERT(mFrozen);
   mFrozen = false;
   return IPC_OK();
@@ -219,6 +223,7 @@ void ClientSourceParent::Init() {
   // Since we validate the principal on the child side as well, any failure
   // here is treated as fatal.
   if (NS_WARN_IF(!ClientIsValidPrincipalInfo(mClientInfo.PrincipalInfo()))) {
+    mService->ForgetFutureSource(mClientInfo.ToIPC());
     KillInvalidChild();
     return;
   }
@@ -254,7 +259,6 @@ void ClientSourceParent::ClearController() { mController.reset(); }
 
 void ClientSourceParent::AttachHandle(ClientHandleParent* aClientHandle) {
   MOZ_DIAGNOSTIC_ASSERT(aClientHandle);
-  MOZ_DIAGNOSTIC_ASSERT(!mFrozen);
   MOZ_ASSERT(!mHandleList.Contains(aClientHandle));
   mHandleList.AppendElement(aClientHandle);
 }

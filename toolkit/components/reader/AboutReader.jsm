@@ -9,28 +9,29 @@ var EXPORTED_SYMBOLS = ["AboutReader"];
 const { ReaderMode } = ChromeUtils.import(
   "resource://gre/modules/ReaderMode.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AsyncPrefs",
   "resource://gre/modules/AsyncPrefs.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NarrateControls",
   "resource://gre/modules/narrate/NarrateControls.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PluralForm",
   "resource://gre/modules/PluralForm.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NimbusFeatures",
   "resource://nimbus/ExperimentAPI.jsm"
 );
@@ -47,7 +48,12 @@ const zoomOnMeta =
   Services.prefs.getIntPref("mousewheel.with_meta.action", 1) == 3;
 const isAppLocaleRTL = Services.locale.isAppLocaleRTL;
 
-var AboutReader = function(actor, articlePromise) {
+var AboutReader = function(
+  actor,
+  articlePromise,
+  docContentType = "document",
+  docTitle = ""
+) {
   let win = actor.contentWindow;
   let url = this._getOriginalUrl(win);
   if (
@@ -73,7 +79,10 @@ var AboutReader = function(actor, articlePromise) {
   }
   doc.documentElement.setAttribute("platform", AppConstants.platform);
 
+  doc.title = docTitle;
+
   this._actor = actor;
+  this._isLoggedInPocketUser = undefined;
 
   this._docRef = Cu.getWeakReference(doc);
   this._winRef = Cu.getWeakReference(win);
@@ -127,12 +136,25 @@ var AboutReader = function(actor, articlePromise) {
   win.addEventListener("resize", this);
   win.addEventListener("wheel", this, { passive: false });
 
+  this.colorSchemeMediaList = win.matchMedia("(prefers-color-scheme: dark)");
+  this.colorSchemeMediaList.addEventListener("change", this);
+
+  this.forcedColorsMediaList = win.matchMedia("(forced-colors)");
+  this.forcedColorsMediaList.addEventListener("change", this);
+
   this._topScrollChange = this._topScrollChange.bind(this);
   this._intersectionObs = new win.IntersectionObserver(this._topScrollChange, {
     root: null,
     threshold: [0, 1],
   });
   this._intersectionObs.observe(doc.querySelector(".top-anchor"));
+
+  this._ctaIntersectionObserver = new win.IntersectionObserver(
+    this._pocketCTAObserved.bind(this),
+    {
+      threshold: 0.5,
+    }
+  );
 
   Services.obs.addObserver(this, "inner-window-destroyed");
 
@@ -156,8 +178,8 @@ var AboutReader = function(actor, articlePromise) {
       itemClass: value + "-button",
     };
   });
-
   let colorScheme = Services.prefs.getCharPref("reader.color_scheme");
+
   this._setupSegmentedButton(
     "color-scheme-buttons",
     colorSchemeOptions,
@@ -207,10 +229,10 @@ var AboutReader = function(actor, articlePromise) {
     Services.prefs.getBoolPref("narrate.enabled") &&
     !Services.prefs.getBoolPref("privacy.resistFingerprinting", false)
   ) {
-    new NarrateControls(win, this._languagePromise);
+    new lazy.NarrateControls(win, this._languagePromise);
   }
 
-  this._loadArticle();
+  this._loadArticle(docContentType);
 
   let dropdown = this._toolbarElement;
 
@@ -224,12 +246,13 @@ var AboutReader = function(actor, articlePromise) {
     ".light-button": "colorschemelight",
     ".dark-button": "colorschemedark",
     ".sepia-button": "colorschemesepia",
+    ".auto-button": "colorschemeauto",
   };
 
   for (let [selector, stringID] of Object.entries(elemL10nMap)) {
     dropdown
       .querySelector(selector)
-      .setAttribute(
+      ?.setAttribute(
         "title",
         gStrings.GetStringFromName("aboutReader.toolbar." + stringID)
       );
@@ -242,6 +265,8 @@ AboutReader.prototype = {
     ".content p > a:only-child > img:only-child, " +
     ".content .wp-caption img, " +
     ".content figure img",
+
+  _TABLES_SELECTOR: ".content table",
 
   FONT_SIZE_MIN: 1,
 
@@ -319,7 +344,7 @@ AboutReader.prototype = {
           let btn = this._doc.createElement("button");
           btn.dataset.buttonid = message.data.id;
           btn.dataset.telemetryId = `reader-${message.data.telemetryId}`;
-          btn.className = "button " + message.data.id;
+          btn.className = "toolbar-button " + message.data.id;
           let tip = this._doc.createElement("span");
           tip.className = "hover-label";
           tip.textContent = message.data.label;
@@ -456,8 +481,31 @@ AboutReader.prototype = {
 
         this._actor.readerModeHidden();
         this.clearActor();
+
+        // Disconnect and delete IntersectionObservers to prevent memory leaks:
+
         this._intersectionObs.unobserve(this._doc.querySelector(".top-anchor"));
+        this._ctaIntersectionObserver.disconnect();
+
         delete this._intersectionObs;
+        delete this._ctaIntersectionObserver;
+
+        break;
+
+      case "change":
+        let colorScheme;
+        if (this.forcedColorsMediaList.matches) {
+          colorScheme = "hcm";
+        } else {
+          colorScheme = Services.prefs.getCharPref("reader.color_scheme");
+          // We should be changing the color scheme in relation to a preference change
+          // if the user has the color scheme preference set to "Auto".
+          if (colorScheme == "auto") {
+            colorScheme = this.colorSchemeMediaList.matches ? "dark" : "light";
+          }
+        }
+        this._setColorScheme(colorScheme);
+
         break;
     }
   },
@@ -467,11 +515,13 @@ AboutReader.prototype = {
   },
 
   _onReaderClose() {
-    ReaderMode.leaveReaderMode(this._actor.docShell, this._win);
+    if (this._actor) {
+      this._actor.closeReaderMode();
+    }
   },
 
   async _resetFontSize() {
-    await AsyncPrefs.reset("reader.font_size");
+    await lazy.AsyncPrefs.reset("reader.font_size");
     let currentSize = Services.prefs.getIntPref("reader.font_size");
     this._setFontSize(currentSize);
   },
@@ -493,7 +543,7 @@ AboutReader.prototype = {
 
     let readerBody = this._doc.body;
     readerBody.style.setProperty("--font-size", size + "px");
-    return AsyncPrefs.set("reader.font_size", this._fontSize);
+    return lazy.AsyncPrefs.set("reader.font_size", this._fontSize);
   },
 
   _setupFontSizeButtons() {
@@ -563,7 +613,7 @@ AboutReader.prototype = {
     let width = 20 + 5 * (this._contentWidth - 1) + "em";
     this._doc.body.style.setProperty("--content-width", width);
     this._scheduleToolbarOverlapHandler();
-    return AsyncPrefs.set("reader.content_width", this._contentWidth);
+    return lazy.AsyncPrefs.set("reader.content_width", this._contentWidth);
   },
 
   _displayContentWidth(currentContentWidth) {
@@ -645,7 +695,7 @@ AboutReader.prototype = {
     this._displayLineHeight(newLineHeight);
     let height = 1 + 0.2 * (newLineHeight - 1) + "em";
     this._containerElement.style.setProperty("--line-height", height);
-    return AsyncPrefs.set("reader.line_height", newLineHeight);
+    return lazy.AsyncPrefs.set("reader.line_height", newLineHeight);
   },
 
   _displayLineHeight(currentLineHeight) {
@@ -724,8 +774,8 @@ AboutReader.prototype = {
   },
 
   _setColorScheme(newColorScheme) {
-    // "auto" is not a real color scheme
-    if (this._colorScheme === newColorScheme || newColorScheme === "auto") {
+    // There's nothing to change if the new color scheme is the same as our current scheme.
+    if (this._colorScheme === newColorScheme) {
       return;
     }
 
@@ -735,15 +785,26 @@ AboutReader.prototype = {
       bodyClasses.remove(this._colorScheme);
     }
 
-    this._colorScheme = newColorScheme;
+    if (!this._win.matchMedia("(forced-colors)").matches) {
+      if (newColorScheme === "auto") {
+        this._colorScheme = this.colorSchemeMediaList.matches
+          ? "dark"
+          : "light";
+      } else {
+        this._colorScheme = newColorScheme;
+      }
+    } else {
+      this._colorScheme = "hcm";
+    }
+
     bodyClasses.add(this._colorScheme);
   },
 
-  // Pref values include "dark", "light", and "sepia"
+  // Pref values include "dark", "light", "sepia", and "auto"
   _setColorSchemePref(colorSchemePref) {
     this._setColorScheme(colorSchemePref);
 
-    AsyncPrefs.set("reader.color_scheme", colorSchemePref);
+    lazy.AsyncPrefs.set("reader.color_scheme", colorSchemePref);
   },
 
   _setFontType(newFontType) {
@@ -760,10 +821,10 @@ AboutReader.prototype = {
     this._fontType = newFontType;
     bodyClasses.add(this._fontType);
 
-    AsyncPrefs.set("reader.font_type", this._fontType);
+    lazy.AsyncPrefs.set("reader.font_type", this._fontType);
   },
 
-  async _loadArticle() {
+  async _loadArticle(docContentType = "document") {
     let url = this._getOriginalUrl();
     this._showProgressDelayed();
 
@@ -774,9 +835,17 @@ AboutReader.prototype = {
 
     if (!article) {
       try {
-        article = await ReaderMode.downloadAndParseDocument(url);
+        article = await ReaderMode.downloadAndParseDocument(
+          url,
+          docContentType
+        );
       } catch (e) {
-        if (e && e.newURL) {
+        if (e?.newURL && this._actor) {
+          await this._actor.sendQuery("RedirectTo", {
+            newURL: e.newURL,
+            article: e.article,
+          });
+
           let readerURL = "about:reader?url=" + encodeURIComponent(e.newURL);
           this._win.location.replace(readerURL);
           return;
@@ -864,6 +933,8 @@ AboutReader.prototype = {
     let bodyWidth = this._doc.body.clientWidth;
 
     let setImageMargins = function(img) {
+      img.classList.add("moz-reader-block-img");
+
       // If the image is at least as wide as the window, make it fill edge-to-edge on mobile.
       if (img.naturalWidth >= windowWidth) {
         img.setAttribute("moz-reader-full-width", true);
@@ -893,6 +964,23 @@ AboutReader.prototype = {
     }
   },
 
+  _updateWideTables() {
+    let windowWidth = this._win.innerWidth;
+
+    // Avoid horizontal overflow in the document by making tables that are wider than half browser window's size
+    // by making it scrollable.
+    let tables = this._doc.querySelectorAll(this._TABLES_SELECTOR);
+    for (let i = tables.length; --i >= 0; ) {
+      let table = tables[i];
+      let rect = table.getBoundingClientRect();
+      let tableWidth = rect.width;
+
+      if (windowWidth / 2 <= tableWidth) {
+        table.classList.add("moz-reader-wide-table");
+      }
+    }
+  },
+
   _maybeSetTextDirection: function Read_maybeSetTextDirection(article) {
     // Set the article's "dir" on the contents.
     // If no direction is specified, the contents should automatically be LTR
@@ -915,7 +1003,7 @@ AboutReader.prototype = {
       displayStringKey = "aboutReader.estimatedReadTimeValue1";
     }
 
-    return PluralForm.get(
+    return lazy.PluralForm.get(
       slowEstimate,
       gStrings.GetStringFromName(displayStringKey)
     )
@@ -971,7 +1059,17 @@ AboutReader.prototype = {
 
     this._domainElement.href = article.url;
     let articleUri = Services.io.newURI(article.url);
-    this._domainElement.textContent = this._stripHost(articleUri.host);
+
+    try {
+      this._domainElement.textContent = this._stripHost(articleUri.host);
+    } catch (ex) {
+      let url = this._actor.document.URL;
+      url = url.substring(url.indexOf("%2F") + 6);
+      url = url.substring(0, url.indexOf("%2F"));
+
+      this._domainElement.textContent = url;
+    }
+
     this._creditsElement.textContent = article.byline;
 
     this._titleElement.textContent = article.title;
@@ -979,7 +1077,14 @@ AboutReader.prototype = {
       article.readingTimeMinsSlow,
       article.readingTimeMinsFast
     );
-    this._doc.title = article.title;
+
+    // If a document title was not provided in the constructor, we'll fall back
+    // to using the article title.
+    if (!this._doc.title) {
+      this._doc.title = article.title;
+    }
+
+    this._containerElement.setAttribute("lang", article.lang);
 
     this._headerElement.classList.add("reader-show-element");
 
@@ -1001,6 +1106,7 @@ AboutReader.prototype = {
 
     this._contentElement.classList.add("reader-show-element");
     this._updateImageMargins();
+    this._updateWideTables();
 
     this._requestFavicon();
     this._doc.body.classList.add("loaded");
@@ -1272,7 +1378,17 @@ AboutReader.prototype = {
    */
   _goToReference(ref) {
     if (ref) {
-      this._win.location.hash = ref;
+      if (this._doc.readyState == "complete") {
+        this._win.location.hash = ref;
+      } else {
+        this._win.addEventListener(
+          "load",
+          () => {
+            this._win.location.hash = ref;
+          },
+          { once: true }
+        );
+      }
     }
   },
 
@@ -1281,12 +1397,21 @@ AboutReader.prototype = {
 
     elDismissCta?.addEventListener(`click`, e => {
       this._doc.querySelector("#pocket-cta-container").hidden = true;
+
+      Services.telemetry.recordEvent(
+        "readermode",
+        "pocket_cta",
+        "close_cta",
+        null,
+        {}
+      );
     });
   },
 
   _enableRecShowHide() {
     let elPocketRecs = this._doc.querySelector(`.pocket-recs`);
     let elCollapseRecs = this._doc.querySelector(`.pocket-collapse-recs`);
+    let elSignUp = this._doc.querySelector(`div.pocket-sign-up-wrapper`);
 
     let toggleRecsVisibility = () => {
       let isClosed = elPocketRecs.classList.contains(`closed`);
@@ -1296,9 +1421,19 @@ AboutReader.prototype = {
       if (isClosed) {
         elPocketRecs.classList.add(`closed`);
         elCollapseRecs.classList.add(`closed`);
+        elSignUp.setAttribute(`hidden`, true);
+
+        Services.telemetry.recordEvent(
+          "readermode",
+          "pocket_cta",
+          "minimize_recs_click",
+          null,
+          {}
+        );
       } else {
         elPocketRecs.classList.remove(`closed`);
         elCollapseRecs.classList.remove(`closed`);
+        elSignUp.removeAttribute(`hidden`);
       }
     };
 
@@ -1329,8 +1464,21 @@ AboutReader.prototype = {
 
     elTop.setAttribute(`href`, url);
 
+    elTop.addEventListener(`click`, e => {
+      Services.telemetry.recordEvent(
+        "readermode",
+        "pocket_cta",
+        "rec_click",
+        null,
+        {}
+      );
+    });
+
     elThumb.classList.add(`pocket-rec-thumb`);
     elThumb.setAttribute(`loading`, `lazy`);
+    elThumb.addEventListener(`load`, () => {
+      elThumb.classList.add(`pocket-rec-thumb-loaded`);
+    });
     elThumb.setAttribute(
       `src`,
       `https://img-getpocket.cdn.mozilla.net/132x132/filters:format(jpeg):quality(60):no_upscale():strip_exif()/${thumb}`
@@ -1360,6 +1508,14 @@ AboutReader.prototype = {
       this._savePocketArticle(url);
       elAdd.textContent = `Saved`;
       elAdd.classList.add(`saved`);
+
+      Services.telemetry.recordEvent(
+        "readermode",
+        "pocket_cta",
+        "rec_saved",
+        null,
+        {}
+      );
     });
 
     return fragment;
@@ -1390,18 +1546,34 @@ AboutReader.prototype = {
     });
   },
 
+  _pocketCTAObserved(entries) {
+    if (entries && entries[0]?.isIntersecting) {
+      this._ctaIntersectionObserver.disconnect();
+
+      Services.telemetry.recordEvent(
+        "readermode",
+        "pocket_cta",
+        "cta_seen",
+        null,
+        {
+          logged_in: `${this._isLoggedInPocketUser}`,
+        }
+      );
+    }
+  },
+
   async _setupPocketCTA() {
-    let ctaVersion = NimbusFeatures.readerMode.getAllVariables()
+    let ctaVersion = lazy.NimbusFeatures.readerMode.getAllVariables()
       ?.pocketCTAVersion;
-    let isLoggedInUser = await this._requestPocketLoginStatus();
+    this._isLoggedInPocketUser = await this._requestPocketLoginStatus();
     let elPocketCTAWrapper = this._doc.querySelector("#pocket-cta-container");
 
     // Show the Pocket CTA container if the pref is set and valid
     if (ctaVersion === `cta-and-recs` || ctaVersion === `cta-only`) {
-      if (ctaVersion === `cta-and-recs` && isLoggedInUser) {
+      if (ctaVersion === `cta-and-recs` && this._isLoggedInPocketUser) {
         this._getAndBuildPocketRecs();
         this._enableRecShowHide();
-      } else if (ctaVersion === `cta-and-recs` && !isLoggedInUser) {
+      } else if (ctaVersion === `cta-and-recs` && !this._isLoggedInPocketUser) {
         // Fall back to cta only for logged out users:
         ctaVersion = `cta-only`;
       }
@@ -1412,6 +1584,31 @@ AboutReader.prototype = {
 
       elPocketCTAWrapper.hidden = false;
       elPocketCTAWrapper.classList.add(`pocket-cta-container-${ctaVersion}`);
+      elPocketCTAWrapper.classList.add(
+        `pocket-cta-container-${
+          this._isLoggedInPocketUser ? `logged-in` : `logged-out`
+        }`
+      );
+
+      // Set up tracking for sign up buttons
+      this._doc
+        .querySelectorAll(`.pocket-sign-up, .pocket-discover-more`)
+        .forEach(el => {
+          el.addEventListener(`click`, e => {
+            Services.telemetry.recordEvent(
+              "readermode",
+              "pocket_cta",
+              "sign_up_click",
+              null,
+              {}
+            );
+          });
+        });
+
+      // Set up tracking for user seeing CTA
+      this._ctaIntersectionObserver.observe(
+        this._doc.querySelector(`#pocket-cta-container`)
+      );
     }
   },
 };

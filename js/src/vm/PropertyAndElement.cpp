@@ -405,8 +405,7 @@ JS_PUBLIC_API bool JS_DefineUCProperty(JSContext* cx, JS::Handle<JSObject*> obj,
 }
 
 extern bool PropertySpecNameToId(JSContext* cx, JSPropertySpec::Name name,
-                                 MutableHandleId id,
-                                 js::PinningBehavior pin = js::DoNotPinAtom);
+                                 MutableHandleId id);
 
 static bool DefineSelfHostedProperty(JSContext* cx, JS::Handle<JSObject*> obj,
                                      JS::Handle<jsid> id,
@@ -948,7 +947,7 @@ JS_PUBLIC_API bool JS_DefineFunctions(JSContext* cx, JS::Handle<JSObject*> obj,
   CHECK_THREAD(cx);
   cx->check(obj);
 
-  return js::DefineFunctions(cx, obj, fs, NotIntrinsic);
+  return js::DefineFunctions(cx, obj, fs);
 }
 
 JS_PUBLIC_API JSFunction* JS_DefineFunction(JSContext* cx,

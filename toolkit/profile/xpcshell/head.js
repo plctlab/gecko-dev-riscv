@@ -1,12 +1,10 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
 const { FileUtils } = ChromeUtils.import(
   "resource://gre/modules/FileUtils.jsm"
 );
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -39,11 +37,7 @@ const ShellService = {
     let registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
 
     let factory = {
-      createInstance(outer, iid) {
-        if (outer != null) {
-          throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-        }
-
+      createInstance(iid) {
         return ShellService.QueryInterface(iid);
       },
     };
@@ -78,19 +72,6 @@ function simulateSnapEnvironment() {
   gIsLegacy = true;
 }
 
-// This doesn't actually simulate running as a Windows package, because that
-// isn't really possible. We're just telling the profile service to pretend it
-// found a package environment running.
-// Use of this function is not limited to Windows.
-function simulateWinPackageEnvironment() {
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  env.set("MOZ_TEST_EMULATE_PACKAGE", "1");
-
-  gIsLegacy = false;
-}
-
 function enableLegacyProfiles() {
   let env = Cc["@mozilla.org/process/environment;1"].getService(
     Ci.nsIEnvironment
@@ -111,6 +92,40 @@ let DEDICATED_NAME = `default-${UPDATE_CHANNEL}`;
 if (AppConstants.MOZ_DEV_EDITION) {
   DEDICATED_NAME = PROFILE_DEFAULT = "dev-edition-default";
 }
+
+// Shared data for backgroundtasks tests.
+const BACKGROUNDTASKS_PROFILE_DATA = (() => {
+  let hash = xreDirProvider.getInstallHash();
+  let profileData = {
+    options: {
+      startWithLastProfile: true,
+    },
+    profiles: [
+      {
+        name: "Profile1",
+        path: "Path1",
+        default: false,
+      },
+      {
+        name: "Profile3",
+        path: "Path3",
+        default: false,
+      },
+    ],
+    installs: {
+      [hash]: {
+        default: "Path1",
+      },
+    },
+    backgroundTasksProfiles: [
+      {
+        name: `MozillaBackgroundTask-${hash}-unrelated_task`,
+        path: `saltsalt.MozillaBackgroundTask-${hash}-unrelated_task`,
+      },
+    ],
+  };
+  return profileData;
+})();
 
 /**
  * Creates a random profile path for use.
@@ -195,8 +210,7 @@ function safeGet(ini, section, key) {
 function writeCompatibilityIni(
   dir,
   appDir = FileUtils.getDir("CurProcD", []),
-  greDir = FileUtils.getDir("GreD", []),
-  options = { downgrade: false }
+  greDir = FileUtils.getDir("GreD", [])
 ) {
   let target = dir.clone();
   target.append("compatibility.ini");
@@ -206,23 +220,12 @@ function writeCompatibilityIni(
   );
   let ini = factory.createINIParser().QueryInterface(Ci.nsIINIParserWriter);
 
-  if (options.downgrade) {
-    // Simulate attempting to downgrade a profile.
-    ini.setString(
-      "Compatibility",
-      "LastVersion",
-      "9999.0a1_99991231235959/99991231235959"
-    );
-  } else {
-    // Simulate attempting to upgrade a profile.
-    ini.setString(
-      "Compatibility",
-      "LastVersion",
-      "64.0a1_20180919123806/20180919123806"
-    );
-  }
-
-  // The profile service doesn't care about these so just use fixed values.
+  // The profile service doesn't care about these so just use fixed values
+  ini.setString(
+    "Compatibility",
+    "LastVersion",
+    "64.0a1_20180919123806/20180919123806"
+  );
   ini.setString("Compatibility", "LastOSABI", "Darwin_x86_64-gcc3");
 
   ini.setString(
@@ -251,7 +254,12 @@ function writeProfilesIni(profileData) {
   );
   let ini = factory.createINIParser().QueryInterface(Ci.nsIINIParserWriter);
 
-  const { options = {}, profiles = [], installs = null } = profileData;
+  const {
+    options = {},
+    profiles = [],
+    installs = null,
+    backgroundTasksProfiles = null,
+  } = profileData;
 
   let { startWithLastProfile = true } = options;
   ini.setString(
@@ -270,6 +278,17 @@ function writeProfilesIni(profileData) {
 
     if (profile.default) {
       ini.setString(section, "Default", "1");
+    }
+  }
+
+  if (backgroundTasksProfiles) {
+    let section = "BackgroundTasksProfiles";
+    for (let backgroundTasksProfile of backgroundTasksProfiles) {
+      ini.setString(
+        section,
+        backgroundTasksProfile.name,
+        backgroundTasksProfile.path
+      );
     }
   }
 
@@ -379,6 +398,19 @@ function readProfilesIni() {
       if (locked !== null) {
         profileData.installs[section.substring(7)].locked = locked;
       }
+    }
+
+    if (section == "BackgroundTasksProfiles") {
+      profileData.backgroundTasksProfiles = [];
+      let backgroundTasksProfiles = ini.getKeys(section);
+      while (backgroundTasksProfiles.hasMore()) {
+        let name = backgroundTasksProfiles.getNext();
+        let path = ini.getString(section, name);
+        profileData.backgroundTasksProfiles.push({ name, path });
+      }
+      profileData.backgroundTasksProfiles.sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
     }
   }
 
@@ -570,15 +602,6 @@ function checkProfileService(
   if (verifyBackup) {
     checkBackup(profileData);
   }
-}
-
-/**
- * Asynchronously reads an nsIFile from disk.
- */
-async function readFile(file) {
-  let decoder = new TextDecoder();
-  let data = await OS.File.read(file.path);
-  return decoder.decode(data);
 }
 
 function checkStartupReason(expected = undefined) {

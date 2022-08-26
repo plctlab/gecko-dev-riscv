@@ -6,14 +6,9 @@
 
 const EXPORTED_SYMBOLS = ["WindowGlobalMessageHandler"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { ContextDescriptorType, MessageHandler } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/MessageHandler.jsm"
 );
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  MessageHandler:
-    "chrome://remote/content/shared/messagehandler/MessageHandler.jsm",
-});
 
 /**
  * A WindowGlobalMessageHandler is dedicated to debugging a single window
@@ -23,6 +18,14 @@ XPCOMUtils.defineLazyModuleGetters(this, {
  * MessageHandler network.
  */
 class WindowGlobalMessageHandler extends MessageHandler {
+  #innerWindowId;
+
+  constructor() {
+    super(...arguments);
+
+    this.#innerWindowId = this.context.window.windowGlobalChild.innerWindowId;
+  }
+
   /**
    * Returns the WindowGlobalMessageHandler module path.
    *
@@ -55,9 +58,75 @@ class WindowGlobalMessageHandler extends MessageHandler {
     return context.id;
   }
 
+  get innerWindowId() {
+    return this.#innerWindowId;
+  }
+
+  get window() {
+    return this.context.window;
+  }
+
+  async applyInitialSessionDataItems(sessionDataItems) {
+    if (!Array.isArray(sessionDataItems)) {
+      return;
+    }
+
+    const destination = {
+      type: WindowGlobalMessageHandler.type,
+    };
+
+    const sessionDataPromises = sessionDataItems.map(sessionDataItem => {
+      const {
+        moduleName,
+        category,
+        contextDescriptor,
+        value,
+      } = sessionDataItem;
+      if (!this._matchesContext(contextDescriptor)) {
+        return Promise.resolve();
+      }
+
+      // Don't apply session data if the module is not present
+      // for the destination.
+      if (!this.moduleCache.hasModule(moduleName, destination)) {
+        return Promise.resolve();
+      }
+
+      return this.handleCommand({
+        moduleName,
+        commandName: "_applySessionData",
+        params: {
+          category,
+          // TODO: We might call _applySessionData several times for the same
+          // moduleName & category, but with different values. Instead we can
+          // use the fact that _applySessionData supports arrays of values,
+          // though it will make the implementation more complex.
+          added: [value],
+        },
+        destination,
+      });
+    });
+
+    await Promise.all(sessionDataPromises);
+
+    // With the session data applied the handler is now ready to be used.
+    this.emitEvent("window-global-handler-created", {
+      contextId: this.contextId,
+      innerWindowId: this.#innerWindowId,
+    });
+  }
+
   forwardCommand(command) {
     throw new Error(
       `Cannot forward commands from a "WINDOW_GLOBAL" MessageHandler`
+    );
+  }
+
+  _matchesContext(contextDescriptor) {
+    return (
+      contextDescriptor.type === ContextDescriptorType.All ||
+      (contextDescriptor.type === ContextDescriptorType.TopBrowsingContext &&
+        contextDescriptor.id === this.context.browserId)
     );
   }
 }

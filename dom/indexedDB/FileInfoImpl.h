@@ -10,14 +10,12 @@
 #include "FileInfo.h"
 
 #include "mozilla/dom/QMResult.h"
-#include "mozilla/dom/QMResultInlines.h"
 #include "mozilla/dom/quota/QuotaCommon.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/Mutex.h"
 #include "nsIFile.h"
 
-namespace mozilla {
-namespace dom {
-namespace indexedDB {
+namespace mozilla::dom::indexedDB {
 
 template <typename FileManager>
 FileInfo<FileManager>::FileInfo(
@@ -148,8 +146,6 @@ nsCOMPtr<nsIFile> FileInfo<FileManager>::GetFileForFileInfo() const {
   return file;
 }
 
-}  // namespace indexedDB
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::indexedDB
 
 #endif  // DOM_INDEXEDDB_FILEINFOIMPL_H_

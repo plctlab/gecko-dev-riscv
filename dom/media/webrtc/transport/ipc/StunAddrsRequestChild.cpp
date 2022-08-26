@@ -11,22 +11,17 @@ using namespace mozilla::ipc;
 
 namespace mozilla::net {
 
-StunAddrsRequestChild::StunAddrsRequestChild(
-    StunAddrsListener* listener, nsISerialEventTarget* mainThreadEventTarget)
+StunAddrsRequestChild::StunAddrsRequestChild(StunAddrsListener* listener)
     : mListener(listener) {
-  if (mainThreadEventTarget) {
-    gNeckoChild->SetEventTargetForActor(this, mainThreadEventTarget);
-  }
-
   gNeckoChild->SendPStunAddrsRequestConstructor(this);
   // IPDL holds a reference until IPDL channel gets destroyed
   AddIPDLReference();
 }
 
 mozilla::ipc::IPCResult StunAddrsRequestChild::RecvOnMDNSQueryComplete(
-    const nsCString& hostname, const Maybe<nsCString>& address) {
+    const nsACString& hostname, const Maybe<nsCString>& address) {
   if (mListener) {
-    mListener->OnMDNSQueryComplete(hostname, address);
+    mListener->OnMDNSQueryComplete(PromiseFlatCString(hostname), address);
   }
   return IPC_OK();
 }

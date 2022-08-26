@@ -19,7 +19,8 @@
 enum DllBlocklistInitFlags {
   eDllBlocklistInitFlagDefault = 0,
   eDllBlocklistInitFlagIsChildProcess = 1,
-  eDllBlocklistInitFlagWasBootstrapped = 2
+  eDllBlocklistInitFlagWasBootstrapped = 2,
+  eDllBlocklistInitFlagIsUtilityProcess = 4
 };
 
 // Only available from within firefox.exe
@@ -39,11 +40,31 @@ MFBT_API bool DllBlocklist_CheckStatus();
 MFBT_API void DllBlocklist_Shutdown();
 #  endif  // DEBUG
 
-// Forward declaration
 namespace mozilla {
 namespace glue {
 namespace detail {
+// Forward declaration
 class DllServicesBase;
+
+template <size_t N>
+class WritableBuffer {
+  char mBuffer[N];
+  size_t mLen;
+
+  size_t Available() const { return sizeof(mBuffer) - mLen; }
+
+ public:
+  WritableBuffer() : mBuffer{0}, mLen(0) {}
+
+  void Write(const char* aData, size_t aLen) {
+    size_t writable_len = std::min(aLen, Available());
+    memcpy(mBuffer + mLen, aData, writable_len);
+    mLen += writable_len;
+  }
+
+  size_t Length() const { return mLen; }
+  const char* Data() const { return mBuffer; }
+};
 }  // namespace detail
 }  // namespace glue
 }  // namespace mozilla

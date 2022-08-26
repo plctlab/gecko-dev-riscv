@@ -23,6 +23,7 @@
 #include "mozilla/dom/cache/ReadStream.h"
 #include "mozilla/dom/cache/TypeUtils.h"
 #include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundUtils.h"
@@ -557,7 +558,12 @@ bool CacheStorage::HasStorageAccess() const {
   if (NS_WARN_IF(!mGlobal)) {
     return false;
   }
-  return mGlobal->GetStorageAccess() > StorageAccess::ePrivateBrowsing;
+
+  StorageAccess access = mGlobal->GetStorageAccess();
+  return access > StorageAccess::ePrivateBrowsing ||
+         (StaticPrefs::
+              privacy_partition_always_partition_third_party_non_cookie_storage() &&
+          ShouldPartitionStorage(access));
 }
 
 }  // namespace mozilla::dom::cache

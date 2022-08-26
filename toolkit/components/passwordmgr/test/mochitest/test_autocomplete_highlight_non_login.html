@@ -32,11 +32,9 @@ addLoginsInParent(
 let username = document.getElementById("uname");
 let password = document.getElementById("pword");
 
-add_task(async function setup() {
+add_setup(async () => {
   ok(readyPromise, "check promise is available");
   await readyPromise;
-
-  await SpecialPowers.pushPrefEnv({"set": [["security.insecure_field_warning.contextual.enabled", true]]});
 });
 
 add_task(async function test_field_highlight_on_pw_field_autocomplete_insecureWarning() {
@@ -69,6 +67,13 @@ add_task(async function test_field_highlight_on_pw_field_autocomplete_insecureWa
      "Highlight is not applied to the username field if tab key is pressed on the insecure warning item");
 });
 
+function closeCurrentTab() {
+  runInParent(function cleanUpWindow() {
+    let window = Services.wm.getMostRecentWindow("navigator:browser");
+    window.gBrowser.removeTab(window.gBrowser.selectedTab);
+  });
+}
+
 add_task(async function test_field_highlight_on_pw_field_autocomplete_footer() {
   // Press enter on the footer and check.
   password.focus();
@@ -84,11 +89,7 @@ add_task(async function test_field_highlight_on_pw_field_autocomplete_footer() {
   is(document.defaultView.getComputedStyle(username).getPropertyValue("filter"), "none",
      "Highlight is not applied to the username field if enter key is pressed on the footer item");
 
-  runInParent(function cleanUpWindow() {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-    let window = Services.wm.getMostRecentWindow("navigator:browser");
-    window.gBrowser.removeTab(window.gBrowser.selectedTab);
-  });
+  closeCurrentTab();
 
   // Press tab on the footer and check.
   password.focus();
@@ -103,6 +104,8 @@ add_task(async function test_field_highlight_on_pw_field_autocomplete_footer() {
      "Highlight is not applied to the password field if tab key is pressed on the footer item");
   is(document.defaultView.getComputedStyle(username).getPropertyValue("filter"), "none",
      "Highlight is not applied to the username field if tab key is pressed on the insecure warning item");
+
+  closeCurrentTab();
 });
 </script>
 </body>

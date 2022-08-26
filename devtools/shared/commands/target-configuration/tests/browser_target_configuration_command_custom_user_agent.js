@@ -32,18 +32,24 @@ add_task(async function() {
     "The user agent is properly set on the top level document after updating the configuration"
   );
   is(
+    await getUserAgentForTopLevelRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources on the top level document"
+  );
+
+  is(
     await getIframeUserAgent(),
     CUSTOM_USER_AGENT,
     "The user agent is properly set on the iframe after updating the configuration"
   );
+  is(
+    await getUserAgentForIframeRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources on the iframe"
+  );
 
   info("Reload the page");
-  let onPageLoaded = BrowserTestUtils.browserLoaded(
-    gBrowser.selectedBrowser,
-    true
-  );
-  gBrowser.reloadTab(tab);
-  await onPageLoaded;
+  await BrowserTestUtils.reloadTab(tab, /* includeSubFrames */ true);
 
   is(
     await getTopLevelDocumentUserAgentAtStartup(),
@@ -56,6 +62,11 @@ add_task(async function() {
     "The custom user agent is set in the content page after reloading"
   );
   is(
+    await getUserAgentForTopLevelRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources after reloading"
+  );
+  is(
     await getIframeUserAgentAtStartup(),
     CUSTOM_USER_AGENT,
     "The custom user agent was set in the remote iframe when it loaded after reloading"
@@ -65,13 +76,21 @@ add_task(async function() {
     CUSTOM_USER_AGENT,
     "The custom user agent is set in the remote iframe after reloading"
   );
+  is(
+    await getUserAgentForIframeRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources in the remote iframe after reloading"
+  );
 
   const previousBrowsingContextId = gBrowser.selectedBrowser.browsingContext.id;
   info(
     "Check that navigating to a page that forces the creation of a new browsing context keep the simulation enabled"
   );
 
-  onPageLoaded = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, true);
+  const onPageLoaded = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    /* includeSubFrames */ true
+  );
   BrowserTestUtils.loadURI(
     gBrowser.selectedBrowser,
     URL_ROOT_ORG_SSL + TEST_DOCUMENT + "?crossOriginIsolated=true"
@@ -95,6 +114,11 @@ add_task(async function() {
     "The custom user agent is set in the content page after navigating to a new browsing context"
   );
   is(
+    await getUserAgentForTopLevelRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources after navigating to a new browsing context"
+  );
+  is(
     await getIframeUserAgentAtStartup(),
     CUSTOM_USER_AGENT,
     "The custom user agent was set in the remote iframe when it loaded after navigating to a new browsing context"
@@ -103,6 +127,11 @@ add_task(async function() {
     await getIframeUserAgent(),
     CUSTOM_USER_AGENT,
     "The custom user agent is set in the remote iframe after navigating to a new browsing context"
+  );
+  is(
+    await getUserAgentForTopLevelRequest(commands),
+    CUSTOM_USER_AGENT,
+    "The custom user agent is used when retrieving resources in the remote iframes after navigating to a new browsing context"
   );
 
   info(
@@ -114,10 +143,10 @@ add_task(async function() {
   const otherTargetCommand = otherCommands.targetCommand;
   await otherTargetCommand.startListening();
   // wait for the target to be fully attached to avoid pending connection to the server
-  await otherTargetCommand.watchTargets(
-    [otherTargetCommand.TYPES.FRAME],
-    () => {}
-  );
+  await otherTargetCommand.watchTargets({
+    types: [otherTargetCommand.TYPES.FRAME],
+    onAvailable: () => {},
+  });
 
   // Let's update the configuration with this commands instance to make sure we hit the TargetConfigurationActor
   await otherTargetConfigurationCommand.updateConfiguration({
@@ -149,9 +178,7 @@ add_task(async function() {
     "The custom user agent is still set on the page after destroying the first commands instance. Bug 1705326 will fix that and make it equal to `initialUserAgent`"
   );
 
-  onPageLoaded = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, true);
-  gBrowser.reloadTab(tab);
-  await onPageLoaded;
+  await BrowserTestUtils.reloadTab(tab, /* includeSubFrames */ true);
   is(
     await getTopLevelUserAgent(),
     initialUserAgent,
@@ -161,6 +188,21 @@ add_task(async function() {
     await getIframeUserAgent(),
     initialUserAgent,
     "The user agent was reset in the remote iframe after destroying the commands"
+  );
+
+  // We need commands to retrieve the headers of the network request, and
+  // all those we created so far were destroyed; let's create new ones.
+  const newCommands = await CommandsFactory.forTab(tab);
+  await newCommands.targetCommand.startListening();
+  is(
+    await getUserAgentForTopLevelRequest(newCommands),
+    initialUserAgent,
+    "The initial user agent is used when retrieving resources after destroying the commands"
+  );
+  is(
+    await getUserAgentForIframeRequest(newCommands),
+    initialUserAgent,
+    "The initial user agent is used when retrieving resources on the remote iframe after destroying the commands"
   );
 });
 
@@ -202,4 +244,66 @@ async function getIframeUserAgent() {
 async function getIframeUserAgentAtStartup() {
   const iframeBC = await getIframeBrowsingContext();
   return getUserAgentAtStartup(iframeBC);
+}
+
+async function getRequestUserAgent(commands, browserOrBrowsingContext) {
+  const url = `unknown?${Date.now()}`;
+
+  // Wait for the resource and its headers to be available
+  const onAvailable = () => {};
+  let onUpdated;
+
+  const onResource = new Promise(resolve => {
+    onUpdated = updates => {
+      for (const { resource } of updates) {
+        if (resource.url.includes(url) && resource.requestHeadersAvailable) {
+          resolve(resource);
+        }
+      }
+    };
+
+    commands.resourceCommand.watchResources(
+      [commands.resourceCommand.TYPES.NETWORK_EVENT],
+      {
+        onAvailable,
+        onUpdated,
+        ignoreExistingResources: true,
+      }
+    );
+  });
+
+  info(`Fetch ${url}`);
+  SpecialPowers.spawn(browserOrBrowsingContext, [url], innerUrl => {
+    content.fetch(`./${innerUrl}`);
+  });
+  info("waiting for matching resource…");
+  const networkResource = await onResource;
+
+  info("…got resource, retrieve headers");
+  const packet = {
+    to: networkResource.actor,
+    type: "getRequestHeaders",
+  };
+
+  const { headers } = await commands.client.request(packet);
+
+  commands.resourceCommand.unwatchResources(
+    [commands.resourceCommand.TYPES.NETWORK_EVENT],
+    {
+      onAvailable,
+      onUpdated,
+      ignoreExistingResources: true,
+    }
+  );
+
+  return headers.find(header => header.name == "User-Agent")?.value;
+}
+
+async function getUserAgentForTopLevelRequest(commands) {
+  return getRequestUserAgent(commands, gBrowser.selectedBrowser);
+}
+
+async function getUserAgentForIframeRequest(commands) {
+  const iframeBC = await getIframeBrowsingContext();
+  return getRequestUserAgent(commands, iframeBC);
 }

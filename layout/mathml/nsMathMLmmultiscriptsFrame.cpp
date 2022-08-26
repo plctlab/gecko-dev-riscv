@@ -6,8 +6,11 @@
 
 #include "nsMathMLmmultiscriptsFrame.h"
 
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_mathml.h"
+#include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include <algorithm>
 #include "gfxContext.h"
@@ -188,7 +191,7 @@ nsresult nsMathMLmmultiscriptsFrame::PlaceMultiScript(
   nscoord xHeight = fm->XHeight();
 
   nscoord oneDevPixel = fm->AppUnitsPerDevPixel();
-  gfxFont* mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
   // scriptspace from TeX for extra spacing after sup/subscript
   nscoord scriptSpace;
   if (mathFont) {

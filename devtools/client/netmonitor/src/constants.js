@@ -26,6 +26,7 @@ const actionTypes = {
   DISABLE_BROWSER_CACHE: "DISABLE_BROWSER_CACHE",
   OPEN_STATISTICS: "OPEN_STATISTICS",
   PERSIST_CHANGED: "PERSIST_CHANGED",
+  PRESELECT_REQUEST: "PRESELECT_REQUEST",
   REMOVE_SELECTED_CUSTOM_REQUEST: "REMOVE_SELECTED_CUSTOM_REQUEST",
   RESET_COLUMNS: "RESET_COLUMNS",
   SELECT_REQUEST: "SELECT_REQUEST",
@@ -45,7 +46,7 @@ const actionTypes = {
   DISABLE_MATCHING_URLS: "DISABLE_MATCHING_URLS",
   REQUEST_BLOCKING_UPDATE_COMPLETE: "REQUEST_BLOCKING_UPDATE_COMPLETE",
   TOGGLE_COLUMN: "TOGGLE_COLUMN",
-  TOGGLE_RECORDING: "TOGGLE_RECORDING",
+  SET_RECORDING_STATE: "SET_RECORDING_STATE",
   TOGGLE_REQUEST_FILTER_TYPE: "TOGGLE_REQUEST_FILTER_TYPE",
   UNBLOCK_SELECTED_REQUEST_DONE: "UNBLOCK_SELECTED_REQUEST_DONE",
   UPDATE_REQUEST: "UPDATE_REQUEST",
@@ -145,7 +146,7 @@ const EVENTS = {
 
 const TEST_EVENTS = {
   // When a network or timeline event is received.
-  // See https://developer.mozilla.org/docs/Tools/Web_Console/remoting for
+  // See https://firefox-source-docs.mozilla.org/devtools-user/web_console/remoting/ for
   // more information about what each packet is supposed to deliver.
   NETWORK_EVENT: "NetMonitor:NetworkEvent",
   NETWORK_EVENT_UPDATED: "NetMonitor:NetworkEventUpdated",
@@ -226,6 +227,7 @@ const UPDATE_PROPS = [
   "stacktrace",
   "isThirdPartyTrackingResource",
   "referrerPolicy",
+  "priority",
   "blockedReason",
   "blockingExtension",
   "channelId",
@@ -242,6 +244,7 @@ const PANELS = {
   SECURITY: "security",
   STACK_TRACE: "stack-trace",
   TIMINGS: "timings",
+  HTTP_CUSTOM_REQUEST: "network-action-bar-HTTP-custom-request",
   SEARCH: "network-action-bar-search",
   BLOCKING: "network-action-bar-blocked",
 };
@@ -323,6 +326,11 @@ const HEADERS = [
     name: "contentSize",
     boxName: "size",
     filterKey: "size",
+    canFilter: true,
+  },
+  {
+    name: "priority",
+    boxName: "priority",
     canFilter: true,
   },
   {

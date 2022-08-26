@@ -10,7 +10,6 @@ const { AppConstants } = ChromeUtils.import(
 const { ProcessType } = ChromeUtils.import(
   "resource://gre/modules/ProcessType.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 let AboutThirdParty = null;
 let CrashModuleSet = null;
@@ -327,6 +326,13 @@ function visualizeData(aData) {
   document.getElementById("main").appendChild(mainContentFragment);
 }
 
+function clearVisualizedData() {
+  const mainDiv = document.getElementById("main");
+  while (mainDiv.firstChild) {
+    mainDiv.firstChild.remove();
+  }
+}
+
 async function collectCrashInfo() {
   const parseBigInt = maybeBigInt => {
     try {
@@ -396,10 +402,22 @@ async function onLoad() {
         return;
       }
 
+      // Add {once: true} to prevent multiple listeners from being scheduled
       const button = document.getElementById("button-reload");
-      button.addEventListener("click", () => {
-        location.reload();
-      });
+      button.addEventListener(
+        "click",
+        async event => {
+          // Update the content with data we've already collected.
+          clearVisualizedData();
+          visualizeData(await fetchData());
+          event.target.hidden = true;
+        },
+        { once: true }
+      );
+
+      // Coming here means visualizeData is completed before the background
+      // tasks are completed.  Because the page does not show full information,
+      // we show the reload button to call visualizeData again.
       button.hidden = false;
     })
     .catch(Cu.reportError);

@@ -7,6 +7,7 @@
 #include "nsMathMLmrootFrame.h"
 
 #include "mozilla/PresShell.h"
+#include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include <algorithm>
 #include "gfxContext.h"
@@ -97,7 +98,8 @@ void nsMathMLmrootFrame::GetRadicalXOffsets(nscoord aIndexWidth,
   nscoord xHeight = aFontMetrics->XHeight();
   nscoord indexRadicalKern = NSToCoordRound(1.35f * xHeight);
   nscoord oneDevPixel = aFontMetrics->AppUnitsPerDevPixel();
-  gfxFont* mathFont = aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont =
+      aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
   if (mathFont) {
     indexRadicalKern = mathFont->MathTable()->Constant(
         gfxMathTable::RadicalKernAfterDegree, oneDevPixel);
@@ -189,7 +191,6 @@ void nsMathMLmrootFrame::Reflow(nsPresContext* aPresContext,
     // report an error, encourage people to get their markups in order
     ReportChildCountError();
     ReflowError(drawTarget, aDesiredSize);
-    NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
     // Call DidReflow() for the child frames we successfully did reflow.
     DidReflowChildren(mFrames.FirstChild(), childFrame);
     return;
@@ -266,7 +267,7 @@ void nsMathMLmrootFrame::Reflow(nsPresContext* aPresContext,
   // the index is raised by some fraction of the height
   // of the radical, see \mroot macro in App. B, TexBook
   float raiseIndexPercent = 0.6f;
-  gfxFont* mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
   if (mathFont) {
     raiseIndexPercent = mathFont->MathTable()->Constant(
         gfxMathTable::RadicalDegreeBottomRaisePercent);
@@ -329,8 +330,6 @@ void nsMathMLmrootFrame::Reflow(nsPresContext* aPresContext,
 
   mReference.x = 0;
   mReference.y = aDesiredSize.BlockStartAscent();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 /* virtual */

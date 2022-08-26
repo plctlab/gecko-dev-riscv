@@ -14,6 +14,12 @@ search-header-shortcut =
 list-empty-get-extensions-message =
     Get extensions and themes on <a data-l10n-name="get-extensions">{ $domain }</a>
 
+list-empty-get-dictionaries-message =
+    Get dictionaries on <a data-l10n-name="get-extensions">{ $domain }</a>
+
+list-empty-get-language-packs-message =
+    Get language packs on <a data-l10n-name="get-extensions">{ $domain }</a>
+
 list-empty-installed =
     .value = You don’t have any add-ons of this type installed
 
@@ -48,6 +54,9 @@ detail-version =
 
 detail-last-updated =
     .label = Last Updated
+
+addon-detail-description-expand = Show more
+addon-detail-description-collapse = Show less
 
 detail-contributions-description = The developer of this add-on asks that you help support its continued development by making a small contribution.
 
@@ -185,6 +194,9 @@ addon-category-available-updates-title =
 addon-category-recent-updates = Recent Updates
 addon-category-recent-updates-title =
     .title = Recent Updates
+addon-category-sitepermission = Site Permissions
+addon-category-sitepermission-title =
+    .title = Site Permissions
 
 ## These are global warnings
 
@@ -346,9 +358,17 @@ extension-enabled-heading = Enabled
 extension-disabled-heading = Disabled
 
 theme-enabled-heading = Enabled
-theme-disabled-heading = Disabled
+theme-disabled-heading2 = Saved Themes
 theme-monochromatic-heading = Colorways
 theme-monochromatic-subheading = Vibrant new colorways from { -brand-product-name }. Available for a limited time.
+
+# Refers to the button label for the colorways card when a user does not have a colorway theme enabled.
+theme-colorways-button = Try Colorways
+# Refers to the button label for the colorways card when a user has a colorway theme enabled.
+theme-colorways-button-colorway-enabled = Change Colorway
+# Variables:
+#   $expiryDate (string) - date on which the colorway collection expires. When formatting this, you may omit the year, only exposing the month and day, as colorway collections will always expire within a year.
+colorway-collection-expiry-label = Expires { DATETIME($expiryDate, month: "long", day: "numeric") }
 
 plugin-enabled-heading = Enabled
 plugin-disabled-heading = Disabled
@@ -358,6 +378,9 @@ dictionary-disabled-heading = Disabled
 
 locale-enabled-heading = Enabled
 locale-disabled-heading = Disabled
+
+sitepermission-enabled-heading = Enabled
+sitepermission-disabled-heading = Disabled
 
 always-activate-button = Always Activate
 never-activate-button = Never Activate
@@ -446,6 +469,8 @@ addon-permissions-learnmore = Learn more about permissions
 recommended-extensions-heading = Recommended Extensions
 recommended-themes-heading = Recommended Themes
 
+addon-sitepermissions-required = Grants the following capabilities to <span data-l10n-name="hostname">{ $hostname }</span>:
+
 # A recommendation for the Firefox Color theme shown at the bottom of the theme
 # list view. The "Firefox Color" name itself should not be translated.
 recommended-theme-1 = Feeling creative? <a data-l10n-name="link">Build your own theme with Firefox Color.</a>
@@ -458,6 +483,7 @@ plugin-heading = Manage Your Plugins
 dictionary-heading = Manage Your Dictionaries
 locale-heading = Manage Your Languages
 updates-heading = Manage Your Updates
+sitepermission-heading = Manage Your Site Permissions
 discover-heading = Personalize Your { -brand-short-name }
 shortcuts-heading = Manage Extension Shortcuts
 
@@ -467,3 +493,26 @@ addons-heading-search-input =
 
 addon-page-options-button =
     .title = Tools for all add-ons
+
+## Detail notifications
+## Variables:
+##   $name (String): name of the add-on.
+
+# Variables:
+#   $version (String): application version.
+details-notification-incompatible = { $name } is incompatible with { -brand-short-name } { $version }.
+details-notification-incompatible-link = More Information
+
+details-notification-unsigned-and-disabled = { $name } could not be verified for use in { -brand-short-name } and has been disabled.
+details-notification-unsigned-and-disabled-link = More Information
+
+details-notification-unsigned = { $name } could not be verified for use in { -brand-short-name }. Proceed with caution.
+details-notification-unsigned-link = More Information
+
+details-notification-blocked = { $name } has been disabled due to security or stability issues.
+details-notification-blocked-link = More Information
+
+details-notification-softblocked = { $name } is known to cause security or stability issues.
+details-notification-softblocked-link = More Information
+
+details-notification-gmp-pending = { $name } will be installed shortly.

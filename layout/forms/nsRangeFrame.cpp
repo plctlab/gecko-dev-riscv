@@ -6,7 +6,6 @@
 
 #include "nsRangeFrame.h"
 
-#include "mozilla/EventStates.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/TouchEvents.h"
 
@@ -14,7 +13,9 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsCSSPseudoElements.h"
 #include "nsCSSRendering.h"
+#include "nsDisplayList.h"
 #include "nsIContent.h"
+#include "nsLayoutUtils.h"
 #include "mozilla/dom/Document.h"
 #include "nsNameSpaceManager.h"
 #include "nsGkAtoms.h"
@@ -189,8 +190,6 @@ void nsRangeFrame::Reflow(nsPresContext* aPresContext,
   FinishAndStoreOverflow(&aDesiredSize);
 
   MOZ_ASSERT(aStatus.IsEmpty(), "This type of frame can't be split.");
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsRangeFrame::ReflowAnonymousContent(nsPresContext* aPresContext,

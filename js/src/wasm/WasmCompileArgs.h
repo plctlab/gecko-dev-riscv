@@ -73,10 +73,8 @@ class Tiers {
 // available under prefs.)
 
 struct FeatureOptions {
-  FeatureOptions() : simdWormhole(false), intrinsics(false) {}
+  FeatureOptions() : intrinsics(false) {}
 
-  // May be set if javascript.options.wasm_simd_wormhole==true.
-  bool simdWormhole;
   // Enables intrinsic opcodes, only set in WasmIntrinsic.cpp.
   bool intrinsics;
 };
@@ -87,11 +85,10 @@ struct FeatureArgs {
   FeatureArgs()
       :
 #define WASM_FEATURE(NAME, LOWER_NAME, ...) LOWER_NAME(false),
-        JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE)
+        JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE, WASM_FEATURE)
 #undef WASM_FEATURE
             sharedMemory(Shareable::False),
-        hugeMemory(false),
-        simdWormhole(false),
+        simd(false),
         intrinsics(false) {
   }
   FeatureArgs(const FeatureArgs&) = default;
@@ -101,12 +98,11 @@ struct FeatureArgs {
   static FeatureArgs build(JSContext* cx, const FeatureOptions& options);
 
 #define WASM_FEATURE(NAME, LOWER_NAME, ...) bool LOWER_NAME;
-  JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE)
+  JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE, WASM_FEATURE)
 #undef WASM_FEATURE
 
   Shareable sharedMemory;
-  bool hugeMemory;
-  bool simdWormhole;
+  bool simd;
   bool intrinsics;
 };
 
@@ -118,6 +114,13 @@ struct ScriptedCaller {
   unsigned line;
 
   ScriptedCaller() : filenameIsURL(false), line(0) {}
+};
+
+// Describes the reasons we cannot compute compile args
+
+enum class CompileArgsError {
+  OutOfMemory,
+  NoCompiler,
 };
 
 // Describes all the parameters that control wasm compilation.
@@ -132,29 +135,31 @@ struct CompileArgs : ShareableBase<CompileArgs> {
 
   bool baselineEnabled;
   bool ionEnabled;
-  bool craneliftEnabled;
   bool debugEnabled;
   bool forceTiering;
 
   FeatureArgs features;
 
-  // CompileArgs has two constructors:
+  // CompileArgs has three constructors:
   //
-  // - one through a factory function `build`, which checks that flags are
-  // consistent with each other.
+  // - two through a factory function `build`, which checks that flags are
+  // consistent with each other, and optionally reports any errors.
   // - one that gives complete access to underlying fields.
   //
   // You should use the first one in general, unless you have a very good
   // reason (i.e. no JSContext around and you know which flags have been used).
 
   static SharedCompileArgs build(JSContext* cx, ScriptedCaller&& scriptedCaller,
-                                 const FeatureOptions& options);
+                                 const FeatureOptions& options,
+                                 CompileArgsError* error);
+  static SharedCompileArgs buildAndReport(JSContext* cx,
+                                          ScriptedCaller&& scriptedCaller,
+                                          const FeatureOptions& options);
 
   explicit CompileArgs(ScriptedCaller&& scriptedCaller)
       : scriptedCaller(std::move(scriptedCaller)),
         baselineEnabled(false),
         ionEnabled(false),
-        craneliftEnabled(false),
         debugEnabled(false),
         forceTiering(false) {}
 };

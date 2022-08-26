@@ -4,6 +4,9 @@
 // @ts-check
 "use strict";
 
+/** @type {any} */
+const lazy = {};
+
 /**
  * @typedef {import("./@types/perf").Library} Library
  * @typedef {import("./@types/perf").PerfFront} PerfFront
@@ -18,18 +21,18 @@
  */
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "clearTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 
 /** @type {any} */
-const global = this;
+const global = globalThis;
 
 // This module obtains symbol tables for binaries.
 // It does so with the help of a WASM module which gets pulled in from the
@@ -49,11 +52,11 @@ const global = this;
 // The sha384 sum can be computed with the following command (tested on macOS):
 // shasum -b -a 384 profiler_get_symbols_wasm_bg.wasm | awk '{ print $1 }' | xxd -r -p | base64
 
-// Generated from https://github.com/mstange/profiler-get-symbols/commit/007c254385f74ed0538f6e915c73c5055f194a8c
+// Generated from https://github.com/mstange/profiler-get-symbols/commit/b933282e82f871ea76b5373f9fc81800e8550b7b
 const WASM_MODULE_URL =
-  "https://storage.googleapis.com/firefox-profiler-get-symbols/007c254385f74ed0538f6e915c73c5055f194a8c.wasm";
+  "https://storage.googleapis.com/firefox-profiler-get-symbols/b933282e82f871ea76b5373f9fc81800e8550b7b.wasm";
 const WASM_MODULE_INTEGRITY =
-  "sha384-HtoagTJzW8MQ8Bc4QfYfWBOxxSlOrKopxf6Nx0eskn9RduB0HssVNX5Ev2OsMkza";
+  "sha384-WeRBd3mn0rbs+/DX4NzsNc77ZhZOPuRTPZR9y10xrvQdUY6Dm0o205EDz3GyYSPv";
 
 const EXPIRY_TIME_IN_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -81,8 +84,8 @@ function getWASMProfilerGetSymbolsModule() {
   }
 
   // Reset expiry timer.
-  clearTimeout(gCachedWASMModuleExpiryTimer);
-  gCachedWASMModuleExpiryTimer = setTimeout(
+  lazy.clearTimeout(gCachedWASMModuleExpiryTimer);
+  gCachedWASMModuleExpiryTimer = lazy.setTimeout(
     clearCachedWASMModule,
     EXPIRY_TIME_IN_MS
   );
@@ -139,7 +142,7 @@ async function getResultFromWorker(workerURL, initialMessageToWorker) {
     worker.onerror = errorEvent => {
       gActiveWorkers.delete(worker);
       worker.terminate();
-      if (errorEvent instanceof ErrorEvent) {
+      if (ErrorEvent.isInstance(errorEvent)) {
         const { message, filename, lineno } = errorEvent;
         const error = new Error(`${message} at ${filename}:${lineno}`);
         error.name = "WorkerError";
@@ -152,17 +155,10 @@ async function getResultFromWorker(workerURL, initialMessageToWorker) {
     // Handle errors from messages that cannot be deserialized. I'm not sure
     // how to get into such a state, but having this handler seems like a good
     // idea.
-    worker.onmessageerror = errorEvent => {
+    worker.onmessageerror = () => {
       gActiveWorkers.delete(worker);
       worker.terminate();
-      if (errorEvent instanceof ErrorEvent) {
-        const { message, filename, lineno } = errorEvent;
-        const error = new Error(`${message} at ${filename}:${lineno}`);
-        error.name = "WorkerMessageError";
-        reject(error);
-      } else {
-        reject(new Error("Error in worker"));
-      }
+      reject(new Error("Error in worker"));
     };
 
     worker.postMessage(initialMessageToWorker);
@@ -362,7 +358,8 @@ function createLocalSymbolicationService(sharedLibraries, objdirs, perfFront) {
 }
 
 // Provide an exports object for the JSM to be properly read by TypeScript.
-/** @type {any} */ (this).module = {};
+/** @type {any} */
+var module = {};
 
 module.exports = {
   createLocalSymbolicationService,

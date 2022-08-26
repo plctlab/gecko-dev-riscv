@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
@@ -62,6 +62,16 @@ nsWebHandlerApp.prototype = {
     // can't do this directly.  Ideally, we'd fix nsStandardURL to make it
     // possible to turn off all of its quirks handling, and use that...
 
+    let { scheme } = aURI;
+    if (scheme == "ftp" || scheme == "ftps" || scheme == "sftp") {
+      // FTP URLs are parsed by nsStandardURL, so clearing the username and
+      // password does not throw.
+      aURI = aURI
+        .mutate()
+        .setUserPass("")
+        .finalize();
+    }
+
     // encode the URI to be handled
     var escapedUriSpecToHandle = encodeURIComponent(aURI.spec);
 
@@ -78,7 +88,6 @@ nsWebHandlerApp.prototype = {
     // iframes, and in any case it's unlikely to work due to framing
     // restrictions employed by the target site.
     if (aBrowsingContext && aBrowsingContext != aBrowsingContext.top) {
-      let { scheme } = aURI;
       if (!scheme.startsWith("web+") && !scheme.startsWith("ext+")) {
         aBrowsingContext = null;
       }
@@ -103,7 +112,7 @@ nsWebHandlerApp.prototype = {
     let win = Services.wm.getMostRecentWindow("navigator:browser");
 
     // If this is an extension handler, check private browsing access.
-    if (!privateAllowed && PrivateBrowsingUtils.isWindowPrivate(win)) {
+    if (!privateAllowed && lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
       throw Components.Exception(
         "Extension not allowed in private windows.",
         Cr.NS_ERROR_FILE_NOT_FOUND

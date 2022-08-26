@@ -5,21 +5,22 @@
 "use strict";
 
 const EXPORTED_SYMBOLS = [
-  "ChromeWebElement",
-  "ContentWebElement",
-  "ContentWebFrame",
-  "ContentWebWindow",
   "element",
+  "ShadowRoot",
   "WebElement",
+  "WebFrame",
+  "WebReference",
+  "WebWindow",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ContentDOMReference: "resource://gre/modules/ContentDOMReference.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 
   assert: "chrome://remote/content/shared/webdriver/Assert.jsm",
   atom: "chrome://remote/content/marionette/atom.js",
@@ -68,7 +69,7 @@ const XUL_SELECTED_ELS = new Set([
  *
  * @namespace
  */
-this.element = {};
+const element = {};
 
 element.Strategy = {
   ClassName: "class name",
@@ -85,7 +86,7 @@ element.Strategy = {
  * Stores known/seen web element references and their associated
  * ContentDOMReference ElementIdentifiers.
  *
- * The ContentDOMReference ElementIdentifier is augmented with a WebElement
+ * The ContentDOMReference ElementIdentifier is augmented with a WebReference
  * reference, so in Marionette's IPC it looks like the following example:
  *
  * { browsingContextId: 9,
@@ -130,7 +131,7 @@ element.ReferenceStore = class {
    * @param {Array.<ElementIdentifer>} elIds
    *     Sequence of ids to add to set of seen elements.
    *
-   * @return {Array.<WebElement>}
+   * @return {Array.<WebReference>}
    *     List of the web element references associated with each element
    *     from <var>els</var>.
    */
@@ -144,18 +145,20 @@ element.ReferenceStore = class {
    * @param {ElementIdentifier} elId
    *    {id, browsingContextId} to add to set of seen elements.
    *
-   * @return {WebElement}
+   * @return {WebReference}
    *     Web element reference associated with element.
    *
    */
   add(elId) {
     if (!elId.id || !elId.browsingContextId) {
-      throw new TypeError(pprint`Expected ElementIdentifier, got: ${elId}`);
+      throw new TypeError(
+        lazy.pprint`Expected ElementIdentifier, got: ${elId}`
+      );
     }
     if (this.domRefs.has(elId.id)) {
-      return WebElement.fromJSON(this.domRefs.get(elId.id));
+      return WebReference.fromJSON(this.domRefs.get(elId.id));
     }
-    const webEl = WebElement.fromJSON(elId.webElRef);
+    const webEl = WebReference.fromJSON(elId.webElRef);
     this.refs.set(webEl.uuid, elId);
     this.domRefs.set(elId.id, elId.webElRef);
     return webEl;
@@ -167,45 +170,45 @@ element.ReferenceStore = class {
    * Unlike when getting the element, a staleness check is not
    * performed.
    *
-   * @param {WebElement} webEl
+   * @param {WebReference} webEl
    *     Element's associated web element reference.
    *
    * @return {boolean}
    *     True if element is in the store, false otherwise.
    *
    * @throws {TypeError}
-   *     If <var>webEl</var> is not a {@link WebElement}.
+   *     If <var>webEl</var> is not a {@link WebReference}.
    */
   has(webEl) {
-    if (!(webEl instanceof WebElement)) {
-      throw new TypeError(pprint`Expected web element, got: ${webEl}`);
+    if (!(webEl instanceof WebReference)) {
+      throw new TypeError(lazy.pprint`Expected web element, got: ${webEl}`);
     }
     return this.refs.has(webEl.uuid);
   }
 
   /**
    * Retrieve a DOM {@link Element} or a {@link XULElement} by its
-   * unique {@link WebElement} reference.
+   * unique {@link WebReference} reference.
    *
-   * @param {WebElement} webEl
+   * @param {WebReference} webEl
    *     Web element reference to find the associated {@link Element}
    *     of.
    * @returns {ElementIdentifier}
    *     ContentDOMReference identifier
    *
    * @throws {TypeError}
-   *     If <var>webEl</var> is not a {@link WebElement}.
+   *     If <var>webEl</var> is not a {@link WebReference}.
    * @throws {NoSuchElementError}
    *     If the web element reference <var>uuid</var> has not been
    *     seen before.
    */
   get(webEl) {
-    if (!(webEl instanceof WebElement)) {
-      throw new TypeError(pprint`Expected web element, got: ${webEl}`);
+    if (!(webEl instanceof WebReference)) {
+      throw new TypeError(lazy.pprint`Expected web element, got: ${webEl}`);
     }
     const elId = this.refs.get(webEl.uuid);
     if (!elId) {
-      throw new error.NoSuchElementError(
+      throw new lazy.error.NoSuchElementError(
         "Web element reference not seen before: " + webEl.uuid
       );
     }
@@ -225,23 +228,6 @@ element.ReferenceStore = class {
  * See the {@link element.Strategy} enum for a full list of supported
  * search strategies that can be passed to <var>strategy</var>.
  *
- * Available flags for <var>opts</var>:
- *
- * <dl>
- *   <dt><code>all</code>
- *   <dd>
- *     If true, a multi-element search selector is used and a sequence
- *     of elements will be returned.  Otherwise a single element.
- *
- *   <dt><code>timeout</code>
- *   <dd>
- *     Duration to wait before timing out the search.  If <code>all</code>
- *     is false, a {@link NoSuchElementError} is thrown if unable to
- *     find the element within the timeout duration.
- *
- *   <dt><code>startNode</code>
- *   <dd>Element to use as the root of the search.
- *
  * @param {Object.<string, WindowProxy>} container
  *     Window object.
  * @param {string} strategy
@@ -249,8 +235,16 @@ element.ReferenceStore = class {
  * @param {string} selector
  *     Selector search pattern.  The selector must be compatible with
  *     the chosen search <var>strategy</var>.
- * @param {Object.<string, ?>} opts
- *     Options.
+ * @param {Object=} options
+ * @param {boolean=} all
+ *     If true, a multi-element search selector is used and a sequence of
+ *     elements will be returned, otherwise a single element. Defaults to false.
+ * @param {Element=} startNode
+ *     Element to use as the root of the search.
+ * @param {number=} timeout
+ *     Duration to wait before timing out the search.  If <code>all</code>
+ *     is false, a {@link NoSuchElementError} is thrown if unable to
+ *     find the element within the timeout duration.
  *
  * @return {Promise.<(Element|Array.<Element>)>}
  *     Single element or a sequence of elements.
@@ -263,20 +257,18 @@ element.ReferenceStore = class {
  *     If a single element is requested, this error will throw if the
  *     element is not found.
  */
-element.find = function(container, strategy, selector, opts = {}) {
-  let all = !!opts.all;
-  let timeout = opts.timeout || 0;
-  let startNode = opts.startNode;
+element.find = function(container, strategy, selector, options = {}) {
+  const { all = false, startNode, timeout = 0 } = options;
 
   let searchFn;
-  if (opts.all) {
+  if (all) {
     searchFn = findElements.bind(this);
   } else {
     searchFn = findElement.bind(this);
   }
 
   return new Promise((resolve, reject) => {
-    let findElements = new PollPromise(
+    let findElements = new lazy.PollPromise(
       (resolve, reject) => {
         let res = find_(container, strategy, selector, searchFn, {
           all,
@@ -294,12 +286,12 @@ element.find = function(container, strategy, selector, opts = {}) {
     findElements.then(foundEls => {
       // the following code ought to be moved into findElement
       // and findElements when bug 1254486 is addressed
-      if (!opts.all && (!foundEls || foundEls.length == 0)) {
+      if (!all && (!foundEls || foundEls.length == 0)) {
         let msg = `Unable to locate element: ${selector}`;
-        reject(new error.NoSuchElementError(msg));
+        reject(new lazy.error.NoSuchElementError(msg));
       }
 
-      if (opts.all) {
+      if (all) {
         resolve(foundEls);
       }
       resolve(foundEls[0]);
@@ -324,7 +316,7 @@ function find_(
   try {
     res = searchFn(strategy, selector, rootNode, startNode);
   } catch (e) {
-    throw new error.InvalidSelectorError(
+    throw new lazy.error.InvalidSelectorError(
       `Given ${strategy} expression "${selector}" is invalid: ${e}`
     );
   }
@@ -341,7 +333,7 @@ function find_(
 /**
  * Find a single element by XPath expression.
  *
- * @param {HTMLDocument} document
+ * @param {Document} document
  *     Document root.
  * @param {Element} startNode
  *     Where in the DOM hiearchy to begin searching.
@@ -365,7 +357,7 @@ element.findByXPath = function(document, startNode, expression) {
 /**
  * Find elements by XPath expression.
  *
- * @param {HTMLDocument} document
+ * @param {Document} document
  *     Document root.
  * @param {Element} startNode
  *     Where in the DOM hierarchy to begin searching.
@@ -373,7 +365,7 @@ element.findByXPath = function(document, startNode, expression) {
  *     XPath search expression.
  *
  * @return {Iterable.<Node>}
- *     Iterator over elements matching <var>expression</var>.
+ *     Iterator over nodes matching <var>expression</var>.
  */
 element.findByXPathAll = function*(document, startNode, expression) {
   let iter = document.evaluate(
@@ -405,7 +397,7 @@ element.findByXPathAll = function*(document, startNode, expression) {
 element.findByLinkText = function(startNode, linkText) {
   return filterLinks(
     startNode,
-    link => atom.getElementText(link).trim() === linkText
+    link => lazy.atom.getElementText(link).trim() === linkText
   );
 };
 
@@ -424,7 +416,7 @@ element.findByLinkText = function(startNode, linkText) {
  */
 element.findByPartialLinkText = function(startNode, linkText) {
   return filterLinks(startNode, link =>
-    atom.getElementText(link).includes(linkText)
+    lazy.atom.getElementText(link).includes(linkText)
   );
 };
 
@@ -456,13 +448,13 @@ function* filterLinks(startNode, predicate) {
  *     Selector strategy to use.
  * @param {string} selector
  *     Selector expression.
- * @param {HTMLDocument} document
+ * @param {Document} document
  *     Document root.
  * @param {Element=} startNode
- *     Optional node from which to start searching.
+ *     Optional Element from which to start searching.
  *
  * @return {Element}
- *     Found elements.
+ *     Found element.
  *
  * @throws {InvalidSelectorError}
  *     If strategy <var>using</var> is not recognised.
@@ -498,7 +490,7 @@ function findElement(strategy, selector, document, startNode = undefined) {
 
     case element.Strategy.LinkText:
       for (let link of startNode.getElementsByTagName("a")) {
-        if (atom.getElementText(link).trim() === selector) {
+        if (lazy.atom.getElementText(link).trim() === selector) {
           return link;
         }
       }
@@ -506,7 +498,7 @@ function findElement(strategy, selector, document, startNode = undefined) {
 
     case element.Strategy.PartialLinkText:
       for (let link of startNode.getElementsByTagName("a")) {
-        if (atom.getElementText(link).includes(selector)) {
+        if (lazy.atom.getElementText(link).includes(selector)) {
           return link;
         }
       }
@@ -516,11 +508,13 @@ function findElement(strategy, selector, document, startNode = undefined) {
       try {
         return startNode.querySelector(selector);
       } catch (e) {
-        throw new error.InvalidSelectorError(`${e.message}: "${selector}"`);
+        throw new lazy.error.InvalidSelectorError(
+          `${e.message}: "${selector}"`
+        );
       }
   }
 
-  throw new error.InvalidSelectorError(`No such strategy: ${strategy}`);
+  throw new lazy.error.InvalidSelectorError(`No such strategy: ${strategy}`);
 }
 
 /**
@@ -530,10 +524,10 @@ function findElement(strategy, selector, document, startNode = undefined) {
  *     Selector strategy to use.
  * @param {string} selector
  *     Selector expression.
- * @param {HTMLDocument} document
+ * @param {Document} document
  *     Document root.
  * @param {Element=} startNode
- *     Optional node from which to start searching.
+ *     Optional Element from which to start searching.
  *
  * @return {Array.<Element>}
  *     Found elements.
@@ -580,16 +574,18 @@ function findElements(strategy, selector, document, startNode = undefined) {
       return startNode.querySelectorAll(selector);
 
     default:
-      throw new error.InvalidSelectorError(`No such strategy: ${strategy}`);
+      throw new lazy.error.InvalidSelectorError(
+        `No such strategy: ${strategy}`
+      );
   }
 }
 
 /**
- * Finds the closest parent node of <var>startNode</var> by CSS a
+ * Finds the closest parent node of <var>startNode</var> matching a CSS
  * <var>selector</var> expression.
  *
  * @param {Node} startNode
- *     Cyce through <var>startNode</var>'s parent nodes in tree-order
+ *     Cycle through <var>startNode</var>'s parent nodes in tree-order
  *     and return the first match to <var>selector</var>.
  * @param {string} selector
  *     CSS selector expression.
@@ -615,14 +611,28 @@ element.findClosest = function(startNode, selector) {
  * @param {Element} el
  *     The DOM element to generate the identifier for.
  *
- * @return {object} The ContentDOMReference ElementIdentifier for the DOM
- *     element augmented with a Marionette WebElement reference, and some
- *     additional properties.
+ * @return {object}
+ *     The ContentDOMReference ElementIdentifier for the DOM element augmented
+ *     with a Marionette WebReference reference, and some additional properties.
+ *
+ * @throws {StaleElementReferenceError}
+ *     If the element has gone stale, indicating it is no longer
+ *     attached to the DOM, or its node document is no longer the
+ *     active document.
  */
 element.getElementId = function(el) {
-  const webEl = WebElement.from(el);
+  if (element.isStale(el)) {
+    throw new lazy.error.StaleElementReferenceError(
+      lazy.pprint`The element reference of ${el} ` +
+        "is stale; either the element is no longer attached to the DOM, " +
+        "it is not in the current frame context, " +
+        "or the document has been refreshed"
+    );
+  }
 
-  const id = ContentDOMReference.get(el);
+  const webEl = WebReference.from(el);
+
+  const id = lazy.ContentDOMReference.get(el);
   const browsingContext = BrowsingContext.get(id.browsingContextId);
 
   id.webElRef = webEl.toJSON();
@@ -669,16 +679,17 @@ element.resolveElement = function(id, win) {
   }
 
   if (!sameBrowsingContext) {
-    throw new error.NoSuchElementError(
+    throw new lazy.error.NoSuchElementError(
       `Web element reference not seen before: ${JSON.stringify(id.webElRef)}`
     );
   }
 
-  const el = ContentDOMReference.resolve(id);
+  const el = lazy.ContentDOMReference.resolve(id);
 
   if (element.isStale(el, win)) {
-    throw new error.StaleElementReferenceError(
-      pprint`The element reference of ${el || JSON.stringify(id.webElRef)} ` +
+    throw new lazy.error.StaleElementReferenceError(
+      lazy.pprint`The element reference of ${el ||
+        JSON.stringify(id.webElRef)} ` +
         "is stale; either the element is no longer attached to the DOM, " +
         "it is not in the current frame context, " +
         "or the document has been refreshed"
@@ -690,11 +701,11 @@ element.resolveElement = function(id, win) {
 /**
  * Determines if <var>obj<var> is an HTML or JS collection.
  *
- * @param {*} seq
+ * @param {Object} seq
  *     Type to determine.
  *
  * @return {boolean}
- *     True if <var>seq</va> is collection.
+ *     True if <var>seq</va> is a collection.
  */
 element.isCollection = function(seq) {
   switch (Object.prototype.toString.call(seq)) {
@@ -728,7 +739,7 @@ element.isCollection = function(seq) {
  * browsing context such as an <tt>&lt;iframe&gt;</tt>.
  *
  * @param {Element=} el
- *     DOM element to check for staleness.  If null, which may be
+ *     Element to check for staleness.  If null, which may be
  *     the case if the element has been unwrapped from a weak
  *     reference, it is always considered stale.
  * @param {WindowProxy=} win
@@ -758,7 +769,7 @@ element.isStale = function(el, win = undefined) {
  * <tt>&lt;input type=radio&gt;</tt>,
  * and <tt>&gt;option&gt;</tt> elements.
  *
- * @param {(DOMElement|XULElement)} el
+ * @param {Element} el
  *     Element to test if selected.
  *
  * @return {boolean}
@@ -1109,7 +1120,7 @@ element.isInView = function(el) {
 element.isVisible = function(el, x = undefined, y = undefined) {
   let win = el.ownerGlobal;
 
-  if (!atom.isElementDisplayed(el, win)) {
+  if (!lazy.atom.isElementDisplayed(el, win)) {
     return false;
   }
 
@@ -1246,101 +1257,126 @@ element.isKeyboardInteractable = () => true;
  */
 element.scrollIntoView = function(el) {
   if (el.scrollIntoView) {
-    el.scrollIntoView({ block: "end", inline: "nearest", behavior: "instant" });
+    el.scrollIntoView({ block: "end", inline: "nearest" });
   }
 };
 
 /**
- * Ascertains whether <var>node</var> is a DOM-, SVG-, or XUL element.
+ * Ascertains whether <var>obj</var> is a DOM-, SVG-, or XUL element.
  *
- * @param {*} node
- *     Element thought to be an <code>Element</code> or
+ * @param {Object} obj
+ *     Object thought to be an <code>Element</code> or
  *     <code>XULElement</code>.
  *
  * @return {boolean}
- *     True if <var>node</var> is an element, false otherwise.
+ *     True if <var>obj</var> is an element, false otherwise.
  */
-element.isElement = function(node) {
-  return element.isDOMElement(node) || element.isXULElement(node);
+element.isElement = function(obj) {
+  return element.isDOMElement(obj) || element.isXULElement(obj);
 };
 
 /**
- * Ascertains whether <var>node</var> is a DOM element.
+ * Returns the shadow root of an element.
  *
- * @param {*} node
- *     Element thought to be an <code>Element</code>.
- *
- * @return {boolean}
- *     True if <var>node</var> is a DOM element, false otherwise.
+ * @param {Element} el
+ *     Element thought to have a <code>shadowRoot</code>
+ * @returns {ShadowRoot}
+ *     Shadow root of the element.
  */
-element.isDOMElement = function(node) {
+element.getShadowRoot = function(el) {
+  const shadowRoot = el.openOrClosedShadowRoot;
+  if (!shadowRoot) {
+    throw new lazy.error.NoSuchShadowRootError();
+  }
+  return shadowRoot;
+};
+
+/**
+ * Ascertains whether <var>obj</var> is a shadow root.
+ *
+ * @param {ShadowRoot} obj
+ *   The node that will be checked to see if it has a shadow root
+ *
+ * @returns {boolean}
+ *     True if <var>obj</var> is a shadow root, false otherwise.
+ */
+element.isShadowRoot = function(obj) {
   return (
-    typeof node == "object" &&
-    node !== null &&
-    "nodeType" in node &&
-    [ELEMENT_NODE, DOCUMENT_NODE].includes(node.nodeType) &&
-    !element.isXULElement(node)
+    obj !== null && typeof obj == "object" && obj.containingShadowRoot == obj
   );
 };
 
 /**
- * Ascertains whether <var>node</var> is a XUL element.
+ * Ascertains whether <var>obj</var> is a DOM element.
  *
- * @param {*} node
- *     Element to check
+ * @param {Object} obj
+ *     Object to check.
  *
  * @return {boolean}
- *     True if <var>node</var> is a XULElement,
+ *     True if <var>obj</var> is a DOM element, false otherwise.
+ */
+element.isDOMElement = function(obj) {
+  return (
+    typeof obj == "object" &&
+    obj !== null &&
+    "nodeType" in obj &&
+    [ELEMENT_NODE, DOCUMENT_NODE].includes(obj.nodeType) &&
+    !element.isXULElement(obj)
+  );
+};
+
+/**
+ * Ascertains whether <var>obj</var> is a XUL element.
+ *
+ * @param {Object} obj
+ *     Object to check.
+ *
+ * @return {boolean}
+ *     True if <var>obj</var> is a XULElement, false otherwise.
+ */
+element.isXULElement = function(obj) {
+  return (
+    typeof obj == "object" &&
+    obj !== null &&
+    "nodeType" in obj &&
+    obj.nodeType === obj.ELEMENT_NODE &&
+    obj.namespaceURI === XUL_NS
+  );
+};
+
+/**
+ * Ascertains whether <var>node</var> is in a privileged document.
+ *
+ * @param {Node} node
+ *     Node to check.
+ *
+ * @return {boolean}
+ *     True if <var>node</var> is in a privileged document,
  *     false otherwise.
  */
-element.isXULElement = function(node) {
-  return (
-    typeof node == "object" &&
-    node !== null &&
-    "nodeType" in node &&
-    node.nodeType === node.ELEMENT_NODE &&
-    node.namespaceURI === XUL_NS
-  );
+element.isInPrivilegedDocument = function(node) {
+  return !!node?.nodePrincipal?.isSystemPrincipal;
 };
 
 /**
- * Ascertains whether <var>node</var> is in a XUL document.
+ * Ascertains whether <var>obj</var> is a <code>WindowProxy</code>.
  *
- * @param {*} node
- *     Element to check
- *
- * @return {boolean}
- *     True if <var>node</var> is in a XUL document,
- *     false otherwise.
- */
-element.isInXULDocument = function(node) {
-  return (
-    typeof node == "object" &&
-    node !== null &&
-    "ownerDocument" in node &&
-    node.ownerDocument.documentElement.namespaceURI === XUL_NS
-  );
-};
-
-/**
- * Ascertains whether <var>node</var> is a <code>WindowProxy</code>.
- *
- * @param {*} node
- *     Node thought to be a <code>WindowProxy</code>.
+ * @param {Object} obj
+ *     Object to check.
  *
  * @return {boolean}
- *     True if <var>node</var> is a DOM window.
+ *     True if <var>obj</var> is a DOM window.
  */
-element.isDOMWindow = function(node) {
+element.isDOMWindow = function(obj) {
   // TODO(ato): This should use Object.prototype.toString.call(node)
   // but it's not clear how to write a good xpcshell test for that,
   // seeing as we stub out a WindowProxy.
   return (
-    typeof node == "object" &&
-    node !== null &&
-    typeof node.toString == "function" &&
-    node.toString() == "[object Window]" &&
-    node.self === node
+    typeof obj == "object" &&
+    obj !== null &&
+    typeof obj.toString == "function" &&
+    obj.toString() == "[object Window]" &&
+    obj.self === obj
   );
 };
 
@@ -1377,7 +1413,7 @@ const boolEls = {
 /**
  * Tests if the attribute is a boolean attribute on element.
  *
- * @param {DOMElement} el
+ * @param {Element} el
  *     Element to test if <var>attr</var> is a boolean attribute on.
  * @param {string} attr
  *     Attribute to test is a boolean attribute.
@@ -1404,27 +1440,27 @@ element.isBooleanAttribute = function(el, attr) {
 };
 
 /**
- * A web element is an abstraction used to identify an element when
+ * A web reference is an abstraction used to identify an element when
  * it is transported via the protocol, between remote- and local ends.
  *
  * In Marionette this abstraction can represent DOM elements,
  * WindowProxies, and XUL elements.
  */
-class WebElement {
+class WebReference {
   /**
    * @param {string} uuid
    *     Identifier that must be unique across all browsing contexts
    *     for the contract to be upheld.
    */
   constructor(uuid) {
-    this.uuid = assert.string(uuid);
+    this.uuid = lazy.assert.string(uuid);
   }
 
   /**
    * Performs an equality check between this web element and
    * <var>other</var>.
    *
-   * @param {WebElement} other
+   * @param {WebReference} other
    *     Web element to compare with this.
    *
    * @return {boolean}
@@ -1432,7 +1468,7 @@ class WebElement {
    *     otherwise.
    */
   is(other) {
-    return other instanceof WebElement && this.uuid === other.uuid;
+    return other instanceof WebReference && this.uuid === other.uuid;
   }
 
   toString() {
@@ -1440,132 +1476,114 @@ class WebElement {
   }
 
   /**
-   * Returns a new {@link WebElement} reference for a DOM element,
-   * <code>WindowProxy</code>, or XUL element.
+   * Returns a new {@link WebReference} reference for a DOM or XUL element,
+   * <code>WindowProxy</code>, or <code>ShadowRoot</code>.
    *
-   * @param {(Element|WindowProxy|XULElement)} node
+   * @param {(Element|ShadowRoot|WindowProxy|XULElement)} node
    *     Node to construct a web element reference for.
    *
-   * @return {(ContentWebElement|ChromeWebElement)}
-   *     Web element reference for <var>el</var>.
+   * @return {WebReference)}
+   *     Web reference for <var>node</var>.
    *
    * @throws {InvalidArgumentError}
    *     If <var>node</var> is neither a <code>WindowProxy</code>,
-   *     DOM element, or a XUL element.
+   *     DOM or XUL element, or <code>ShadowRoot</code>.
    */
   static from(node) {
-    const uuid = WebElement.generateUUID();
+    const uuid = WebReference.generateUUID();
 
-    if (element.isElement(node)) {
-      if (element.isInXULDocument(node)) {
-        // If the node is in a XUL document, we are in "chrome" context.
-        return new ChromeWebElement(uuid);
-      }
-      return new ContentWebElement(uuid);
+    if (element.isShadowRoot(node) && !element.isInPrivilegedDocument(node)) {
+      // When we support Chrome Shadowroots we will need to
+      // do a check here of shadowroot.host being in a privileged document
+      // See Bug 1743541
+      return new ShadowRoot(uuid);
+    } else if (element.isElement(node)) {
+      return new WebElement(uuid);
     } else if (element.isDOMWindow(node)) {
       if (node.parent === node) {
-        return new ContentWebWindow(uuid);
+        return new WebWindow(uuid);
       }
-      return new ContentWebFrame(uuid);
+      return new WebFrame(uuid);
     }
 
-    throw new error.InvalidArgumentError(
-      "Expected DOM window/element " + pprint`or XUL element, got: ${node}`
+    throw new lazy.error.InvalidArgumentError(
+      "Expected DOM window/element " + lazy.pprint`or XUL element, got: ${node}`
     );
   }
 
   /**
-   * Unmarshals a JSON Object to one of {@link ContentWebElement},
-   * {@link ContentWebWindow}, {@link ContentWebFrame}, or
-   * {@link ChromeWebElement}.
+   * Unmarshals a JSON Object to one of {@link ShadowRoot}, {@link WebElement},
+   * {@link WebFrame}, or {@link WebWindow}.
    *
    * @param {Object.<string, string>} json
-   *     Web element reference, which is supposed to be a JSON Object
-   *     where the key is one of the {@link WebElement} concrete
+   *     Web reference, which is supposed to be a JSON Object
+   *     where the key is one of the {@link WebReference} concrete
    *     classes' UUID identifiers.
    *
-   * @return {WebElement}
-   *     Representation of the web element.
+   * @return {WebReference}
+   *     Web reference for the JSON object.
    *
    * @throws {InvalidArgumentError}
-   *     If <var>json</var> is not a web element reference.
+   *     If <var>json</var> is not a web reference.
    */
   static fromJSON(json) {
-    assert.object(json);
-    if (json instanceof WebElement) {
+    lazy.assert.object(json);
+    if (json instanceof WebReference) {
       return json;
     }
     let keys = Object.keys(json);
 
     for (let key of keys) {
       switch (key) {
-        case ContentWebElement.Identifier:
-          return ContentWebElement.fromJSON(json);
+        case ShadowRoot.Identifier:
+          return ShadowRoot.fromJSON(json);
 
-        case ContentWebWindow.Identifier:
-          return ContentWebWindow.fromJSON(json);
+        case WebElement.Identifier:
+          return WebElement.fromJSON(json);
 
-        case ContentWebFrame.Identifier:
-          return ContentWebFrame.fromJSON(json);
+        case WebFrame.Identifier:
+          return WebFrame.fromJSON(json);
 
-        case ChromeWebElement.Identifier:
-          return ChromeWebElement.fromJSON(json);
+        case WebWindow.Identifier:
+          return WebWindow.fromJSON(json);
       }
     }
 
-    throw new error.InvalidArgumentError(
-      pprint`Expected web element reference, got: ${json}`
+    throw new lazy.error.InvalidArgumentError(
+      lazy.pprint`Expected web reference, got: ${json}`
     );
   }
 
   /**
-   * Constructs a {@link ContentWebElement} or {@link ChromeWebElement}
-   * from a a string <var>uuid</var>.
+   * Constructs a {@link WebElement} from a string <var>uuid</var>.
    *
    * This whole function is a workaround for the fact that clients
    * to Marionette occasionally pass <code>{id: <uuid>}</code> JSON
-   * Objects instead of web element representations.  For that reason
-   * we need the <var>context</var> argument to determine what kind of
-   * {@link WebElement} to return.
+   * Objects instead of web element representations.
    *
    * @param {string} uuid
-   *     UUID to be associated with the web element.
-   * @param {Context} context
-   *     Context, which is used to determine if the returned type
-   *     should be a content web element or a chrome web element.
+   *     UUID to be associated with the web reference.
    *
    * @return {WebElement}
-   *     One of {@link ContentWebElement} or {@link ChromeWebElement},
-   *     based on <var>context</var>.
+   *     The web element reference.
    *
    * @throws {InvalidArgumentError}
-   *     If <var>uuid</var> is not a string or <var>context</var>
-   *     is an invalid context.
+   *     If <var>uuid</var> is not a string.
    */
-  static fromUUID(uuid, context) {
-    assert.string(uuid);
+  static fromUUID(uuid) {
+    lazy.assert.string(uuid);
 
-    switch (context) {
-      case "chrome":
-        return new ChromeWebElement(uuid);
-
-      case "content":
-        return new ContentWebElement(uuid);
-
-      default:
-        throw new error.InvalidArgumentError("Unknown context: " + context);
-    }
+    return new WebElement(uuid);
   }
 
   /**
-   * Checks if <var>ref<var> is a {@link WebElement} reference,
-   * i.e. if it has {@link ContentWebElement.Identifier}, or
-   * {@link ChromeWebElement.Identifier} as properties.
+   * Checks if <var>obj<var> is a {@link WebReference} reference.
    *
    * @param {Object.<string, string>} obj
-   *     Object that represents a reference to a {@link WebElement}.
+   *     Object that represents a {@link WebReference}.
+   *
    * @return {boolean}
-   *     True if <var>obj</var> is a {@link WebElement}, false otherwise.
+   *     True if <var>obj</var> is a {@link WebReference}, false otherwise.
    */
   static isReference(obj) {
     if (Object.prototype.toString.call(obj) != "[object Object]") {
@@ -1573,10 +1591,10 @@ class WebElement {
     }
 
     if (
-      ContentWebElement.Identifier in obj ||
-      ContentWebWindow.Identifier in obj ||
-      ContentWebFrame.Identifier in obj ||
-      ChromeWebElement.Identifier in obj
+      ShadowRoot.Identifier in obj ||
+      WebElement.Identifier in obj ||
+      WebFrame.Identifier in obj ||
+      WebWindow.Identifier in obj
     ) {
       return true;
     }
@@ -1587,105 +1605,102 @@ class WebElement {
    * Generates a unique identifier.
    *
    * @return {string}
-   *     UUID.
+   *     Generated UUID.
    */
   static generateUUID() {
     let uuid = Services.uuid.generateUUID().toString();
     return uuid.substring(1, uuid.length - 1);
   }
 }
-this.WebElement = WebElement;
 
 /**
  * DOM elements are represented as web elements when they are
  * transported over the wire protocol.
  */
-class ContentWebElement extends WebElement {
+class WebElement extends WebReference {
   toJSON() {
-    return { [ContentWebElement.Identifier]: this.uuid };
+    return { [WebElement.Identifier]: this.uuid };
   }
 
   static fromJSON(json) {
-    const { Identifier } = ContentWebElement;
+    const { Identifier } = WebElement;
 
     if (!(Identifier in json)) {
-      throw new error.InvalidArgumentError(
-        pprint`Expected web element reference, got: ${json}`
+      throw new lazy.error.InvalidArgumentError(
+        lazy.pprint`Expected web element reference, got: ${json}`
       );
     }
 
     let uuid = json[Identifier];
-    return new ContentWebElement(uuid);
+    return new WebElement(uuid);
   }
 }
-ContentWebElement.Identifier = "element-6066-11e4-a52e-4f735466cecf";
-this.ContentWebElement = ContentWebElement;
+WebElement.Identifier = "element-6066-11e4-a52e-4f735466cecf";
+
+/**
+ * Shadow Root elements are represented as shadow root references when they are
+ * transported over the wire protocol
+ */
+class ShadowRoot extends WebReference {
+  toJSON() {
+    return { [ShadowRoot.Identifier]: this.uuid };
+  }
+
+  static fromJSON(json) {
+    const { Identifier } = ShadowRoot;
+
+    if (!(Identifier in json)) {
+      throw new lazy.error.InvalidArgumentError(
+        lazy.pprint`Expected shadow root reference, got: ${json}`
+      );
+    }
+
+    let uuid = json[Identifier];
+    return new ShadowRoot(uuid);
+  }
+}
+ShadowRoot.Identifier = "shadow-6066-11e4-a52e-4f735466cecf";
 
 /**
  * Top-level browsing contexts, such as <code>WindowProxy</code>
  * whose <code>opener</code> is null, are represented as web windows
  * over the wire protocol.
  */
-class ContentWebWindow extends WebElement {
+class WebWindow extends WebReference {
   toJSON() {
-    return { [ContentWebWindow.Identifier]: this.uuid };
+    return { [WebWindow.Identifier]: this.uuid };
   }
 
   static fromJSON(json) {
-    if (!(ContentWebWindow.Identifier in json)) {
-      throw new error.InvalidArgumentError(
-        pprint`Expected web window reference, got: ${json}`
+    if (!(WebWindow.Identifier in json)) {
+      throw new lazy.error.InvalidArgumentError(
+        lazy.pprint`Expected web window reference, got: ${json}`
       );
     }
-    let uuid = json[ContentWebWindow.Identifier];
-    return new ContentWebWindow(uuid);
+    let uuid = json[WebWindow.Identifier];
+    return new WebWindow(uuid);
   }
 }
-ContentWebWindow.Identifier = "window-fcc6-11e5-b4f8-330a88ab9d7f";
-this.ContentWebWindow = ContentWebWindow;
+WebWindow.Identifier = "window-fcc6-11e5-b4f8-330a88ab9d7f";
 
 /**
  * Nested browsing contexts, such as the <code>WindowProxy</code>
  * associated with <tt>&lt;frame&gt;</tt> and <tt>&lt;iframe&gt;</tt>,
  * are represented as web frames over the wire protocol.
  */
-class ContentWebFrame extends WebElement {
+class WebFrame extends WebReference {
   toJSON() {
-    return { [ContentWebFrame.Identifier]: this.uuid };
+    return { [WebFrame.Identifier]: this.uuid };
   }
 
   static fromJSON(json) {
-    if (!(ContentWebFrame.Identifier in json)) {
-      throw new error.InvalidArgumentError(
-        pprint`Expected web frame reference, got: ${json}`
+    if (!(WebFrame.Identifier in json)) {
+      throw new lazy.error.InvalidArgumentError(
+        lazy.pprint`Expected web frame reference, got: ${json}`
       );
     }
-    let uuid = json[ContentWebFrame.Identifier];
-    return new ContentWebFrame(uuid);
+    let uuid = json[WebFrame.Identifier];
+    return new WebFrame(uuid);
   }
 }
-ContentWebFrame.Identifier = "frame-075b-4da1-b6ba-e579c2d3230a";
-this.ContentWebFrame = ContentWebFrame;
-
-/**
- * XUL elements in chrome space are represented as chrome web elements
- * over the wire protocol.
- */
-class ChromeWebElement extends WebElement {
-  toJSON() {
-    return { [ChromeWebElement.Identifier]: this.uuid };
-  }
-
-  static fromJSON(json) {
-    if (!(ChromeWebElement.Identifier in json)) {
-      throw new error.InvalidArgumentError(
-        "Expected chrome element reference " +
-          pprint`for XUL element, got: ${json}`
-      );
-    }
-    let uuid = json[ChromeWebElement.Identifier];
-    return new ChromeWebElement(uuid);
-  }
-}
-ChromeWebElement.Identifier = "chromeelement-9fc5-4b51-a3c8-01716eedeb04";
-this.ChromeWebElement = ChromeWebElement;
+WebFrame.Identifier = "frame-075b-4da1-b6ba-e579c2d3230a";

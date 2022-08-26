@@ -41,6 +41,7 @@ enum class SurfaceType : int8_t {
   DATA_SHARED_WRAPPER,    /* Shared memory mapped in from another process */
   BLOB_IMAGE,             /* Recorded blob image */
   DATA_MAPPED,            /* Data surface wrapping a ScopedMap */
+  WEBGL,                  /* Surface wrapping a DrawTargetWebgl texture */
 };
 
 enum class SurfaceFormat : int8_t {
@@ -348,6 +349,16 @@ enum class ColorDepth : uint8_t {
   _Last = COLOR_16,
 };
 
+enum class TransferFunction : uint8_t {
+  BT709,
+  SRGB,
+  PQ,
+  HLG,
+  _First = BT709,
+  _Last = HLG,
+  Default = BT709,
+};
+
 enum class ColorRange : uint8_t {
   LIMITED,
   FULL,
@@ -355,7 +366,7 @@ enum class ColorRange : uint8_t {
   _Last = FULL,
 };
 
-// Really "YcbcrColorSpace"
+// Really "YcbcrColorColorSpace"
 enum class YUVRangedColorSpace : uint8_t {
   BT601_Narrow = 0,
   BT601_Full,
@@ -368,6 +379,23 @@ enum class YUVRangedColorSpace : uint8_t {
   _First = BT601_Narrow,
   _Last = GbrIdentity,
   Default = BT709_Narrow,
+};
+
+// I can either come up with a longer "very clever" name that doesn't conflict
+// with FilterSupport.h, embrace and expand FilterSupport, or rename the old
+// one.
+// Some times Worse Is Better.
+enum class ColorSpace2 : uint8_t {
+  UNKNOWN,  // Eventually we will remove this.
+  SRGB,
+  BT601_525,  // aka smpte170m NTSC
+  BT709,      // Same gamut as SRGB, but different gamma.
+  BT601_625 =
+      BT709,  // aka bt470bg PAL. Basically BT709, just Xg is 0.290 not 0.300.
+  BT2020,
+  DISPLAY_P3,
+  _First = UNKNOWN,
+  _Last = DISPLAY_P3,
 };
 
 struct FromYUVRangedColorSpaceT final {
@@ -506,6 +534,27 @@ static inline uint32_t RescalingFactorForColorDepth(ColorDepth aColorDepth) {
   return factor;
 }
 
+enum class ChromaSubsampling : uint8_t {
+  FULL,
+  HALF_WIDTH,
+  HALF_WIDTH_AND_HEIGHT,
+  _First = FULL,
+  _Last = HALF_WIDTH_AND_HEIGHT,
+};
+
+template <typename T>
+static inline T ChromaSize(const T& aYSize, ChromaSubsampling aSubsampling) {
+  switch (aSubsampling) {
+    case ChromaSubsampling::FULL:
+      return aYSize;
+    case ChromaSubsampling::HALF_WIDTH:
+      return T((aYSize.width + 1) / 2, aYSize.height);
+    case ChromaSubsampling::HALF_WIDTH_AND_HEIGHT:
+      return T((aYSize.width + 1) / 2, (aYSize.height + 1) / 2);
+  }
+  MOZ_CRASH("bad ChromaSubsampling");
+}
+
 enum class FilterType : int8_t {
   BLEND = 0,
   TRANSFORM,
@@ -550,6 +599,7 @@ enum class BackendType : int8_t {
   RECORDING,
   DIRECT2D1_1,
   WEBRENDER_TEXT,
+  WEBGL,
 
   // Add new entries above this line.
   BACKEND_LAST
@@ -569,7 +619,8 @@ enum class NativeSurfaceType : int8_t {
   CAIRO_CONTEXT,
   CGCONTEXT,
   CGCONTEXT_ACCELERATED,
-  OPENGL_TEXTURE
+  OPENGL_TEXTURE,
+  WEBGL_CONTEXT
 };
 
 enum class FontStyle : int8_t { NORMAL, ITALIC, BOLD, BOLD_ITALIC };
@@ -715,25 +766,6 @@ struct sRGBColor {
     return a > 0.f ? sRGBColor(r / a, g / a, b / a, a) : *this;
   }
 
-  // Returns aFrac*aC2 + (1 - aFrac)*C1. The interpolation is done in
-  // unpremultiplied space, which is what SVG gradients and cairo gradients
-  // expect.
-  constexpr static sRGBColor InterpolatePremultiplied(const sRGBColor& aC1,
-                                                      const sRGBColor& aC2,
-                                                      float aFrac) {
-    double other = 1 - aFrac;
-    return sRGBColor(
-        aC2.r * aFrac + aC1.r * other, aC2.g * aFrac + aC1.g * other,
-        aC2.b * aFrac + aC1.b * other, aC2.a * aFrac + aC1.a * other);
-  }
-
-  constexpr static sRGBColor Interpolate(const sRGBColor& aC1,
-                                         const sRGBColor& aC2, float aFrac) {
-    return InterpolatePremultiplied(aC1.Premultiplied(), aC2.Premultiplied(),
-                                    aFrac)
-        .Unpremultiplied();
-  }
-
   // The "Unusual" prefix is to avoid unintentionally using this function when
   // ToABGR(), which is much more common, is needed.
   uint32_t UnusualToARGB() const {
@@ -855,6 +887,8 @@ namespace mozilla {
 
 // Side constants for use in various places.
 enum Side : uint8_t { eSideTop, eSideRight, eSideBottom, eSideLeft };
+
+std::ostream& operator<<(std::ostream&, const mozilla::Side&);
 
 constexpr auto AllPhysicalSides() {
   return mozilla::MakeInclusiveEnumeratedRange(eSideTop, eSideLeft);

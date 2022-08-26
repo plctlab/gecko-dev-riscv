@@ -109,6 +109,17 @@ def setup_webserver(webserver):
     return httpd
 
 
+def skip_test(test_instance_dict, config):
+    # Determines if a test should be skipped, and returns
+    # a message with a reason why or None if it doesn't need
+    # to be skipped
+    if not test_instance_dict.get("pine", True) and config.get(
+        "project", ""
+    ).startswith("pine"):
+        return "Broken on the pine branch"
+    return None
+
+
 def run_tests(config, browser_config):
     """Runs the talos tests on the given configuration and generates a report."""
     # get the test data
@@ -116,7 +127,11 @@ def run_tests(config, browser_config):
     tests = useBaseTestDefaults(config.get("basetest", {}), tests)
     paths = ["profile_path", "tpmanifest", "extensions", "setup", "cleanup"]
 
-    for test in tests:
+    for test_index, test in enumerate(tests):
+        if config.get("suite", False):
+            test["suite"] = config["suite"]
+        if test_index == 0:
+            test["is_first_test"] = True
         # Check for profile_path, tpmanifest and interpolate based on Talos
         # root https://bugzilla.mozilla.org/show_bug.cgi?id=727711
         # Build command line from config
@@ -163,8 +178,8 @@ def run_tests(config, browser_config):
     if browser_config["subtests"]:
         browser_config["preferences"]["talos.subtests"] = browser_config["subtests"]
 
-    if browser_config.get("enable_fission", False):
-        browser_config["preferences"]["fission.autostart"] = True
+    if not browser_config.get("fission", True):
+        browser_config["preferences"]["fission.autostart"] = False
 
     browser_config["preferences"]["network.proxy.type"] = 2
     browser_config["preferences"]["network.proxy.autoconfig_url"] = (
@@ -265,13 +280,14 @@ function FindProxyForURL(url, host) {
         talos_results.add_extra_option("gecko-profile")
 
     # differentiate fission vs non-fission results in perfherder
-    if browser_config.get("enable_fission", False):
+    if browser_config.get("fission", True):
         talos_results.add_extra_option("fission")
 
     # differentiate webrender from non-webrender results
     if browser_config["preferences"].get("gfx.webrender.software", False):
         talos_results.add_extra_option("webrender-sw")
-    elif browser_config.get("enable_webrender", False):
+    else:
+        # we need to add 'webrender' so reported data is consistent
         talos_results.add_extra_option("webrender")
 
     # differentiate webgl from webgl-ipc results
@@ -287,6 +303,17 @@ function FindProxyForURL(url, host) {
         for test in tests:
             testname = test["name"]
             LOG.test_start(testname)
+
+            # Skip test if necessary
+            skip_reason = skip_test(test, config)
+            if skip_reason is not None and skip_reason != "":
+                LOG.info("Skipping %s, reason: %s" % (testname, skip_reason))
+                LOG.test_end(
+                    testname,
+                    status="SKIP",
+                    message="Test skipped: %s" % skip_reason,
+                )
+                continue
 
             if not test.get("url"):
                 # set browser prefs for pageloader test setings (doesn't use cmd line args / url)
@@ -359,24 +386,28 @@ function FindProxyForURL(url, host) {
 
     LOG.info("Completed test suite (%s)" % timer.elapsed())
 
-    # output results
-    if results_urls and not browser_config["no_upload_results"]:
-        talos_results.output(results_urls)
-        if browser_config["develop"] or config["gecko_profile"]:
-            print(
-                "Thanks for running Talos locally. Results are in %s"
-                % (results_urls["output_urls"])
-            )
+    if talos_results.has_results():
+        # output results
+        if results_urls and not browser_config["no_upload_results"]:
+            talos_results.output(results_urls)
+            if browser_config["develop"] or config["gecko_profile"]:
+                print(
+                    "Thanks for running Talos locally. Results are in %s"
+                    % (results_urls["output_urls"])
+                )
 
-    # when running talos locally with gecko profiling on, use the view-gecko-profile
-    # tool to automatically load the latest gecko profile in profiler.firefox.com
-    if config["gecko_profile"] and browser_config["develop"]:
-        if os.environ.get("DISABLE_PROFILE_LAUNCH", "0") == "1":
-            LOG.info(
-                "Not launching profiler.firefox.com because DISABLE_PROFILE_LAUNCH=1"
-            )
-        else:
-            view_gecko_profile_from_talos()
+        # when running talos locally with gecko profiling on, use the view-gecko-profile
+        # tool to automatically load the latest gecko profile in profiler.firefox.com
+        if config["gecko_profile"] and browser_config["develop"]:
+            if os.environ.get("DISABLE_PROFILE_LAUNCH", "0") == "1":
+                LOG.info(
+                    "Not launching profiler.firefox.com because DISABLE_PROFILE_LAUNCH=1"
+                )
+            else:
+                view_gecko_profile_from_talos()
+    else:
+        LOG.error("No tests ran")
+        return 2
 
     # we will stop running tests on a failed test, or we will return 0 for
     # green

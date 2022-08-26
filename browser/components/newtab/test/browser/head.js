@@ -5,11 +5,9 @@ ChromeUtils.defineModuleGetter(
   "ObjectUtils",
   "resource://gre/modules/ObjectUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   this,
   "QueryCache",
@@ -88,6 +86,39 @@ async function test_screen_content(
           "Navigated to a welcome screen"
         );
       }
+    }
+  );
+}
+
+// eslint-disable-next-line no-unused-vars
+async function test_element_styles(
+  browser,
+  elementSelector,
+  expectedStyles = {},
+  unexpectedStyles = {}
+) {
+  await ContentTask.spawn(
+    browser,
+    [elementSelector, expectedStyles, unexpectedStyles],
+    async ([selector, expected, unexpected]) => {
+      const element = await ContentTaskUtils.waitForCondition(() =>
+        content.document.querySelector(selector)
+      );
+      const computedStyles = content.window.getComputedStyle(element);
+      Object.entries(expected).forEach(([attr, val]) =>
+        is(
+          computedStyles[attr],
+          val,
+          `${selector} should have computed ${attr} of ${val}`
+        )
+      );
+      Object.entries(unexpected).forEach(([attr, val]) =>
+        isnot(
+          computedStyles[attr],
+          val,
+          `${selector} should not have computed ${attr} of ${val}`
+        )
+      );
     }
   );
 }

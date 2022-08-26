@@ -7,11 +7,13 @@ AutoTestThread
 AwaitIdleMixed
 AwaitIdlePaused
 BGReadURLs
+BHMgr Monitor
 BHMgr Processor
 COM Intcpt Log
 COM MTA
 Cache I/O
 Cameras IPC
+CanvasRenderer
 ChainedPipePump
 ChainedPipeRecv
 Checker Test
@@ -37,7 +39,9 @@ HTML5 Parser
 ICS parser
 IMAP
 IPC Launch
+IPCFuzzLoop
 IPDL Background
+IPDL UnitTest
 IdentityCrypto
 ImageBridgeChld
 LS Thread
@@ -46,6 +50,7 @@ MWQThread
 MediaCache
 MediaTelemetry
 MediaTrackGrph
+MemoryPoller
 mtransport
 NamedPipeSrv
 Netlink Monitor
@@ -72,6 +77,7 @@ SpinEventLoop
 StressRunner
 SuicideManager
 SuicideThread
+System Proxy
 TEQ AwaitIdle
 TelemetryModule
 Test Thread

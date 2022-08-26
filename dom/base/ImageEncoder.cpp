@@ -75,13 +75,13 @@ already_AddRefed<DataSourceSurface> GetBRGADataSourceSurfaceSync(
   return helper->GetDataSurfaceSafe();
 }
 
-class EncodingCompleteEvent : public Runnable {
+class EncodingCompleteEvent final : public DiscardableRunnable {
   virtual ~EncodingCompleteEvent() = default;
 
  public:
   explicit EncodingCompleteEvent(
       EncodeCompleteCallback* aEncodeCompleteCallback)
-      : Runnable("EncodingCompleteEvent"),
+      : DiscardableRunnable("EncodingCompleteEvent"),
         mImgSize(0),
         mType(),
         mImgData(nullptr),
@@ -123,6 +123,11 @@ class EncodingCompleteEvent : public Runnable {
 
   nsIEventTarget* GetCreationThreadEventTarget() {
     return mCreationEventTarget;
+  }
+
+  bool CanBeDeletedOnAnyThread() {
+    return !mEncodeCompleteCallback ||
+           mEncodeCompleteCallback->CanBeDeletedOnAnyThread();
   }
 
  private:
@@ -192,8 +197,10 @@ class EncodingRunnable : public Runnable {
     rv = mEncodingCompleteEvent->GetCreationThreadEventTarget()->Dispatch(
         mEncodingCompleteEvent, nsIThread::DISPATCH_NORMAL);
     if (NS_FAILED(rv)) {
-      // Better to leak than to crash.
-      Unused << mEncodingCompleteEvent.forget();
+      if (!mEncodingCompleteEvent->CanBeDeletedOnAnyThread()) {
+        // Better to leak than to crash.
+        Unused << mEncodingCompleteEvent.forget();
+      }
       return rv;
     }
 

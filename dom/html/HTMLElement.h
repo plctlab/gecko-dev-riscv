@@ -23,14 +23,24 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   // nsINode
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
+  // nsIContent
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  void UnbindFromTree(bool aNullParent = true) override;
+
   // Element
   void SetCustomElementDefinition(
       CustomElementDefinition* aDefinition) override;
+  bool IsLabelable() const override { return IsFormAssociatedElement(); }
 
   // nsGenericHTMLElement
   // https://html.spec.whatwg.org/multipage/custom-elements.html#dom-attachinternals
   already_AddRefed<mozilla::dom::ElementInternals> AttachInternals(
       ErrorResult& aRv) override;
+
+  // nsGenericHTMLFormElement
+  bool IsFormAssociatedElement() const override;
+  void AfterClearForm(bool aUnbindOrDelete) override;
+  void FieldSetDisabledChanged(bool aNotify) override;
 
   void UpdateFormOwner();
 
@@ -40,6 +50,13 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   JSObject* WrapNode(JSContext* aCx,
                      JS::Handle<JSObject*> aGivenProto) override;
 
+  // Element
+  nsresult AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                        const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                        nsIPrincipal* aMaybeScriptedPrincipal,
+                        bool aNotify) override;
+  ElementState IntrinsicState() const override;
+
   // nsGenericHTMLFormElement
   void SetFormInternal(HTMLFormElement* aForm, bool aBindToTree) override;
   HTMLFormElement* GetFormInternal() const override;
@@ -47,7 +64,10 @@ class HTMLElement final : public nsGenericHTMLFormElement {
   HTMLFieldSetElement* GetFieldSetInternal() const override;
   bool CanBeDisabled() const override;
   bool DoesReadOnlyApply() const override;
-  bool IsFormAssociatedElement() const override;
+  void UpdateDisabledState(bool aNotify) override;
+  void UpdateFormOwner(bool aBindToTree, Element* aFormIdElement) override;
+
+  void UpdateBarredFromConstraintValidation();
 
   ElementInternals* GetElementInternals() const;
 };

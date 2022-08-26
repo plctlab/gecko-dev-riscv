@@ -14,7 +14,6 @@
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "FileSystemUtils.h"
-#include "nsContentUtils.h"
 #include "nsNetCID.h"
 #include "nsProxyRelease.h"
 
@@ -448,7 +447,7 @@ void GetFilesHelperChild::Work(ErrorResult& aRv) {
     return;
   }
 
-  aRv = nsContentUtils::GenerateUUIDInPlace(mUUID);
+  aRv = nsID::GenerateUUIDInPlace(mUUID);
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
@@ -513,8 +512,7 @@ class GetFilesHelperParentCallback final : public GetFilesCallback {
     ipcBlobs.SetLength(aBlobImpls.Length());
 
     for (uint32_t i = 0; i < aBlobImpls.Length(); ++i) {
-      nsresult rv = IPCBlobUtils::Serialize(
-          aBlobImpls[i], mParent->mContentParent, ipcBlobs[i]);
+      nsresult rv = IPCBlobUtils::Serialize(aBlobImpls[i], ipcBlobs[i]);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         mParent->mContentParent->SendGetFilesResponseAndForget(
             mParent->mUUID, GetFilesResponseFailure(NS_ERROR_OUT_OF_MEMORY));

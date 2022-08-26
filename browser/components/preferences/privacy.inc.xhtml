@@ -79,7 +79,7 @@
                   <label class="content-blocking-label" data-l10n-id="content-blocking-social-media-trackers"/>
                 </hbox>
                 <hbox class="extra-information-label cross-site-cookies-option" hidden="true">
-                  <label class="content-blocking-label" data-l10n-id="content-blocking-cross-site-cookies-in-all-windows"/>
+                  <label class="content-blocking-label" data-l10n-id="content-blocking-cross-site-cookies-in-all-windows2"/>
                 </hbox>
                 <hbox class="extra-information-label third-party-tracking-cookies-option" hidden="true">
                   <label class="content-blocking-label" data-l10n-id="content-blocking-cross-site-tracking-cookies"/>
@@ -111,6 +111,29 @@
                 <hbox class="extra-information-label fingerprinters-option" hidden="true">
                   <label class="content-blocking-label" data-l10n-id="content-blocking-fingerprinters"/>
                 </hbox>
+              </vbox>
+              <vbox id="etpStandardTCPBox" class="content-blocking-warning info-box-container">
+                <hbox>
+                  <label class="content-blocking-warning-title" data-l10n-id="content-blocking-etp-standard-tcp-title"/>
+                </hbox>
+                <description>
+                  <html:span class="tail-with-learn-more" data-l10n-id="content-blocking-etp-standard-tcp-rollout-description"></html:span>
+                  <label id="tcp-learn-more-link" class="learnMore" data-l10n-id="content-blocking-etp-standard-tcp-rollout-learn-more" is="text-link"/>
+                </description>
+              </vbox>
+              <vbox id="etpStandardTCPRolloutBox" class="content-blocking-warning info-box-container">
+                <hbox>
+                  <checkbox id="etpStandardTCPRollout"
+                            class="content-blocking-warning-title"
+                            data-l10n-id="content-blocking-etp-standard-tcp-rollout-checkbox"
+                            preference="privacy.restrict3rdpartystorage.rollout.enabledByDefault"
+                            flex="1" />
+
+                </hbox>
+                <description class="indent">
+                  <html:span class="tail-with-learn-more" data-l10n-id="content-blocking-etp-standard-tcp-rollout-description"></html:span>
+                  <label id="tcp-rollout-learn-more-link" class="learnMore" data-l10n-id="content-blocking-etp-standard-tcp-rollout-learn-more" is="text-link"/>
+                </description>
               </vbox>
               <html:div class="content-blocking-warning info-box-container reload-tabs" hidden="true">
                 <html:div class="content-blocking-reload-desc-container">
@@ -154,7 +177,7 @@
                   <label class="content-blocking-label" data-l10n-id="content-blocking-all-cross-site-cookies-private-windows"/>
                 </hbox>
                 <hbox class="extra-information-label cross-site-cookies-option" hidden="true">
-                  <label class="content-blocking-label" data-l10n-id="content-blocking-cross-site-cookies-in-all-windows"/>
+                  <label class="content-blocking-label" data-l10n-id="content-blocking-cross-site-cookies-in-all-windows2"/>
                 </hbox>
                 <hbox class="extra-information-label pb-trackers-option" hidden="true">
                   <label class="content-blocking-label" data-l10n-id="content-blocking-private-windows"/>
@@ -199,7 +222,7 @@
                   <label class="content-blocking-warning-title" data-l10n-id="content-blocking-warning-title"/>
                 </hbox>
                 <description class="indent">
-                  <html:span class="tail-with-learn-more content-blocking-warning-description" data-l10n-id="content-blocking-and-isolating-etp-warning-description"></html:span>
+                  <html:span class="tail-with-learn-more content-blocking-warning-description" data-l10n-id="content-blocking-and-isolating-etp-warning-description-2"></html:span>
                   <label id="" class="learnMore contentBlockWarningLink" data-l10n-id="content-blocking-warning-learn-how" is="text-link"/>
                 </description>
               </vbox>
@@ -235,7 +258,7 @@
                                 preference="network.cookie.cookieBehavior">
                         <menupopup>
                           <menuitem id="blockCookiesSocialMedia" data-l10n-id="sitedata-option-block-cross-site-trackers" value="trackers"/>
-                          <menuitem id="isolateCookiesSocialMedia" data-l10n-id="sitedata-option-block-cross-site-and-social-media-trackers-plus-isolate" value="trackers-plus-isolate"/>
+                          <menuitem id="isolateCookiesSocialMedia" data-l10n-id="sitedata-option-block-cross-site-cookies" value="trackers-plus-isolate"/>
                           <menuitem data-l10n-id="sitedata-option-block-unvisited" value="unvisited"/>
                           <menuitem data-l10n-id="sitedata-option-block-all-third-party" value="all-third-parties"/>
                           <menuitem data-l10n-id="sitedata-option-block-all" value="always"/>
@@ -303,7 +326,7 @@
                   <label class="content-blocking-warning-title" data-l10n-id="content-blocking-warning-title"/>
                 </hbox>
                 <description class="indent">
-                  <html:span class="tail-with-learn-more content-blocking-warning-description" data-l10n-id="content-blocking-and-isolating-etp-warning-description"></html:span>
+                  <html:span class="tail-with-learn-more content-blocking-warning-description" data-l10n-id="content-blocking-and-isolating-etp-warning-description-2"></html:span>
                   <label id="" class="learnMore contentBlockWarningLink" data-l10n-id="content-blocking-warning-learn-how" is="text-link"/>
                 </description>
               </vbox>
@@ -345,7 +368,6 @@
             align="center">
         <checkbox id="deleteOnClose"
                   data-l10n-id="sitedata-delete-on-close"
-                  preference="network.cookie.lifetimePolicy"
                   flex="1" />
       </hbox>
     </vbox>
@@ -491,7 +513,7 @@
                  data-l10n-attrs="hidden"
                  flex="1"/>
 #ifdef XP_WIN
-    <hbox align="center">
+    <hbox id="windows-sso" align="center">
       <checkbox data-l10n-id="forms-windows-sso"
                 preference="network.http.windows-sso.enabled"
                 class="tail-with-learn-more"/>
@@ -499,7 +521,7 @@
              flex="1"
              data-l10n-id="forms-windows-sso-learn-more-link"/>
     </hbox>
-    <description class="indent tip-caption"
+    <description id="windows-sso-caption" class="indent tip-caption"
            data-l10n-id="forms-windows-sso-desc"/>
 
 #endif
@@ -636,28 +658,97 @@
             preference="browser.urlbar.suggest.topsites"/>
   <checkbox id="enginesSuggestion" data-l10n-id="addressbar-locbar-engines-option"
             preference="browser.urlbar.suggest.engines"/>
-  <!-- #firefoxSuggestContainer is visible only for users enrolled in Firefox Suggest rollouts. -->
+  <hbox id="firefoxSuggestBestMatchContainer" align="center" hidden="true">
+    <checkbox id="firefoxSuggestBestMatch"
+              class="tail-with-learn-more"
+              data-l10n-id="addressbar-firefox-suggest-best-match-option"
+              preference="browser.urlbar.suggest.bestmatch"/>
+    <label id="firefoxSuggestBestMatchLearnMore"
+           class="learnMore"
+           is="text-link"
+           data-l10n-id="addressbar-best-match-learn-more"/>
+  </hbox>
+  <hbox id="quickActionsBox" align="center" hidden="true">
+    <checkbox id="enableQuickActions"
+              class="tail-with-learn-more"
+              data-l10n-id="addressbar-locbar-quickactions-option"
+              preference="browser.urlbar.suggest.quickactions" />
+    <label id="quickActionsLink"
+           class="learnMore"
+           is="text-link"
+           data-l10n-id="addressbar-quickactions-learn-more" />
+  </hbox>
   <vbox id="firefoxSuggestContainer" hidden="true">
-    <hbox align="center">
-      <checkbox id="firefoxSuggestSuggestion"
-                class="tail-with-learn-more"
-                data-l10n-id="addressbar-locbar-firefox-suggest-option"
-                preference="browser.urlbar.suggest.quicksuggest"/>
-      <label id="firefoxSuggestSuggestionLearnMore"
-             class="learnMore"
-             is="text-link"
-             data-l10n-id="addressbar-locbar-firefox-suggest-learn-more"/>
-    </hbox>
-    <description id="firefoxSuggestSuggestionDescription"
-                 hidden="true"
-                 class="indent tip-caption"
-                 data-l10n-id="addressbar-locbar-firefox-suggest-description"/>
-    <vbox class="indent">
-      <checkbox id="firefoxSuggestSponsoredSuggestion"
-                data-l10n-id="addressbar-locbar-firefox-suggest-sponsored-option"/>
-      <description class="indent tip-caption"
-                   data-l10n-id="addressbar-locbar-firefox-suggest-sponsored-description"/>
+    <!-- This form[autocomplete="off"] is necessary to prevent the inputs from
+         participating in session restore. autocomplete="off" is ignored on the
+         inputs themselves. -->
+    <html:form id="firefoxSuggestForm" autocomplete="off" hidden="true"/>
+    <vbox class="firefoxSuggestOptionBox">
+      <hbox align="center">
+        <label id="firefoxSuggestNonsponsoredLabel"
+               flex="1"
+               data-l10n-id="addressbar-firefox-suggest-nonsponsored"/>
+        <html:input id="firefoxSuggestNonsponsoredToggle"
+                    type="checkbox"
+                    class="toggle-button firefoxSuggestToggle"
+                    preference="browser.urlbar.suggest.quicksuggest.nonsponsored"
+                    form="firefoxSuggestForm"
+                    aria-labelledby="firefoxSuggestNonsponsoredLabel"
+                    aria-describedby="firefoxSuggestNonsponsoredDescription"/>
+      </hbox>
+      <description id="firefoxSuggestNonsponsoredDescription"
+                   class="tip-caption firefoxSuggestOptionDescription"
+                   data-l10n-id="addressbar-firefox-suggest-nonsponsored-description"/>
     </vbox>
+    <vbox class="firefoxSuggestOptionBox">
+      <hbox align="center">
+        <label id="firefoxSuggestSponsoredLabel"
+               flex="1"
+               data-l10n-id="addressbar-firefox-suggest-sponsored"/>
+        <html:input id="firefoxSuggestSponsoredToggle"
+                    type="checkbox"
+                    class="toggle-button firefoxSuggestToggle"
+                    preference="browser.urlbar.suggest.quicksuggest.sponsored"
+                    form="firefoxSuggestForm"
+                    aria-labelledby="firefoxSuggestSponsoredLabel"
+                    aria-describedby="firefoxSuggestSponsoredDescription"/>
+      </hbox>
+      <description id="firefoxSuggestSponsoredDescription"
+                   class="tip-caption firefoxSuggestOptionDescription"
+                   data-l10n-id="addressbar-firefox-suggest-sponsored-description"/>
+    </vbox>
+    <vbox class="firefoxSuggestOptionBox">
+      <hbox align="center">
+        <label id="firefoxSuggestDataCollectionLabel"
+               flex="1"
+               data-l10n-id="addressbar-firefox-suggest-data-collection"/>
+        <html:input id="firefoxSuggestDataCollectionToggle"
+                    type="checkbox"
+                    class="toggle-button firefoxSuggestToggle"
+                    preference="browser.urlbar.quicksuggest.dataCollection.enabled"
+                    form="firefoxSuggestForm"
+                    aria-labelledby="firefoxSuggestDataCollectionLabel"
+                    aria-describedby="firefoxSuggestDataCollectionDescription"/>
+      </hbox>
+      <description class="tip-caption firefoxSuggestOptionDescription">
+        <html:span id="firefoxSuggestDataCollectionDescription"
+                   class="tail-with-learn-more"
+                   data-l10n-id="addressbar-firefox-suggest-data-collection-description"/>
+      <label id="firefoxSuggestDataCollectionLearnMore"
+             class="learnMore firefoxSuggestLearnMore" is="text-link"
+             data-l10n-id="addressbar-locbar-firefox-suggest-learn-more"/>
+      </description>
+    </vbox>
+    <hbox id="firefoxSuggestInfoBox" class="info-box-container" align="start"
+          hidden="true">
+      <image class="info-icon"/>
+      <description class="tip-caption" flex="1">
+        <html:span id="firefoxSuggestInfoText" class="tail-with-learn-more"/>
+        <label id="firefoxSuggestInfoBoxLearnMore"
+               class="learnMore firefoxSuggestLearnMore" is="text-link"
+               data-l10n-id="addressbar-locbar-firefox-suggest-learn-more"/>
+      </description>
+    </hbox>
   </vbox>
   <label id="openSearchEnginePreferences" is="text-link"
          data-l10n-id="addressbar-suggestions-settings"/>
@@ -858,7 +949,6 @@
 </groupbox>
 
 <!-- Firefox Data Collection and Use -->
-#ifdef MOZ_DATA_REPORTING
 <hbox id="dataCollectionCategory"
       class="subcategory"
       hidden="true"
@@ -875,6 +965,7 @@
            class="learnMore" is="text-link"
            data-l10n-id="collection-privacy-notice"/>
   </description>
+#ifdef MOZ_DATA_REPORTING
   <description>
     <hbox id="telemetry-container" class="info-box-container smaller-font-size" hidden="true">
       <hbox class="info-icon-container">
@@ -940,8 +1031,23 @@
     </hbox>
 #endif
   </vbox>
-</groupbox>
 #endif
+  <vbox id="privacySegmentationSection" data-subcategory="privacy-segmentation" hidden="true">
+    <hbox align="center">
+      <!-- TODO: Bug 1752172, provisional copy  -->
+      <checkbox id="privacySegmentationCheck"
+                preference="browser.privacySegmentation.enabled"
+                class="tail-with-learn-more"
+                label="Always ask before enabling new features that use my data"
+                accesskey="A">
+      </checkbox>
+      <!-- TODO: Bug 1752172, provisional copy  -->
+      <label id="privacy-segmentation-learn-more-link"
+             class="learnMore"
+             is="text-link">Learn more</label>
+    </hbox>
+  </vbox>
+</groupbox>
 
 <hbox id="securityCategory"
       class="subcategory"

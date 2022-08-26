@@ -1,25 +1,20 @@
-//! Module processing functionality.
+/*!
+[`Module`](super::Module) processing functionality.
+*/
 
-mod index;
-mod interpolator;
+pub mod index;
 mod layouter;
 mod namer;
 mod terminator;
 mod typifier;
 
-pub use index::IndexableLength;
-pub use layouter::{Alignment, InvalidBaseType, Layouter, TypeLayout};
+use std::cmp::PartialEq;
+
+pub use index::{BoundsCheckPolicies, BoundsCheckPolicy, IndexableLength, IndexableLengthError};
+pub use layouter::{Alignment, LayoutError, LayoutErrorInner, Layouter, TypeLayout};
 pub use namer::{EntryPointIndex, NameKey, Namer};
 pub use terminator::ensure_block_returns;
 pub use typifier::{ResolveContext, ResolveError, TypeResolution};
-
-#[derive(Clone, Debug, thiserror::Error, PartialEq)]
-pub enum ProcError {
-    #[error("type is not indexable, and has no length (validation error)")]
-    TypeNotIndexable,
-    #[error("array length is wrong kind of constant (validation error)")]
-    InvalidArraySizeConstant(crate::Handle<crate::Constant>),
-}
 
 impl From<super::StorageFormat> for super::ScalarKind {
     fn from(format: super::StorageFormat) -> Self {
@@ -62,7 +57,7 @@ impl From<super::StorageFormat> for super::ScalarKind {
 }
 
 impl super::ScalarValue {
-    pub fn scalar_kind(&self) -> super::ScalarKind {
+    pub const fn scalar_kind(&self) -> super::ScalarKind {
         match *self {
             Self::Uint(_) => super::ScalarKind::Uint,
             Self::Sint(_) => super::ScalarKind::Sint,
@@ -72,10 +67,19 @@ impl super::ScalarValue {
     }
 }
 
+impl super::ScalarKind {
+    pub const fn is_numeric(self) -> bool {
+        match self {
+            crate::ScalarKind::Sint | crate::ScalarKind::Uint | crate::ScalarKind::Float => true,
+            crate::ScalarKind::Bool => false,
+        }
+    }
+}
+
 pub const POINTER_SPAN: u32 = 4;
 
 impl super::TypeInner {
-    pub fn scalar_kind(&self) -> Option<super::ScalarKind> {
+    pub const fn scalar_kind(&self) -> Option<super::ScalarKind> {
         match *self {
             super::TypeInner::Scalar { kind, .. } | super::TypeInner::Vector { kind, .. } => {
                 Some(kind)
@@ -85,31 +89,31 @@ impl super::TypeInner {
         }
     }
 
-    pub fn pointer_class(&self) -> Option<crate::StorageClass> {
+    pub const fn pointer_space(&self) -> Option<crate::AddressSpace> {
         match *self {
-            Self::Pointer { class, .. } => Some(class),
-            Self::ValuePointer { class, .. } => Some(class),
+            Self::Pointer { space, .. } => Some(space),
+            Self::ValuePointer { space, .. } => Some(space),
             _ => None,
         }
     }
 
-    pub fn span(&self, constants: &super::Arena<super::Constant>) -> u32 {
-        match *self {
+    pub fn try_size(
+        &self,
+        constants: &super::Arena<super::Constant>,
+    ) -> Result<u32, crate::arena::BadHandle> {
+        Ok(match *self {
             Self::Scalar { kind: _, width } | Self::Atomic { kind: _, width } => width as u32,
             Self::Vector {
                 size,
                 kind: _,
                 width,
-            } => (size as u8 * width) as u32,
+            } => size as u32 * width as u32,
             // matrices are treated as arrays of aligned columns
             Self::Matrix {
                 columns,
                 rows,
                 width,
-            } => {
-                let aligned_rows = if rows > crate::VectorSize::Bi { 4 } else { 2 };
-                columns as u32 * aligned_rows * width as u32
-            }
+            } => Alignment::from(rows) * width as u32 * columns as u32,
             Self::Pointer { .. } | Self::ValuePointer { .. } => POINTER_SPAN,
             Self::Array {
                 base: _,
@@ -118,8 +122,8 @@ impl super::TypeInner {
             } => {
                 let count = match size {
                     super::ArraySize::Constant(handle) => {
-                        // Bad array lengths will be caught during validation.
-                        constants[handle].to_array_length().unwrap_or(1)
+                        let constant = constants.try_get(handle)?;
+                        constant.to_array_length().unwrap_or(1)
                     }
                     // A dynamically-sized array has to have at least one element
                     super::ArraySize::Dynamic => 1,
@@ -127,13 +131,97 @@ impl super::TypeInner {
                 count * stride
             }
             Self::Struct { span, .. } => span,
-            Self::Image { .. } | Self::Sampler { .. } => 0,
+            Self::Image { .. } | Self::Sampler { .. } | Self::BindingArray { .. } => 0,
+        })
+    }
+
+    /// Get the size of this type. Panics if the `constants` doesn't contain
+    /// a referenced handle. This may not happen in a properly validated IR module.
+    pub fn size(&self, constants: &super::Arena<super::Constant>) -> u32 {
+        self.try_size(constants).unwrap()
+    }
+
+    /// Return the canonical form of `self`, or `None` if it's already in
+    /// canonical form.
+    ///
+    /// Certain types have multiple representations in `TypeInner`. This
+    /// function converts all forms of equivalent types to a single
+    /// representative of their class, so that simply applying `Eq` to the
+    /// result indicates whether the types are equivalent, as far as Naga IR is
+    /// concerned.
+    pub fn canonical_form(
+        &self,
+        types: &crate::UniqueArena<crate::Type>,
+    ) -> Option<crate::TypeInner> {
+        use crate::TypeInner as Ti;
+        match *self {
+            Ti::Pointer { base, space } => match types[base].inner {
+                Ti::Scalar { kind, width } => Some(Ti::ValuePointer {
+                    size: None,
+                    kind,
+                    width,
+                    space,
+                }),
+                Ti::Vector { size, kind, width } => Some(Ti::ValuePointer {
+                    size: Some(size),
+                    kind,
+                    width,
+                    space,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Compare `self` and `rhs` as types.
+    ///
+    /// This is mostly the same as `<TypeInner as Eq>::eq`, but it treats
+    /// `ValuePointer` and `Pointer` types as equivalent.
+    ///
+    /// When you know that one side of the comparison is never a pointer, it's
+    /// fine to not bother with canonicalization, and just compare `TypeInner`
+    /// values with `==`.
+    pub fn equivalent(
+        &self,
+        rhs: &crate::TypeInner,
+        types: &crate::UniqueArena<crate::Type>,
+    ) -> bool {
+        let left = self.canonical_form(types);
+        let right = rhs.canonical_form(types);
+        left.as_ref().unwrap_or(self) == right.as_ref().unwrap_or(rhs)
+    }
+
+    pub fn is_dynamically_sized(&self, types: &crate::UniqueArena<crate::Type>) -> bool {
+        use crate::TypeInner as Ti;
+        match *self {
+            Ti::Array { size, .. } => size == crate::ArraySize::Dynamic,
+            Ti::Struct { ref members, .. } => members
+                .last()
+                .map(|last| types[last.ty].inner.is_dynamically_sized(types))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+}
+
+impl super::AddressSpace {
+    pub fn access(self) -> crate::StorageAccess {
+        use crate::StorageAccess as Sa;
+        match self {
+            crate::AddressSpace::Function
+            | crate::AddressSpace::Private
+            | crate::AddressSpace::WorkGroup => Sa::LOAD | Sa::STORE,
+            crate::AddressSpace::Uniform => Sa::LOAD,
+            crate::AddressSpace::Storage { access } => access,
+            crate::AddressSpace::Handle => Sa::LOAD,
+            crate::AddressSpace::PushConstant => Sa::LOAD,
         }
     }
 }
 
 impl super::MathFunction {
-    pub fn argument_count(&self) -> usize {
+    pub const fn argument_count(&self) -> usize {
         match *self {
             // comparison
             Self::Abs => 1,
@@ -154,6 +242,8 @@ impl super::MathFunction {
             Self::Asinh => 1,
             Self::Acosh => 1,
             Self::Atanh => 1,
+            Self::Radians => 1,
+            Self::Degrees => 1,
             // decomposition
             Self::Ceil => 1,
             Self::Floor => 1,
@@ -193,13 +283,29 @@ impl super::MathFunction {
             // bits
             Self::CountOneBits => 1,
             Self::ReverseBits => 1,
+            Self::ExtractBits => 3,
+            Self::InsertBits => 4,
+            Self::FindLsb => 1,
+            Self::FindMsb => 1,
+            // data packing
+            Self::Pack4x8snorm => 1,
+            Self::Pack4x8unorm => 1,
+            Self::Pack2x16snorm => 1,
+            Self::Pack2x16unorm => 1,
+            Self::Pack2x16float => 1,
+            // data unpacking
+            Self::Unpack4x8snorm => 1,
+            Self::Unpack4x8unorm => 1,
+            Self::Unpack2x16snorm => 1,
+            Self::Unpack2x16unorm => 1,
+            Self::Unpack2x16float => 1,
         }
     }
 }
 
 impl crate::Expression {
     /// Returns true if the expression is considered emitted at the start of a function.
-    pub fn needs_pre_emit(&self) -> bool {
+    pub const fn needs_pre_emit(&self) -> bool {
         match *self {
             Self::Constant(_)
             | Self::FunctionArgument(_)
@@ -232,8 +338,35 @@ impl crate::Expression {
     }
 }
 
+impl crate::Function {
+    /// Return the global variable being accessed by the expression `pointer`.
+    ///
+    /// Assuming that `pointer` is a series of `Access` and `AccessIndex`
+    /// expressions that ultimately access some part of a `GlobalVariable`,
+    /// return a handle for that global.
+    ///
+    /// If the expression does not ultimately access a global variable, return
+    /// `None`.
+    pub fn originating_global(
+        &self,
+        mut pointer: crate::Handle<crate::Expression>,
+    ) -> Option<crate::Handle<crate::GlobalVariable>> {
+        loop {
+            pointer = match self.expressions[pointer] {
+                crate::Expression::Access { base, .. } => base,
+                crate::Expression::AccessIndex { base, .. } => base,
+                crate::Expression::GlobalVariable(handle) => return Some(handle),
+                crate::Expression::LocalVariable(_) => return None,
+                crate::Expression::FunctionArgument(_) => return None,
+                // There are no other expressions that produce pointer values.
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
 impl crate::SampleLevel {
-    pub fn implicit_derivatives(&self) -> bool {
+    pub const fn implicit_derivatives(&self) -> bool {
         match *self {
             Self::Auto | Self::Bias(_) => true,
             Self::Zero | Self::Exact(_) | Self::Gradient { .. } => false,
@@ -273,9 +406,9 @@ impl crate::Constant {
 }
 
 impl crate::Binding {
-    pub fn to_built_in(&self) -> Option<crate::BuiltIn> {
+    pub const fn to_built_in(&self) -> Option<crate::BuiltIn> {
         match *self {
-            Self::BuiltIn(bi) => Some(bi),
+            crate::Binding::BuiltIn(built_in) => Some(built_in),
             Self::Location { .. } => None,
         }
     }
@@ -308,7 +441,7 @@ impl std::hash::Hash for crate::ScalarValue {
 impl super::SwizzleComponent {
     pub const XYZW: [Self; 4] = [Self::X, Self::Y, Self::Z, Self::W];
 
-    pub fn index(&self) -> u32 {
+    pub const fn index(&self) -> u32 {
         match *self {
             Self::X => 0,
             Self::Y => 1,
@@ -316,12 +449,28 @@ impl super::SwizzleComponent {
             Self::W => 3,
         }
     }
-    pub fn from_index(idx: u32) -> Self {
+    pub const fn from_index(idx: u32) -> Self {
         match idx {
             0 => Self::X,
             1 => Self::Y,
             2 => Self::Z,
             _ => Self::W,
+        }
+    }
+}
+
+impl super::ImageClass {
+    pub const fn is_multisampled(self) -> bool {
+        match self {
+            crate::ImageClass::Sampled { multi, .. } | crate::ImageClass::Depth { multi } => multi,
+            crate::ImageClass::Storage { .. } => false,
+        }
+    }
+
+    pub const fn is_mipmapped(self) -> bool {
+        match self {
+            crate::ImageClass::Sampled { multi, .. } | crate::ImageClass::Depth { multi } => !multi,
+            crate::ImageClass::Storage { .. } => false,
         }
     }
 }
@@ -335,7 +484,7 @@ fn test_matrix_size() {
             rows: crate::VectorSize::Tri,
             width: 4
         }
-        .span(&constants),
-        48
+        .size(&constants),
+        48,
     );
 }

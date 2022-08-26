@@ -65,7 +65,7 @@ class TestCommandLineArguments(MarionetteTestCase):
             "moz:debuggerAddress"
         )
 
-        self.assertEqual(debugger_address, "localhost:9222")
+        self.assertEqual(debugger_address, "127.0.0.1:9222")
         result = requests.get(url="http://{}/json/version".format(debugger_address))
         self.assertTrue(result.ok)
 
@@ -95,24 +95,8 @@ class TestCommandLineArguments(MarionetteTestCase):
             websocket_url = self.marionette.session_capabilities.get("webSocketUrl")
 
             self.assertEqual(
-                websocket_url, "ws://localhost:9222/session/{}".format(session_id)
+                websocket_url, "ws://127.0.0.1:9222/session/{}".format(session_id)
             )
-
-    def test_start_in_safe_mode(self):
-        self.marionette.instance.app_args.append("-safe-mode")
-
-        self.marionette.quit()
-        self.marionette.start_session()
-
-        with self.marionette.using_context("chrome"):
-            safe_mode = self.marionette.execute_script(
-                """
-              Cu.import("resource://gre/modules/Services.jsm");
-
-              return Services.appinfo.inSafeMode;
-            """
-            )
-            self.assertTrue(safe_mode, "Safe Mode has not been enabled")
 
     # An issue in the command line argument handling lead to open Firefox on
     # random URLs when remote-debugging-port is set to an explicit value, on macos.

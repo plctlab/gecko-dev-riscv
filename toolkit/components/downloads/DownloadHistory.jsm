@@ -18,16 +18,20 @@ var EXPORTED_SYMBOLS = ["DownloadHistory"];
 const { DownloadList } = ChromeUtils.import(
   "resource://gre/modules/DownloadList.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Downloads: "resource://gre/modules/Downloads.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   OS: "resource://gre/modules/osfile.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 // Places query used to retrieve all history downloads for the related list.
@@ -68,12 +72,12 @@ var DownloadHistory = {
    * @resolves The requested DownloadHistoryList object.
    * @rejects JavaScript exception.
    */
-  async getList({ type = Downloads.PUBLIC, maxHistoryResults } = {}) {
+  async getList({ type = lazy.Downloads.PUBLIC, maxHistoryResults } = {}) {
     await DownloadCache.ensureInitialized();
 
     let key = `${type}|${maxHistoryResults ? maxHistoryResults : -1}`;
     if (!this._listPromises[key]) {
-      this._listPromises[key] = Downloads.getList(type).then(list => {
+      this._listPromises[key] = lazy.Downloads.getList(type).then(list => {
         // When the amount of history downloads is capped, we request the list in
         // descending order, to make sure that the list can apply the limit.
         let query =
@@ -96,7 +100,9 @@ var DownloadHistory = {
   async addDownloadToHistory(download) {
     if (
       download.source.isPrivate ||
-      !PlacesUtils.history.canAddURI(PlacesUtils.toURI(download.source.url))
+      !lazy.PlacesUtils.history.canAddURI(
+        lazy.PlacesUtils.toURI(download.source.url)
+      )
     ) {
       return;
     }
@@ -135,7 +141,11 @@ var DownloadHistory = {
       }
     }
 
-    let metaData = { state, endTime: download.endTime };
+    let metaData = {
+      state,
+      deleted: download.deleted,
+      endTime: download.endTime,
+    };
     if (download.succeeded) {
       metaData.fileSize = download.target.size;
     }
@@ -199,7 +209,7 @@ var DownloadCache = {
         placesObserver
       );
 
-      let pageAnnos = await PlacesUtils.history.fetchAnnotatedPages([
+      let pageAnnos = await lazy.PlacesUtils.history.fetchAnnotatedPages([
         METADATA_ANNO,
         DESTINATIONFILEURI_ANNO,
       ]);
@@ -236,7 +246,7 @@ var DownloadCache = {
    *                       an object containing the meta data. The meta data
    *                       will look like:
    *
-   * { targetFileSpec, state, endTime, fileSize, ... }
+   * { targetFileSpec, state, deleted, endTime, fileSize, ... }
    *
    * The targetFileSpec property is the value of "downloads/destinationFileURI",
    * while the other properties are taken from "downloads/metaData". Any of the
@@ -254,7 +264,7 @@ var DownloadCache = {
   async addDownload(download) {
     await this.ensureInitialized();
 
-    let targetFile = new FileUtils.File(download.target.path);
+    let targetFile = new lazy.FileUtils.File(download.target.path);
     let targetUri = Services.io.newFileURI(targetFile);
 
     // This should be executed before any async parts, to ensure the cache is
@@ -263,9 +273,11 @@ var DownloadCache = {
     // the start of a new download.
     this._data.set(download.source.url, { targetFileSpec: targetUri.spec });
 
-    let originalPageInfo = await PlacesUtils.history.fetch(download.source.url);
+    let originalPageInfo = await lazy.PlacesUtils.history.fetch(
+      download.source.url
+    );
 
-    let pageInfo = await PlacesUtils.history.insert({
+    let pageInfo = await lazy.PlacesUtils.history.insert({
       url: download.source.url,
       // In case we are downloading a file that does not correspond to a web
       // page for which the title is present, we populate the otherwise empty
@@ -277,7 +289,7 @@ var DownloadCache = {
         {
           // The start time is always available when we reach this point.
           date: download.startTime,
-          transition: PlacesUtils.history.TRANSITIONS.DOWNLOAD,
+          transition: lazy.PlacesUtils.history.TRANSITIONS.DOWNLOAD,
           referrer: download.source.referrerInfo
             ? download.source.referrerInfo.originalReferrer
             : null,
@@ -285,7 +297,7 @@ var DownloadCache = {
       ],
     });
 
-    await PlacesUtils.history.update({
+    await lazy.PlacesUtils.history.update({
       annotations: new Map([["downloads/destinationFileURI", targetUri.spec]]),
       // XXX Bug 1479445: We shouldn't have to supply both guid and url here,
       // but currently we do.
@@ -315,7 +327,7 @@ var DownloadCache = {
     this._data.set(url, newData);
 
     try {
-      await PlacesUtils.history.update({
+      await lazy.PlacesUtils.history.update({
         annotations: new Map([[METADATA_ANNO, JSON.stringify(metadata)]]),
         url,
       });
@@ -398,6 +410,7 @@ HistoryDownload.prototype = {
         metaData.state == METADATA_STATE_CANCELED ||
         metaData.state == METADATA_STATE_PAUSED;
       this.endTime = metaData.endTime;
+      this.deleted = metaData.deleted;
 
       // Recreate partial error information from the state saved in history.
       if (metaData.state == METADATA_STATE_FAILED) {
@@ -431,6 +444,7 @@ HistoryDownload.prototype = {
       this.succeeded = !this.target.path;
       this.error = this.target.path ? { message: "Unstarted download." } : null;
       this.canceled = false;
+      this.deleted = false;
 
       // These properties may be updated if the user interface is refreshed.
       this.target.exists = false;
@@ -467,7 +481,7 @@ HistoryDownload.prototype = {
    */
   async refresh() {
     try {
-      this.target.size = (await OS.File.stat(this.target.path)).size;
+      this.target.size = (await lazy.OS.File.stat(this.target.path)).size;
       this.target.exists = true;
     } catch (ex) {
       // We keep the known file size from the metadata, if any.
@@ -475,6 +489,22 @@ HistoryDownload.prototype = {
     }
 
     this.slot.list._notifyAllViews("onDownloadChanged", this);
+  },
+
+  /**
+   * This method mimicks the "manuallyRemoveData" method of session downloads.
+   */
+  async manuallyRemoveData() {
+    let { path } = this.target;
+    if (this.target.path && this.succeeded) {
+      // Temp files are made "read-only" by DownloadIntegration.downloadDone, so
+      // reset the permission bits to read/write. This won't be necessary after
+      // bug 1733587 since Downloads won't ever be temporary.
+      await IOUtils.setPermissions(path, 0o660);
+      await IOUtils.remove(path, { ignoreAbsent: true });
+    }
+    this.deleted = true;
+    await this.refresh();
   },
 };
 
@@ -553,10 +583,13 @@ var DownloadHistoryList = function(publicList, place) {
   publicList.addView(this).catch(Cu.reportError);
   let query = {},
     options = {};
-  PlacesUtils.history.queryStringToQuery(place, query, options);
+  lazy.PlacesUtils.history.queryStringToQuery(place, query, options);
 
   // NB: The addObserver call sets our nsINavHistoryResultObserver.result.
-  let result = PlacesUtils.history.executeQuery(query.value, options.value);
+  let result = lazy.PlacesUtils.history.executeQuery(
+    query.value,
+    options.value
+  );
   result.addObserver(this);
 
   // Our history result observer is long lived for fast shared views, so free

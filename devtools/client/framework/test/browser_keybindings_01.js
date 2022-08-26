@@ -15,9 +15,7 @@ const TEST_URL =
 const {
   gDevToolsBrowser,
 } = require("devtools/client/framework/devtools-browser");
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 const isMac = AppConstants.platform == "macosx";
@@ -35,7 +33,7 @@ function buildDevtoolsKeysetMap(keyset) {
     allKeys.push({
       toolId: key.id.split("_")[1],
       key: key.getAttribute("key"),
-      modifiers: modifiers,
+      modifiers,
       modifierOpt: {
         shiftKey: modifiers.match("shift"),
         ctrlKey: modifiers.match("ctrl"),
@@ -43,7 +41,7 @@ function buildDevtoolsKeysetMap(keyset) {
         metaKey: modifiers.match("meta"),
         accelKey: modifiers.match("accel"),
       },
-      synthesizeKey: function() {
+      synthesizeKey() {
         EventUtils.synthesizeKey(this.key, this.modifierOpt);
       },
     });

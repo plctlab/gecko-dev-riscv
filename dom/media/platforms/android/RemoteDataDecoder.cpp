@@ -11,6 +11,7 @@
 #include "EMEDecoderModule.h"
 #include "GLImages.h"
 #include "JavaCallbacksSupport.h"
+#include "MediaCodec.h"
 #include "MediaData.h"
 #include "MediaInfo.h"
 #include "SimpleMap.h"
@@ -131,8 +132,9 @@ class RemoteVideoDecoder : public RemoteDataDecoder {
 
   RefPtr<InitPromise> Init() override {
     mThread = GetCurrentSerialEventTarget();
-    java::sdk::BufferInfo::LocalRef bufferInfo;
-    if (NS_FAILED(java::sdk::BufferInfo::New(&bufferInfo)) || !bufferInfo) {
+    java::sdk::MediaCodec::BufferInfo::LocalRef bufferInfo;
+    if (NS_FAILED(java::sdk::MediaCodec::BufferInfo::New(&bufferInfo)) ||
+        !bufferInfo) {
       return InitPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY, __func__);
     }
     mInputBufferInfo = bufferInfo;
@@ -182,6 +184,11 @@ class RemoteVideoDecoder : public RemoteDataDecoder {
   RefPtr<MediaDataDecoder::DecodePromise> Decode(
       MediaRawData* aSample) override {
     AssertOnThread();
+
+    if (NeedsNewDecoder()) {
+      return DecodePromise::CreateAndReject(NS_ERROR_DOM_MEDIA_NEED_NEW_DECODER,
+                                            __func__);
+    }
 
     const VideoInfo* config =
         aSample->mTrackInfo ? aSample->mTrackInfo->GetAsVideoInfo() : &mConfig;
@@ -265,7 +272,18 @@ class RemoteVideoDecoder : public RemoteDataDecoder {
     UniquePtr<layers::SurfaceTextureImage::SetCurrentCallback> releaseSample(
         new CompositeListener(mJavaDecoder, aSample));
 
-    java::sdk::BufferInfo::LocalRef info = aSample->Info();
+    // If our output surface has been released (due to the GPU process crashing)
+    // then request a new decoder, which will in turn allocate a new
+    // Surface. This is usually be handled by the Error() callback, but on some
+    // devices (or at least on the emulator) the java decoder does not raise an
+    // error when the Surface is released. So we raise this error here as well.
+    if (NeedsNewDecoder()) {
+      Error(MediaResult(NS_ERROR_DOM_MEDIA_NEED_NEW_DECODER,
+                        RESULT_DETAIL("VideoCallBack::HandleOutput")));
+      return;
+    }
+
+    java::sdk::MediaCodec::BufferInfo::LocalRef info = aSample->Info();
     MOZ_ASSERT(info);
 
     int32_t flags;
@@ -316,6 +334,10 @@ class RemoteVideoDecoder : public RemoteDataDecoder {
     }
   }
 
+  bool NeedsNewDecoder() const override {
+    return !mSurface || mSurface->IsReleased();
+  }
+
   const VideoInfo mConfig;
   java::GeckoSurface::GlobalRef mSurface;
   AndroidSurfaceTextureHandle mSurfaceHandle;
@@ -343,18 +365,24 @@ class RemoteAudioDecoder : public RemoteDataDecoder {
     bool formatHasCSD = false;
     NS_ENSURE_SUCCESS_VOID(aFormat->ContainsKey(u"csd-0"_ns, &formatHasCSD));
 
-    if (!formatHasCSD && aConfig.mCodecSpecificConfig->Length() >= 2) {
+    // It would be nice to instead use more specific information here, but
+    // we force a byte buffer for now since this handles arbitrary codecs.
+    // TODO(bug 1768564): implement further type checking for codec data.
+    RefPtr<MediaByteBuffer> audioCodecSpecificBinaryBlob =
+        ForceGetAudioCodecSpecificBlob(aConfig.mCodecSpecificConfig);
+    if (!formatHasCSD && audioCodecSpecificBinaryBlob->Length() >= 2) {
       jni::ByteBuffer::LocalRef buffer(env);
-      buffer = jni::ByteBuffer::New(aConfig.mCodecSpecificConfig->Elements(),
-                                    aConfig.mCodecSpecificConfig->Length());
+      buffer = jni::ByteBuffer::New(audioCodecSpecificBinaryBlob->Elements(),
+                                    audioCodecSpecificBinaryBlob->Length());
       NS_ENSURE_SUCCESS_VOID(aFormat->SetByteBuffer(u"csd-0"_ns, buffer));
     }
   }
 
   RefPtr<InitPromise> Init() override {
     mThread = GetCurrentSerialEventTarget();
-    java::sdk::BufferInfo::LocalRef bufferInfo;
-    if (NS_FAILED(java::sdk::BufferInfo::New(&bufferInfo)) || !bufferInfo) {
+    java::sdk::MediaCodec::BufferInfo::LocalRef bufferInfo;
+    if (NS_FAILED(java::sdk::MediaCodec::BufferInfo::New(&bufferInfo)) ||
+        !bufferInfo) {
       return InitPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY, __func__);
     }
     mInputBufferInfo = bufferInfo;
@@ -482,7 +510,7 @@ class RemoteAudioDecoder : public RemoteDataDecoder {
 
     RenderOrReleaseOutput autoRelease(mJavaDecoder, aSample);
 
-    java::sdk::BufferInfo::LocalRef info = aSample->Info();
+    java::sdk::MediaCodec::BufferInfo::LocalRef info = aSample->Info();
     MOZ_ASSERT(info);
 
     int32_t flags = 0;
@@ -661,11 +689,12 @@ RefPtr<ShutdownPromise> RemoteDataDecoder::Shutdown() {
   return ShutdownPromise::CreateAndResolve(true, __func__);
 }
 
-using CryptoInfoResult = Result<java::sdk::CryptoInfo::LocalRef, nsresult>;
+using CryptoInfoResult =
+    Result<java::sdk::MediaCodec::CryptoInfo::LocalRef, nsresult>;
 
 static CryptoInfoResult GetCryptoInfoFromSample(const MediaRawData* aSample) {
   auto& cryptoObj = aSample->mCrypto;
-  java::sdk::CryptoInfo::LocalRef cryptoInfo;
+  java::sdk::MediaCodec::CryptoInfo::LocalRef cryptoInfo;
 
   if (!cryptoObj.IsEncrypted()) {
     return CryptoInfoResult(cryptoInfo);
@@ -676,7 +705,7 @@ static CryptoInfoResult GetCryptoInfoFromSample(const MediaRawData* aSample) {
     return CryptoInfoResult(NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR);
   }
 
-  nsresult rv = java::sdk::CryptoInfo::New(&cryptoInfo);
+  nsresult rv = java::sdk::MediaCodec::CryptoInfo::New(&cryptoInfo);
   NS_ENSURE_SUCCESS(rv, CryptoInfoResult(rv));
 
   uint32_t numSubSamples = std::min<uint32_t>(
@@ -863,8 +892,17 @@ void RemoteDataDecoder::Error(const MediaResult& aError) {
   if (GetState() == State::SHUTDOWN) {
     return;
   }
-  mDecodePromise.RejectIfExists(aError, __func__);
-  mDrainPromise.RejectIfExists(aError, __func__);
+
+  // If we know we need a new decoder (eg because RemoteVideoDecoder's mSurface
+  // has been released due to a GPU process crash) then override the error to
+  // request a new decoder.
+  const MediaResult& error =
+      NeedsNewDecoder()
+          ? MediaResult(NS_ERROR_DOM_MEDIA_NEED_NEW_DECODER, __func__)
+          : aError;
+
+  mDecodePromise.RejectIfExists(error, __func__);
+  mDrainPromise.RejectIfExists(error, __func__);
 }
 
 }  // namespace mozilla

@@ -351,13 +351,6 @@ extern JS_PUBLIC_API bool OrdinaryHasInstance(JSContext* cx,
                                               HandleObject objArg,
                                               HandleValue v, bool* bp);
 
-// Implementation of
-// https://www.ecma-international.org/ecma-262/6.0/#sec-instanceofoperator
-// This is almost identical to JS_HasInstance, except the latter may call a
-// custom hasInstance class op instead of InstanceofOperator.
-extern JS_PUBLIC_API bool InstanceofOperator(JSContext* cx, HandleObject obj,
-                                             HandleValue v, bool* bp);
-
 }  // namespace JS
 
 extern JS_PUBLIC_API JSObject* JS_GetConstructor(JSContext* cx,
@@ -810,6 +803,7 @@ extern JS_PUBLIC_API void JS_SetOffthreadIonCompilationEnabled(JSContext* cx,
   Register(JIT_TRUSTEDPRINCIPALS_ENABLE, "jit_trustedprincipals.enable") \
   Register(ION_CHECK_RANGE_ANALYSIS, "ion.check-range-analysis") \
   Register(ION_FREQUENT_BAILOUT_THRESHOLD, "ion.frequent-bailout-threshold") \
+  Register(BASE_REG_FOR_LOCALS, "base-reg-for-locals") \
   Register(INLINING_BYTECODE_MAX_LENGTH, "inlining.bytecode-max-length") \
   Register(BASELINE_INTERPRETER_ENABLE, "blinterp.enable") \
   Register(BASELINE_ENABLE, "baseline.enable") \
@@ -823,6 +817,7 @@ extern JS_PUBLIC_API void JS_SetOffthreadIonCompilationEnabled(JSContext* cx,
   Register(SPECTRE_STRING_MITIGATIONS, "spectre.string-mitigations") \
   Register(SPECTRE_VALUE_MASKING, "spectre.value-masking") \
   Register(SPECTRE_JIT_TO_CXX_CALLS, "spectre.jit-to-cxx-calls") \
+  Register(WATCHTOWER_MEGAMORPHIC, "watchtower.megamorphic") \
   Register(WASM_FOLD_OFFSETS, "wasm.fold-offsets") \
   Register(WASM_DELAY_TIER2, "wasm.delay-tier2") \
   Register(WASM_JIT_BASELINE, "wasm.baseline") \
@@ -844,6 +839,14 @@ extern JS_PUBLIC_API void JS_SetGlobalJitCompilerOption(JSContext* cx,
 extern JS_PUBLIC_API bool JS_GetGlobalJitCompilerOption(JSContext* cx,
                                                         JSJitCompilerOption opt,
                                                         uint32_t* valueOut);
+
+namespace JS {
+
+// Disable all Spectre mitigations for this process after creating the initial
+// JSContext. Must be called on this context's thread.
+extern JS_PUBLIC_API void DisableSpectreMitigationsAfterInit();
+
+};
 
 /**
  * Convert a uint32_t index into a jsid.

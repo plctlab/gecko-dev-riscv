@@ -7,6 +7,7 @@
 #ifndef mozilla_dom_AnimationUtils_h
 #define mozilla_dom_AnimationUtils_h
 
+#include "mozilla/PseudoStyleType.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/Nullable.h"
 #include "nsRFPService.h"
@@ -18,8 +19,6 @@ struct JSContext;
 
 namespace mozilla {
 
-enum class PseudoStyleType : uint8_t;
-class ComputedTimingFunction;
 class EffectSet;
 
 namespace dom {
@@ -84,6 +83,31 @@ class AnimationUtils {
    */
   static bool HasCurrentTransitions(const dom::Element* aElement,
                                     PseudoStyleType aPseudoType);
+
+  /**
+   * Returns true if this pseudo style type is supported by animations.
+   * Note: This doesn't include PseudoStyleType::NotPseudo.
+   */
+  static bool IsSupportedPseudoForAnimations(PseudoStyleType aType) {
+    // FIXME: Bug 1615469: Support first-line and first-letter for Animation.
+    return aType == PseudoStyleType::before ||
+           aType == PseudoStyleType::after || aType == PseudoStyleType::marker;
+  }
+
+  /**
+   * Returns true if the difference between |aFirst| and |aSecond| is within
+   * the animation time tolerance (i.e. 1 microsecond).
+   */
+  static bool IsWithinAnimationTimeTolerance(const TimeDuration& aFirst,
+                                             const TimeDuration& aSecond) {
+    if (aFirst == TimeDuration::Forever() ||
+        aSecond == TimeDuration::Forever()) {
+      return aFirst == aSecond;
+    }
+
+    TimeDuration diff = aFirst >= aSecond ? aFirst - aSecond : aSecond - aFirst;
+    return diff <= TimeDuration::FromMicroseconds(1);
+  }
 };
 
 }  // namespace mozilla

@@ -2,15 +2,15 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ---
-loader: taskgraph.loader.transform:loader
+loader: gecko_taskgraph.loader.transform:loader
 
 kind-dependencies:
     - packages
 
 transforms:
-    - taskgraph.transforms.docker_image:transforms
-    - taskgraph.transforms.cached_tasks:transforms
-    - taskgraph.transforms.task:transforms
+    - gecko_taskgraph.transforms.docker_image:transforms
+    - gecko_taskgraph.transforms.cached_tasks:transforms
+    - gecko_taskgraph.transforms.task:transforms
 
 # make a task for each docker-image we might want.  For the moment, since we
 # write artifacts for each, these are whitelisted, but ideally that will change
@@ -108,16 +108,16 @@ jobs:
             - deb11-valgrind
     lint:
         symbol: I(lnt)
-        parent: ubuntu1804-base
+        parent: debian11-base
     # Neither the debian10-raw nor the debian10-packages images can have
     # packages dependencies.
     debian10-raw:
         symbol: I(deb10-raw)
         definition: debian-raw
         args:
-            BASE_IMAGE: debian:buster-20210816
+            BASE_IMAGE: debian:buster-20220509
             DIST: buster
-            SNAPSHOT: '20210816T214117Z'
+            SNAPSHOT: '20220509T214601Z'
     debian10-packages:
         symbol: I(deb10-pkg)
         definition: debian-packages
@@ -132,20 +132,15 @@ jobs:
     debian10-test:
         symbol: I(deb10-test)
         parent: debian10-base
-    debian10-test-iris:
-        symbol: I(deb10-ti)
-        parent: debian10-test
-        packages:
-            - deb10-python-zstandard
     # Neither the debian11-raw nor the debian11-packages images can have
     # packages dependencies.
     debian11-raw:
         symbol: I(deb11-raw)
         definition: debian-raw
         args:
-            BASE_IMAGE: debian:bullseye-20210816
+            BASE_IMAGE: debian:bullseye-20220509
             DIST: bullseye
-            SNAPSHOT: '20210816T214117Z'
+            SNAPSHOT: '20220509T214601Z'
     debian11-packages:
         symbol: I(deb11-pkg)
         definition: debian-packages
@@ -199,7 +194,7 @@ jobs:
         parent: push-to-try
     periodic-updates:
         symbol: I(file)
-        parent: ubuntu1804-base
+        parent: debian11-base
     firefox-snap:
         symbol: I(snap)
     firefox-flatpak:
@@ -210,9 +205,6 @@ jobs:
     condprof:
         symbol: I(condprof)
         parent: ubuntu1804-test
-    visual-metrics:
-        symbol: I(visual-metrics)
-        parent: debian10-base
     github-sync:
         symbol: I(github-sync)
         parent: debian10-base
@@ -225,9 +217,12 @@ jobs:
     system-symbols-win:
         symbol: I(system-symbols-win)
         parent: debian10-base
+    system-symbols-linux-scraper:
+        symbol: I(system-symbols-linux)
+        parent: debian11-base
     push-to-try:
         symbol: I(push-to-try)
         parent: debian10-base
     decision:
         symbol: I(decision)
-        parent: ubuntu1804-base
+        parent: ubuntu2004-base

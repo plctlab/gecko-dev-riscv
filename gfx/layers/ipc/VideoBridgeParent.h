@@ -34,7 +34,7 @@ class VideoBridgeParent final : public PVideoBridgeParent,
   // PVideoBridgeParent
   void ActorDestroy(ActorDestroyReason aWhy) override;
   PTextureParent* AllocPTextureParent(const SurfaceDescriptor& aSharedData,
-                                      const ReadLockDescriptor& aReadLock,
+                                      ReadLockDescriptor& aReadLock,
                                       const LayersBackend& aLayersBackend,
                                       const TextureFlags& aFlags,
                                       const uint64_t& aSerial);
@@ -53,11 +53,9 @@ class VideoBridgeParent final : public PVideoBridgeParent,
   bool IPCOpen() const override { return !mClosed; }
 
   // IShmemAllocator
-  bool AllocShmem(size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-                  ipc::Shmem* aShmem) override;
+  bool AllocShmem(size_t aSize, ipc::Shmem* aShmem) override;
 
-  bool AllocUnsafeShmem(size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-                        ipc::Shmem* aShmem) override;
+  bool AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) override;
 
   bool DeallocShmem(ipc::Shmem& aShmem) override;
 

@@ -90,7 +90,7 @@ function check_telemetry() {
   );
   equal(
     histogram.values[16],
-    2,
+    3,
     "Actual and expected SEC_ERROR_INVALID_TIME values should match"
   );
   equal(
@@ -100,7 +100,7 @@ function check_telemetry() {
   );
   equal(
     histogram.values[19],
-    3,
+    4,
     "Actual and expected MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT values should match"
   );
   equal(
@@ -129,7 +129,7 @@ function check_telemetry() {
   );
   equal(
     keySizeHistogram.values[3],
-    68,
+    70,
     "Actual and expected verification failures unrelated to key size should match"
   );
 
@@ -245,6 +245,12 @@ function add_simple_tests() {
     "before-epoch.example.com",
     Ci.nsICertOverrideService.ERROR_TIME,
     SEC_ERROR_INVALID_TIME
+  );
+  add_cert_override_test(
+    "before-epoch-self-signed.example.com",
+    Ci.nsICertOverrideService.ERROR_TIME |
+      Ci.nsICertOverrideService.ERROR_UNTRUSTED,
+    MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT
   );
   add_cert_override_test(
     "selfsigned.example.com",
@@ -566,6 +572,14 @@ function add_simple_tests() {
       expectedBits,
       false
     );
+    certOverrideService.rememberValidityOverride(
+      "::1",
+      80,
+      {},
+      cert,
+      expectedBits,
+      false
+    );
     Assert.ok(
       certOverrideService.hasMatchingOverride(
         "example.com",
@@ -597,7 +611,13 @@ function add_simple_tests() {
       "Should have added override for example.org:443"
     );
     Assert.ok(
-      !certOverrideService.hasMatchingOverride(
+      certOverrideService.hasMatchingOverride("::1", 80, {}, cert, {}, {}),
+      "Should have added override for [::1]:80"
+    );
+    // When in a private browsing context, overrides added in non-private
+    // contexts should match (but not vice-versa).
+    Assert.ok(
+      certOverrideService.hasMatchingOverride(
         "example.org",
         443,
         { privateBrowsingId: 1 },
@@ -605,10 +625,10 @@ function add_simple_tests() {
         {},
         {}
       ),
-      "Should not have override for example.org:443 with privateBrowsingId 1"
+      "Should have override for example.org:443 with privateBrowsingId 1"
     );
     Assert.ok(
-      !certOverrideService.hasMatchingOverride(
+      certOverrideService.hasMatchingOverride(
         "example.org",
         443,
         { privateBrowsingId: 2 },
@@ -616,7 +636,7 @@ function add_simple_tests() {
         {},
         {}
       ),
-      "Should not have override for example.org:443 with privateBrowsingId 2"
+      "Should have override for example.org:443 with privateBrowsingId 2"
     );
     Assert.ok(
       certOverrideService.hasMatchingOverride(
@@ -679,7 +699,7 @@ function add_simple_tests() {
       "Should ignore firstPartyDomain and userContextId when checking overrides"
     );
     certOverrideService.rememberValidityOverride(
-      "example.org",
+      "example.test",
       443,
       { privateBrowsingId: 1 },
       cert,
@@ -688,25 +708,36 @@ function add_simple_tests() {
     );
     Assert.ok(
       certOverrideService.hasMatchingOverride(
-        "example.org",
+        "example.test",
         443,
         { privateBrowsingId: 1 },
         cert,
         {},
         {}
       ),
-      "Should have added override for example.org:443 with privateBrowsingId 1"
+      "Should have added override for example.test:443 with privateBrowsingId 1"
     );
     Assert.ok(
       !certOverrideService.hasMatchingOverride(
-        "example.org",
+        "example.test",
         443,
         { privateBrowsingId: 2 },
         cert,
         {},
         {}
       ),
-      "Should not have override for example.org:443 with privateBrowsingId 2"
+      "Should not have override for example.test:443 with privateBrowsingId 2"
+    );
+    Assert.ok(
+      !certOverrideService.hasMatchingOverride(
+        "example.test",
+        443,
+        {},
+        cert,
+        {},
+        {}
+      ),
+      "Should not have override for example.test:443 with non-private OriginAttributes"
     );
     // Clear them all...
     certOverrideService.clearAllOverrides();

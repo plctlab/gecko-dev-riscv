@@ -27,13 +27,22 @@ class WindowGlobalTargetFront extends TargetMixin(
     // used anywhere else.
     this._javascriptEnabled = null;
 
+    // If this target was retrieved via NodeFront connectToFrame, keep a
+    // reference to the parent NodeFront.
+    this._parentNodeFront = null;
+
     this._onTabNavigated = this._onTabNavigated.bind(this);
     this._onFrameUpdate = this._onFrameUpdate.bind(this);
+
+    this.on("tabNavigated", this._onTabNavigated);
+    this.on("frameUpdate", this._onFrameUpdate);
   }
 
   form(json) {
     this.actorID = json.actor;
     this.browsingContextID = json.browsingContextID;
+    this.innerWindowId = json.innerWindowId;
+    this.processID = json.processID;
 
     // Save the full form for Target class usage.
     // Do not use `form` name to avoid colliding with protocol.js's `form` method
@@ -67,7 +76,6 @@ class WindowGlobalTargetFront extends TargetMixin(
     const event = Object.create(null);
     event.url = packet.url;
     event.title = packet.title;
-    event.nativeConsoleAPI = packet.nativeConsoleAPI;
     event.isFrameSwitching = packet.isFrameSwitching;
 
     // Keep the title unmodified when a developer toolbox switches frame
@@ -88,6 +96,14 @@ class WindowGlobalTargetFront extends TargetMixin(
     }
   }
 
+  getParentNodeFront() {
+    return this._parentNodeFront;
+  }
+
+  setParentNodeFront(nodeFront) {
+    this._parentNodeFront = nodeFront;
+  }
+
   /**
    * Set the targetFront url.
    *
@@ -106,34 +122,6 @@ class WindowGlobalTargetFront extends TargetMixin(
     this._title = title;
   }
 
-  async attach() {
-    if (this._attach) {
-      return this._attach;
-    }
-    this._attach = (async () => {
-      // All Browsing context inherited target emit a few event that are being
-      // translated on the target class. Listen for them before attaching as they
-      // can start firing on attach call.
-      this.on("tabNavigated", this._onTabNavigated);
-      this.on("frameUpdate", this._onFrameUpdate);
-
-      const response = await super.attach();
-
-      this.targetForm.threadActor = response.threadActor;
-
-      // @backward-compat { version 93 } Remove this. All the traits are on form and can be accessed
-      // using getTraits.
-      this.traits = response.traits || {};
-
-      // xpcshell tests from devtools/server/tests/xpcshell/ are implementing
-      // fake WindowGlobalTargetActor which do not expose any console actor.
-      if (this.targetForm.consoleActor) {
-        await this.attachConsole();
-      }
-    })();
-    return this._attach;
-  }
-
   async detach() {
     // When calling this.destroy() at the end of this method,
     // we will end up calling detach again from TargetMixin.destroy.
@@ -144,7 +132,7 @@ class WindowGlobalTargetFront extends TargetMixin(
     }
     this._isDetaching = true;
 
-    // Remove listeners set in attach
+    // Remove listeners set in constructor
     this.off("tabNavigated", this._onTabNavigated);
     this.off("frameUpdate", this._onFrameUpdate);
 
@@ -167,9 +155,10 @@ class WindowGlobalTargetFront extends TargetMixin(
 
   destroy() {
     const promise = super.destroy();
+    this._parentNodeFront = null;
 
     // As detach isn't necessarily called on target's destroy
-    // (it isn't for local tabs), ensure removing listeners set in attach.
+    // (it isn't for local tabs), ensure removing listeners set in constructor.
     this.off("tabNavigated", this._onTabNavigated);
     this.off("frameUpdate", this._onFrameUpdate);
 

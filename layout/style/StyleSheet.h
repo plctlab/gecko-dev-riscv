@@ -119,7 +119,8 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
 
   // Common code that needs to be called after servo finishes parsing. This is
   // shared between the parallel and sequential paths.
-  void FinishAsyncParse(already_AddRefed<RawServoStyleSheetContents>);
+  void FinishAsyncParse(already_AddRefed<RawServoStyleSheetContents>,
+                        UniquePtr<StyleUseCounters>);
 
   // Similar to `ParseSheet`, but guarantees that
   // parsing will be performed synchronously.
@@ -138,9 +139,8 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
     return Inner().mContents;
   }
 
-  void SetContentsForImport(const RawServoStyleSheetContents* aContents) {
-    MOZ_ASSERT(!Inner().mContents);
-    Inner().mContents = aContents;
+  const StyleUseCounters* GetStyleUseCounters() const {
+    return Inner().mUseCounters.get();
   }
 
   URLExtraData* URLData() const { return Inner().mURLData; }
@@ -515,6 +515,11 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
   // Take the recently cloned sheets from the `@import` rules, and reparent them
   // correctly to `aPrimarySheet`.
   void FixUpAfterInnerClone();
+
+  // aFromClone says whether this comes from a clone of the stylesheet (and thus
+  // we should also fix up the wrappers for the individual rules in the rule
+  // lists).
+  void FixUpRuleListAfterContentsChangeIfNeeded(bool aFromClone = false);
 
   void DropRuleList();
 

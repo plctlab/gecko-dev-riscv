@@ -4,7 +4,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Troubleshoot } = ChromeUtils.import(
   "resource://gre/modules/Troubleshoot.jsm"
 );
@@ -17,14 +16,18 @@ const { AppConstants } = ChromeUtils.import(
 
 ChromeUtils.defineModuleGetter(
   this,
+  "DownloadUtils",
+  "resource://gre/modules/DownloadUtils.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  this,
   "PluralForm",
   "resource://gre/modules/PluralForm.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesDBUtils",
-  "resource://gre/modules/PlacesDBUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesDBUtils: "resource://gre/modules/PlacesDBUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   this,
   "ProcessType",
@@ -37,6 +40,9 @@ window.addEventListener("load", function onload(event) {
     Troubleshoot.snapshot(async function(snapshot) {
       for (let prop in snapshotFormatters) {
         await snapshotFormatters[prop](snapshot[prop]);
+      }
+      if (location.hash) {
+        scrollToSection();
       }
     });
     populateActionBox();
@@ -148,7 +154,7 @@ var snapshotFormatters = {
       experimentTreatment: "fission-status-experiment-treatment",
       disabledByE10sEnv: "fission-status-disabled-by-e10s-env",
       enabledByEnv: "fission-status-enabled-by-env",
-      disabledBySafeMode: "fission-status-disabled-by-safe-mode",
+      disabledByEnv: "fission-status-disabled-by-env",
       enabledByDefault: "fission-status-enabled-by-default",
       disabledByDefault: "fission-status-disabled-by-default",
       enabledByUserPref: "fission-status-enabled-by-user-pref",
@@ -229,6 +235,17 @@ var snapshotFormatters = {
     document.l10n.setAttributes($("key-mozilla-box"), keyMozillaFound);
 
     $("safemode-box").textContent = data.safeMode;
+
+    const formatHumanReadableBytes = (elem, bytes) => {
+      let size = DownloadUtils.convertByteUnits(bytes);
+      document.l10n.setAttributes(elem, "app-basics-data-size", {
+        value: size[0],
+        unit: size[1],
+      });
+    };
+
+    formatHumanReadableBytes($("memory-size-box"), data.memorySizeBytes);
+    formatHumanReadableBytes($("disk-available-box"), data.diskAvailableBytes);
   },
 
   crashes(data) {
@@ -237,7 +254,7 @@ var snapshotFormatters = {
     }
 
     let daysRange = Troubleshoot.kMaxCrashAge / (24 * 60 * 60 * 1000);
-    document.l10n.setAttributes($("crashes-title"), "report-crash-for-days", {
+    document.l10n.setAttributes($("crashes"), "report-crash-for-days", {
       days: daysRange,
     });
     let reportURL;
@@ -314,7 +331,7 @@ var snapshotFormatters = {
 
   securitySoftware(data) {
     if (!AppConstants.isPlatformAndVersionAtLeast("win", "6.2")) {
-      $("security-software-title").hidden = true;
+      $("security-software").hidden = true;
       $("security-software-table").hidden = true;
       return;
     }
@@ -638,9 +655,6 @@ var snapshotFormatters = {
     let compositor = "";
     if (data.windowLayerManagerRemote) {
       compositor = data.windowLayerManagerType;
-      if (data.windowUsingAdvancedLayers) {
-        compositor += " (Advanced Layers)";
-      }
     } else {
       let noOMTCString = await document.l10n.formatValue("main-thread-no-omtc");
       compositor = "BasicLayers (" + noOMTCString + ")";
@@ -651,7 +665,6 @@ var snapshotFormatters = {
     delete data.numTotalWindows;
     delete data.numAcceleratedWindows;
     delete data.numAcceleratedWindowsMessage;
-    delete data.windowUsingAdvancedLayers;
 
     addRow(
       "features",
@@ -685,7 +698,6 @@ var snapshotFormatters = {
       ["direct2DEnabled", "#Direct2D"],
       ["windowProtocol", "graphics-window-protocol"],
       ["desktopEnvironment", "graphics-desktop-environment"],
-      "usesTiling",
       "targetFrameRate",
     ];
     for (let feature of featureKeys) {
@@ -1038,13 +1050,19 @@ var snapshotFormatters = {
 
     // Media Capabilitites
     insertEnumerateDatabase();
+
+    // Codec decode/encode support information (inc. HW accel)
+    // Currently supported on Windows with Linux/OS X support under development
+    if (AppConstants.platform == "win") {
+      insertBasicInfo("media-codec-support-info", data.codecSupportInfo);
+    }
   },
 
   remoteAgent(data) {
     if (!AppConstants.ENABLE_WEBDRIVER) {
       return;
     }
-    $("remote-debugging-accepting-connections").textContent = data.listening;
+    $("remote-debugging-accepting-connections").textContent = data.running;
     $("remote-debugging-url").textContent = data.url;
   },
 
@@ -1188,7 +1206,7 @@ var snapshotFormatters = {
       addonStudies,
       prefRollouts,
       nimbusExperiments,
-      remoteConfigs,
+      nimbusRollouts,
     } = data;
     $.append(
       $("remote-features-tbody"),
@@ -1202,14 +1220,13 @@ var snapshotFormatters = {
 
     $.append(
       $("remote-features-tbody"),
-      remoteConfigs.map(({ featureId, slug }) =>
+      nimbusRollouts.map(({ userFacingName, branch }) =>
         $.new("tr", [
-          $.new("td", [document.createTextNode(featureId)]),
-          $.new("td", [document.createTextNode(`(${slug})`)]),
+          $.new("td", [document.createTextNode(userFacingName)]),
+          $.new("td", [document.createTextNode(`(${branch.slug})`)]),
         ])
       )
     );
-
     $.append(
       $("remote-experiments-tbody"),
       [addonStudies, prefStudies, nimbusExperiments]
@@ -1319,16 +1336,6 @@ function copyRawDataToClipboard(button) {
         null,
         Ci.nsIClipboard.kGlobalClipboard
       );
-      if (AppConstants.platform == "android") {
-        // Present a snackbar notification.
-        var { Snackbars } = ChromeUtils.import(
-          "resource://gre/modules/Snackbars.jsm"
-        );
-        let rawDataCopiedString = await document.l10n.formatValue(
-          "raw-data-copied"
-        );
-        Snackbars.show(rawDataCopiedString, Snackbars.LENGTH_SHORT);
-      }
     });
   } catch (err) {
     if (button) {
@@ -1376,15 +1383,6 @@ async function copyContentsToClipboard() {
     null,
     Services.clipboard.kGlobalClipboard
   );
-
-  if (AppConstants.platform == "android") {
-    // Present a snackbar notification.
-    var { Snackbars } = ChromeUtils.import(
-      "resource://gre/modules/Snackbars.jsm"
-    );
-    let textCopiedString = await document.l10n.formatValue("text-copied");
-    Snackbars.show(textCopiedString, Snackbars.LENGTH_SHORT);
-  }
 }
 
 // Return the plain text representation of an element.  Do a little bit
@@ -1734,4 +1732,16 @@ function setupEventListeners() {
   $("profile-dir-button").addEventListener("click", function(event) {
     openProfileDirectory();
   });
+}
+
+/**
+ * Scroll to section specified by location.hash
+ */
+function scrollToSection() {
+  const id = location.hash.substr(1);
+  const elem = $(id);
+
+  if (elem) {
+    elem.scrollIntoView();
+  }
 }

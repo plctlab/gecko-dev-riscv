@@ -30,7 +30,6 @@ class gfxVarReceiver;
   _(BrowserTabsRemoteAutostart, bool, false)                       \
   _(ContentBackend, BackendType, BackendType::NONE)                \
   _(SoftwareBackend, BackendType, BackendType::NONE)               \
-  _(TileSize, IntSize, IntSize(-1, -1))                            \
   _(OffscreenFormat, gfxImageFormat,                               \
     mozilla::gfx::SurfaceFormat::X8R8G8B8_UINT32)                  \
   _(RequiresAcceleratedGLContextForCompositorOGL, bool, false)     \
@@ -57,12 +56,15 @@ class gfxVarReceiver;
   _(WebRenderBoolParameters, int32_t, 0)                           \
   _(WebRenderBatchingLookback, int32_t, 10)                        \
   _(WebRenderBlobTileSize, int32_t, 256)                           \
+  _(WebRenderBatchedUploadThreshold, int32_t, 512 * 512)           \
   _(UseSoftwareWebRender, bool, false)                             \
   _(AllowSoftwareWebRenderD3D11, bool, false)                      \
   _(ScreenDepth, int32_t, 0)                                       \
   _(GREDirectory, nsString, nsString())                            \
   _(ProfDirectory, nsString, nsString())                           \
   _(AllowD3D11KeyedMutex, bool, false)                             \
+  _(SwapIntervalGLX, bool, false)                                  \
+  _(SwapIntervalEGL, bool, false)                                  \
   _(SystemTextQuality, int32_t, 5 /* CLEARTYPE_QUALITY */)         \
   _(SystemTextClearTypeLevel, float, 1.0f)                         \
   _(SystemTextEnhancedContrast, float, 1.0f)                       \
@@ -82,7 +84,17 @@ class gfxVarReceiver;
   _(UseEGL, bool, false)                                           \
   _(DrmRenderDevice, nsCString, nsCString())                       \
   _(UseDMABuf, bool, false)                                        \
-  _(WebRenderRequiresHardwareDriver, bool, false)
+  _(CodecSupportInfo, nsCString, nsCString())                      \
+  _(WebRenderRequiresHardwareDriver, bool, false)                  \
+  _(SupportsThreadsafeGL, bool, false)                             \
+  _(AllowWebGPU, bool, false)                                      \
+  _(UseVP8HwDecode, bool, false)                                   \
+  _(UseVP9HwDecode, bool, false)                                   \
+  _(HwDecodedVideoZeroCopy, bool, false)                           \
+  _(UseDMABufSurfaceExport, bool, true)                            \
+  _(ReuseDecoderDevice, bool, false)                               \
+  _(UseCanvasRenderThread, bool, false)                            \
+  _(AllowBackdropFilter, bool, true)
 
 /* Add new entries above this line. */
 

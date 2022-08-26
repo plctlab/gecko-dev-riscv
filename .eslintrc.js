@@ -8,6 +8,7 @@ const xpcshellTestConfig = require("eslint-plugin-mozilla/lib/configs/xpcshell-t
 const browserTestConfig = require("eslint-plugin-mozilla/lib/configs/browser-test.js");
 const mochitestTestConfig = require("eslint-plugin-mozilla/lib/configs/mochitest-test.js");
 const chromeTestConfig = require("eslint-plugin-mozilla/lib/configs/chrome-test.js");
+const { testPaths } = require("./.eslintrc-test-paths.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -21,22 +22,6 @@ function removeOverrides(config) {
   return config;
 }
 
-const xpcshellTestPaths = ["**/test*/unit*/", "**/test*/xpcshell/"];
-
-const browserTestPaths = ["**/test*/**/browser*/"];
-
-const mochitestTestPaths = [
-  // Note: we do not want to match testing/mochitest as that would apply
-  // too many globals for that directory.
-  "**/test/mochitest/",
-  "**/tests/mochitest/",
-  "**/test/mochitests/",
-  "testing/mochitest/tests/SimpleTest/",
-  "testing/mochitest/tests/Harness_sanity/",
-];
-
-const chromeTestPaths = ["**/test*/chrome/"];
-
 const ignorePatterns = [
   ...fs
     .readFileSync(
@@ -46,12 +31,19 @@ const ignorePatterns = [
     .split("\n"),
   ...fs
     .readFileSync(
-      path.join(__dirname, "devtools", "client", "debugger", ".eslintignore")
+      path.join(
+        __dirname,
+        "devtools",
+        "client",
+        "debugger",
+        "src",
+        ".eslintignore"
+      )
     )
     .toString("utf-8")
     .split("\n")
     .filter(p => p && !p.startsWith("#"))
-    .map(p => `devtools/client/debugger/${p}`),
+    .map(p => `devtools/client/debugger/src/${p}`),
 ];
 
 module.exports = {
@@ -62,6 +54,9 @@ module.exports = {
       configFile: path.join(__dirname, ".babel-eslint.rc.js"),
     },
   },
+  settings: {
+    "import/extensions": [".mjs"],
+  },
   ignorePatterns,
   // Ignore eslint configurations in parent directories.
   root: true,
@@ -69,7 +64,7 @@ module.exports = {
   // tools/lint/eslint/eslint-plugin-mozilla/lib/configs/recommended.js to
   // allow external repositories that use the plugin to pick them up as well.
   extends: ["plugin:mozilla/recommended"],
-  plugins: ["mozilla"],
+  plugins: ["mozilla", "import"],
   overrides: [
     {
       // All .eslintrc.js files are in the node environment, so turn that
@@ -82,14 +77,43 @@ module.exports = {
       },
     },
     {
+      files: ["*.mjs"],
+      rules: {
+        "import/default": "error",
+        "import/export": "error",
+        "import/named": "error",
+        "import/namespace": "error",
+        "import/newline-after-import": "error",
+        "import/no-anonymous-default-export": "error",
+        "import/no-duplicates": "error",
+        "import/no-absolute-path": "error",
+        "import/no-named-default": "error",
+        "import/no-named-as-default": "error",
+        "import/no-named-as-default-member": "error",
+        "import/no-self-import": "error",
+        "import/no-unassigned-import": "error",
+        "import/no-unresolved": [
+          "error",
+          // Bug 1773473 - Ignore resolver URLs for chrome and resource as we
+          // do not yet have a resolver for them.
+          { ignore: ["chrome://", "resource://"] },
+        ],
+        "import/no-useless-path-segments": "error",
+      },
+    },
+    {
       files: [
-        "*.html",
-        "*.xhtml",
-        "*.xul",
-        "*.xml",
-        "js/src/builtin/**/*.js",
-        "js/src/shell/**/*.js",
+        // Bug 1773475 - For now, turn off no-unresolved on some paths where we import
+        // from node_modules, as the ESLint setup only installs modules at the
+        // top-level.
+        "devtools/shared/compatibility/**",
       ],
+      rules: {
+        "import/no-unresolved": "off",
+      },
+    },
+    {
+      files: ["*.html", "*.xhtml", "*.xml"],
       rules: {
         // Curly brackets are required for all the tree via recommended.js,
         // however these files aren't auto-fixable at the moment.
@@ -105,15 +129,14 @@ module.exports = {
     },
     {
       ...removeOverrides(xpcshellTestConfig),
-      files: xpcshellTestPaths.map(path => `${path}**`),
-      excludedFiles: "devtools/**",
+      files: testPaths.xpcshell.map(path => `${path}**`),
     },
     {
       // If it is an xpcshell head file, we turn off global unused variable checks, as it
       // would require searching the other test files to know if they are used or not.
       // This would be expensive and slow, and it isn't worth it for head files.
       // We could get developers to declare as exported, but that doesn't seem worth it.
-      files: xpcshellTestPaths.map(path => `${path}head*.js`),
+      files: testPaths.xpcshell.map(path => `${path}head*.js`),
       rules: {
         "no-unused-vars": [
           "error",
@@ -125,17 +148,73 @@ module.exports = {
       },
     },
     {
+      // This section enables warning of no-unused-vars globally for all test*.js
+      // files in xpcshell test paths.
+      // These are turned into errors with selected exclusions in the next
+      // section.
+      // Bug 1612907: This section should go away once the exclusions are removed
+      // from the following section.
+      files: testPaths.xpcshell.map(path => `${path}test*.js`),
+      rules: {
+        // No declaring variables that are never used
+        "no-unused-vars": [
+          "warn",
+          {
+            args: "none",
+            vars: "all",
+          },
+        ],
+      },
+    },
+    {
+      // This section makes global issues with no-unused-vars be reported as
+      // errors - except for the excluded lists which are being fixed in the
+      // dependencies of bug 1612907.
+      files: testPaths.xpcshell.map(path => `${path}test*.js`),
+      excludedFiles: [
+        // These are suitable as good first bugs, take one or two related lines
+        // per bug.
+        "extensions/permissions/**",
+        "image/test/unit/**",
+        "intl/uconv/tests/unit/test_bug340714.js",
+        "modules/libjar/test/unit/test_empty_jar_telemetry.js",
+        "modules/libjar/zipwriter/test/unit/test_alignment.js",
+        "modules/libjar/zipwriter/test/unit/test_bug419769_2.js",
+        "modules/libjar/zipwriter/test/unit/test_storedata.js",
+        "modules/libjar/zipwriter/test/unit/test_zippermissions.js",
+        "modules/libpref/test/unit/test_dirtyPrefs.js",
+        "toolkit/crashreporter/test/unit/test_crash_AsyncShutdown.js",
+        "toolkit/mozapps/update/tests/unit_aus_update/testConstants.js",
+
+        // These are more complicated bugs which may require some in-depth
+        // investigation or different solutions. They are also likely to be
+        // a reasonable size.
+        "dom/**",
+        "netwerk/**",
+      ],
+      rules: {
+        // No declaring variables that are never used
+        "no-unused-vars": [
+          "error",
+          {
+            args: "none",
+            vars: "all",
+          },
+        ],
+      },
+    },
+    {
       ...browserTestConfig,
-      files: browserTestPaths.map(path => `${path}**`),
+      files: testPaths.browser.map(path => `${path}**`),
     },
     {
       ...removeOverrides(mochitestTestConfig),
-      files: mochitestTestPaths.map(path => `${path}**`),
+      files: testPaths.mochitest.map(path => `${path}**`),
       excludedFiles: ["security/manager/ssl/tests/mochitest/browser/**"],
     },
     {
       ...removeOverrides(chromeTestConfig),
-      files: chromeTestPaths.map(path => `${path}**`),
+      files: testPaths.chrome.map(path => `${path}**`),
     },
     {
       env: {
@@ -145,28 +224,14 @@ module.exports = {
         "mozilla/simpletest": true,
       },
       files: [
-        ...mochitestTestPaths.map(path => `${path}/**/*.js`),
-        ...chromeTestPaths.map(path => `${path}/**/*.js`),
+        ...testPaths.mochitest.map(path => `${path}/**/*.js`),
+        ...testPaths.chrome.map(path => `${path}/**/*.js`),
       ],
     },
     {
-      files: [
-        "netwerk/cookie/test/browser/**",
-        "netwerk/test/browser/**",
-        "netwerk/test/mochitests/**",
-        "netwerk/test/unit*/**",
-      ],
+      files: ["netwerk/test/mochitests/**", "netwerk/test/unit*/**"],
       rules: {
-        "mozilla/no-arbitrary-setTimeout": "off",
-        "mozilla/no-define-cc-etc": "off",
-        "mozilla/use-services": "off",
-        "consistent-return": "off",
-        "no-eval": "off",
-        "no-global-assign": "off",
-        "no-nested-ternary": "off",
-        "no-redeclare": "off",
-        "no-shadow": "off",
-        "no-throw-literal": "off",
+        "no-shadow": "warn",
       },
     },
     {
@@ -213,46 +278,49 @@ module.exports = {
     },
     {
       files: [
-        "dom/animation/**",
+        "dom/animation/test/**",
         "dom/base/test/*.*",
         "dom/base/test/unit/test_serializers_entities*.js",
         "dom/base/test/unit_ipc/**",
         "dom/base/test/jsmodules/**",
-        "dom/base/*.*",
-        "dom/canvas/**",
-        "dom/encoding/**",
-        "dom/events/**",
-        "dom/fetch/**",
-        "dom/file/**",
-        "dom/html/**",
-        "dom/jsurl/**",
+        "dom/canvas/test/**",
+        "dom/encoding/test/**",
+        "dom/events/test/**",
+        "dom/fetch/tests/**",
+        "dom/file/ipc/tests/**",
+        "dom/file/tests/**",
+        "dom/html/test/**",
+        "dom/jsurl/test/**",
         "dom/media/tests/**",
-        "dom/media/webaudio/**",
+        "dom/media/webaudio/test/**",
         "dom/media/webrtc/tests/**",
-        "dom/media/webspeech/**",
-        "dom/messagechannel/**",
-        "dom/midi/**",
-        "dom/network/**",
-        "dom/payments/**",
-        "dom/performance/**",
-        "dom/permission/**",
-        "dom/quota/**",
+        "dom/media/webspeech/recognition/test/**",
+        "dom/media/webspeech/synth/test/**",
+        "dom/messagechannel/tests/**",
+        "dom/midi/tests/**",
+        "dom/network/tests/**",
+        "dom/payments/test/**",
+        "dom/performance/tests/**",
+        "dom/quota/test/browser/**",
+        "dom/quota/test/common/**",
+        "dom/quota/test/mochitest/**",
+        "dom/quota/test/xpcshell/**",
         "dom/security/test/cors/**",
         "dom/security/test/csp/**",
         "dom/security/test/mixedcontentblocker/**",
-        "dom/serviceworkers/**",
-        "dom/smil/**",
+        "dom/serviceworkers/test/**",
+        "dom/smil/test/**",
         "dom/tests/mochitest/**",
-        "dom/u2f/**",
-        "dom/vr/**",
-        "dom/webauthn/**",
-        "dom/webgpu/**",
-        "dom/websocket/**",
-        "dom/workers/**",
-        "dom/worklet/**",
-        "dom/xml/**",
-        "dom/xslt/**",
-        "dom/xul/**",
+        "dom/u2f/tests/**",
+        "dom/vr/test/**",
+        "dom/webauthn/tests/**",
+        "dom/webgpu/mochitest/**",
+        "dom/websocket/tests/**",
+        "dom/workers/test/**",
+        "dom/worklet/tests/**",
+        "dom/xml/test/**",
+        "dom/xslt/tests/**",
+        "dom/xul/test/**",
         "dom/ipc/test.xhtml",
       ],
       rules: {
@@ -265,7 +333,6 @@ module.exports = {
         "mozilla/reject-importGlobalProperties": "off",
         "mozilla/use-cc-etc": "off",
         "mozilla/use-chromeutils-generateqi": "off",
-        "mozilla/use-chromeutils-import": "off",
         "mozilla/use-includes-instead-of-indexOf": "off",
         "mozilla/use-ownerGlobal": "off",
         "mozilla/use-services": "off",
@@ -285,7 +352,6 @@ module.exports = {
         "no-nested-ternary": "off",
         "no-new-object": "off",
         "no-new-wrappers": "off",
-        "no-octal": "off",
         "no-redeclare": "off",
         "no-return-await": "off",
         "no-restricted-globals": "off",
@@ -358,7 +424,6 @@ module.exports = {
         "dom/base/test/chrome/test_bug884693.xhtml",
         "dom/base/test/chrome/test_document-element-inserted.xhtml",
         "dom/base/test/chrome/test_domparsing.xhtml",
-        "dom/base/test/chrome/test_fileconstructor.xhtml",
         "dom/base/test/chrome/title_window.xhtml",
         "dom/base/test/chrome/window_nsITextInputProcessor.xhtml",
         "dom/base/test/chrome/window_swapFrameLoaders.xhtml",
@@ -404,13 +469,10 @@ module.exports = {
         "no-empty": "off",
         "no-eval": "off",
         "no-lone-blocks": "off",
-        "no-octal": "off",
         "no-redeclare": "off",
         "no-shadow": "off",
         "no-throw-literal": "off",
-        "no-undef": "off",
         "no-unsanitized/method": "off",
-        "no-unused-vars": "off",
         "no-useless-return": "off",
         "object-shorthand": "off",
       },
@@ -444,115 +506,20 @@ module.exports = {
       },
     },
     {
-      // TODO: Bug 1609271 Fix all violations for ChromeUtils.import(..., null)
+      // Rules of Hooks broadly checks for camelCase "use" identifiers, so
+      // enable only for paths actually using React to avoid false positives.
+      extends: ["plugin:react-hooks/recommended"],
       files: [
-        "browser/base/content/test/forms/head.js",
-        "browser/base/content/test/general/browser_datachoices_notification.js",
-        "browser/base/content/test/sync/browser_fxa_web_channel.js",
-        "browser/base/content/test/webextensions/head.js",
-        "browser/components/customizableui/test/browser_1042100_default_placements_update.js",
-        "browser/components/customizableui/test/browser_1096763_seen_widgets_post_reset.js",
-        "browser/components/customizableui/test/browser_1161838_inserted_new_default_buttons.js",
-        "browser/components/customizableui/test/browser_989338_saved_placements_not_resaved.js",
-        "browser/components/customizableui/test/browser_currentset_post_reset.js",
-        "browser/components/customizableui/test/browser_panel_keyboard_navigation.js",
-        "browser/components/customizableui/test/browser_proton_toolbar_hide_toolbarbuttons.js",
-        "browser/components/enterprisepolicies/tests/browser/browser_policies_setAndLockPref_API.js",
-        "browser/components/enterprisepolicies/tests/xpcshell/head.js",
-        "browser/components/enterprisepolicies/tests/xpcshell/test_proxy.js",
-        "browser/components/enterprisepolicies/tests/xpcshell/test_runOnce_helper.js",
-        "browser/components/extensions/test/browser/browser_ext_browserAction_context.js",
-        "browser/components/extensions/test/browser/browser_ext_browserAction_popup_preload.js",
-        "browser/components/extensions/test/browser/browser_ext_currentWindow.js",
-        "browser/components/extensions/test/browser/browser_ext_getViews.js",
-        "browser/components/extensions/test/browser/browser_ext_management.js",
-        "browser/components/extensions/test/browser/browser_ext_pageAction_context.js",
-        "browser/components/extensions/test/browser/browser_ext_pageAction_show_matches.js",
-        "browser/components/extensions/test/browser/browser_ext_sessions_getRecentlyClosed_private.js",
-        "browser/components/extensions/test/browser/browser_ext_sessions_restore.js",
-        "browser/components/extensions/test/browser/browser_ext_tabs_audio.js",
-        "browser/components/extensions/test/browser/browser_ext_tabs_duplicate.js",
-        "browser/components/extensions/test/browser/browser_ext_tabs_removeCSS.js",
-        "browser/components/extensions/test/browser/browser_ext_tabs_zoom.js",
-        "browser/components/extensions/test/browser/browser_ext_windows.js",
-        "browser/components/extensions/test/browser/browser_ext_windows_events.js",
-        "browser/components/extensions/test/browser/head.js",
-        "browser/components/extensions/test/xpcshell/test_ext_url_overrides_newtab.js",
-        "browser/components/migration/tests/unit/test_Edge_db_migration.js",
-        "browser/components/translation/test/unit/test_cld2.js",
-        "browser/extensions/formautofill/test/unit/test_sync.js",
-        "browser/extensions/report-site-issue/test/browser/head.js",
-        "devtools/client/aboutdebugging/test/browser/browser_aboutdebugging_addons_debug_popup.js",
-        "dom/ipc/tests/browser_memory_distribution_telemetry.js",
-        "dom/push/test/xpcshell/head.js",
-        "dom/push/test/xpcshell/test_broadcast_success.js",
-        "dom/push/test/xpcshell/test_crypto.js",
-        "security/manager/ssl/RemoteSecuritySettings.jsm",
-        "services/common/tests/unit/head_helpers.js",
-        "services/common/tests/unit/test_uptake_telemetry.js",
-        "services/fxaccounts/tests/xpcshell/test_accounts.js",
-        "services/fxaccounts/tests/xpcshell/test_accounts_device_registration.js",
-        "services/fxaccounts/tests/xpcshell/test_loginmgr_storage.js",
-        "services/fxaccounts/tests/xpcshell/test_oauth_token_storage.js",
-        "services/fxaccounts/tests/xpcshell/test_oauth_tokens.js",
-        "services/fxaccounts/tests/xpcshell/test_web_channel.js",
-        "services/sync/modules-testing/utils.js",
-        "services/sync/tests/unit/test_postqueue.js",
-        "toolkit/components/cloudstorage/tests/unit/test_cloudstorage.js",
-        "toolkit/components/crashes/tests/xpcshell/test_crash_manager.js",
-        "toolkit/components/crashes/tests/xpcshell/test_crash_service.js",
-        "toolkit/components/crashes/tests/xpcshell/test_crash_store.js",
-        "toolkit/components/enterprisepolicies/tests/EnterprisePolicyTesting.jsm",
-        "toolkit/components/extensions/ExtensionPreferencesManager.jsm",
-        "toolkit/components/extensions/ExtensionXPCShellUtils.jsm",
-        "toolkit/components/extensions/parent/ext-management.js",
-        "toolkit/components/extensions/test/mochitest/test_ext_contentscript_cache.html",
-        "toolkit/components/extensions/test/xpcshell/head_native_messaging.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_api_permissions.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_background_early_shutdown.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_background_teardown.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_contentscript_context.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_contentscript_context_isolation.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_contentscript_teardown.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_contexts_gc.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_privacy_disable.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_schemas_interactive.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_shutdown_cleanup.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_storage_sync_kinto.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_storage_sync_kinto_crypto.js",
-        "toolkit/components/extensions/test/xpcshell/test_ext_tab_teardown.js",
-        "toolkit/components/extensions/test/xpcshell/test_native_manifests.js",
-        "toolkit/components/featuregates/test/unit/test_FeatureGate.js",
-        "toolkit/components/normandy/test/browser/browser_actions_ShowHeartbeatAction.js",
-        "toolkit/components/osfile/modules/osfile_async_front.jsm",
-        "toolkit/components/osfile/modules/osfile_native.jsm",
-        "toolkit/components/osfile/tests/xpcshell/test_osfile_kill.js",
-        "toolkit/components/passwordmgr/test/unit/test_getFormFields.js",
-        "toolkit/components/passwordmgr/test/unit/test_getPasswordFields.js",
-        "toolkit/components/passwordmgr/test/unit/test_getUserNameAndPasswordFields.js",
-        "toolkit/components/processsingleton/MainProcessSingleton.jsm",
-        "toolkit/modules/subprocess/test/xpcshell/test_subprocess.js",
-        "toolkit/modules/tests/xpcshell/test_GMPInstallManager.js",
-        "toolkit/mozapps/extensions/internal/AddonTestUtils.jsm",
-        "toolkit/mozapps/extensions/test/browser/browser_gmpProvider.js",
-        "toolkit/mozapps/extensions/test/xpcshell/head_addons.js",
-        "toolkit/mozapps/extensions/test/xpcshell/rs-blocklist/test_blocklist_clients.js",
-        "toolkit/mozapps/extensions/test/xpcshell/rs-blocklist/test_blocklist_regexp_split.js",
-        "toolkit/mozapps/extensions/test/xpcshell/rs-blocklist/test_blocklist_targetapp_filter.js",
-        "toolkit/mozapps/extensions/test/xpcshell/rs-blocklist/test_blocklist_telemetry.js",
-        "toolkit/mozapps/extensions/test/xpcshell/rs-blocklist/test_blocklistchange.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_gmpProvider.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_no_addons.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_permissions_prefs.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_signed_updatepref.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_signed_verify.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_webextension.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_webextension_events.js",
-        "toolkit/mozapps/extensions/test/xpcshell/test_XPIStates.js",
-        "toolkit/mozapps/installer/precompile_cache.js",
+        "browser/components/newtab/**",
+        "browser/components/pocket/**",
+        "devtools/**",
       ],
+    },
+    {
+      // Turn off the osfile rule for osfile.
+      files: ["toolkit/components/osfile/**"],
       rules: {
-        "mozilla/reject-chromeutils-import-params": "off",
+        "mozilla/reject-osfile": "off",
       },
     },
   ],

@@ -1,9 +1,17 @@
 /* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+
+ChromeUtils.defineESModuleGetters(this, {
+  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.sys.mjs",
+  SearchService: "resource://gre/modules/SearchService.sys.mjs",
+  SearchSettings: "resource://gre/modules/SearchSettings.sys.mjs",
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+  SearchUtils: "resource://gre/modules/SearchUtils.sys.mjs",
+});
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   clearTimeout: "resource://gre/modules/Timer.jsm",
@@ -12,18 +20,11 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Region: "resource://gre/modules/Region.jsm",
   RemoteSettings: "resource://services-settings/remote-settings.js",
   RemoteSettingsClient: "resource://services-settings/RemoteSettingsClient.jsm",
-  SearchSettings: "resource://gre/modules/SearchSettings.jsm",
-  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.jsm",
-  SearchService: "resource://gre/modules/SearchService.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
   TestUtils: "resource://testing-common/TestUtils.jsm",
-  SearchUtils: "resource://gre/modules/SearchUtils.jsm",
   sinon: "resource://testing-common/Sinon.jsm",
 });
 
-var { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 var { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
 var { AddonTestUtils } = ChromeUtils.import(
   "resource://testing-common/AddonTestUtils.jsm"
@@ -65,13 +66,13 @@ Services.prefs.setBoolPref(
 SearchSettings.SETTNGS_INVALIDATION_DELAY = 250;
 
 async function promiseSettingsData() {
-  let path = OS.Path.join(OS.Constants.Path.profileDir, SETTINGS_FILENAME);
+  let path = PathUtils.join(PathUtils.profileDir, SETTINGS_FILENAME);
   return JSON.parse(await IOUtils.readUTF8(path, { decompress: true }));
 }
 
 function promiseSaveSettingsData(data) {
   return IOUtils.write(
-    OS.Path.join(OS.Constants.Path.profileDir, SETTINGS_FILENAME),
+    PathUtils.join(PathUtils.profileDir, SETTINGS_FILENAME),
     new TextEncoder().encode(JSON.stringify(data)),
     { compress: true }
   );
@@ -331,6 +332,62 @@ function useCustomGeoServer(region, waitToRespond = Promise.resolve()) {
 }
 
 /**
+ * @typedef {object} TelemetryDetails
+ * @property {string} engineId
+ * @property {string} [displayName]
+ * @property {string} [loadPath]
+ * @property {string} [submissionUrl]
+ * @property {string} [verified].
+
+/**
+ * Asserts that default search engine telemetry has been correctly reported
+ * to Glean.
+ *
+ * @param {object} expected
+ * @param {TelemetryDetails} expected.normal
+ *   An object with the expected details for the normal search engine.
+ * @param {TelemetryDetails} [expected.private]
+ *   An object with the expected details for the private search engine.
+ */
+async function assertGleanDefaultEngine(expected) {
+  await TestUtils.waitForCondition(
+    () =>
+      Glean.searchEngineDefault.engineId.testGetValue() ==
+      (expected.normal.engineId ?? ""),
+    "Should have set the correct telemetry id for the normal engine"
+  );
+
+  await TestUtils.waitForCondition(
+    () =>
+      Glean.searchEnginePrivate.engineId.testGetValue() ==
+      (expected.private?.engineId ?? ""),
+    "Should have set the correct telemetry id for the private engine"
+  );
+
+  for (let property of [
+    "displayName",
+    "loadPath",
+    "submissionUrl",
+    "verified",
+  ]) {
+    if (property in expected.normal) {
+      Assert.equal(
+        Glean.searchEngineDefault[property].testGetValue(),
+        expected.normal[property] ?? "",
+        `Should have set ${property} correctly`
+      );
+    }
+    if (expected.private && property in expected.private) {
+      Assert.equal(
+        Glean.searchEnginePrivate[property].testGetValue(),
+        expected.private[property] ?? "",
+        `Should have set ${property} correctly`
+      );
+    }
+  }
+}
+
+/**
  * A simple observer to ensure we get only the expected notifications.
  */
 class SearchObserver {
@@ -411,21 +468,25 @@ let consoleAllowList = [
   'property "profileDir" is non-configurable and can\'t be deleted',
 ];
 
-let consoleListener = {
-  observe(subject, topic, data) {
-    let msg = subject.wrappedJSObject;
-    let messageContents = msg.arguments[0]?.message || msg.arguments[0];
-    if (
-      msg.level == "error" &&
-      !consoleAllowList.some(e => messageContents.includes(e))
-    ) {
-      Assert.ok(false, "Unexpected console message: " + messageContents);
-    }
-  },
-};
+function observe(subject) {
+  let msg = subject.wrappedJSObject;
+  let messageContents = msg.arguments[0]?.message || msg.arguments[0];
+  if (
+    msg.level == "error" &&
+    !consoleAllowList.some(e => messageContents.includes(e))
+  ) {
+    Assert.ok(false, "Unexpected console message: " + messageContents);
+  }
+}
 
-Services.obs.addObserver(consoleListener, "console-api-log-event");
+const ConsoleAPIStorage = Cc["@mozilla.org/consoleAPI-storage;1"].getService(
+  Ci.nsIConsoleAPIStorage
+);
+ConsoleAPIStorage.addLogEventListener(
+  observe,
+  Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+);
 
 registerCleanupFunction(async () => {
-  Services.obs.removeObserver(consoleListener, "console-api-log-event");
+  ConsoleAPIStorage.removeLogEventListener(observe);
 });

@@ -17,22 +17,25 @@
 #include "Adapter.h"
 #include "Buffer.h"
 #include "ComputePipeline.h"
+#include "DeviceLostInfo.h"
 #include "Queue.h"
 #include "RenderBundleEncoder.h"
 #include "RenderPipeline.h"
 #include "Sampler.h"
+#include "SupportedFeatures.h"
+#include "SupportedLimits.h"
 #include "Texture.h"
 #include "TextureView.h"
 #include "ValidationError.h"
 #include "ipc/WebGPUChild.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 mozilla::LazyLogModule gWebGPULog("WebGPU");
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED(Device, DOMEventTargetHelper, mBridge,
-                                   mQueue)
+GPU_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_INHERITED(Device, DOMEventTargetHelper,
+                                                 mBridge, mQueue, mFeatures,
+                                                 mLimits, mLostPromise);
 NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(Device, DOMEventTargetHelper)
 GPU_IMPL_JS_WRAP(Device)
 
@@ -51,120 +54,104 @@ JSObject* Device::CreateExternalArrayBuffer(JSContext* aCx, size_t aOffset,
                                     &mapFreeCallback, nullptr);
 }
 
-Device::Device(Adapter* const aParent, RawId aId)
+Device::Device(Adapter* const aParent, RawId aId,
+               UniquePtr<ffi::WGPULimits> aRawLimits)
     : DOMEventTargetHelper(aParent->GetParentObject()),
       mId(aId),
+      // features are filled in Adapter::RequestDevice
+      mFeatures(new SupportedFeatures(aParent)),
+      mLimits(new SupportedLimits(aParent, std::move(aRawLimits))),
       mBridge(aParent->mBridge),
       mQueue(new class Queue(this, aParent->mBridge, aId)) {
-  mBridge->RegisterDevice(mId, this);
+  mBridge->RegisterDevice(this);
 }
 
 Device::~Device() { Cleanup(); }
 
 void Device::Cleanup() {
-  if (mValid && mBridge && mBridge->IsOpen()) {
-    mValid = false;
+  if (!mValid) {
+    return;
+  }
+
+  mValid = false;
+
+  if (mBridge) {
     mBridge->UnregisterDevice(mId);
+  }
+
+  // Cycle collection may have disconnected the promise object.
+  if (mLostPromise && mLostPromise->PromiseObj() != nullptr) {
+    auto info = MakeRefPtr<DeviceLostInfo>(GetParentObject(),
+                                           dom::GPUDeviceLostReason::Destroyed,
+                                           u"Device destroyed"_ns);
+    mLostPromise->MaybeResolve(info);
+  }
+}
+
+void Device::CleanupUnregisteredInParent() {
+  if (mBridge) {
+    mBridge->FreeUnregisteredInParentDevice(mId);
+  }
+  mValid = false;
+}
+
+bool Device::IsLost() const { return !mBridge || !mBridge->CanSend(); }
+
+// Generate an error on the Device timeline for this device.
+//
+// aMessage is interpreted as UTF-8.
+void Device::GenerateError(const nsCString& aMessage) {
+  if (mBridge->CanSend()) {
+    mBridge->SendGenerateError(mId, aMessage);
   }
 }
 
 void Device::GetLabel(nsAString& aValue) const { aValue = mLabel; }
 void Device::SetLabel(const nsAString& aLabel) { mLabel = aLabel; }
 
-const RefPtr<Queue>& Device::GetQueue() const { return mQueue; }
+dom::Promise* Device::GetLost(ErrorResult& aRv) {
+  if (!mLostPromise) {
+    mLostPromise = dom::Promise::Create(GetParentObject(), aRv);
+    if (mLostPromise && !mBridge->CanSend()) {
+      auto info = MakeRefPtr<DeviceLostInfo>(GetParentObject(),
+                                             u"WebGPUChild destroyed"_ns);
+      mLostPromise->MaybeResolve(info);
+    }
+  }
+  return mLostPromise;
+}
 
 already_AddRefed<Buffer> Device::CreateBuffer(
     const dom::GPUBufferDescriptor& aDesc, ErrorResult& aRv) {
-  ipc::Shmem shmem;
-  bool hasMapFlags = aDesc.mUsage & (dom::GPUBufferUsage_Binding::MAP_WRITE |
-                                     dom::GPUBufferUsage_Binding::MAP_READ);
-  if (hasMapFlags || aDesc.mMappedAtCreation) {
-    const auto checked = CheckedInt<size_t>(aDesc.mSize);
-    if (!checked.isValid()) {
-      aRv.ThrowRangeError("Mappable size is too large");
-      return nullptr;
-    }
-    const auto& size = checked.value();
-
-    // TODO: use `ShmemPool`?
-    if (!mBridge->AllocShmem(size, ipc::Shmem::SharedMemory::TYPE_BASIC,
-                             &shmem)) {
-      aRv.ThrowAbortError(
-          nsPrintfCString("Unable to allocate shmem of size %" PRIuPTR, size));
-      return nullptr;
-    }
-
-    // zero out memory
-    memset(shmem.get<uint8_t>(), 0, size);
-  }
-
-  // If the buffer is not mapped at creation, and it has Shmem, we send it
-  // to the GPU process. Otherwise, we keep it.
-  RawId id = mBridge->DeviceCreateBuffer(mId, aDesc);
-  RefPtr<Buffer> buffer = new Buffer(this, id, aDesc.mSize, hasMapFlags);
-  if (aDesc.mMappedAtCreation) {
-    buffer->SetMapped(std::move(shmem),
-                      !(aDesc.mUsage & dom::GPUBufferUsage_Binding::MAP_READ));
-  } else if (hasMapFlags) {
-    mBridge->SendBufferReturnShmem(id, std::move(shmem));
-  }
-
-  return buffer.forget();
-}
-
-RefPtr<MappingPromise> Device::MapBufferAsync(RawId aId, uint32_t aMode,
-                                              size_t aOffset, size_t aSize,
-                                              ErrorResult& aRv) {
-  ffi::WGPUHostMap mode;
-  switch (aMode) {
-    case dom::GPUMapMode_Binding::READ:
-      mode = ffi::WGPUHostMap_Read;
-      break;
-    case dom::GPUMapMode_Binding::WRITE:
-      mode = ffi::WGPUHostMap_Write;
-      break;
-    default:
-      aRv.ThrowInvalidAccessError(
-          nsPrintfCString("Invalid map flag %u", aMode));
-      return nullptr;
-  }
-
-  const CheckedInt<uint64_t> offset(aOffset);
-  if (!offset.isValid()) {
-    aRv.ThrowRangeError("Mapped offset is too large");
-    return nullptr;
-  }
-  const CheckedInt<uint64_t> size(aSize);
-  if (!size.isValid()) {
-    aRv.ThrowRangeError("Mapped size is too large");
-    return nullptr;
-  }
-
-  return mBridge->SendBufferMap(aId, mode, offset.value(), size.value());
-}
-
-void Device::UnmapBuffer(RawId aId, ipc::Shmem&& aShmem, bool aFlush,
-                         bool aKeepShmem) {
-  mBridge->SendBufferUnmap(aId, std::move(aShmem), aFlush, aKeepShmem);
+  return Buffer::Create(this, mId, aDesc, aRv);
 }
 
 already_AddRefed<Texture> Device::CreateTexture(
     const dom::GPUTextureDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreateTexture(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateTexture(mId, aDesc);
+  }
   RefPtr<Texture> texture = new Texture(this, id, aDesc);
   return texture.forget();
 }
 
 already_AddRefed<Sampler> Device::CreateSampler(
     const dom::GPUSamplerDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreateSampler(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateSampler(mId, aDesc);
+  }
   RefPtr<Sampler> sampler = new Sampler(this, id);
   return sampler.forget();
 }
 
 already_AddRefed<CommandEncoder> Device::CreateCommandEncoder(
     const dom::GPUCommandEncoderDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreateCommandEncoder(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateCommandEncoder(mId, aDesc);
+  }
   RefPtr<CommandEncoder> encoder = new CommandEncoder(this, mBridge, id);
   return encoder.forget();
 }
@@ -178,19 +165,28 @@ already_AddRefed<RenderBundleEncoder> Device::CreateRenderBundleEncoder(
 
 already_AddRefed<BindGroupLayout> Device::CreateBindGroupLayout(
     const dom::GPUBindGroupLayoutDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreateBindGroupLayout(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateBindGroupLayout(mId, aDesc);
+  }
   RefPtr<BindGroupLayout> object = new BindGroupLayout(this, id, true);
   return object.forget();
 }
 already_AddRefed<PipelineLayout> Device::CreatePipelineLayout(
     const dom::GPUPipelineLayoutDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreatePipelineLayout(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreatePipelineLayout(mId, aDesc);
+  }
   RefPtr<PipelineLayout> object = new PipelineLayout(this, id);
   return object.forget();
 }
 already_AddRefed<BindGroup> Device::CreateBindGroup(
     const dom::GPUBindGroupDescriptor& aDesc) {
-  RawId id = mBridge->DeviceCreateBindGroup(mId, aDesc);
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateBindGroup(mId, aDesc);
+  }
   RefPtr<BindGroup> object = new BindGroup(this, id);
   return object.forget();
 }
@@ -198,39 +194,118 @@ already_AddRefed<BindGroup> Device::CreateBindGroup(
 already_AddRefed<ShaderModule> Device::CreateShaderModule(
     JSContext* aCx, const dom::GPUShaderModuleDescriptor& aDesc) {
   Unused << aCx;
-  RawId id = mBridge->DeviceCreateShaderModule(mId, aDesc);
-  RefPtr<ShaderModule> object = new ShaderModule(this, id);
-  return object.forget();
+
+  if (!mBridge->CanSend()) {
+    return nullptr;
+  }
+
+  ErrorResult err;
+  RefPtr<dom::Promise> promise = dom::Promise::Create(GetParentObject(), err);
+  if (NS_WARN_IF(err.Failed())) {
+    return nullptr;
+  }
+
+  return mBridge->DeviceCreateShaderModule(this, aDesc, promise);
 }
 
 already_AddRefed<ComputePipeline> Device::CreateComputePipeline(
     const dom::GPUComputePipelineDescriptor& aDesc) {
-  nsTArray<RawId> implicitBindGroupLayoutIds;
-  RawId implicitPipelineLayoutId = 0;
-  RawId id = mBridge->DeviceCreateComputePipeline(
-      mId, aDesc, &implicitPipelineLayoutId, &implicitBindGroupLayoutIds);
+  PipelineCreationContext context = {mId};
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateComputePipeline(&context, aDesc);
+  }
   RefPtr<ComputePipeline> object =
-      new ComputePipeline(this, id, implicitPipelineLayoutId,
-                          std::move(implicitBindGroupLayoutIds));
+      new ComputePipeline(this, id, context.mImplicitPipelineLayoutId,
+                          std::move(context.mImplicitBindGroupLayoutIds));
   return object.forget();
 }
 
 already_AddRefed<RenderPipeline> Device::CreateRenderPipeline(
     const dom::GPURenderPipelineDescriptor& aDesc) {
-  nsTArray<RawId> implicitBindGroupLayoutIds;
-  RawId implicitPipelineLayoutId = 0;
-  RawId id = mBridge->DeviceCreateRenderPipeline(
-      mId, aDesc, &implicitPipelineLayoutId, &implicitBindGroupLayoutIds);
+  PipelineCreationContext context = {mId};
+  RawId id = 0;
+  if (mBridge->CanSend()) {
+    id = mBridge->DeviceCreateRenderPipeline(&context, aDesc);
+  }
   RefPtr<RenderPipeline> object =
-      new RenderPipeline(this, id, implicitPipelineLayoutId,
-                         std::move(implicitBindGroupLayoutIds));
+      new RenderPipeline(this, id, context.mImplicitPipelineLayoutId,
+                         std::move(context.mImplicitBindGroupLayoutIds));
   return object.forget();
+}
+
+already_AddRefed<dom::Promise> Device::CreateComputePipelineAsync(
+    const dom::GPUComputePipelineDescriptor& aDesc, ErrorResult& aRv) {
+  RefPtr<dom::Promise> promise = dom::Promise::Create(GetParentObject(), aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  if (!mBridge->CanSend()) {
+    promise->MaybeRejectWithOperationError("Internal communication error");
+    return promise.forget();
+  }
+
+  std::shared_ptr<PipelineCreationContext> context(
+      new PipelineCreationContext());
+  context->mParentId = mId;
+  mBridge->DeviceCreateComputePipelineAsync(context.get(), aDesc)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr{this}, context, promise](RawId aId) {
+            RefPtr<ComputePipeline> object = new ComputePipeline(
+                self, aId, context->mImplicitPipelineLayoutId,
+                std::move(context->mImplicitBindGroupLayoutIds));
+            promise->MaybeResolve(object);
+          },
+          [promise](const ipc::ResponseRejectReason&) {
+            promise->MaybeRejectWithOperationError(
+                "Internal communication error");
+          });
+
+  return promise.forget();
+}
+
+already_AddRefed<dom::Promise> Device::CreateRenderPipelineAsync(
+    const dom::GPURenderPipelineDescriptor& aDesc, ErrorResult& aRv) {
+  RefPtr<dom::Promise> promise = dom::Promise::Create(GetParentObject(), aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  if (!mBridge->CanSend()) {
+    promise->MaybeRejectWithOperationError("Internal communication error");
+    return promise.forget();
+  }
+
+  std::shared_ptr<PipelineCreationContext> context(
+      new PipelineCreationContext());
+  context->mParentId = mId;
+  mBridge->DeviceCreateRenderPipelineAsync(context.get(), aDesc)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr{this}, context, promise](RawId aId) {
+            RefPtr<RenderPipeline> object = new RenderPipeline(
+                self, aId, context->mImplicitPipelineLayoutId,
+                std::move(context->mImplicitBindGroupLayoutIds));
+            promise->MaybeResolve(object);
+          },
+          [promise](const ipc::ResponseRejectReason&) {
+            promise->MaybeRejectWithOperationError(
+                "Internal communication error");
+          });
+
+  return promise.forget();
 }
 
 already_AddRefed<Texture> Device::InitSwapChain(
     const dom::GPUCanvasConfiguration& aDesc,
-    wr::ExternalImageId aExternalImageId, gfx::SurfaceFormat aFormat,
+    const layers::CompositableHandle& aHandle, gfx::SurfaceFormat aFormat,
     gfx::IntSize* aCanvasSize) {
+  if (!mBridge->CanSend()) {
+    return nullptr;
+  }
+
   gfx::IntSize size = *aCanvasSize;
   if (aDesc.mSize.WasPassed()) {
     const auto& descSize = aDesc.mSize.Value();
@@ -246,14 +321,13 @@ already_AddRefed<Texture> Device::InitSwapChain(
     } else {
       MOZ_CRASH("Unexpected union");
     }
+    *aCanvasSize = size;
   }
-  *aCanvasSize = size;
 
-  const layers::RGBDescriptor rgbDesc(size, aFormat, false);
+  const layers::RGBDescriptor rgbDesc(size, aFormat);
   // buffer count doesn't matter much, will be created on demand
   const size_t maxBufferCount = 10;
-  mBridge->DeviceCreateSwapChain(mId, rgbDesc, maxBufferCount,
-                                 aExternalImageId);
+  mBridge->DeviceCreateSwapChain(mId, rgbDesc, maxBufferCount, aHandle);
 
   dom::GPUTextureDescriptor desc;
   desc.mDimension = dom::GPUTextureDimension::_2d;
@@ -268,12 +342,18 @@ already_AddRefed<Texture> Device::InitSwapChain(
   return CreateTexture(desc);
 }
 
+bool Device::CheckNewWarning(const nsACString& aMessage) {
+  return mKnownWarnings.EnsureInserted(aMessage);
+}
+
 void Device::Destroy() {
   // TODO
 }
 
 void Device::PushErrorScope(const dom::GPUErrorFilter& aFilter) {
-  mBridge->SendDevicePushErrorScope(mId);
+  if (mBridge->CanSend()) {
+    mBridge->SendDevicePushErrorScope(mId);
+  }
 }
 
 already_AddRefed<dom::Promise> Device::PopErrorScope(ErrorResult& aRv) {
@@ -282,10 +362,15 @@ already_AddRefed<dom::Promise> Device::PopErrorScope(ErrorResult& aRv) {
     return nullptr;
   }
 
+  if (!mBridge->CanSend()) {
+    promise->MaybeRejectWithOperationError("Internal communication error");
+    return promise.forget();
+  }
+
   auto errorPromise = mBridge->SendDevicePopErrorScope(mId);
 
   errorPromise->Then(
-      GetMainThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [self = RefPtr{this}, promise](const MaybeScopedError& aMaybeError) {
         if (aMaybeError) {
           if (aMaybeError->operationError) {
@@ -295,8 +380,8 @@ already_AddRefed<dom::Promise> Device::PopErrorScope(ErrorResult& aRv) {
             if (aMaybeError->validationMessage.IsEmpty()) {
               error.SetAsGPUOutOfMemoryError();
             } else {
-              error.SetAsGPUValidationError() =
-                  new ValidationError(self, aMaybeError->validationMessage);
+              error.SetAsGPUValidationError() = new ValidationError(
+                  self->GetParentObject(), aMaybeError->validationMessage);
             }
             promise->MaybeResolve(std::move(error));
           }
@@ -311,5 +396,4 @@ already_AddRefed<dom::Promise> Device::PopErrorScope(ErrorResult& aRv) {
   return promise.forget();
 }
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu

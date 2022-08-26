@@ -29,24 +29,19 @@ const { createLazyLoaders } = ChromeUtils.import(
 const lazy = createLazyLoaders({
   Chrome: () => require("chrome"),
   Services: () => require("Services"),
-  OS: () => ChromeUtils.import("resource://gre/modules/osfile.jsm"),
-  PerfSymbolication: () =>
-    ChromeUtils.import(
-      "resource://devtools/client/performance-new/symbolication.jsm.js"
-    ),
 });
-
-const TRANSFER_EVENT = "devtools:perf-html-transfer-profile";
-const SYMBOL_TABLE_REQUEST_EVENT = "devtools:perf-html-request-symbol-table";
-const SYMBOL_TABLE_RESPONSE_EVENT = "devtools:perf-html-reply-symbol-table";
 
 /** @type {PerformancePref["UIBaseUrl"]} */
 const UI_BASE_URL_PREF = "devtools.performance.recording.ui-base-url";
 /** @type {PerformancePref["UIBaseUrlPathPref"]} */
 const UI_BASE_URL_PATH_PREF = "devtools.performance.recording.ui-base-url-path";
 
+/** @type {PerformancePref["UIEnableActiveTabView"]} */
+const UI_ENABLE_ACTIVE_TAB_PREF =
+  "devtools.performance.recording.active-tab-view.enabled";
+
 const UI_BASE_URL_DEFAULT = "https://profiler.firefox.com";
-const UI_BASE_URL_PATH_DEFAULT = "/from-addon";
+const UI_BASE_URL_PATH_DEFAULT = "/from-browser";
 
 /**
  * This file contains all of the privileged browser-specific functionality. This helps
@@ -58,32 +53,14 @@ const UI_BASE_URL_PATH_DEFAULT = "/from-addon";
 /**
  * Once a profile is received from the actor, it needs to be opened up in
  * profiler.firefox.com to be analyzed. This function opens up profiler.firefox.com
- * into a new browser tab, and injects the profile via a frame script.
- *
- * @param {MinimallyTypedGeckoProfile | ArrayBuffer | {}} profile - The Gecko profile.
+ * into a new browser tab.
  * @param {ProfilerViewMode | undefined} profilerViewMode - View mode for the Firefox Profiler
  *   front-end timeline. While opening the url, we should append a query string
  *   if a view other than "full" needs to be displayed.
- * @param {SymbolicationService} symbolicationService - An object which implements the
- *   SymbolicationService interface, whose getSymbolTable method will be invoked
- *   when profiler.firefox.com sends SYMBOL_TABLE_REQUEST_EVENT messages to us. This
- *   method should obtain a symbol table for the requested binary and resolve the
- *   returned promise with it.
+ * @returns {Promise<MockedExports.Browser>} The browser for the opened tab.
  */
-function openProfilerAndDisplayProfile(
-  profile,
-  profilerViewMode,
-  symbolicationService
-) {
+async function openProfilerTab(profilerViewMode) {
   const Services = lazy.Services();
-  // Find the most recently used window, as the DevTools client could be in a variety
-  // of hosts.
-  const win = Services.wm.getMostRecentWindow("navigator:browser");
-  if (!win) {
-    throw new Error("No browser window");
-  }
-  const browser = win.gBrowser;
-  win.focus();
 
   // Allow the user to point to something other than profiler.firefox.com.
   const baseUrl = Services.prefs.getStringPref(
@@ -95,56 +72,55 @@ function openProfilerAndDisplayProfile(
     UI_BASE_URL_PATH_PREF,
     UI_BASE_URL_PATH_DEFAULT
   );
+  // This controls whether we enable the active tab view when capturing in web
+  // developer preset.
+  const enableActiveTab = Services.prefs.getBoolPref(
+    UI_ENABLE_ACTIVE_TAB_PREF,
+    false
+  );
 
   // We automatically open up the "full" mode if no query string is present.
   // `undefined` also means nothing is specified, and it should open the "full"
   // timeline view in that case.
   let viewModeQueryString = "";
   if (profilerViewMode === "active-tab") {
-    viewModeQueryString = "?view=active-tab&implementation=js";
+    // We're not enabling the active-tab view in all environments until we
+    // iron out all its issues.
+    if (enableActiveTab) {
+      viewModeQueryString = "?view=active-tab&implementation=js";
+    } else {
+      viewModeQueryString = "?implementation=js";
+    }
   } else if (profilerViewMode !== undefined && profilerViewMode !== "full") {
     viewModeQueryString = `?view=${profilerViewMode}`;
   }
 
-  const tab = browser.addWebTab(
-    `${baseUrl}${baseUrlPath}${viewModeQueryString}`,
-    {
-      triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({
-        userContextId: browser.contentPrincipal.userContextId,
-      }),
-    }
+  const urlToLoad = `${baseUrl}${baseUrlPath}${viewModeQueryString}`;
+
+  // Find the most recently used window, as the DevTools client could be in a variety
+  // of hosts.
+  // Note that when running from the browser toolbox, there won't be the browser window,
+  // but only the browser toolbox document.
+  const win =
+    Services.wm.getMostRecentWindow("navigator:browser") ||
+    Services.wm.getMostRecentWindow("devtools:toolbox");
+  if (!win) {
+    throw new Error("No browser window");
+  }
+  win.focus();
+
+  // The profiler frontend currently doesn't support being loaded in a private
+  // window, because it does some storage writes in IndexedDB. That's why we
+  // force the opening of the tab in a non-private window. This might open a new
+  // non-private window if the only currently opened window is a private window.
+  const contentBrowser = await new Promise(resolveOnContentBrowserCreated =>
+    win.openWebLinkIn(urlToLoad, "tab", {
+      forceNonPrivate: true,
+      resolveOnContentBrowserCreated,
+      userContextId: win.gBrowser?.contentPrincipal.userContextId,
+    })
   );
-  browser.selectedTab = tab;
-  const mm = tab.linkedBrowser.messageManager;
-  mm.loadFrameScript(
-    "chrome://devtools/content/performance-new/frame-script.js",
-    false
-  );
-  mm.sendAsyncMessage(TRANSFER_EVENT, profile);
-  mm.addMessageListener(SYMBOL_TABLE_REQUEST_EVENT, e => {
-    const { debugName, breakpadId } = e.data;
-    symbolicationService.getSymbolTable(debugName, breakpadId).then(
-      result => {
-        const [addr, index, buffer] = result;
-        mm.sendAsyncMessage(SYMBOL_TABLE_RESPONSE_EVENT, {
-          status: "success",
-          debugName,
-          breakpadId,
-          result: [addr, index, buffer],
-        });
-      },
-      error => {
-        // Re-wrap the error object into an object that is Structured Clone-able.
-        const { name, message, lineNumber, fileName } = error;
-        mm.sendAsyncMessage(SYMBOL_TABLE_RESPONSE_EVENT, {
-          status: "error",
-          debugName,
-          breakpadId,
-          error: { name, message, lineNumber, fileName },
-        });
-      }
-    );
-  });
+  return contentBrowser;
 }
 
 /**
@@ -221,7 +197,7 @@ function openFilePickerForObjdir(window, objdirs, changeObjdirs) {
 }
 
 module.exports = {
-  openProfilerAndDisplayProfile,
+  openProfilerTab,
   sharedLibrariesFromProfile,
   restartBrowserWithEnvironmentVariable,
   getEnvironmentVariable,

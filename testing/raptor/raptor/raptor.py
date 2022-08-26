@@ -47,22 +47,12 @@ def main(args=sys.argv[1:]):
 
     args.extra_prefs = parse_preferences(args.extra_prefs or [])
 
-    if args.enable_fission:
-        args.extra_prefs.update(
-            {
-                "fission.autostart": True,
-            }
-        )
-
     if args.enable_marionette_trace:
         args.extra_prefs.update(
             {
                 "marionette.log.level": "Trace",
             }
         )
-
-    if args.extra_prefs and args.extra_prefs.get("fission.autostart", False):
-        args.enable_fission = True
 
     args.environment = dict(parse_key_value(args.environment or [], context="--setenv"))
 
@@ -139,15 +129,16 @@ def main(args=sys.argv[1:]):
             activity=args.activity,
             intent=args.intent,
             interrupt_handler=SignalHandler(),
-            enable_webrender=args.enable_webrender,
             extra_prefs=args.extra_prefs or {},
             environment=args.environment or {},
             device_name=args.device_name,
             disable_perf_tuning=args.disable_perf_tuning,
             conditioned_profile=args.conditioned_profile,
+            test_bytecode_cache=args.test_bytecode_cache,
             chimera=args.chimera,
             project=args.project,
             verbose=args.verbose,
+            fission=args.fission,
         )
     except Exception:
         traceback.print_exc()
@@ -156,6 +147,7 @@ def main(args=sys.argv[1:]):
         )
         os.sys.exit(1)
 
+    raptor.results_handler.use_existing_results(args.browsertime_existing_results)
     success = raptor.run_tests(raptor_test_list, raptor_test_names)
 
     if not success:

@@ -11,9 +11,13 @@
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/OffscreenCanvas.h"
 #include "mozilla/dom/UserActivation.h"
+#include "mozilla/dom/WorkerCommon.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/BasePrincipal.h"
-#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StaticPrefs_webgl.h"
 #include "nsIPrincipal.h"
@@ -47,24 +51,26 @@ using namespace mozilla::gfx;
 namespace mozilla::CanvasUtils {
 
 bool IsImageExtractionAllowed(dom::Document* aDocument, JSContext* aCx,
-                              nsIPrincipal& aPrincipal) {
+                              Maybe<nsIPrincipal*> aPrincipal) {
   // Do the rest of the checks only if privacy.resistFingerprinting is on.
   if (!nsContentUtils::ShouldResistFingerprinting(aDocument)) {
     return true;
   }
 
   // Don't proceed if we don't have a document or JavaScript context.
-  if (!aDocument || !aCx) {
+  if (!aDocument || !aCx || !aPrincipal) {
     return false;
   }
 
+  nsIPrincipal& subjectPrincipal = *aPrincipal.ref();
+
   // The system principal can always extract canvas data.
-  if (aPrincipal.IsSystemPrincipal()) {
+  if (subjectPrincipal.IsSystemPrincipal()) {
     return true;
   }
 
   // Allow extension principals.
-  auto principal = BasePrincipal::Cast(&aPrincipal);
+  auto* principal = BasePrincipal::Cast(&subjectPrincipal);
   if (principal->AddonPolicy() || principal->ContentScriptAddonPolicy()) {
     return true;
   }
@@ -86,25 +92,12 @@ bool IsImageExtractionAllowed(dom::Document* aDocument, JSContext* aCx,
     return true;
   }
 
-  dom::Document* topLevelDocument =
-      aDocument->GetTopLevelContentDocumentIfSameProcess();
-  nsIURI* topLevelDocURI =
-      topLevelDocument ? topLevelDocument->GetDocumentURI() : nullptr;
-  nsCString topLevelDocURISpec;
-  if (topLevelDocURI) {
-    topLevelDocURI->GetSpec(topLevelDocURISpec);
-  }
-
-  // Load Third Party Util service.
-  nsresult rv;
-  nsCOMPtr<mozIThirdPartyUtil> thirdPartyUtil =
-      do_GetService(THIRDPARTYUTIL_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, false);
-
   // Block all third-party attempts to extract canvas.
-  bool isThirdParty = true;
-  rv = thirdPartyUtil->IsThirdPartyURI(topLevelDocURI, docURI, &isThirdParty);
-  NS_ENSURE_SUCCESS(rv, false);
+  MOZ_ASSERT(aDocument->GetWindowContext());
+  bool isThirdParty =
+      aDocument->GetWindowContext()
+          ? aDocument->GetWindowContext()->GetIsThirdPartyWindow()
+          : false;
   if (isThirdParty) {
     nsAutoString message;
     message.AppendPrintf("Blocked third party %s from extracting canvas data.",
@@ -115,6 +108,7 @@ bool IsImageExtractionAllowed(dom::Document* aDocument, JSContext* aCx,
   }
 
   // Load Permission Manager service.
+  nsresult rv;
   nsCOMPtr<nsIPermissionManager> permissionManager =
       do_GetService(NS_PERMISSIONMANAGER_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, false);
@@ -206,7 +200,7 @@ bool GetCanvasContextType(const nsAString& str,
     }
   }
 
-  if (StaticPrefs::dom_webgpu_enabled()) {
+  if (gfxVars::AllowWebGPU()) {
     if (str.EqualsLiteral("webgpu")) {
       *out_type = dom::CanvasContextType::WebGPU;
       return true;
@@ -250,7 +244,11 @@ void DoDrawImageSecurityCheck(dom::HTMLCanvasElement* aCanvasElement,
   // No need to do a security check if the image used CORS for the load
   if (CORSUsed) return;
 
-  MOZ_ASSERT(aPrincipal, "Must have a principal here");
+  if (NS_WARN_IF(!aPrincipal)) {
+    MOZ_ASSERT_UNREACHABLE("Must have a principal here");
+    aCanvasElement->SetWriteOnly();
+    return;
+  }
 
   if (aCanvasElement->NodePrincipal()->Subsumes(aPrincipal)) {
     // This canvas has access to that image anyway
@@ -279,6 +277,52 @@ void DoDrawImageSecurityCheck(dom::HTMLCanvasElement* aCanvasElement,
   aCanvasElement->SetWriteOnly();
 }
 
+/**
+ * This security check utility might be called from an source that never taints
+ * others. For example, while painting a CanvasPattern, which is created from an
+ * ImageBitmap, onto a canvas. In this case, the caller could set the aCORSUsed
+ * true in order to pass this check and leave the aPrincipal to be a nullptr
+ * since the aPrincipal is not going to be used.
+ */
+void DoDrawImageSecurityCheck(dom::OffscreenCanvas* aOffscreenCanvas,
+                              nsIPrincipal* aPrincipal, bool aForceWriteOnly,
+                              bool aCORSUsed) {
+  // Callers should ensure that mCanvasElement is non-null before calling this
+  if (NS_WARN_IF(!aOffscreenCanvas)) {
+    return;
+  }
+
+  if (aOffscreenCanvas->IsWriteOnly()) {
+    return;
+  }
+
+  // If we explicitly set WriteOnly just do it and get out
+  if (aForceWriteOnly) {
+    aOffscreenCanvas->SetWriteOnly();
+    return;
+  }
+
+  // No need to do a security check if the image used CORS for the load
+  if (aCORSUsed) {
+    return;
+  }
+
+  // If we are on a worker thread, we might not have any principals at all.
+  nsIGlobalObject* global = aOffscreenCanvas->GetOwnerGlobal();
+  nsIPrincipal* canvasPrincipal = global ? global->PrincipalOrNull() : nullptr;
+  if (!aPrincipal || !canvasPrincipal) {
+    aOffscreenCanvas->SetWriteOnly();
+    return;
+  }
+
+  if (canvasPrincipal->Subsumes(aPrincipal)) {
+    // This canvas has access to that image anyway
+    return;
+  }
+
+  aOffscreenCanvas->SetWriteOnly();
+}
+
 bool CoerceDouble(const JS::Value& v, double* d) {
   if (v.isDouble()) {
     *d = v.toDouble();
@@ -295,6 +339,40 @@ bool CoerceDouble(const JS::Value& v, double* d) {
 bool HasDrawWindowPrivilege(JSContext* aCx, JSObject* /* unused */) {
   return nsContentUtils::CallerHasPermission(aCx,
                                              nsGkAtoms::all_urlsPermission);
+}
+
+bool IsOffscreenCanvasEnabled(JSContext* aCx, JSObject* aObj) {
+  if (StaticPrefs::gfx_offscreencanvas_enabled()) {
+    return true;
+  }
+
+  if (OriginTrials::IsEnabled(aCx, aObj, OriginTrial::OffscreenCanvas)) {
+    return true;
+  }
+
+  if (!StaticPrefs::gfx_offscreencanvas_domain_enabled()) {
+    return false;
+  }
+
+  if (!NS_IsMainThread()) {
+    dom::WorkerPrivate* workerPrivate = dom::GetWorkerPrivateFromContext(aCx);
+    if (workerPrivate->UsesSystemPrincipal() ||
+        workerPrivate->OriginNoSuffix() == u"resource://pdf.js"_ns) {
+      return true;
+    }
+
+    const auto prefLock = StaticPrefs::gfx_offscreencanvas_domain_allowlist();
+    return nsContentUtils::IsURIInList(workerPrivate->GetBaseURI(), *prefLock);
+  }
+
+  nsIPrincipal* principal = nsContentUtils::SubjectPrincipal(aCx);
+  if (principal->IsSystemPrincipal() || nsContentUtils::IsPDFJS(principal)) {
+    return true;
+  }
+
+  nsCOMPtr<nsIURI> uri = principal->GetURI();
+  const auto prefLock = StaticPrefs::gfx_offscreencanvas_domain_allowlist();
+  return nsContentUtils::IsURIInList(uri, *prefLock);
 }
 
 bool CheckWriteOnlySecurity(bool aCORSUsed, nsIPrincipal* aPrincipal,

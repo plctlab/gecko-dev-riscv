@@ -27,19 +27,15 @@ ChromeUtils.defineModuleGetter(
   "NewTabUtils",
   "resource://gre/modules/NewTabUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   this,
   "TelemetryEnvironment",
   "resource://gre/modules/TelemetryEnvironment.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
@@ -1111,9 +1107,64 @@ add_task(async function check_userMonthlyActivity() {
   );
 });
 
-add_task(async function check_doesAppNeedPing() {
+add_task(async function check_doesAppNeedPin() {
   is(
     typeof (await ASRouterTargeting.Environment.doesAppNeedPin),
+    "boolean",
+    "Should return a boolean"
+  );
+});
+
+add_task(async function check_doesAppNeedPrivatePin() {
+  is(
+    typeof (await ASRouterTargeting.Environment.doesAppNeedPrivatePin),
+    "boolean",
+    "Should return a boolean"
+  );
+});
+
+add_task(async function check_isBackgroundTaskMode() {
+  if (!AppConstants.MOZ_BACKGROUNDTASKS) {
+    // `mochitest-browser` suite `add_task` does not yet support
+    // `properties.skip_if`.
+    ok(true, "Skipping because !AppConstants.MOZ_BACKGROUNDTASKS");
+    return;
+  }
+
+  const bts = Cc["@mozilla.org/backgroundtasks;1"].getService(
+    Ci.nsIBackgroundTasks
+  );
+
+  // Pretend that this is a background task.
+  bts.overrideBackgroundTaskNameForTesting("taskName");
+  is(
+    await ASRouterTargeting.Environment.isBackgroundTaskMode,
+    true,
+    "Is in background task mode"
+  );
+  is(
+    await ASRouterTargeting.Environment.backgroundTaskName,
+    "taskName",
+    "Has expected background task name"
+  );
+
+  // Unset, so that subsequent test functions don't see background task mode.
+  bts.overrideBackgroundTaskNameForTesting(null);
+  is(
+    await ASRouterTargeting.Environment.isBackgroundTaskMode,
+    false,
+    "Is not in background task mode"
+  );
+  is(
+    await ASRouterTargeting.Environment.backgroundTaskName,
+    null,
+    "Has no background task name"
+  );
+});
+
+add_task(async function check_userPrefersReducedMotion() {
+  is(
+    typeof (await ASRouterTargeting.Environment.userPrefersReducedMotion),
     "boolean",
     "Should return a boolean"
   );

@@ -10,22 +10,24 @@
 
 var EXPORTED_SYMBOLS = ["BasePopup", "PanelPopup", "ViewPopup"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CustomizableUI",
   "resource:///modules/CustomizableUI.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ExtensionParent",
   "resource://gre/modules/ExtensionParent.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
@@ -62,7 +64,7 @@ function promisePopupShown(popup) {
   });
 }
 
-XPCOMUtils.defineLazyGetter(this, "standaloneStylesheets", () => {
+XPCOMUtils.defineLazyGetter(lazy, "standaloneStylesheets", () => {
   let stylesheets = [];
 
   if (AppConstants.platform === "macosx") {
@@ -195,10 +197,10 @@ class BasePopup {
     let sheets = [];
 
     if (this.browserStyle) {
-      sheets.push(...ExtensionParent.extensionStylesheets);
+      sheets.push(...lazy.ExtensionParent.extensionStylesheets);
     }
     if (!this.fixedWidth) {
-      sheets.push(...standaloneStylesheets);
+      sheets.push(...lazy.standaloneStylesheets);
     }
 
     return sheets;
@@ -314,13 +316,11 @@ class BasePopup {
     browser.setAttribute("type", "content");
     browser.setAttribute("disableglobalhistory", "true");
     browser.setAttribute("messagemanagergroup", "webext-browsers");
-    browser.setAttribute("transparent", "true");
     browser.setAttribute("class", "webextension-popup-browser");
     browser.setAttribute("webextension-view-type", "popup");
     browser.setAttribute("tooltip", "aHTMLTooltip");
     browser.setAttribute("contextmenu", "contentAreaContextMenu");
     browser.setAttribute("autocompletepopup", "PopupAutoComplete");
-    browser.setAttribute("selectmenulist", "ContentSelectDropdown");
     browser.setAttribute("selectmenuconstrained", "false");
 
     // Ensure the browser will initially load in the same group as other
@@ -377,7 +377,10 @@ class BasePopup {
       browser.addEventListener("DoZoomEnlargeBy10", this, true); // eslint-disable-line mozilla/balanced-listeners
       browser.addEventListener("DoZoomReduceBy10", this, true); // eslint-disable-line mozilla/balanced-listeners
 
-      ExtensionParent.apiManager.emit("extension-browser-inserted", browser);
+      lazy.ExtensionParent.apiManager.emit(
+        "extension-browser-inserted",
+        browser
+      );
       return browser;
     };
 
@@ -426,6 +429,12 @@ class BasePopup {
       if (this.destroyed) {
         return;
       }
+      // Only block the parser for the preloaded browser, initBrowser will be
+      // called again when the browserAction popup is navigated and we should
+      // not block the parser in that case, otherwise the navigating the popup
+      // to another extension page will never complete and the popup will
+      // stay stuck on the previous extension page. See Bug 1747813.
+      this.blockParser = false;
       this.browser.messageManager.sendAsyncMessage("Extension:UnblockParser");
     });
   }
@@ -495,6 +504,7 @@ class PanelPopup extends BasePopup {
     if (extension.remote) {
       panel.setAttribute("remote", "true");
     }
+    panel.setAttribute("neverhidden", "true");
 
     document.getElementById("mainPopupSet").appendChild(panel);
 
@@ -550,6 +560,7 @@ class ViewPopup extends BasePopup {
       if (remote) {
         panel.setAttribute("remote", "true");
       }
+      panel.setAttribute("neverhidden", "true");
 
       document.getElementById("mainPopupSet").appendChild(panel);
       return panel;
@@ -579,6 +590,11 @@ class ViewPopup extends BasePopup {
     this.tempPanel = panel;
     this.tempBrowser = this.browser;
 
+    // NOTE: this class is added to the preload browser and never removed because
+    // the preload browser is then switched with a new browser once we are about to
+    // make the popup visible (this class is not actually used anywhere but it may
+    // be useful to keep it around to be able to identify the preload buffer while
+    // investigating issues).
     this.browser.classList.add("webextension-preload-browser");
   }
 
@@ -626,7 +642,7 @@ class ViewPopup extends BasePopup {
         // This promise may be rejected if the popup calls window.close()
         // before it has fully loaded.
         this.browserLoaded.catch(() => {}),
-        new Promise(resolve => setTimeout(resolve, POPUP_LOAD_TIMEOUT_MS)),
+        new Promise(resolve => lazy.setTimeout(resolve, POPUP_LOAD_TIMEOUT_MS)),
       ]),
     ]);
 
@@ -637,7 +653,7 @@ class ViewPopup extends BasePopup {
     }
 
     if (this.destroyed) {
-      CustomizableUI.hidePanelForNode(viewNode);
+      lazy.CustomizableUI.hidePanelForNode(viewNode);
       return false;
     }
 
@@ -739,7 +755,7 @@ class ViewPopup extends BasePopup {
 
   closePopup() {
     if (this.shown) {
-      CustomizableUI.hidePanelForNode(this.viewNode);
+      lazy.CustomizableUI.hidePanelForNode(this.viewNode);
     } else if (this.attached) {
       this.destroyed = true;
     } else {

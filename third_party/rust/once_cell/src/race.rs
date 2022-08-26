@@ -5,11 +5,27 @@
 //! them stores the result.
 //!
 //! This module does not require `std` feature.
+//!
+//! # Atomic orderings
+//!
+//! All types in this module use `Acquire` and `Release`
+//! [atomic orderings](Ordering) for all their operations. While this is not
+//! strictly necessary for types other than `OnceBox`, it is useful for users as
+//! it allows them to be certain that after `get` or `get_or_init` returns on
+//! one thread, any side-effects caused by the setter thread prior to them
+//! calling `set` or `get_or_init` will be made visible to that thread; without
+//! it, it's possible for it to appear as if they haven't happened yet from the
+//! getter thread's perspective. This is an acceptable tradeoff to make since
+//! `Acquire` and `Release` have very little performance overhead on most
+//! architectures versus `Relaxed`.
 
-use core::{
-    num::NonZeroUsize,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+#[cfg(feature = "atomic-polyfill")]
+use atomic_polyfill as atomic;
+#[cfg(not(feature = "atomic-polyfill"))]
+use core::sync::atomic;
+
+use atomic::{AtomicUsize, Ordering};
+use core::num::NonZeroUsize;
 
 /// A thread-safe cell which can be written to only once.
 #[derive(Default, Debug)]
@@ -160,19 +176,21 @@ pub use self::once_box::OnceBox;
 
 #[cfg(feature = "alloc")]
 mod once_box {
-    use core::{
-        marker::PhantomData,
-        ptr,
-        sync::atomic::{AtomicPtr, Ordering},
-    };
+    use super::atomic::{AtomicPtr, Ordering};
+    use core::{marker::PhantomData, ptr};
 
     use alloc::boxed::Box;
 
     /// A thread-safe cell which can be written to only once.
-    #[derive(Debug)]
     pub struct OnceBox<T> {
         inner: AtomicPtr<T>,
         ghost: PhantomData<Option<Box<T>>>,
+    }
+
+    impl<T> core::fmt::Debug for OnceBox<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "OnceBox({:?})", self.inner.load(Ordering::Relaxed))
+        }
     }
 
     impl<T> Default for OnceBox<T> {

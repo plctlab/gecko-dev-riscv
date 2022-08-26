@@ -6,26 +6,13 @@
 
 var EXPORTED_SYMBOLS = ["SessionMigration"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "E10SUtils",
   "resource://gre/modules/E10SUtils.jsm"
 );
-
-// An encoder to UTF-8.
-XPCOMUtils.defineLazyGetter(this, "gEncoder", function() {
-  return new TextEncoder();
-});
-
-// A decoder.
-XPCOMUtils.defineLazyGetter(this, "gDecoder", function() {
-  return new TextDecoder();
-});
 
 var SessionMigrationInternal = {
   /**
@@ -72,7 +59,7 @@ var SessionMigrationInternal = {
     let formdata = { id: { sessionData: state }, url };
     let entry = {
       url,
-      triggeringPrincipal_base64: E10SUtils.SERIALIZED_SYSTEMPRINCIPAL,
+      triggeringPrincipal_base64: lazy.E10SUtils.SERIALIZED_SYSTEMPRINCIPAL,
     };
     return { windows: [{ tabs: [{ entries: [entry], formdata }] }] };
   },
@@ -80,21 +67,15 @@ var SessionMigrationInternal = {
    * Asynchronously read session restore state (JSON) from a path
    */
   readState(aPath) {
-    return (async function() {
-      let bytes = await OS.File.read(aPath, { compression: "lz4" });
-      let text = gDecoder.decode(bytes);
-      let state = JSON.parse(text);
-      return state;
-    })();
+    return IOUtils.readJSON(aPath, { decompress: true });
   },
   /**
    * Asynchronously write session restore state as JSON to a path
    */
   writeState(aPath, aState) {
-    let bytes = gEncoder.encode(JSON.stringify(aState));
-    return OS.File.writeAtomic(aPath, bytes, {
-      tmpPath: aPath + ".tmp",
-      compression: "lz4",
+    return IOUtils.writeJSON(aPath, aState, {
+      compress: true,
+      tmpPath: `${aPath}.tmp`,
     });
   },
 };

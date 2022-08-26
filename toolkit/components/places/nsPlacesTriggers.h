@@ -151,6 +151,26 @@
         "SET frecency_delta = frecency_delta - OLD.frecency "       \
         "WHERE OLD.frecency > 0; "                                  \
         "END ")
+
+// This is an alternate version of CREATE_PLACES_AFTERDELETE_TRIGGER, with
+// support for previews tombstones. Only one of these should be used at the
+// same time
+#  define CREATE_PLACES_AFTERDELETE_WPREVIEWS_TRIGGER                   \
+    nsLiteralCString(                                                   \
+        "CREATE TEMP TRIGGER moz_places_afterdelete_wpreviews_trigger " \
+        "AFTER DELETE ON moz_places FOR EACH ROW "                      \
+        "BEGIN "                                                        \
+        "INSERT INTO moz_updateoriginsdelete_temp (prefix, host, "      \
+        "frecency_delta) "                                              \
+        "VALUES (get_prefix(OLD.url), get_host_and_port(OLD.url), "     \
+        "-MAX(OLD.frecency, 0)) "                                       \
+        "ON CONFLICT(prefix, host) DO UPDATE "                          \
+        "SET frecency_delta = frecency_delta - OLD.frecency "           \
+        "WHERE OLD.frecency > 0; "                                      \
+        "INSERT OR IGNORE INTO moz_previews_tombstones VALUES "         \
+        "(md5hex(OLD.url));"                                            \
+        "END ")
+
 // This trigger corresponds to the previous trigger.  It runs on deletes on
 // moz_updateoriginsdelete_temp -- logically, after deletes on moz_places.
 #  define CREATE_UPDATEORIGINSDELETE_AFTERDELETE_TRIGGER \
@@ -386,21 +406,6 @@
         "BEGIN "                                                   \
         "UPDATE moz_places SET foreign_count = foreign_count - 1 " \
         "WHERE id = OLD.place_id; "                                \
-        "END")
-
-// This trigger removes orphan groups when snapshots are removed.
-#  define CREATE_PLACES_METADATA_SNAPSHOTS_GROUPS_AFTERDELETE_TRIGGER   \
-    nsLiteralCString(                                                   \
-        "CREATE TEMP TRIGGER "                                          \
-        "moz_places_metadata_groups_to_snapshots_afterdelete_trigger "  \
-        "AFTER DELETE ON moz_places_metadata_groups_to_snapshots "      \
-        "FOR EACH ROW "                                                 \
-        "BEGIN "                                                        \
-        "DELETE FROM moz_places_metadata_snapshots_groups "             \
-        "WHERE id = OLD.group_id AND NOT EXISTS ( "                     \
-        "SELECT group_id FROM moz_places_metadata_groups_to_snapshots " \
-        "WHERE group_id = OLD.group_id "                                \
-        "); "                                                           \
         "END")
 
 // This trigger increments foreign_count when sessions are altered.

@@ -86,7 +86,15 @@ if CONFIG["MOZ_GECKO_PROFILER"]:
         UNIFIED_SOURCES += [
             "core/shared-libraries-macos.cc",
         ]
+        if CONFIG["CPU_ARCH"] == "aarch64":
+            UNIFIED_SOURCES += [
+                "core/PowerCounters-mac.cpp",
+            ]
     elif CONFIG["OS_TARGET"] == "WINNT":
+        if CONFIG["CC_TYPE"] == "clang-cl":
+            UNIFIED_SOURCES += [
+                "core/PowerCounters-win.cpp",
+            ]
         SOURCES += [
             "core/shared-libraries-win32.cc",
         ]
@@ -98,6 +106,7 @@ if CONFIG["MOZ_GECKO_PROFILER"]:
         "/mozglue/linker",
         "/netwerk/base",
         "/netwerk/protocol/http",
+        "/toolkit/components/jsoncpp/include",
         "/toolkit/crashreporter/google-breakpad/src",
         "/tools/profiler/core/",
         "/tools/profiler/gecko/",
@@ -143,6 +152,7 @@ EXPORTS += [
     "public/ChildProfilerController.h",
     "public/GeckoProfiler.h",
     "public/ProfilerBindings.h",
+    "public/ProfilerControl.h",
     "public/ProfilerParent.h",
     "public/ProfilerRustBindings.h",
 ]
@@ -156,12 +166,14 @@ EXPORTS.mozilla += [
     "public/ProfilerMarkersDetail.h",
     "public/ProfilerMarkersPrerequisites.h",
     "public/ProfilerMarkerTypes.h",
+    "public/ProfilerRunnable.h",
     "public/ProfilerState.h",
     "public/ProfilerThreadPlatformData.h",
     "public/ProfilerThreadRegistration.h",
     "public/ProfilerThreadRegistrationData.h",
     "public/ProfilerThreadRegistrationInfo.h",
     "public/ProfilerThreadRegistry.h",
+    "public/ProfilerThreadSleep.h",
     "public/ProfilerThreadState.h",
     "public/ProfilerUtils.h",
 ]
@@ -185,6 +197,10 @@ if CONFIG["COMPILE_ENVIRONMENT"]:
         "!profiler_ffi_generated.h",
     ]
 
+USE_LIBS += [
+    "jsoncpp",
+]
+
 FINAL_LIBRARY = "xul"
 
 if CONFIG["ENABLE_TESTS"]:
@@ -192,7 +208,6 @@ if CONFIG["ENABLE_TESTS"]:
 
 if CONFIG["CC_TYPE"] in ("clang", "gcc"):
     CXXFLAGS += [
-        "-Wno-error=shadow",
         "-Wno-error=stack-protector",
         "-Wno-ignored-qualifiers",  # due to use of breakpad headers
     ]

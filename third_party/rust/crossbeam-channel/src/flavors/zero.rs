@@ -5,18 +5,31 @@
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
+use std::{fmt, ptr};
 
 use crossbeam_utils::Backoff;
 
 use crate::context::Context;
 use crate::err::{RecvTimeoutError, SendTimeoutError, TryRecvError, TrySendError};
 use crate::select::{Operation, SelectHandle, Selected, Token};
-use crate::utils::Spinlock;
 use crate::waker::Waker;
 
 /// A pointer to a packet.
-pub(crate) type ZeroToken = usize;
+pub(crate) struct ZeroToken(*mut ());
+
+impl Default for ZeroToken {
+    fn default() -> Self {
+        Self(ptr::null_mut())
+    }
+}
+
+impl fmt::Debug for ZeroToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&(self.0 as usize), f)
+    }
+}
 
 /// A slot for passing one message from a sender to a receiver.
 struct Packet<T> {
@@ -82,7 +95,7 @@ struct Inner {
 /// Zero-capacity channel.
 pub(crate) struct Channel<T> {
     /// Inner representation of the channel.
-    inner: Spinlock<Inner>,
+    inner: Mutex<Inner>,
 
     /// Indicates that dropping a `Channel<T>` may drop values of type `T`.
     _marker: PhantomData<T>,
@@ -92,7 +105,7 @@ impl<T> Channel<T> {
     /// Constructs a new zero-capacity channel.
     pub(crate) fn new() -> Self {
         Channel {
-            inner: Spinlock::new(Inner {
+            inner: Mutex::new(Inner {
                 senders: Waker::new(),
                 receivers: Waker::new(),
                 is_disconnected: false,
@@ -113,14 +126,14 @@ impl<T> Channel<T> {
 
     /// Attempts to reserve a slot for sending a message.
     fn start_send(&self, token: &mut Token) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting receiver, pair up with it.
         if let Some(operation) = inner.receivers.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             true
         } else if inner.is_disconnected {
-            token.zero = 0;
+            token.zero.0 = ptr::null_mut();
             true
         } else {
             false
@@ -130,11 +143,11 @@ impl<T> Channel<T> {
     /// Writes a message into the packet.
     pub(crate) unsafe fn write(&self, token: &mut Token, msg: T) -> Result<(), T> {
         // If there is no packet, the channel is disconnected.
-        if token.zero == 0 {
+        if token.zero.0.is_null() {
             return Err(msg);
         }
 
-        let packet = &*(token.zero as *const Packet<T>);
+        let packet = &*(token.zero.0 as *const Packet<T>);
         packet.msg.get().write(Some(msg));
         packet.ready.store(true, Ordering::Release);
         Ok(())
@@ -142,14 +155,14 @@ impl<T> Channel<T> {
 
     /// Attempts to pair up with a sender.
     fn start_recv(&self, token: &mut Token) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting sender, pair up with it.
         if let Some(operation) = inner.senders.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             true
         } else if inner.is_disconnected {
-            token.zero = 0;
+            token.zero.0 = ptr::null_mut();
             true
         } else {
             false
@@ -159,11 +172,11 @@ impl<T> Channel<T> {
     /// Reads a message from the packet.
     pub(crate) unsafe fn read(&self, token: &mut Token) -> Result<T, ()> {
         // If there is no packet, the channel is disconnected.
-        if token.zero == 0 {
+        if token.zero.0.is_null() {
             return Err(());
         }
 
-        let packet = &*(token.zero as *const Packet<T>);
+        let packet = &*(token.zero.0 as *const Packet<T>);
 
         if packet.on_stack {
             // The message has been in the packet from the beginning, so there is no need to wait
@@ -177,7 +190,7 @@ impl<T> Channel<T> {
             // heap-allocated packet.
             packet.wait_ready();
             let msg = packet.msg.get().replace(None).unwrap();
-            drop(Box::from_raw(packet as *const Packet<T> as *mut Packet<T>));
+            drop(Box::from_raw(token.zero.0.cast::<Packet<T>>()));
             Ok(msg)
         }
     }
@@ -185,11 +198,11 @@ impl<T> Channel<T> {
     /// Attempts to send a message into the channel.
     pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         let token = &mut Token::default();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting receiver, pair up with it.
         if let Some(operation) = inner.receivers.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             drop(inner);
             unsafe {
                 self.write(token, msg).ok().unwrap();
@@ -209,11 +222,11 @@ impl<T> Channel<T> {
         deadline: Option<Instant>,
     ) -> Result<(), SendTimeoutError<T>> {
         let token = &mut Token::default();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting receiver, pair up with it.
         if let Some(operation) = inner.receivers.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             drop(inner);
             unsafe {
                 self.write(token, msg).ok().unwrap();
@@ -228,10 +241,10 @@ impl<T> Channel<T> {
         Context::with(|cx| {
             // Prepare for blocking until a receiver wakes us up.
             let oper = Operation::hook(token);
-            let packet = Packet::<T>::message_on_stack(msg);
+            let mut packet = Packet::<T>::message_on_stack(msg);
             inner
                 .senders
-                .register_with_packet(oper, &packet as *const Packet<T> as usize, cx);
+                .register_with_packet(oper, &mut packet as *mut Packet<T> as *mut (), cx);
             inner.receivers.notify();
             drop(inner);
 
@@ -241,12 +254,12 @@ impl<T> Channel<T> {
             match sel {
                 Selected::Waiting => unreachable!(),
                 Selected::Aborted => {
-                    self.inner.lock().senders.unregister(oper).unwrap();
+                    self.inner.lock().unwrap().senders.unregister(oper).unwrap();
                     let msg = unsafe { packet.msg.get().replace(None).unwrap() };
                     Err(SendTimeoutError::Timeout(msg))
                 }
                 Selected::Disconnected => {
-                    self.inner.lock().senders.unregister(oper).unwrap();
+                    self.inner.lock().unwrap().senders.unregister(oper).unwrap();
                     let msg = unsafe { packet.msg.get().replace(None).unwrap() };
                     Err(SendTimeoutError::Disconnected(msg))
                 }
@@ -262,11 +275,11 @@ impl<T> Channel<T> {
     /// Attempts to receive a message without blocking.
     pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
         let token = &mut Token::default();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting sender, pair up with it.
         if let Some(operation) = inner.senders.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             drop(inner);
             unsafe { self.read(token).map_err(|_| TryRecvError::Disconnected) }
         } else if inner.is_disconnected {
@@ -279,11 +292,11 @@ impl<T> Channel<T> {
     /// Receives a message from the channel.
     pub(crate) fn recv(&self, deadline: Option<Instant>) -> Result<T, RecvTimeoutError> {
         let token = &mut Token::default();
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         // If there's a waiting sender, pair up with it.
         if let Some(operation) = inner.senders.try_select() {
-            token.zero = operation.packet;
+            token.zero.0 = operation.packet;
             drop(inner);
             unsafe {
                 return self.read(token).map_err(|_| RecvTimeoutError::Disconnected);
@@ -297,10 +310,12 @@ impl<T> Channel<T> {
         Context::with(|cx| {
             // Prepare for blocking until a sender wakes us up.
             let oper = Operation::hook(token);
-            let packet = Packet::<T>::empty_on_stack();
-            inner
-                .receivers
-                .register_with_packet(oper, &packet as *const Packet<T> as usize, cx);
+            let mut packet = Packet::<T>::empty_on_stack();
+            inner.receivers.register_with_packet(
+                oper,
+                &mut packet as *mut Packet<T> as *mut (),
+                cx,
+            );
             inner.senders.notify();
             drop(inner);
 
@@ -310,11 +325,21 @@ impl<T> Channel<T> {
             match sel {
                 Selected::Waiting => unreachable!(),
                 Selected::Aborted => {
-                    self.inner.lock().receivers.unregister(oper).unwrap();
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .receivers
+                        .unregister(oper)
+                        .unwrap();
                     Err(RecvTimeoutError::Timeout)
                 }
                 Selected::Disconnected => {
-                    self.inner.lock().receivers.unregister(oper).unwrap();
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .receivers
+                        .unregister(oper)
+                        .unwrap();
                     Err(RecvTimeoutError::Disconnected)
                 }
                 Selected::Operation(_) => {
@@ -330,7 +355,7 @@ impl<T> Channel<T> {
     ///
     /// Returns `true` if this call disconnected the channel.
     pub(crate) fn disconnect(&self) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap();
 
         if !inner.is_disconnected {
             inner.is_disconnected = true;
@@ -348,7 +373,6 @@ impl<T> Channel<T> {
     }
 
     /// Returns the capacity of the channel.
-    #[allow(clippy::unnecessary_wraps)] // This is intentional.
     pub(crate) fn capacity(&self) -> Option<usize> {
         Some(0)
     }
@@ -382,40 +406,40 @@ impl<T> SelectHandle for Receiver<'_, T> {
     fn register(&self, oper: Operation, cx: &Context) -> bool {
         let packet = Box::into_raw(Packet::<T>::empty_on_heap());
 
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner
             .receivers
-            .register_with_packet(oper, packet as usize, cx);
+            .register_with_packet(oper, packet.cast::<()>(), cx);
         inner.senders.notify();
         inner.senders.can_select() || inner.is_disconnected
     }
 
     fn unregister(&self, oper: Operation) {
-        if let Some(operation) = self.0.inner.lock().receivers.unregister(oper) {
+        if let Some(operation) = self.0.inner.lock().unwrap().receivers.unregister(oper) {
             unsafe {
-                drop(Box::from_raw(operation.packet as *mut Packet<T>));
+                drop(Box::from_raw(operation.packet.cast::<Packet<T>>()));
             }
         }
     }
 
     fn accept(&self, token: &mut Token, cx: &Context) -> bool {
-        token.zero = cx.wait_packet();
+        token.zero.0 = cx.wait_packet();
         true
     }
 
     fn is_ready(&self) -> bool {
-        let inner = self.0.inner.lock();
+        let inner = self.0.inner.lock().unwrap();
         inner.senders.can_select() || inner.is_disconnected
     }
 
     fn watch(&self, oper: Operation, cx: &Context) -> bool {
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner.receivers.watch(oper, cx);
         inner.senders.can_select() || inner.is_disconnected
     }
 
     fn unwatch(&self, oper: Operation) {
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner.receivers.unwatch(oper);
     }
 }
@@ -432,40 +456,40 @@ impl<T> SelectHandle for Sender<'_, T> {
     fn register(&self, oper: Operation, cx: &Context) -> bool {
         let packet = Box::into_raw(Packet::<T>::empty_on_heap());
 
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner
             .senders
-            .register_with_packet(oper, packet as usize, cx);
+            .register_with_packet(oper, packet.cast::<()>(), cx);
         inner.receivers.notify();
         inner.receivers.can_select() || inner.is_disconnected
     }
 
     fn unregister(&self, oper: Operation) {
-        if let Some(operation) = self.0.inner.lock().senders.unregister(oper) {
+        if let Some(operation) = self.0.inner.lock().unwrap().senders.unregister(oper) {
             unsafe {
-                drop(Box::from_raw(operation.packet as *mut Packet<T>));
+                drop(Box::from_raw(operation.packet.cast::<Packet<T>>()));
             }
         }
     }
 
     fn accept(&self, token: &mut Token, cx: &Context) -> bool {
-        token.zero = cx.wait_packet();
+        token.zero.0 = cx.wait_packet();
         true
     }
 
     fn is_ready(&self) -> bool {
-        let inner = self.0.inner.lock();
+        let inner = self.0.inner.lock().unwrap();
         inner.receivers.can_select() || inner.is_disconnected
     }
 
     fn watch(&self, oper: Operation, cx: &Context) -> bool {
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner.senders.watch(oper, cx);
         inner.receivers.can_select() || inner.is_disconnected
     }
 
     fn unwatch(&self, oper: Operation) {
-        let mut inner = self.0.inner.lock();
+        let mut inner = self.0.inner.lock().unwrap();
         inner.senders.unwatch(oper);
     }
 }

@@ -45,19 +45,27 @@ class NetworkEventContentWatcher {
     this.onUpdated = onUpdated;
 
     this.httpFailedOpeningRequest = this.httpFailedOpeningRequest.bind(this);
+    this.httpOnImageCacheResponse = this.httpOnImageCacheResponse.bind(this);
 
     Services.obs.addObserver(
       this.httpFailedOpeningRequest,
       "http-on-failed-opening-request"
     );
+
+    Services.obs.addObserver(
+      this.httpOnImageCacheResponse,
+      "http-on-image-cache-response"
+    );
+  }
+  /**
+   * Allows clearing of network events
+   */
+  clear() {
+    this._networkEvents.clear();
   }
 
   get conn() {
     return this.targetActor.conn;
-  }
-
-  get browserId() {
-    return this.targetActor.browserId;
   }
 
   httpFailedOpeningRequest(subject, topic) {
@@ -70,24 +78,74 @@ class NetworkEventContentWatcher {
       return;
     }
 
-    const event = NetworkUtils.createNetworkEvent(channel, {
-      blockedReason: channel.loadInfo.requestBlockingReason,
-    });
-
-    // For same-origin iframe targets, we're notified about this event from both the top-level
-    // target *and* the iframe one. We ignore the event if it doesn't come from the same
-    // browsing context as the target's one to avoid duplicate messages in the netmonitor.
     if (
-      this.targetActor.ignoreSubFrames &&
-      event.browsingContextID !== this.targetActor.browsingContext.id
+      !NetworkUtils.matchRequest(channel, {
+        targetActor: this.targetActor,
+      })
     ) {
       return;
     }
 
+    this.onNetworkEventAvailable(channel, {
+      networkEventOptions: {
+        blockedReason: channel.loadInfo.requestBlockingReason,
+      },
+      resourceOverrides: null,
+      onNetworkEventUpdate: this.onFailedNetworkEventUpdated.bind(this),
+    });
+  }
+
+  httpOnImageCacheResponse(subject, topic) {
+    if (
+      topic != "http-on-image-cache-response" ||
+      !(subject instanceof Ci.nsIHttpChannel)
+    ) {
+      return;
+    }
+
+    const channel = subject.QueryInterface(Ci.nsIHttpChannel);
+
+    if (
+      !NetworkUtils.matchRequest(channel, {
+        targetActor: this.targetActor,
+      })
+    ) {
+      return;
+    }
+
+    // Only one network request should be created per URI for images from the cache
+    const hasNetworkEventForURI = Array.from(this._networkEvents.values()).find(
+      networkEvent => networkEvent.url === channel.URI.spec
+    );
+
+    if (hasNetworkEventForURI) {
+      return;
+    }
+
+    this.onNetworkEventAvailable(channel, {
+      networkEventOptions: { fromCache: true },
+      resourceOverrides: {
+        status: 200,
+        statusText: "OK",
+        totalTime: 0,
+        mimeType: channel.contentType,
+        contentSize: channel.contentLength,
+      },
+      onNetworkEventUpdate: this.onImageCacheNetworkEventUpdated.bind(this),
+    });
+  }
+
+  onNetworkEventAvailable(
+    channel,
+    { networkEventOptions, resourceOverrides, onNetworkEventUpdate }
+  ) {
+    const event = NetworkUtils.createNetworkEvent(channel, networkEventOptions);
+
     const actor = new NetworkEventActor(
-      this,
+      this.conn,
+      this.targetActor.sessionContext,
       {
-        onNetworkEventUpdate: this.onNetworkEventUpdated.bind(this),
+        onNetworkEventUpdate,
         onNetworkEventDestroy: this.onNetworkEventDestroyed.bind(this),
       },
       event
@@ -97,31 +155,77 @@ class NetworkEventContentWatcher {
     const resource = actor.asResource();
 
     this._networkEvents.set(resource.resourceId, {
+      browsingContextID: resource.browsingContextID,
+      innerWindowId: resource.innerWindowId,
       resourceId: resource.resourceId,
       resourceType: resource.resourceType,
+      url: resource.url,
       types: [],
       resourceUpdates: {},
     });
+
+    // Override the default resource property values if need be
+    if (resourceOverrides) {
+      for (const prop in resourceOverrides) {
+        resource[prop] = resourceOverrides[prop];
+      }
+    }
 
     this.onAvailable([resource]);
     NetworkUtils.fetchRequestHeadersAndCookies(channel, actor, {});
   }
 
-  onNetworkEventUpdated(updateResource) {
+  /*
+   * When an update is needed for a network event.
+   *
+   * @param {Object} updateResource
+   *                 The resource to be updated
+   * @param {Array} allRequiredUpdates
+   *                The updates that are essential to be received before notifying
+   *                the client. Other updates may or may not be available.
+   */
+
+  onNetworkEventUpdated(updateResource, allRequiredUpdates) {
     const networkEvent = this._networkEvents.get(updateResource.resourceId);
 
     if (!networkEvent) {
       return;
     }
 
-    const { resourceId, resourceType, resourceUpdates, types } = networkEvent;
+    const {
+      browsingContextID,
+      innerWindowId,
+      resourceId,
+      resourceType,
+      resourceUpdates,
+      types,
+    } = networkEvent;
 
     resourceUpdates[`${updateResource.updateType}Available`] = true;
     types.push(updateResource.updateType);
 
-    if (types.includes("requestHeaders") && types.includes("requestCookies")) {
-      this.onUpdated([{ resourceType, resourceId, resourceUpdates }]);
+    if (allRequiredUpdates.every(header => types.includes(header))) {
+      this.onUpdated([
+        {
+          browsingContextID,
+          innerWindowId,
+          resourceType,
+          resourceId,
+          resourceUpdates,
+        },
+      ]);
     }
+  }
+
+  onFailedNetworkEventUpdated(updateResource) {
+    this.onNetworkEventUpdated(updateResource, [
+      "requestHeaders",
+      "requestCookies",
+    ]);
+  }
+
+  onImageCacheNetworkEventUpdated(updateResource) {
+    this.onNetworkEventUpdated(updateResource, ["requestHeaders"]);
   }
 
   onNetworkEventDestroyed(channelId) {
@@ -131,9 +235,15 @@ class NetworkEventContentWatcher {
   }
 
   destroy() {
+    this.clear();
     Services.obs.removeObserver(
       this.httpFailedOpeningRequest,
       "http-on-failed-opening-request"
+    );
+
+    Services.obs.removeObserver(
+      this.httpOnImageCacheResponse,
+      "http-on-image-cache-response"
     );
   }
 }

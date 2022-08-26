@@ -17,10 +17,8 @@
 
 #include "mozilla/gfx/2D.h"
 #include "mozilla/RefPtr.h"
-#include "nsBaseScreen.h"
 #include "nsBaseWidget.h"
 #include "nsCOMArray.h"
-#include "nsIScreenManager.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ContentCache.h"
@@ -29,6 +27,7 @@
 #include "mozilla/layers/MemoryPressureObserver.h"
 
 namespace mozilla {
+enum class NativeKeyBindingsType : uint8_t;
 
 namespace dom {
 class BrowserChild;
@@ -115,10 +114,10 @@ class PuppetWidget : public nsBaseWidget,
   virtual void Enable(bool aState) override { mEnabled = aState; }
   virtual bool IsEnabled() const override { return mEnabled; }
 
-  virtual void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override;
+  virtual nsSizeMode SizeMode() override { return mSizeMode; }
+  virtual void SetSizeMode(nsSizeMode aMode) override { mSizeMode = aMode; }
 
-  virtual nsresult ConfigureChildren(
-      const nsTArray<Configuration>& aConfigurations) override;
+  virtual void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override;
 
   virtual void Invalidate(const LayoutDeviceIntRect& aRect) override;
 
@@ -139,7 +138,7 @@ class PuppetWidget : public nsBaseWidget,
     return GetWindowPosition();
   }
 
-  int32_t RoundsWidgetCoordinatesTo() override;
+  int32_t RoundsWidgetCoordinatesTo() override { return mRounding; }
 
   void InitEvent(WidgetGUIEvent& aEvent,
                  LayoutDeviceIntPoint* aPoint = nullptr);
@@ -186,8 +185,6 @@ class PuppetWidget : public nsBaseWidget,
   bool CreateRemoteLayerManager(
       const std::function<bool(WebRenderLayerManager*)>& aInitializeFunc);
 
-  bool HasLayerManager() { return !!mWindowRenderer; }
-
   virtual void SetInputContext(const InputContext& aContext,
                                const InputContextAction& aAction) override;
   virtual InputContext GetInputContext() override;
@@ -204,12 +201,8 @@ class PuppetWidget : public nsBaseWidget,
 
   virtual void SetCursor(const Cursor&) override;
 
-  // Gets the DPI of the screen corresponding to this widget.
-  // Contacts the parent process which gets the DPI from the
-  // proper widget there. TODO: Handle DPI changes that happen
-  // later on.
-  virtual float GetDPI() override;
-  virtual double GetDefaultScaleInternal() override;
+  float GetDPI() override { return mDPI; }
+  double GetDefaultScaleInternal() override { return mDefaultScale; }
 
   virtual bool NeedsPaint() override;
 
@@ -225,8 +218,6 @@ class PuppetWidget : public nsBaseWidget,
     mRounding = aRounding;
     mDefaultScale = aScale;
   }
-
-  nsIntSize GetScreenDimensions();
 
   // safe area insets support
   virtual ScreenIntMargin GetSafeAreaInsets() const override;
@@ -286,7 +277,8 @@ class PuppetWidget : public nsBaseWidget,
   virtual nsresult SynthesizeNativeTouchpadPan(TouchpadGesturePhase aEventPhase,
                                                LayoutDeviceIntPoint aPoint,
                                                double aDeltaX, double aDeltaY,
-                                               int32_t aModifierFlags) override;
+                                               int32_t aModifierFlags,
+                                               nsIObserver* aObserver) override;
 
   virtual void LockNativePointer() override;
   virtual void UnlockNativePointer() override;
@@ -389,10 +381,10 @@ class PuppetWidget : public nsBaseWidget,
   NativeIMEContext mNativeIMEContext;
   ContentCacheInChild mContentCache;
 
-  // The DPI of the screen corresponding to this widget
-  float mDPI;
-  int32_t mRounding;
-  double mDefaultScale;
+  // The DPI of the parent widget containing this widget.
+  float mDPI = 96;
+  int32_t mRounding = 1;
+  double mDefaultScale = 1.0f;
 
   ScreenIntMargin mSafeAreaInsets;
 
@@ -403,6 +395,8 @@ class PuppetWidget : public nsBaseWidget,
   bool mVisible;
 
  private:
+  nsSizeMode mSizeMode;
+
   bool mNeedIMEStateInit;
   // When remote process requests to commit/cancel a composition, the
   // composition may have already been committed in the main process.  In such
@@ -412,32 +406,6 @@ class PuppetWidget : public nsBaseWidget,
   // destroyed. So, until this meets new eCompositionStart, following
   // composition events should be ignored if this is set to true.
   bool mIgnoreCompositionEvents;
-};
-
-class PuppetScreen : public nsBaseScreen {
- public:
-  explicit PuppetScreen(void* nativeScreen);
-  ~PuppetScreen();
-
-  NS_IMETHOD GetRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth,
-                     int32_t* aHeight) override;
-  NS_IMETHOD GetAvailRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth,
-                          int32_t* aHeight) override;
-  NS_IMETHOD GetPixelDepth(int32_t* aPixelDepth) override;
-  NS_IMETHOD GetColorDepth(int32_t* aColorDepth) override;
-};
-
-class PuppetScreenManager final : public nsIScreenManager {
-  ~PuppetScreenManager();
-
- public:
-  PuppetScreenManager();
-
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSISCREENMANAGER
-
- protected:
-  nsCOMPtr<nsIScreen> mOneScreen;
 };
 
 }  // namespace widget

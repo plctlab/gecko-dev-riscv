@@ -13,10 +13,10 @@
 //! The types are commented so feel free to inspect each of theme. As a starter, you should read
 //! the documentation of [`Expr`], [`FunctionDefinition`], [`Statement`] and [`TranslationUnit`].
 //!
-//! [`Statement`]: syntax::Statement
-//! [`TranslationUnit`]: syntax::TranslationUnit
-//! [`Expr`]: syntax::Expr
-//! [`FunctionDefinition`]: syntax::FunctionDefinition
+//! [`Statement`]: crate::syntax::Statement
+//! [`TranslationUnit`]: crate::syntax::TranslationUnit
+//! [`Expr`]: crate::syntax::Expr
+//! [`FunctionDefinition`]: crate::syntax::FunctionDefinition
 
 use std::fmt;
 use std::iter::{once, FromIterator};
@@ -116,6 +116,8 @@ pub enum IdentifierError {
   ContainsNonASCIIAlphaNum,
 }
 
+impl std::error::Error for IdentifierError {}
+
 impl fmt::Display for IdentifierError {
   fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
     match *self {
@@ -145,7 +147,12 @@ impl Identifier {
   {
     let name = name.into();
 
-    if name.chars().next().map(|c| c.is_ascii_alphabetic()) == Some(false) {
+    if name
+      .chars()
+      .next()
+      .map(|c| c.is_ascii_alphabetic() || c == '_')
+      == Some(false)
+    {
       // check the first letter is not a digit
       Err(IdentifierError::StartsWithDigit)
     } else if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
@@ -544,9 +551,16 @@ impl From<TypeSpecifierNonArray> for FullySpecifiedType {
   }
 }
 
-/// Dimensionality of an arary.
+/// Dimensionality of an array.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ArraySpecifier {
+pub struct ArraySpecifier {
+  /// List of all the dimensions – possibly unsized or explicitly-sized.
+  pub dimensions: NonEmpty<ArraySpecifierDimension>,
+}
+
+/// One array specifier dimension.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArraySpecifierDimension {
   Unsized,
   ExplicitlySized(Box<Expr>),
 }
@@ -1290,7 +1304,7 @@ mod tests {
     assert!(Identifier::new("foo_bar").is_ok());
     assert!(Identifier::new("3foo_bar").is_err());
     assert!(Identifier::new("FooBar").is_ok());
-    assert!(Identifier::new("_FooBar").is_err());
+    assert!(Identifier::new("_FooBar").is_ok());
     assert!(Identifier::new("foo3").is_ok());
     assert!(Identifier::new("foo3_").is_ok());
     assert!(Identifier::new("fδo3_").is_err());
@@ -1303,7 +1317,7 @@ mod tests {
     assert!(TypeName::new("foo3").is_ok());
     assert!(TypeName::new("foo3_").is_ok());
 
-    assert!(TypeName::new("_FooBar").is_err());
+    assert!(TypeName::new("_FooBar").is_ok());
     assert!(TypeName::new("3foo_bar").is_err());
     assert!(TypeName::new("fδo3_").is_err());
   }

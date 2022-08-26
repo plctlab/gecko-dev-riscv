@@ -11,6 +11,8 @@
 #include "mozilla/Components.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/WorkerCommon.h"
+#include "mozilla/dom/WorkerPrivate.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIChannel.h"
@@ -31,7 +33,8 @@
 #include "js/ContextOptions.h"
 #include "js/PropertyAndElement.h"  // JS_GetElement
 #include "js/RegExp.h"
-#include "js/RegExpFlags.h"  // JS::RegExpFlags
+#include "js/RegExpFlags.h"           // JS::RegExpFlags
+#include "js/friend/ErrorMessages.h"  // JSMSG_UNSAFE_FILENAME
 #include "mozilla/ExtensionPolicyService.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
@@ -146,14 +149,14 @@ nsresult RegexEval(const nsAString& aPattern, const nsAString& aString,
   // evaluation does not interact with the execution global.
   JSAutoRealm ar(cx, xpc::PrivilegedJunkScope());
 
-  JS::RootedObject regexp(
+  JS::Rooted<JSObject*> regexp(
       cx, JS::NewUCRegExpObject(cx, aPattern.BeginReading(), aPattern.Length(),
                                 JS::RegExpFlag::Unicode));
   if (!regexp) {
     return NS_ERROR_ILLEGAL_VALUE;
   }
 
-  JS::RootedValue regexResult(cx, JS::NullValue());
+  JS::Rooted<JS::Value> regexResult(cx, JS::NullValue());
 
   size_t index = 0;
   if (!JS::ExecuteRegExpNoStatics(cx, regexp, aString.BeginReading(),
@@ -179,14 +182,14 @@ nsresult RegexEval(const nsAString& aPattern, const nsAString& aString,
 
   // Now we know we have a result, and we need to extract it so we can read it.
   uint32_t length;
-  JS::RootedObject regexResultObj(cx, &regexResult.toObject());
+  JS::Rooted<JSObject*> regexResultObj(cx, &regexResult.toObject());
   if (!JS::GetArrayLength(cx, regexResultObj, &length)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
   MOZ_LOG(sCSMLog, LogLevel::Verbose, ("Regex Matched %i strings", length));
 
   for (uint32_t i = 0; i < length; i++) {
-    JS::RootedValue element(cx);
+    JS::Rooted<JS::Value> element(cx);
     if (!JS_GetElement(cx, regexResultObj, i, &element)) {
       return NS_ERROR_NO_CONTENT;
     }
@@ -352,46 +355,44 @@ FilenameTypeAndDetails nsContentSecurityUtils::FilenameToFilenameType(
     return FilenameTypeAndDetails(kDataUri, Nothing());
   }
 
-  if (!NS_IsMainThread()) {
-    // We can't do Regex matching off the main thread; so just report.
-    return FilenameTypeAndDetails(kOtherWorker, Nothing());
-  }
+  // Can't do regex matching off-main-thread
+  if (NS_IsMainThread()) {
+    // Extension as loaded via a file://
+    bool regexMatch;
+    nsTArray<nsString> regexResults;
+    nsresult rv = RegexEval(kExtensionRegex, fileName, /* aOnlyMatch = */ false,
+                            regexMatch, &regexResults);
+    if (NS_FAILED(rv)) {
+      return FilenameTypeAndDetails(kRegexFailure, Nothing());
+    }
+    if (regexMatch) {
+      nsCString type = StringEndsWith(regexResults[2], u"mozilla.org.xpi"_ns)
+                           ? kMozillaExtensionFile
+                           : kOtherExtensionFile;
+      const auto& extensionNameAndPath =
+          Substring(regexResults[0], ArrayLength("extensions/") - 1);
+      return FilenameTypeAndDetails(
+          type, Some(OptimizeFileName(extensionNameAndPath)));
+    }
 
-  // Extension as loaded via a file://
-  bool regexMatch;
-  nsTArray<nsString> regexResults;
-  nsresult rv = RegexEval(kExtensionRegex, fileName, /* aOnlyMatch = */ false,
-                          regexMatch, &regexResults);
-  if (NS_FAILED(rv)) {
-    return FilenameTypeAndDetails(kRegexFailure, Nothing());
-  }
-  if (regexMatch) {
-    nsCString type = StringEndsWith(regexResults[2], u"mozilla.org.xpi"_ns)
-                         ? kMozillaExtensionFile
-                         : kOtherExtensionFile;
-    auto& extensionNameAndPath =
-        Substring(regexResults[0], ArrayLength("extensions/") - 1);
-    return FilenameTypeAndDetails(type,
-                                  Some(OptimizeFileName(extensionNameAndPath)));
-  }
+    // Single File
+    rv = RegexEval(kSingleFileRegex, fileName, /* aOnlyMatch = */ true,
+                   regexMatch);
+    if (NS_FAILED(rv)) {
+      return FilenameTypeAndDetails(kRegexFailure, Nothing());
+    }
+    if (regexMatch) {
+      return FilenameTypeAndDetails(kSingleString, Some(fileName));
+    }
 
-  // Single File
-  rv = RegexEval(kSingleFileRegex, fileName, /* aOnlyMatch = */ true,
-                 regexMatch);
-  if (NS_FAILED(rv)) {
-    return FilenameTypeAndDetails(kRegexFailure, Nothing());
-  }
-  if (regexMatch) {
-    return FilenameTypeAndDetails(kSingleString, Some(fileName));
-  }
-
-  // Suspected userChromeJS script
-  rv = RegexEval(kUCJSRegex, fileName, /* aOnlyMatch = */ true, regexMatch);
-  if (NS_FAILED(rv)) {
-    return FilenameTypeAndDetails(kRegexFailure, Nothing());
-  }
-  if (regexMatch) {
-    return FilenameTypeAndDetails(kSuspectedUserChromeJS, Nothing());
+    // Suspected userChromeJS script
+    rv = RegexEval(kUCJSRegex, fileName, /* aOnlyMatch = */ true, regexMatch);
+    if (NS_FAILED(rv)) {
+      return FilenameTypeAndDetails(kRegexFailure, Nothing());
+    }
+    if (regexMatch) {
+      return FilenameTypeAndDetails(kSuspectedUserChromeJS, Nothing());
+    }
   }
 
   // Something loaded via an about:// URI.
@@ -488,6 +489,9 @@ FilenameTypeAndDetails nsContentSecurityUtils::FilenameToFilenameType(
   }
 #endif
 
+  if (!NS_IsMainThread()) {
+    return FilenameTypeAndDetails(kOtherWorker, Nothing());
+  }
   return FilenameTypeAndDetails(kOther, Nothing());
 }
 
@@ -594,8 +598,6 @@ bool nsContentSecurityUtils::IsEvalAllowed(JSContext* cx,
   static nsLiteralCString evalAllowlist[] = {
       // Test-only third-party library
       "resource://testing-common/sinon-7.2.7.js"_ns,
-      // Test-only third-party library
-      "resource://testing-common/ajv-4.1.1.js"_ns,
       // Test-only utility
       "resource://testing-common/content-task.js"_ns,
 
@@ -608,6 +610,11 @@ bool nsContentSecurityUtils::IsEvalAllowed(JSContext* cx,
       // it is okay to allow eval() as it adds no additional attack surface.
       // Bug 1584564 tracks requiring safe usage of require.js
       "resource://gre/modules/workers/require.js"_ns,
+
+      // The profiler's symbolication code uses a wasm module to extract symbols
+      // from the binary files result of local builds.
+      // See bug 1777479
+      "resource://devtools/client/performance-new/symbolication.jsm.js"_ns,
 
       // The Browser Toolbox/Console
       "debugger"_ns,
@@ -810,18 +817,33 @@ void nsContentSecurityUtils::DetectJsHacks() {
   if (!NS_IsMainThread()) {
     return;
   }
+
+  // If the pref service isn't available, do nothing and re-do this later.
+  if (!Preferences::IsServiceAvailable()) {
+    return;
+  }
+
   // No need to check again.
   if (MOZ_LIKELY(sJSHacksChecked || sJSHacksPresent)) {
     return;
   }
+  nsresult rv;
+  sJSHacksChecked = true;
+
   // This preference is required by bootstrapLoader.xpi, which is an
   // alternate way to load legacy-style extensions. It only works on
   // DevEdition/Nightly.
-  bool xpinstallSignatures =
-      Preferences::GetBool("xpinstall.signatures.required", false);
-  if (!xpinstallSignatures) {
+  bool xpinstallSignatures;
+  rv = Preferences::GetBool("xpinstall.signatures.required",
+                            &xpinstallSignatures, PrefValueKind::Default);
+  if (!NS_FAILED(rv) && !xpinstallSignatures) {
     sJSHacksPresent = true;
-    sJSHacksChecked = true;
+    return;
+  }
+  rv = Preferences::GetBool("xpinstall.signatures.required",
+                            &xpinstallSignatures, PrefValueKind::User);
+  if (!NS_FAILED(rv) && !xpinstallSignatures) {
+    sJSHacksPresent = true;
     return;
   }
 
@@ -830,15 +852,48 @@ void nsContentSecurityUtils::DetectJsHacks() {
   // project to run legacy-style 'extensions', some of which use eval,
   // all of which run in the System Principal context.
   nsAutoString jsConfigPref;
-  nsresult rv = Preferences::GetString("general.config.filename", jsConfigPref);
-  if (NS_FAILED(rv)) {
+  rv = Preferences::GetString("general.config.filename", jsConfigPref,
+                              PrefValueKind::Default);
+  if (!NS_FAILED(rv) && !jsConfigPref.IsEmpty()) {
+    sJSHacksPresent = true;
     return;
   }
-  if (!jsConfigPref.IsEmpty()) {
+  rv = Preferences::GetString("general.config.filename", jsConfigPref,
+                              PrefValueKind::User);
+  if (!NS_FAILED(rv) && !jsConfigPref.IsEmpty()) {
     sJSHacksPresent = true;
+    return;
   }
 
-  sJSHacksChecked = true;
+  // These preferences are for autoconfiguration of Firefox by admins.
+  // The first will load a file over the network; the second will
+  // fall back to a local file if the network is unavailable
+  nsAutoString configUrlPref;
+  rv = Preferences::GetString("autoadmin.global_config_url", configUrlPref,
+                              PrefValueKind::Default);
+  if (!NS_FAILED(rv) && !configUrlPref.IsEmpty()) {
+    sJSHacksPresent = true;
+    return;
+  }
+  rv = Preferences::GetString("autoadmin.global_config_url", configUrlPref,
+                              PrefValueKind::User);
+  if (!NS_FAILED(rv) && !configUrlPref.IsEmpty()) {
+    sJSHacksPresent = true;
+    return;
+  }
+
+  bool failOverToCache;
+  rv = Preferences::GetBool("autoadmin.failover_to_cached", &failOverToCache,
+                            PrefValueKind::Default);
+  if (!NS_FAILED(rv) && failOverToCache) {
+    sJSHacksPresent = true;
+    return;
+  }
+  rv = Preferences::GetBool("autoadmin.failover_to_cached", &failOverToCache,
+                            PrefValueKind::User);
+  if (!NS_FAILED(rv) && failOverToCache) {
+    sJSHacksPresent = true;
+  }
 }
 
 /* static */
@@ -849,6 +904,12 @@ void nsContentSecurityUtils::DetectCssHacks() {
   if (!NS_IsMainThread()) {
     return;
   }
+
+  // If the pref service isn't available, do nothing and re-do this later.
+  if (!Preferences::IsServiceAvailable()) {
+    return;
+  }
+
   // No need to check again.
   if (MOZ_LIKELY(sCSSHacksChecked || sCSSHacksPresent)) {
     return;
@@ -895,19 +956,6 @@ nsresult ParseCSPAndEnforceFrameAncestorCheck(
     nsIChannel* aChannel, nsIContentSecurityPolicy** aOutCSP) {
   MOZ_ASSERT(aChannel);
 
-  // CSP can only hang off an http channel, if this channel is not
-  // an http channel then there is nothing to do here.
-  nsCOMPtr<nsIHttpChannel> httpChannel;
-  nsresult rv = nsContentSecurityUtils::GetHttpChannelFromPotentialMultiPart(
-      aChannel, getter_AddRefs(httpChannel));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  if (!httpChannel) {
-    return NS_OK;
-  }
-
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
   ExtContentPolicyType contentType = loadInfo->GetExternalContentPolicyType();
   // frame-ancestor check only makes sense for subdocument and object loads,
@@ -917,35 +965,60 @@ nsresult ParseCSPAndEnforceFrameAncestorCheck(
     return NS_OK;
   }
 
-  nsAutoCString tCspHeaderValue, tCspROHeaderValue;
-
-  Unused << httpChannel->GetResponseHeader("content-security-policy"_ns,
-                                           tCspHeaderValue);
-
-  Unused << httpChannel->GetResponseHeader(
-      "content-security-policy-report-only"_ns, tCspROHeaderValue);
-
-  // if there are no CSP values, then there is nothing to do here.
-  if (tCspHeaderValue.IsEmpty() && tCspROHeaderValue.IsEmpty()) {
-    return NS_OK;
+  // CSP can only hang off an http channel, if this channel is not
+  // an http channel then there is nothing to do here,
+  // except with add-ons, where the CSP is stored in a WebExtensionPolicy.
+  nsCOMPtr<nsIHttpChannel> httpChannel;
+  nsresult rv = nsContentSecurityUtils::GetHttpChannelFromPotentialMultiPart(
+      aChannel, getter_AddRefs(httpChannel));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
   }
 
-  NS_ConvertASCIItoUTF16 cspHeaderValue(tCspHeaderValue);
-  NS_ConvertASCIItoUTF16 cspROHeaderValue(tCspROHeaderValue);
+  nsAutoCString tCspHeaderValue, tCspROHeaderValue;
+  if (httpChannel) {
+    Unused << httpChannel->GetResponseHeader("content-security-policy"_ns,
+                                             tCspHeaderValue);
 
-  RefPtr<nsCSPContext> csp = new nsCSPContext();
+    Unused << httpChannel->GetResponseHeader(
+        "content-security-policy-report-only"_ns, tCspROHeaderValue);
+
+    // if there are no CSP values, then there is nothing to do here.
+    if (tCspHeaderValue.IsEmpty() && tCspROHeaderValue.IsEmpty()) {
+      return NS_OK;
+    }
+  }
+
   nsCOMPtr<nsIPrincipal> resultPrincipal;
   rv = nsContentUtils::GetSecurityManager()->GetChannelResultPrincipal(
       aChannel, getter_AddRefs(resultPrincipal));
   NS_ENSURE_SUCCESS(rv, rv);
-  nsCOMPtr<nsIURI> selfURI;
-  aChannel->GetURI(getter_AddRefs(selfURI));
 
-  nsCOMPtr<nsIReferrerInfo> referrerInfo = httpChannel->GetReferrerInfo();
-  nsAutoString referrerSpec;
-  if (referrerInfo) {
-    referrerInfo->GetComputedReferrerSpec(referrerSpec);
+  RefPtr<extensions::WebExtensionPolicy> addonPolicy;
+  if (!httpChannel) {
+    addonPolicy = BasePrincipal::Cast(resultPrincipal)->AddonPolicy();
+    if (!addonPolicy) {
+      // Neither a HTTP channel, nor a moz-extension:-resource.
+      // CSP is not supported.
+      return NS_OK;
+    }
   }
+
+  RefPtr<nsCSPContext> csp = new nsCSPContext();
+  nsCOMPtr<nsIURI> selfURI;
+  nsAutoString referrerSpec;
+  if (httpChannel) {
+    aChannel->GetURI(getter_AddRefs(selfURI));
+    nsCOMPtr<nsIReferrerInfo> referrerInfo = httpChannel->GetReferrerInfo();
+    if (referrerInfo) {
+      referrerInfo->GetComputedReferrerSpec(referrerSpec);
+    }
+  } else {
+    // aChannel::GetURI would return the jar: or file:-URI for extensions.
+    // Use the "final" URI to get the actual moz-extension:-URL.
+    NS_GetFinalChannelURI(aChannel, getter_AddRefs(selfURI));
+  }
+
   uint64_t innerWindowID = loadInfo->GetInnerWindowID();
 
   rv = csp->SetRequestContextWithPrincipal(resultPrincipal, selfURI,
@@ -954,16 +1027,24 @@ nsresult ParseCSPAndEnforceFrameAncestorCheck(
     return rv;
   }
 
-  // ----- if there's a full-strength CSP header, apply it.
-  if (!cspHeaderValue.IsEmpty()) {
-    rv = CSP_AppendCSPFromHeader(csp, cspHeaderValue, false);
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
+  if (addonPolicy) {
+    csp->AppendPolicy(addonPolicy->BaseCSP(), false, false);
+    csp->AppendPolicy(addonPolicy->ExtensionPageCSP(), false, false);
+  } else {
+    NS_ConvertASCIItoUTF16 cspHeaderValue(tCspHeaderValue);
+    NS_ConvertASCIItoUTF16 cspROHeaderValue(tCspROHeaderValue);
 
-  // ----- if there's a report-only CSP header, apply it.
-  if (!cspROHeaderValue.IsEmpty()) {
-    rv = CSP_AppendCSPFromHeader(csp, cspROHeaderValue, true);
-    NS_ENSURE_SUCCESS(rv, rv);
+    // ----- if there's a full-strength CSP header, apply it.
+    if (!cspHeaderValue.IsEmpty()) {
+      rv = CSP_AppendCSPFromHeader(csp, cspHeaderValue, false);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
+    // ----- if there's a report-only CSP header, apply it.
+    if (!cspROHeaderValue.IsEmpty()) {
+      rv = CSP_AppendCSPFromHeader(csp, cspROHeaderValue, true);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
   }
 
   // ----- Enforce frame-ancestor policy on any applied policies
@@ -1046,26 +1127,26 @@ void nsContentSecurityUtils::AssertAboutPageHasCSP(Document* aDocument) {
     nsAutoString parsedPolicyStr;
     for (uint32_t i = 0; i < policyCount; ++i) {
       csp->GetPolicyString(i, parsedPolicyStr);
-      if (parsedPolicyStr.Find("default-src") >= 0) {
+      if (parsedPolicyStr.Find(u"default-src") >= 0) {
         foundDefaultSrc = true;
       }
-      if (parsedPolicyStr.Find("object-src 'none'") >= 0) {
+      if (parsedPolicyStr.Find(u"object-src 'none'") >= 0) {
         foundObjectSrc = true;
       }
-      if (parsedPolicyStr.Find("'unsafe-eval'") >= 0) {
+      if (parsedPolicyStr.Find(u"'unsafe-eval'") >= 0) {
         foundUnsafeEval = true;
       }
-      if (parsedPolicyStr.Find("'unsafe-inline'") >= 0) {
+      if (parsedPolicyStr.Find(u"'unsafe-inline'") >= 0) {
         foundUnsafeInline = true;
       }
-      if (parsedPolicyStr.Find("script-src") >= 0) {
+      if (parsedPolicyStr.Find(u"script-src") >= 0) {
         foundScriptSrc = true;
       }
-      if (parsedPolicyStr.Find("worker-src") >= 0) {
+      if (parsedPolicyStr.Find(u"worker-src") >= 0) {
         foundWorkerSrc = true;
       }
-      if (parsedPolicyStr.Find("http:") >= 0 ||
-          parsedPolicyStr.Find("https:") >= 0) {
+      if (parsedPolicyStr.Find(u"http:") >= 0 ||
+          parsedPolicyStr.Find(u"https:") >= 0) {
         foundWebScheme = true;
       }
     }
@@ -1091,8 +1172,6 @@ void nsContentSecurityUtils::AssertAboutPageHasCSP(Document* aDocument) {
     "about:srcdoc"_ns,
     // about:sync-log displays plain text only -> no CSP
     "about:sync-log"_ns,
-    // about:printpreview displays plain text only -> no CSP
-    "about:printpreview"_ns,
     // about:logo just displays the firefox logo -> no CSP
     "about:logo"_ns,
     // about:sync is a special mozilla-signed developer addon with low usage ->
@@ -1146,7 +1225,8 @@ void nsContentSecurityUtils::AssertAboutPageHasCSP(Document* aDocument) {
                  StringBeginsWith(aboutSpec, "about:home"_ns) ||
                  StringBeginsWith(aboutSpec, "about:welcome"_ns) ||
                  StringBeginsWith(aboutSpec, "about:devtools"_ns) ||
-                 StringBeginsWith(aboutSpec, "about:pocket-saved"_ns),
+                 StringBeginsWith(aboutSpec, "about:pocket-saved"_ns) ||
+                 StringBeginsWith(aboutSpec, "about:pocket-home"_ns),
              "about: page must not contain a CSP including a web scheme");
 
   if (aDocument->IsExtensionPage()) {
@@ -1191,8 +1271,8 @@ void nsContentSecurityUtils::AssertAboutPageHasCSP(Document* aDocument) {
 #endif
 
 /* static */
-bool nsContentSecurityUtils::ValidateScriptFilename(const char* aFilename,
-                                                    bool aIsSystemRealm) {
+bool nsContentSecurityUtils::ValidateScriptFilename(JSContext* cx,
+                                                    const char* aFilename) {
   // If the pref is permissive, allow everything
   if (StaticPrefs::security_allow_parent_unrestricted_js_loads()) {
     return true;
@@ -1263,11 +1343,6 @@ bool nsContentSecurityUtils::ValidateScriptFilename(const char* aFilename,
     return true;
   }
 
-  auto kAllowedExtensionScriptFilenames = {
-      u"/experiment-apis/translateUi/TranslationBrowserChromeUi.js"_ns,
-      u"/experiment-apis/translateUi/TranslationBrowserChromeUiManager.js"_ns,
-      u"/experiment-apis/translateUi/content/translation-notification.js"_ns};
-
   if (StringBeginsWith(filenameU, u"moz-extension://"_ns)) {
     nsCOMPtr<nsIURI> uri;
     nsresult rv = NS_NewURI(getter_AddRefs(uri), aFilename);
@@ -1277,43 +1352,55 @@ bool nsContentSecurityUtils::ValidateScriptFilename(const char* aFilename,
           ExtensionPolicyService::GetSingleton().GetByHost(url.Host());
 
       if (policy && policy->IsPrivileged()) {
-        bool matchedAnAllowlist = false;
-        for (auto allowedFilename : kAllowedExtensionScriptFilenames) {
-          if (StringBeginsWith(url.FilePath(), allowedFilename)) {
-            matchedAnAllowlist = true;
-          }
-        }
-
-        if (matchedAnAllowlist) {
-          MOZ_LOG(sCSMLog, LogLevel::Debug,
-                  ("Allowing a javascript load of %s because the web extension "
-                   "it is "
-                   "associated with is privileged.",
-                   aFilename));
-          return true;
-        }
+        MOZ_LOG(sCSMLog, LogLevel::Debug,
+                ("Allowing a javascript load of %s because the web extension "
+                 "it is associated with is privileged.",
+                 aFilename));
+        return true;
       }
+    }
+  } else if (!NS_IsMainThread()) {
+    WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(cx);
+    if (workerPrivate && workerPrivate->IsPrivilegedAddonGlobal()) {
+      MOZ_LOG(sCSMLog, LogLevel::Debug,
+              ("Allowing a javascript load of %s because the web extension "
+               "it is associated with is privileged.",
+               aFilename));
+      return true;
     }
   }
 
-  auto kAllowedFilenames = {
+  auto kAllowedFilenamesExact = {
       // Allow through the injection provided by about:sync addon
-      u"data:,new function() {\n  Components.utils.import(\"chrome://aboutsync/content/AboutSyncRedirector.js\");\n  AboutSyncRedirector.register();\n}"_ns,
+      u"data:,new function() {\n  const { AboutSyncRedirector } = ChromeUtils.import(\"chrome://aboutsync/content/AboutSyncRedirector.js\");\n  AboutSyncRedirector.register();\n}"_ns,
+  };
+
+  for (auto allowedFilename : kAllowedFilenamesExact) {
+    if (filenameU == allowedFilename) {
+      return true;
+    }
+  }
+
+  auto kAllowedFilenamesPrefix = {
       // Until 371900 is fixed, we need to do something about about:downloads
       // and this is the most reasonable. See 1727770
       u"about:downloads"_ns,
       // We think this is the same problem as about:downloads
-      u"about:preferences"_ns};
-  for (auto allowedFilename : kAllowedFilenames) {
-    if (filenameU == allowedFilename) {
+      u"about:preferences"_ns,
+      // Browser console will give a filename of 'debugger' See 1763943
+      // Sometimes it's 'debugger eager eval code', other times just 'debugger
+      // eval code'
+      u"debugger"_ns};
+
+  for (auto allowedFilenamePrefix : kAllowedFilenamesPrefix) {
+    if (StringBeginsWith(filenameU, allowedFilenamePrefix)) {
       return true;
     }
   }
 
   // Log to MOZ_LOG
   MOZ_LOG(sCSMLog, LogLevel::Error,
-          ("ValidateScriptFilename System:%i %s\n", (aIsSystemRealm ? 1 : 0),
-           aFilename));
+          ("ValidateScriptFilename Failed: %s\n", aFilename));
 
   // Send Telemetry
   FilenameTypeAndDetails fileNameTypeAndDetails =
@@ -1338,7 +1425,15 @@ bool nsContentSecurityUtils::ValidateScriptFilename(const char* aFilename,
   Telemetry::RecordEvent(eventType, mozilla::Some(fileNameTypeAndDetails.first),
                          extra);
 
-#ifdef NIGHTLY_BUILD
+#if defined(DEBUG) || defined(FUZZING)
+  auto crashString = nsContentSecurityUtils::SmartFormatCrashString(
+      aFilename,
+      fileNameTypeAndDetails.second.isSome()
+          ? NS_ConvertUTF16toUTF8(fileNameTypeAndDetails.second.value()).get()
+          : "(None)",
+      "Blocking a script load %s from file %s");
+  MOZ_CRASH_UNSAFE_PRINTF("%s", crashString.get());
+#elif defined(NIGHTLY_BUILD)
   // Cause a crash (if we've never crashed before and we can ensure we won't do
   // it again.)
   // The details in the second arg, passed to UNSAFE_PRINTF, are also included
@@ -1349,18 +1444,17 @@ bool nsContentSecurityUtils::ValidateScriptFilename(const char* aFilename,
   } else {
     PossiblyCrash("js_load_1", aFilename, "(None)"_ns);
   }
-#elif defined(FUZZING)
-  auto crashString = nsContentSecurityUtils::SmartFormatCrashString(
-      aFilename,
-      NS_ConvertUTF16toUTF8(fileNameTypeAndDetails.second.value()).get(),
-      "Blocking a script load %s from file %s");
-  MOZ_CRASH_UNSAFE_PRINTF("%s", crashString.get());
 #endif
 
-  // Presently we are not enforcing any restrictions for the script filename,
-  // we're only reporting Telemetry. In the future we will assert in debug
-  // builds and return false to prevent execution in non-debug builds.
+  // Presently we are only enforcing restrictions for the script filename
+  // on Nightly.  On all channels we are reporting Telemetry. In the future we
+  // will assert in debug builds and return false to prevent execution in
+  // non-debug builds.
+#ifdef NIGHTLY_BUILD
+  return false;
+#else
   return true;
+#endif
 }
 
 /* static */

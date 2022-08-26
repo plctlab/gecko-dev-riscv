@@ -30,7 +30,7 @@ mozilla::ipc::IPCResult WebrtcTCPSocketChild::RecvOnClose(
 }
 
 mozilla::ipc::IPCResult WebrtcTCPSocketChild::RecvOnConnected(
-    const nsCString& aProxyType) {
+    const nsACString& aProxyType) {
   LOG(("WebrtcTCPSocketChild::RecvOnConnected %p\n", this));
 
   MOZ_ASSERT(mProxyCallbacks, "webrtc TCP callbacks should be non-null");
@@ -64,10 +64,11 @@ WebrtcTCPSocketChild::~WebrtcTCPSocketChild() {
 }
 
 void WebrtcTCPSocketChild::AsyncOpen(
-    const nsCString& aHost, const int& aPort, const nsCString& aLocalAddress,
+    const nsACString& aHost, const int& aPort, const nsACString& aLocalAddress,
     const int& aLocalPort, bool aUseTls,
     const std::shared_ptr<NrSocketProxyConfig>& aProxyConfig) {
-  LOG(("WebrtcTCPSocketChild::AsyncOpen %p %s:%d\n", this, aHost.get(), aPort));
+  LOG(("WebrtcTCPSocketChild::AsyncOpen %p %s:%d\n", this,
+       PromiseFlatCString(aHost).get(), aPort));
 
   MOZ_ASSERT(NS_IsMainThread(), "not main thread");
 
@@ -82,12 +83,9 @@ void WebrtcTCPSocketChild::AsyncOpen(
 
   if (IsNeckoChild()) {
     // We're on a content process
-    gNeckoChild->SetEventTargetForActor(this, GetMainThreadSerialEventTarget());
     gNeckoChild->SendPWebrtcTCPSocketConstructor(this, tabId);
   } else if (IsSocketProcessChild()) {
     // We're on a socket process
-    SocketProcessChild::GetSingleton()->SetEventTargetForActor(
-        this, GetMainThreadSerialEventTarget());
     SocketProcessChild::GetSingleton()->SendPWebrtcTCPSocketConstructor(this,
                                                                         tabId);
   }

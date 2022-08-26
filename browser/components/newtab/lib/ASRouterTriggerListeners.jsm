@@ -3,17 +3,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
-  Region: "resource://gre/modules/Region.jsm",
-  EveryWindow: "resource:///modules/EveryWindow.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AboutReaderParent: "resource:///actors/AboutReaderParent.jsm",
-  ASRouterPreferences: "resource://activity-stream/lib/ASRouterPreferences.jsm",
+  BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
+  EveryWindow: "resource:///modules/EveryWindow.jsm",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
 });
 
 const FEW_MINUTES = 15 * 60 * 1000; // 15 mins
@@ -22,7 +22,7 @@ function isPrivateWindow(win) {
   return (
     !(win instanceof Ci.nsIDOMWindow) ||
     win.closed ||
-    PrivateBrowsingUtils.isWindowPrivate(win)
+    lazy.PrivateBrowsingUtils.isWindowPrivate(win)
   );
 }
 
@@ -87,7 +87,7 @@ function createMatchPatternSet(patterns, flags) {
  * A Map from trigger IDs to singleton trigger listeners. Each listener must
  * have idempotent `init` and `uninit` methods.
  */
-this.ASRouterTriggerListeners = new Map([
+const ASRouterTriggerListeners = new Map([
   [
     "openArticleURL",
     {
@@ -101,7 +101,7 @@ this.ASRouterTriggerListeners = new Map([
       init(triggerHandler, hosts, patterns) {
         if (!this._initialized) {
           this.receiveMessage = this.receiveMessage.bind(this);
-          AboutReaderParent.addMessageListener(this.readerModeEvent, this);
+          lazy.AboutReaderParent.addMessageListener(this.readerModeEvent, this);
           this._triggerHandler = triggerHandler;
           this._initialized = true;
         }
@@ -130,7 +130,10 @@ this.ASRouterTriggerListeners = new Map([
 
       uninit() {
         if (this._initialized) {
-          AboutReaderParent.removeMessageListener(this.readerModeEvent, this);
+          lazy.AboutReaderParent.removeMessageListener(
+            this.readerModeEvent,
+            this
+          );
           this._initialized = false;
           this._triggerHandler = null;
           this._hosts = new Set();
@@ -190,7 +193,7 @@ this.ASRouterTriggerListeners = new Map([
       init(triggerHandler, hosts = [], patterns) {
         if (!this._initialized) {
           this.onTabSwitch = this.onTabSwitch.bind(this);
-          EveryWindow.registerCallback(
+          lazy.EveryWindow.registerCallback(
             this.id,
             win => {
               if (!isPrivateWindow(win)) {
@@ -300,7 +303,7 @@ this.ASRouterTriggerListeners = new Map([
 
       uninit() {
         if (this._initialized) {
-          EveryWindow.unregisterCallback(this.id);
+          lazy.EveryWindow.unregisterCallback(this.id);
 
           this._initialized = false;
           this._triggerHandler = null;
@@ -334,7 +337,7 @@ this.ASRouterTriggerListeners = new Map([
       init(triggerHandler, hosts = [], patterns) {
         if (!this._initialized) {
           this.onLocationChange = this.onLocationChange.bind(this);
-          EveryWindow.registerCallback(
+          lazy.EveryWindow.registerCallback(
             this.id,
             win => {
               if (!isPrivateWindow(win)) {
@@ -369,7 +372,7 @@ this.ASRouterTriggerListeners = new Map([
 
       uninit() {
         if (this._initialized) {
-          EveryWindow.unregisterCallback(this.id);
+          lazy.EveryWindow.unregisterCallback(this.id);
 
           this._initialized = false;
           this._triggerHandler = null;
@@ -489,7 +492,7 @@ this.ASRouterTriggerListeners = new Map([
             "SiteProtection:ContentBlockingMilestone"
           );
           this.onLocationChange = this._onLocationChange.bind(this);
-          EveryWindow.registerCallback(
+          lazy.EveryWindow.registerCallback(
             this.id,
             win => {
               if (!isPrivateWindow(win)) {
@@ -518,7 +521,7 @@ this.ASRouterTriggerListeners = new Map([
             this,
             "SiteProtection:ContentBlockingMilestone"
           );
-          EveryWindow.unregisterCallback(this.id);
+          lazy.EveryWindow.unregisterCallback(this.id);
           this.onLocationChange = null;
           this._initialized = false;
         }
@@ -595,25 +598,8 @@ this.ASRouterTriggerListeners = new Map([
       _initialized: false,
       _triggerHandler: null,
 
-      // XXX For the moment, the captive-portal-login trigger is assumed to be
-      // for the VPN promo, and we check to make sure that hasn't been
-      // disabled by pref for a region (or maybe partner or OS distro?).
-      ///
-      // Ultimately, we'd like to unstaple the VPN promo checks from here,
-      // perhaps even doing them entirely using both ASRouter message targeting
-      // and experimenter/rollout targeting.  This work is being tracked in
-      // bug 1731176.
       _shouldShowCaptivePortalVPNPromo() {
-        const disablePromoPref =
-          ASRouterPreferences.disableCaptivePortalVPNPromo;
-        const homeRegion = Region.home || "";
-        const currentRegion = Region.current || "";
-
-        return (
-          !disablePromoPref &&
-          homeRegion.toLowerCase() !== "cn" &&
-          currentRegion.toLowerCase() !== "cn"
-        );
+        return lazy.BrowserUtils.shouldShowVPNPromo();
       },
 
       init(triggerHandler) {

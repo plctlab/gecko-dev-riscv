@@ -3,8 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use crate::{
-    cow_label, AdapterInformation, ByteBuf, CommandEncoderAction, DeviceAction, DropAction,
-    ImplicitLayout, QueueWriteAction, RawString, TextureAction,
+    cow_label, wgpu_string, AdapterInformation, ByteBuf, CommandEncoderAction, DeviceAction,
+    DropAction, ImplicitLayout, QueueWriteAction, RawString, TextureAction,
 };
 
 use wgc::{hub::IdentityManager, id};
@@ -13,6 +13,8 @@ use wgt::Backend;
 pub use wgc::command::{compute_ffi::*, render_ffi::*};
 
 use parking_lot::Mutex;
+
+use nsstring::nsACString;
 
 use std::{
     borrow::Cow,
@@ -33,13 +35,6 @@ fn make_slice<'a, T>(pointer: *const T, length: usize) -> &'a [T] {
 fn make_byte_buf<T: serde::Serialize>(data: &T) -> ByteBuf {
     let vec = bincode::serialize(data).unwrap();
     ByteBuf::from_vec(vec)
-}
-
-#[repr(C)]
-pub struct ShaderModuleDescriptor {
-    label: RawString,
-    code: *const u8,
-    code_length: usize,
 }
 
 #[repr(C)]
@@ -114,10 +109,12 @@ impl FragmentState<'_> {
     fn to_wgpu(&self) -> wgc::pipeline::FragmentState {
         let color_targets = make_slice(self.targets, self.targets_length)
             .iter()
-            .map(|ct| wgt::ColorTargetState {
-                format: ct.format,
-                blend: ct.blend.cloned(),
-                write_mask: ct.write_mask,
+            .map(|ct| {
+                Some(wgt::ColorTargetState {
+                    format: ct.format,
+                    blend: ct.blend.cloned(),
+                    write_mask: ct.write_mask,
+                })
             })
             .collect();
         wgc::pipeline::FragmentState {
@@ -134,7 +131,7 @@ pub struct PrimitiveState<'a> {
     front_face: wgt::FrontFace,
     cull_mode: Option<&'a wgt::Face>,
     polygon_mode: wgt::PolygonMode,
-    clamp_depth: bool,
+    unclipped_depth: bool,
 }
 
 impl PrimitiveState<'_> {
@@ -145,7 +142,7 @@ impl PrimitiveState<'_> {
             front_face: self.front_face.clone(),
             cull_mode: self.cull_mode.cloned(),
             polygon_mode: self.polygon_mode,
-            clamp_depth: self.clamp_depth,
+            unclipped_depth: self.unclipped_depth,
             conservative: false,
         }
     }
@@ -153,7 +150,7 @@ impl PrimitiveState<'_> {
 
 #[repr(C)]
 pub struct RenderPipelineDescriptor<'a> {
-    label: RawString,
+    label: Option<&'a nsACString>,
     layout: Option<id::PipelineLayoutId>,
     vertex: &'a VertexState,
     primitive: PrimitiveState<'a>,
@@ -199,7 +196,7 @@ pub struct BindGroupLayoutEntry<'a> {
 
 #[repr(C)]
 pub struct BindGroupLayoutDescriptor<'a> {
-    label: RawString,
+    label: Option<&'a nsACString>,
     entries: *const BindGroupLayoutEntry<'a>,
     entries_length: usize,
 }
@@ -216,23 +213,23 @@ pub struct BindGroupEntry {
 }
 
 #[repr(C)]
-pub struct BindGroupDescriptor {
-    label: RawString,
+pub struct BindGroupDescriptor<'a> {
+    label: Option<&'a nsACString>,
     layout: id::BindGroupLayoutId,
     entries: *const BindGroupEntry,
     entries_length: usize,
 }
 
 #[repr(C)]
-pub struct PipelineLayoutDescriptor {
-    label: RawString,
+pub struct PipelineLayoutDescriptor<'a> {
+    label: Option<&'a nsACString>,
     bind_group_layouts: *const id::BindGroupLayoutId,
     bind_group_layouts_length: usize,
 }
 
 #[repr(C)]
 pub struct SamplerDescriptor<'a> {
-    label: RawString,
+    label: Option<&'a nsACString>,
     address_modes: [wgt::AddressMode; 3],
     mag_filter: wgt::FilterMode,
     min_filter: wgt::FilterMode,
@@ -245,7 +242,7 @@ pub struct SamplerDescriptor<'a> {
 
 #[repr(C)]
 pub struct TextureViewDescriptor<'a> {
-    label: RawString,
+    label: Option<&'a nsACString>,
     format: Option<&'a wgt::TextureFormat>,
     dimension: Option<&'a wgt::TextureViewDimension>,
     aspect: wgt::TextureAspect,
@@ -257,10 +254,12 @@ pub struct TextureViewDescriptor<'a> {
 
 #[repr(C)]
 pub struct RenderBundleEncoderDescriptor<'a> {
-    label: RawString,
+    label: Option<&'a nsACString>,
     color_formats: *const wgt::TextureFormat,
     color_formats_length: usize,
     depth_stencil_format: Option<&'a wgt::TextureFormat>,
+    depth_read_only: bool,
+    stencil_read_only: bool,
     sample_count: u32,
 }
 
@@ -297,7 +296,6 @@ impl ImplicitLayout<'_> {
 
 #[derive(Debug, Default)]
 struct Identities {
-    surfaces: IdentityManager,
     vulkan: IdentityHub,
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     metal: IdentityHub,
@@ -440,10 +438,11 @@ pub extern "C" fn wgpu_client_adapter_extract_info(
 
 #[no_mangle]
 pub extern "C" fn wgpu_client_serialize_device_descriptor(
-    desc: &wgt::DeviceDescriptor<RawString>,
+    desc: &wgt::DeviceDescriptor<Option<&nsACString>>,
     bb: &mut ByteBuf,
 ) {
-    *bb = make_byte_buf(&desc.map_label(cow_label));
+    let label = wgpu_string(desc.label);
+    *bb = make_byte_buf(&desc.map_label(|_| label));
 }
 
 #[no_mangle]
@@ -475,32 +474,14 @@ pub extern "C" fn wgpu_client_make_buffer_id(
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_client_create_buffer(
-    client: &Client,
-    device_id: id::DeviceId,
-    desc: &wgt::BufferDescriptor<RawString>,
-    bb: &mut ByteBuf,
-) -> id::BufferId {
-    let backend = device_id.backend();
-    let id = client
-        .identities
-        .lock()
-        .select(backend)
-        .buffers
-        .alloc(backend);
-
-    let action = DeviceAction::CreateBuffer(id, desc.map_label(cow_label));
-    *bb = make_byte_buf(&action);
-    id
-}
-
-#[no_mangle]
 pub extern "C" fn wgpu_client_create_texture(
     client: &Client,
     device_id: id::DeviceId,
-    desc: &wgt::TextureDescriptor<RawString>,
+    desc: &wgt::TextureDescriptor<Option<&nsACString>>,
     bb: &mut ByteBuf,
 ) -> id::TextureId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -509,7 +490,7 @@ pub extern "C" fn wgpu_client_create_texture(
         .textures
         .alloc(backend);
 
-    let action = DeviceAction::CreateTexture(id, desc.map_label(cow_label));
+    let action = DeviceAction::CreateTexture(id, desc.map_label(|_| label));
     *bb = make_byte_buf(&action);
     id
 }
@@ -521,6 +502,8 @@ pub extern "C" fn wgpu_client_create_texture_view(
     desc: &TextureViewDescriptor,
     bb: &mut ByteBuf,
 ) -> id::TextureViewId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -530,7 +513,7 @@ pub extern "C" fn wgpu_client_create_texture_view(
         .alloc(backend);
 
     let wgpu_desc = wgc::resource::TextureViewDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         format: desc.format.cloned(),
         dimension: desc.dimension.cloned(),
         range: wgt::ImageSubresourceRange {
@@ -554,6 +537,8 @@ pub extern "C" fn wgpu_client_create_sampler(
     desc: &SamplerDescriptor,
     bb: &mut ByteBuf,
 ) -> id::SamplerId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -563,7 +548,7 @@ pub extern "C" fn wgpu_client_create_sampler(
         .alloc(backend);
 
     let wgpu_desc = wgc::resource::SamplerDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         address_modes: desc.address_modes,
         mag_filter: desc.mag_filter,
         min_filter: desc.min_filter,
@@ -597,9 +582,11 @@ pub extern "C" fn wgpu_client_make_encoder_id(
 pub extern "C" fn wgpu_client_create_command_encoder(
     client: &Client,
     device_id: id::DeviceId,
-    desc: &wgt::CommandEncoderDescriptor<RawString>,
+    desc: &wgt::CommandEncoderDescriptor<Option<&nsACString>>,
     bb: &mut ByteBuf,
 ) -> id::CommandEncoderId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -608,7 +595,7 @@ pub extern "C" fn wgpu_client_create_command_encoder(
         .command_buffers
         .alloc(backend);
 
-    let action = DeviceAction::CreateCommandEncoder(id, desc.map_label(cow_label));
+    let action = DeviceAction::CreateCommandEncoder(id, desc.map_label(|_| label));
     *bb = make_byte_buf(&action);
     id
 }
@@ -617,22 +604,35 @@ pub extern "C" fn wgpu_client_create_command_encoder(
 pub extern "C" fn wgpu_device_create_render_bundle_encoder(
     device_id: id::DeviceId,
     desc: &RenderBundleEncoderDescriptor,
+    bb: &mut ByteBuf,
 ) -> *mut wgc::command::RenderBundleEncoder {
+    let label = wgpu_string(desc.label);
+
+    let color_formats: Vec<_> = make_slice(desc.color_formats, desc.color_formats_length)
+        .iter()
+        .map(|format| Some(format.clone()))
+        .collect();
     let descriptor = wgc::command::RenderBundleEncoderDescriptor {
-        label: cow_label(&desc.label),
-        color_formats: Cow::Borrowed(make_slice(desc.color_formats, desc.color_formats_length)),
+        label: label,
+        color_formats: Cow::Owned(color_formats),
         depth_stencil: desc
             .depth_stencil_format
             .map(|&format| wgt::RenderBundleDepthStencil {
                 format,
-                depth_read_only: false, //TODO: add to `RenderBundleEncoderDescriptor`
-                stencil_read_only: false,
+                depth_read_only: desc.depth_read_only,
+                stencil_read_only: desc.stencil_read_only,
             }),
         sample_count: desc.sample_count,
+        multiview: None,
     };
     match wgc::command::RenderBundleEncoder::new(&descriptor, device_id, None) {
         Ok(encoder) => Box::into_raw(Box::new(encoder)),
-        Err(e) => panic!("Error in Device::create_render_bundle_encoder: {}", e),
+        Err(e) => {
+            let message = format!("Error in Device::create_render_bundle_encoder: {}", e);
+            let action = DeviceAction::Error(message);
+            *bb = make_byte_buf(&action);
+            ptr::null_mut()
+        }
     }
 }
 
@@ -650,9 +650,11 @@ pub unsafe extern "C" fn wgpu_client_create_render_bundle(
     client: &Client,
     encoder: *mut wgc::command::RenderBundleEncoder,
     device_id: id::DeviceId,
-    desc: &wgt::RenderBundleDescriptor<RawString>,
+    desc: &wgt::RenderBundleDescriptor<Option<&nsACString>>,
     bb: &mut ByteBuf,
 ) -> id::RenderBundleId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -662,14 +664,14 @@ pub unsafe extern "C" fn wgpu_client_create_render_bundle(
         .alloc(backend);
 
     let action =
-        DeviceAction::CreateRenderBundle(id, *Box::from_raw(encoder), desc.map_label(cow_label));
+        DeviceAction::CreateRenderBundle(id, *Box::from_raw(encoder), desc.map_label(|_| label));
     *bb = make_byte_buf(&action);
     id
 }
 
 #[repr(C)]
-pub struct ComputePassDescriptor {
-    pub label: RawString,
+pub struct ComputePassDescriptor<'a> {
+    pub label: Option<&'a nsACString>,
 }
 
 #[no_mangle]
@@ -677,11 +679,11 @@ pub unsafe extern "C" fn wgpu_command_encoder_begin_compute_pass(
     encoder_id: id::CommandEncoderId,
     desc: &ComputePassDescriptor,
 ) -> *mut wgc::command::ComputePass {
+    let label = wgpu_string(desc.label);
+
     let pass = wgc::command::ComputePass::new(
         encoder_id,
-        &wgc::command::ComputePassDescriptor {
-            label: cow_label(&desc.label),
-        },
+        &wgc::command::ComputePassDescriptor { label: label },
     );
     Box::into_raw(Box::new(pass))
 }
@@ -701,8 +703,8 @@ pub unsafe extern "C" fn wgpu_compute_pass_destroy(pass: *mut wgc::command::Comp
 }
 
 #[repr(C)]
-pub struct RenderPassDescriptor {
-    pub label: RawString,
+pub struct RenderPassDescriptor<'a> {
+    pub label: Option<&'a nsACString>,
     pub color_attachments: *const wgc::command::RenderPassColorAttachment,
     pub color_attachments_length: usize,
     pub depth_stencil_attachment: *const wgc::command::RenderPassDepthStencilAttachment,
@@ -713,14 +715,18 @@ pub unsafe extern "C" fn wgpu_command_encoder_begin_render_pass(
     encoder_id: id::CommandEncoderId,
     desc: &RenderPassDescriptor,
 ) -> *mut wgc::command::RenderPass {
+    let label = wgpu_string(desc.label);
+
+    let color_attachments: Vec<_> =
+        make_slice(desc.color_attachments, desc.color_attachments_length)
+            .iter()
+            .map(|format| Some(format.clone()))
+            .collect();
     let pass = wgc::command::RenderPass::new(
         encoder_id,
         &wgc::command::RenderPassDescriptor {
-            label: cow_label(&desc.label),
-            color_attachments: Cow::Borrowed(make_slice(
-                desc.color_attachments,
-                desc.color_attachments_length,
-            )),
+            label: label,
+            color_attachments: Cow::Owned(color_attachments),
             depth_stencil_attachment: desc.depth_stencil_attachment.as_ref(),
         },
     );
@@ -748,6 +754,8 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group_layout(
     desc: &BindGroupLayoutDescriptor,
     bb: &mut ByteBuf,
 ) -> id::BindGroupLayoutId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -778,10 +786,13 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group_layout(
                     has_dynamic_offset: entry.has_dynamic_offset,
                     min_binding_size: entry.min_binding_size,
                 },
-                RawBindingType::Sampler => wgt::BindingType::Sampler {
-                    comparison: entry.sampler_compare,
-                    filtering: entry.sampler_filter,
-                },
+                RawBindingType::Sampler => wgt::BindingType::Sampler(if entry.sampler_compare {
+                    wgt::SamplerBindingType::Comparison
+                } else if entry.sampler_filter {
+                    wgt::SamplerBindingType::Filtering
+                } else {
+                    wgt::SamplerBindingType::NonFiltering
+                }),
                 RawBindingType::SampledTexture => wgt::BindingType::Texture {
                     //TODO: the spec has a bug here
                     view_dimension: *entry
@@ -814,7 +825,7 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group_layout(
         });
     }
     let wgpu_desc = wgc::binding_model::BindGroupLayoutDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         entries: Cow::Owned(entries),
     };
 
@@ -830,6 +841,8 @@ pub unsafe extern "C" fn wgpu_client_create_pipeline_layout(
     desc: &PipelineLayoutDescriptor,
     bb: &mut ByteBuf,
 ) -> id::PipelineLayoutId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -839,7 +852,7 @@ pub unsafe extern "C" fn wgpu_client_create_pipeline_layout(
         .alloc(backend);
 
     let wgpu_desc = wgc::binding_model::PipelineLayoutDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         bind_group_layouts: Cow::Borrowed(make_slice(
             desc.bind_group_layouts,
             desc.bind_group_layouts_length,
@@ -859,6 +872,8 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group(
     desc: &BindGroupDescriptor,
     bb: &mut ByteBuf,
 ) -> id::BindGroupId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let id = client
         .identities
@@ -887,7 +902,7 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group(
         });
     }
     let wgpu_desc = wgc::binding_model::BindGroupDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         layout: desc.layout,
         entries: Cow::Owned(entries),
     };
@@ -898,29 +913,17 @@ pub unsafe extern "C" fn wgpu_client_create_bind_group(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wgpu_client_create_shader_module(
+pub extern "C" fn wgpu_client_make_shader_module_id(
     client: &Client,
     device_id: id::DeviceId,
-    desc: &ShaderModuleDescriptor,
-    bb: &mut ByteBuf,
 ) -> id::ShaderModuleId {
     let backend = device_id.backend();
-    let id = client
+    client
         .identities
         .lock()
         .select(backend)
         .shader_modules
-        .alloc(backend);
-
-    let code =
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(desc.code, desc.code_length));
-    let desc = wgc::pipeline::ShaderModuleDescriptor {
-        label: cow_label(&desc.label),
-    };
-
-    let action = DeviceAction::CreateShaderModule(id, desc, Cow::Borrowed(code));
-    *bb = make_byte_buf(&action);
-    id
+        .alloc(backend)
 }
 
 #[no_mangle]
@@ -968,18 +971,21 @@ pub unsafe extern "C" fn wgpu_client_create_render_pipeline(
     implicit_pipeline_layout_id: *mut Option<id::PipelineLayoutId>,
     implicit_bind_group_layout_ids: *mut Option<id::BindGroupLayoutId>,
 ) -> id::RenderPipelineId {
+    let label = wgpu_string(desc.label);
+
     let backend = device_id.backend();
     let mut identities = client.identities.lock();
     let id = identities.select(backend).render_pipelines.alloc(backend);
 
     let wgpu_desc = wgc::pipeline::RenderPipelineDescriptor {
-        label: cow_label(&desc.label),
+        label: label,
         layout: desc.layout,
         vertex: desc.vertex.to_wgpu(),
         fragment: desc.fragment.map(FragmentState::to_wgpu),
         primitive: desc.primitive.to_wgpu(),
         depth_stencil: desc.depth_stencil.cloned(),
         multisample: desc.multisample.clone(),
+        multiview: None,
     };
 
     let implicit = match desc.layout {
@@ -1052,25 +1058,26 @@ pub unsafe extern "C" fn wgpu_command_encoder_copy_texture_to_texture(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wgpu_render_pass_set_index_buffer(
-    pass: &mut wgc::command::RenderPass,
-    buffer: wgc::id::BufferId,
-    index_format: wgt::IndexFormat,
-    offset: wgt::BufferAddress,
-    size: Option<wgt::BufferSize>,
-) {
-    pass.set_index_buffer(buffer, index_format, offset, size);
+pub extern "C" fn wgpu_command_encoder_push_debug_group(marker: &nsACString, bb: &mut ByteBuf) {
+    let string = marker.to_string();
+    let action = CommandEncoderAction::PushDebugGroup(string);
+    *bb = make_byte_buf(&action);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wgpu_render_bundle_set_index_buffer(
-    encoder: &mut wgc::command::RenderBundleEncoder,
-    buffer: wgc::id::BufferId,
-    index_format: wgt::IndexFormat,
-    offset: wgt::BufferAddress,
-    size: Option<wgt::BufferSize>,
+pub unsafe extern "C" fn wgpu_command_encoder_pop_debug_group(bb: &mut ByteBuf) {
+    let action = CommandEncoderAction::PopDebugGroup;
+    *bb = make_byte_buf(&action);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wgpu_command_encoder_insert_debug_marker(
+    marker: &nsACString,
+    bb: &mut ByteBuf,
 ) {
-    encoder.set_index_buffer(buffer, index_format, offset, size);
+    let string = marker.to_string();
+    let action = CommandEncoderAction::InsertDebugMarker(string);
+    *bb = make_byte_buf(&action);
 }
 
 #[no_mangle]

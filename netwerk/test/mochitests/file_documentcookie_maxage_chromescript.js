@@ -1,8 +1,9 @@
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/chrome-script */
 
 "use strict";
 
 function getCookieService() {
+  // eslint-disable-next-line mozilla/use-services
   return Cc["@mozilla.org/cookiemanager;1"].getService(Ci.nsICookieManager);
 }
 

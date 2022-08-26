@@ -3,7 +3,7 @@
 
 "use strict";
 
-const TEST_PAGE = "http://example.com/document-builder.sjs?html=tab";
+const TEST_PAGE = "https://example.com/document-builder.sjs?html=tab";
 
 add_task(async function test_broadcasting_two_windows_command() {
   const window1Browser = gBrowser.selectedTab.linkedBrowser;
@@ -24,6 +24,7 @@ add_task(async function test_broadcasting_two_windows_command() {
     "commandwindowglobalonly",
     "testBroadcast",
     {},
+    contextDescriptorAll,
     rootMessageHandler
   );
 

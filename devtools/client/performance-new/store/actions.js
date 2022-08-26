@@ -19,6 +19,7 @@ const {
  * @typedef {import("../@types/perf").RecordingSettings} RecordingSettings
  * @typedef {import("../@types/perf").Presets} Presets
  * @typedef {import("../@types/perf").PanelWindow} PanelWindow
+ * @typedef {import("../@types/perf").MinimallyTypedGeckoProfile} MinimallyTypedGeckoProfile
  */
 
 /**
@@ -30,13 +31,11 @@ const {
  * This is the result of the initial questions about the state of the profiler.
  *
  * @param {boolean} isActive
- * @param {boolean} isLockedForPrivateBrowsing
  * @return {Action}
  */
-exports.reportProfilerReady = (isActive, isLockedForPrivateBrowsing) => ({
+exports.reportProfilerReady = isActive => ({
   type: "REPORT_PROFILER_READY",
   isActive,
-  isLockedForPrivateBrowsing,
 });
 
 /**
@@ -53,22 +52,6 @@ exports.reportProfilerStarted = () => ({
  */
 exports.reportProfilerStopped = () => ({
   type: "REPORT_PROFILER_STOPPED",
-});
-
-/**
- * Dispatched when a private browsing session has started.
- * @return {Action}
- */
-exports.reportPrivateBrowsingStarted = () => ({
-  type: "REPORT_PRIVATE_BROWSING_STARTED",
-});
-
-/**
- * Dispatched when a private browsing session has ended.
- * @return {Action}
- */
-exports.reportPrivateBrowsingStopped = () => ({
-  type: "REPORT_PRIVATE_BROWSING_STOPPED",
 });
 
 /**

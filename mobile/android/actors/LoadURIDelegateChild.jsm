@@ -8,12 +8,13 @@ const { GeckoViewActorChild } = ChromeUtils.import(
 const { LoadURIDelegate } = ChromeUtils.import(
   "resource://gre/modules/LoadURIDelegate.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
 });
 
@@ -26,22 +27,17 @@ class LoadURIDelegateChild extends GeckoViewActorChild {
     debug`loadURI: uri=${aUri && aUri.spec}
                     where=${aWhere} flags=0x${aFlags.toString(16)}
                     tp=${aTriggeringPrincipal && aTriggeringPrincipal.spec}`;
-    if (!this.isContentWindow) {
-      debug`loadURI: not a content window`;
-      // This is an internal Gecko window, nothing to do
-      return false;
-    }
 
     // Ignore any load going to the extension process
     // TODO: Remove workaround after Bug 1619798
     if (
       WebExtensionPolicy.useRemoteWebExtensions &&
-      E10SUtils.getRemoteTypeForURIObject(
+      lazy.E10SUtils.getRemoteTypeForURIObject(
         aUri,
         /* aMultiProcess */ true,
         /* aRemoteSubframes */ false,
         Services.appinfo.remoteType
-      ) == E10SUtils.EXTENSION_REMOTE_TYPE
+      ) == lazy.E10SUtils.EXTENSION_REMOTE_TYPE
     ) {
       debug`Bypassing load delegate in the Extension process.`;
       return false;
@@ -62,12 +58,6 @@ class LoadURIDelegateChild extends GeckoViewActorChild {
     debug`handleLoadError: uri=${aUri && aUri.spec}
                              displaySpec=${aUri && aUri.displaySpec}
                              error=${aError}`;
-    if (!this.isContentWindow) {
-      // This is an internal Gecko window, nothing to do
-      debug`handleLoadError: not a content window`;
-      return null;
-    }
-
     if (aUri && LoadURIDelegate.isSafeBrowsingError(aError)) {
       const message = {
         type: "GeckoView:ContentBlocked",

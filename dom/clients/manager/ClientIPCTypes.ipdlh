@@ -12,7 +12,7 @@ include "mozilla/dom/BindingIPCUtils.h";
 include "mozilla/dom/ClientIPCUtils.h";
 include "ipc/ErrorIPCUtils.h";
 
-using class mozilla::TimeStamp from "mozilla/TimeStamp.h";
+using mozilla::TimeStamp from "mozilla/TimeStamp.h";
 using ClientType from "mozilla/dom/ClientsBinding.h";
 using FrameType from "mozilla/dom/ClientBinding.h";
 using mozilla::StorageAccess from "mozilla/StorageAccess.h";
@@ -125,6 +125,9 @@ struct ClientOpenWindowArgs
   nsCString baseURL;
 };
 
+struct ClientEvictBFCacheArgs
+{};
+
 union ClientOpConstructorArgs
 {
   ClientControlledArgs;
@@ -135,6 +138,7 @@ union ClientOpConstructorArgs
   ClientClaimArgs;
   ClientGetInfoAndStateArgs;
   ClientOpenWindowArgs;
+  ClientEvictBFCacheArgs;
 };
 
 struct ClientList

@@ -57,9 +57,26 @@ class DocAccessibleChildBase : public PDocAccessibleChild {
     mDoc = nullptr;
   }
 
+  virtual mozilla::ipc::IPCResult RecvTakeFocus(const uint64_t& aID) override;
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
+  virtual mozilla::ipc::IPCResult RecvScrollTo(
+      const uint64_t& aID, const uint32_t& aScrollType) override;
+
+  virtual mozilla::ipc::IPCResult RecvTakeSelection(
+      const uint64_t& aID) override;
+  virtual mozilla::ipc::IPCResult RecvSetSelected(const uint64_t& aID,
+                                                  const bool& aSelect) override;
+
   virtual mozilla::ipc::IPCResult RecvVerifyCache(
       const uint64_t& aID, const uint64_t& aCacheDomain,
       AccAttributes* aFields) override;
+
+  virtual mozilla::ipc::IPCResult RecvDoActionAsync(
+      const uint64_t& aID, const uint8_t& aIndex) override;
+
+  virtual mozilla::ipc::IPCResult RecvSetCaretOffset(
+      const uint64_t& aID, const int32_t& aOffset) override;
 
  protected:
   static void FlattenTree(LocalAccessible* aRoot,
@@ -83,6 +100,7 @@ class DocAccessibleChildBase : public PDocAccessibleChild {
   void SetConstructedInParentProcess() { mIsRemoteConstructed = true; }
 
   LocalAccessible* IdToAccessible(const uint64_t& aID) const;
+  HyperTextAccessible* IdToHyperTextAccessible(const uint64_t& aID) const;
 
   DocAccessible* mDoc;
   bool mIsRemoteConstructed;

@@ -33,6 +33,8 @@ var gSearchResultsPane = {
   // A (node -> boolean) map of subitems to be made visible or hidden.
   subItems: new Map(),
 
+  searchResultsHighlighted: false,
+
   init() {
     if (this.inited) {
       return;
@@ -47,21 +49,33 @@ var gSearchResultsPane = {
       this.searchInput.addEventListener("command", this);
       window.addEventListener("DOMContentLoaded", () => {
         this.searchInput.focus();
+        // Initialize other panes in an idle callback.
+        window.requestIdleCallback(() => this.initializeCategories());
       });
-      // Initialize other panes in an idle callback.
-      window.requestIdleCallback(() => this.initializeCategories());
     }
     let helpUrl =
       Services.urlFormatter.formatURLPref("app.support.baseURL") +
       "preferences";
     let helpContainer = document.getElementById("need-help");
     helpContainer.querySelector("a").href = helpUrl;
+    ensureScrollPadding();
   },
 
   async handleEvent(event) {
     // Ensure categories are initialized if idle callback didn't run sooo enough.
     await this.initializeCategories();
     this.searchFunction(event);
+  },
+
+  /**
+   * This stops the search input from moving, when typing in it
+   * changes which items in the prefs are visible.
+   */
+  fixInputPosition() {
+    let innerContainer = document.querySelector(".sticky-inner-container");
+    let width = window.windowUtils.getBoundsWithoutFlushing(innerContainer)
+      .width;
+    innerContainer.style.maxWidth = width + "px";
   },
 
   /**
@@ -195,6 +209,8 @@ var gSearchResultsPane = {
       range.setStart(startNode, startValue);
       range.setEnd(endNode, endValue);
       this.getFindSelection(startNode.ownerGlobal).addRange(range);
+
+      this.searchResultsHighlighted = true;
     }
 
     return !!indices.length;
@@ -235,6 +251,8 @@ var gSearchResultsPane = {
       return;
     }
 
+    let firstQuery = !this.query && query;
+    let endQuery = !query && this.query;
     let subQuery = this.query && query.includes(this.query);
     this.query = query;
 
@@ -251,6 +269,10 @@ var gSearchResultsPane = {
     let srHeader = document.getElementById("header-searchResults");
     let noResultsEl = document.getElementById("no-results-message");
     if (this.query) {
+      // If this is the first query, fix the search input in place.
+      if (firstQuery) {
+        this.fixInputPosition();
+      }
       // Showing the Search Results Tag
       await gotoPref("paneSearchResults");
       srHeader.hidden = false;
@@ -353,6 +375,11 @@ var gSearchResultsPane = {
         }
       }
     } else {
+      if (endQuery) {
+        document
+          .querySelector(".sticky-inner-container")
+          .style.removeProperty("max-width");
+      }
       noResultsEl.hidden = true;
       document.getElementById("sorry-message-query").textContent = "";
       // Going back to General when cleared
@@ -545,9 +572,14 @@ var gSearchResultsPane = {
         this.listSearchTooltips.add(nodeObject);
       }
 
-      // If this is a node for an experimental feature option, add it to the list
-      // of subitems. The items that don't match the search term will be hidden.
-      if (child instanceof Element && child.classList.contains("featureGate")) {
+      // If this is a node for an experimental feature option or a Mozilla product item,
+      // add it to the list of subitems. The items that don't match the search term
+      // will be hidden.
+      if (
+        child instanceof Element &&
+        (child.classList.contains("featureGate") ||
+          child.classList.contains("mozilla-product-item"))
+      ) {
         this.subItems.set(child, result);
       }
     }
@@ -669,7 +701,10 @@ var gSearchResultsPane = {
    * a search to another preference category.
    */
   removeAllSearchIndicators(window, showSubItems) {
-    this.getFindSelection(window).removeAllRanges();
+    if (this.searchResultsHighlighted) {
+      this.getFindSelection(window).removeAllRanges();
+      this.searchResultsHighlighted = false;
+    }
     this.removeAllSearchTooltips();
     this.removeAllSearchMenuitemIndicators();
 
@@ -678,9 +713,8 @@ var gSearchResultsPane = {
       for (let subItem of this.subItems.keys()) {
         subItem.classList.remove("visually-hidden");
       }
+      this.subItems.clear();
     }
-
-    this.subItems.clear();
   },
 
   /**

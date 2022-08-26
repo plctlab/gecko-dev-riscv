@@ -13,8 +13,8 @@
 
 #include "jstypes.h"  // JS_PUBLIC_API
 
-#include "js/CompileOptions.h"  // JS::CompileOptions, JS::ReadOnlyCompileOptions
-#include "js/RootingAPI.h"      // JS::Handle, JS::MutableHandle
+#include "js/CompileOptions.h"  // JS::CompileOptions, JS::ReadOnlyCompileOptions, JS::InstantiateOptions
+#include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
 #include "js/Value.h"  // JS::Value and specializations of JS::*Handle-related types
 
 struct JS_PUBLIC_API JSContext;
@@ -89,11 +89,6 @@ extern JS_PUBLIC_API bool JS_ExecuteScript(JSContext* cx,
 extern JS_PUBLIC_API bool JS_ExecuteScript(JSContext* cx,
                                            JS::HandleObjectVector envChain,
                                            JS::Handle<JSScript*> script);
-
-// Callback for the embedding to map from a ScriptSourceObject private-value to
-// an object that is exposed as the source "element" in debugger API.  This hook
-// must be infallible, but can return nullptr if no such element exists.
-using JSSourceElementCallback = JSObject* (*)(JSContext*, JS::HandleValue);
 
 namespace JS {
 
@@ -247,18 +242,9 @@ extern JS_PUBLIC_API void ExposeScriptToDebugger(JSContext* cx,
  * the debug metadata is provided by the UpdateDebugMetadata call.
  */
 extern JS_PUBLIC_API bool UpdateDebugMetadata(
-    JSContext* cx, Handle<JSScript*> script,
-    const ReadOnlyCompileOptions& options, HandleValue privateValue,
-    HandleString elementAttributeName, HandleScript introScript,
-    HandleScript scriptOrModule);
-
-// The debugger API exposes an optional "element" property on DebuggerSource
-// objects.  The callback defined here provides that value.  SpiderMonkey
-// doesn't particularly care about this, but within Firefox the "element" is the
-// HTML script tag for the script which DevTools can use for a better debugging
-// experience.
-extern JS_PUBLIC_API void SetSourceElementCallback(
-    JSContext* cx, JSSourceElementCallback callback);
+    JSContext* cx, Handle<JSScript*> script, const InstantiateOptions& options,
+    HandleValue privateValue, HandleString elementAttributeName,
+    HandleScript introScript, HandleScript scriptOrModule);
 
 } /* namespace JS */
 

@@ -1,5 +1,7 @@
 //! Tests for channel selection using the `Select` struct.
 
+#![allow(clippy::drop_copy)]
+
 use std::any::Any;
 use std::cell::Cell;
 use std::thread;
@@ -690,6 +692,9 @@ fn nesting() {
 
 #[test]
 fn stress_recv() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = unbounded();
@@ -728,6 +733,9 @@ fn stress_recv() {
 
 #[test]
 fn stress_send() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = bounded(0);
@@ -763,6 +771,9 @@ fn stress_send() {
 
 #[test]
 fn stress_mixed() {
+    #[cfg(miri)]
+    const COUNT: usize = 100;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = bounded(0);
@@ -895,12 +906,12 @@ fn matching() {
         for i in 0..THREADS {
             scope.spawn(move |_| {
                 let mut sel = Select::new();
-                let oper1 = sel.recv(&r);
-                let oper2 = sel.send(&s);
+                let oper1 = sel.recv(r);
+                let oper2 = sel.send(s);
                 let oper = sel.select();
                 match oper.index() {
-                    ix if ix == oper1 => assert_ne!(oper.recv(&r), Ok(i)),
-                    ix if ix == oper2 => assert!(oper.send(&s, i).is_ok()),
+                    ix if ix == oper1 => assert_ne!(oper.recv(r), Ok(i)),
+                    ix if ix == oper2 => assert!(oper.send(s, i).is_ok()),
                     _ => unreachable!(),
                 }
             });
@@ -921,12 +932,12 @@ fn matching_with_leftover() {
         for i in 0..THREADS {
             scope.spawn(move |_| {
                 let mut sel = Select::new();
-                let oper1 = sel.recv(&r);
-                let oper2 = sel.send(&s);
+                let oper1 = sel.recv(r);
+                let oper2 = sel.send(s);
                 let oper = sel.select();
                 match oper.index() {
-                    ix if ix == oper1 => assert_ne!(oper.recv(&r), Ok(i)),
-                    ix if ix == oper2 => assert!(oper.send(&s, i).is_ok()),
+                    ix if ix == oper1 => assert_ne!(oper.recv(r), Ok(i)),
+                    ix if ix == oper2 => assert!(oper.send(s, i).is_ok()),
                     _ => unreachable!(),
                 }
             });
@@ -940,6 +951,9 @@ fn matching_with_leftover() {
 
 #[test]
 fn channel_through_channel() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 1000;
 
     type T = Box<dyn Any + Send>;
@@ -998,6 +1012,9 @@ fn channel_through_channel() {
 
 #[test]
 fn linearizable_try() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 100_000;
 
     for step in 0..2 {
@@ -1050,6 +1067,9 @@ fn linearizable_try() {
 
 #[test]
 fn linearizable_timeout() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 100_000;
 
     for step in 0..2 {
@@ -1102,6 +1122,9 @@ fn linearizable_timeout() {
 
 #[test]
 fn fairness1() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = bounded::<()>(COUNT);
@@ -1148,6 +1171,9 @@ fn fairness1() {
 
 #[test]
 fn fairness2() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = unbounded::<()>();
@@ -1212,8 +1238,8 @@ fn sync_and_clone() {
     let (s, r) = &bounded::<usize>(0);
 
     let mut sel = Select::new();
-    let oper1 = sel.recv(&r);
-    let oper2 = sel.send(&s);
+    let oper1 = sel.recv(r);
+    let oper2 = sel.send(s);
     let sel = &sel;
 
     scope(|scope| {
@@ -1222,8 +1248,8 @@ fn sync_and_clone() {
                 let mut sel = sel.clone();
                 let oper = sel.select();
                 match oper.index() {
-                    ix if ix == oper1 => assert_ne!(oper.recv(&r), Ok(i)),
-                    ix if ix == oper2 => assert!(oper.send(&s, i).is_ok()),
+                    ix if ix == oper1 => assert_ne!(oper.recv(r), Ok(i)),
+                    ix if ix == oper2 => assert!(oper.send(s, i).is_ok()),
                     _ => unreachable!(),
                 }
             });
@@ -1241,8 +1267,8 @@ fn send_and_clone() {
     let (s, r) = &bounded::<usize>(0);
 
     let mut sel = Select::new();
-    let oper1 = sel.recv(&r);
-    let oper2 = sel.send(&s);
+    let oper1 = sel.recv(r);
+    let oper2 = sel.send(s);
 
     scope(|scope| {
         for i in 0..THREADS {
@@ -1250,8 +1276,8 @@ fn send_and_clone() {
             scope.spawn(move |_| {
                 let oper = sel.select();
                 match oper.index() {
-                    ix if ix == oper1 => assert_ne!(oper.recv(&r), Ok(i)),
-                    ix if ix == oper2 => assert!(oper.send(&s, i).is_ok()),
+                    ix if ix == oper1 => assert_ne!(oper.recv(r), Ok(i)),
+                    ix if ix == oper2 => assert!(oper.send(s, i).is_ok()),
                     _ => unreachable!(),
                 }
             });
@@ -1264,6 +1290,9 @@ fn send_and_clone() {
 
 #[test]
 fn reuse() {
+    #[cfg(miri)]
+    const COUNT: usize = 50;
+    #[cfg(not(miri))]
     const COUNT: usize = 10_000;
 
     let (s1, r1) = bounded(0);

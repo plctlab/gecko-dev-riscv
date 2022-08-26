@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/AntiTrackingUtils.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ContentBlockingAllowList.h"
 #include "mozilla/dom/BrowsingContext.h"
@@ -21,6 +22,7 @@
 #  include "nsIProtocolHandler.h"
 #endif
 #include "nsIClassInfoImpl.h"
+#include "nsIChannel.h"
 #include "nsICookieManager.h"
 #include "nsICookieService.h"
 #include "nsIObjectInputStream.h"
@@ -82,16 +84,17 @@ class ReleaseCookiePermissions final : public Runnable {
 }  // namespace
 
 // static
-already_AddRefed<nsICookieJarSettings> CookieJarSettings::GetBlockingAll() {
+already_AddRefed<nsICookieJarSettings> CookieJarSettings::GetBlockingAll(
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (sBlockinAll) {
     return do_AddRef(sBlockinAll);
   }
 
-  sBlockinAll =
-      new CookieJarSettings(nsICookieService::BEHAVIOR_REJECT,
-                            OriginAttributes::IsFirstPartyEnabled(), eFixed);
+  sBlockinAll = new CookieJarSettings(nsICookieService::BEHAVIOR_REJECT,
+                                      OriginAttributes::IsFirstPartyEnabled(),
+                                      aShouldResistFingerprinting, eFixed);
   ClearOnShutdown(&sBlockinAll);
 
   return do_AddRef(sBlockinAll);
@@ -99,7 +102,7 @@ already_AddRefed<nsICookieJarSettings> CookieJarSettings::GetBlockingAll() {
 
 // static
 already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
-    CreateMode aMode) {
+    CreateMode aMode, bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<CookieJarSettings> cookieJarSettings;
@@ -109,7 +112,8 @@ already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
     case ePrivate:
       cookieJarSettings = new CookieJarSettings(
           nsICookieManager::GetCookieBehavior(aMode == ePrivate),
-          OriginAttributes::IsFirstPartyEnabled(), eProgressive);
+          OriginAttributes::IsFirstPartyEnabled(), aShouldResistFingerprinting,
+          eProgressive);
       break;
 
     default:
@@ -124,21 +128,27 @@ already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
     nsIPrincipal* aPrincipal) {
   MOZ_ASSERT(NS_IsMainThread());
 
+  bool shouldResistFingerprinting =
+      nsContentUtils::ShouldResistFingerprinting_dangerous(
+          aPrincipal, "We are constructing CookieJarSettings here.");
+
   if (aPrincipal && aPrincipal->OriginAttributesRef().mPrivateBrowsingId > 0) {
-    return Create(ePrivate);
+    return Create(ePrivate, shouldResistFingerprinting);
   }
 
-  return Create(eRegular);
+  return Create(eRegular, shouldResistFingerprinting);
 }
 
 // static
 already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
     uint32_t aCookieBehavior, const nsAString& aPartitionKey,
-    bool aIsFirstPartyIsolated, bool aIsOnContentBlockingAllowList) {
+    bool aIsFirstPartyIsolated, bool aIsOnContentBlockingAllowList,
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<CookieJarSettings> cookieJarSettings = new CookieJarSettings(
-      aCookieBehavior, aIsFirstPartyIsolated, eProgressive);
+  RefPtr<CookieJarSettings> cookieJarSettings =
+      new CookieJarSettings(aCookieBehavior, aIsFirstPartyIsolated,
+                            aShouldResistFingerprinting, eProgressive);
   cookieJarSettings->mPartitionKey = aPartitionKey;
   cookieJarSettings->mIsOnContentBlockingAllowList =
       aIsOnContentBlockingAllowList;
@@ -149,16 +159,20 @@ already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
 // static
 already_AddRefed<nsICookieJarSettings> CookieJarSettings::CreateForXPCOM() {
   MOZ_ASSERT(NS_IsMainThread());
-  return Create(eRegular);
+  return Create(eRegular, /* shouldResistFingerprinting */ false);
 }
 
 CookieJarSettings::CookieJarSettings(uint32_t aCookieBehavior,
-                                     bool aIsFirstPartyIsolated, State aState)
+                                     bool aIsFirstPartyIsolated,
+                                     bool aShouldResistFingerprinting,
+                                     State aState)
     : mCookieBehavior(aCookieBehavior),
       mIsFirstPartyIsolated(aIsFirstPartyIsolated),
       mIsOnContentBlockingAllowList(false),
+      mIsOnContentBlockingAllowListUpdated(false),
       mState(aState),
-      mToBeMerged(false) {
+      mToBeMerged(false),
+      mShouldResistFingerprinting(aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT_IF(
       mIsFirstPartyIsolated,
@@ -199,6 +213,13 @@ CookieJarSettings::GetIsFirstPartyIsolated(bool* aIsFirstPartyIsolated) {
 }
 
 NS_IMETHODIMP
+CookieJarSettings::GetShouldResistFingerprinting(
+    bool* aShouldResistFingerprinting) {
+  *aShouldResistFingerprinting = mShouldResistFingerprinting;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 CookieJarSettings::GetRejectThirdPartyContexts(
     bool* aRejectThirdPartyContexts) {
   *aRejectThirdPartyContexts =
@@ -213,6 +234,26 @@ CookieJarSettings::GetLimitForeignContexts(bool* aLimitForeignContexts) {
       (StaticPrefs::privacy_dynamic_firstparty_limitForeign() &&
        mCookieBehavior ==
            nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetBlockingAllThirdPartyContexts(
+    bool* aBlockingAllThirdPartyContexts) {
+  // XXX For non-cookie forms of storage, we handle BEHAVIOR_LIMIT_FOREIGN by
+  // simply rejecting the request to use the storage. In the future, if we
+  // change the meaning of BEHAVIOR_LIMIT_FOREIGN to be one which makes sense
+  // for non-cookie storage types, this may change.
+  *aBlockingAllThirdPartyContexts =
+      mCookieBehavior == nsICookieService::BEHAVIOR_LIMIT_FOREIGN ||
+      (!StaticPrefs::network_cookie_rejectForeignWithExceptions_enabled() &&
+       mCookieBehavior == nsICookieService::BEHAVIOR_REJECT_FOREIGN);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetBlockingAllContexts(bool* aBlockingAllContexts) {
+  *aBlockingAllContexts = mCookieBehavior == nsICookieService::BEHAVIOR_REJECT;
   return NS_OK;
 }
 
@@ -324,6 +365,7 @@ void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
   aData.isFixed() = mState == eFixed;
   aData.cookieBehavior() = mCookieBehavior;
   aData.isFirstPartyIsolated() = mIsFirstPartyIsolated;
+  aData.shouldResistFingerprinting() = mShouldResistFingerprinting;
   aData.isOnContentBlockingAllowList() = mIsOnContentBlockingAllowList;
   aData.partitionKey() = mPartitionKey;
 
@@ -379,12 +421,15 @@ void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
 
   RefPtr<CookieJarSettings> cookieJarSettings = new CookieJarSettings(
       aData.cookieBehavior(), aData.isFirstPartyIsolated(),
+      aData.shouldResistFingerprinting(),
       aData.isFixed() ? eFixed : eProgressive);
 
   cookieJarSettings->mIsOnContentBlockingAllowList =
       aData.isOnContentBlockingAllowList();
   cookieJarSettings->mCookiePermissions = std::move(list);
   cookieJarSettings->mPartitionKey = aData.partitionKey();
+  cookieJarSettings->mShouldResistFingerprinting =
+      aData.shouldResistFingerprinting();
 
   cookieJarSettings.forget(aCookieJarSettings);
 }
@@ -431,6 +476,10 @@ void CookieJarSettings::Merge(const CookieJarSettingsArgs& aData) {
       mCookieBehavior !=
           nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
 
+  if (aData.shouldResistFingerprinting()) {
+    mShouldResistFingerprinting = true;
+  }
+
   PermissionComparator comparator;
 
   for (const CookiePermissionData& data : aData.cookiePermissions()) {
@@ -464,6 +513,13 @@ void CookieJarSettings::UpdateIsOnContentBlockingAllowList(
     nsIChannel* aChannel) {
   MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(aChannel);
+
+  // Early return if the flag was updated before.
+  if (mIsOnContentBlockingAllowListUpdated) {
+    return;
+  }
+  mIsOnContentBlockingAllowListUpdated = true;
+
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
 
   nsCOMPtr<nsIURI> uri;
@@ -516,6 +572,11 @@ CookieJarSettings::Read(nsIObjectInputStream* aStream) {
   }
 
   rv = aStream->ReadBoolean(&mIsFirstPartyIsolated);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->ReadBoolean(&mShouldResistFingerprinting);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -592,6 +653,11 @@ CookieJarSettings::Write(nsIObjectOutputStream* aStream) {
   }
 
   rv = aStream->WriteBoolean(mIsFirstPartyIsolated);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteBoolean(mShouldResistFingerprinting);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }

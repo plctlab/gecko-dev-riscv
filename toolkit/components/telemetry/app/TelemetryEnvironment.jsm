@@ -6,10 +6,7 @@
 
 var EXPORTED_SYMBOLS = ["TelemetryEnvironment", "Policy"];
 
-const myScope = this;
-
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
@@ -19,6 +16,9 @@ const { ObjectUtils } = ChromeUtils.import(
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
+const { UpdateUtils } = ChromeUtils.import(
+  "resource://gre/modules/UpdateUtils.jsm"
+);
 
 const Utils = TelemetryUtils;
 
@@ -26,33 +26,33 @@ const { AddonManager, AddonManagerPrivate } = ChromeUtils.import(
   "resource://gre/modules/AddonManager.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AttributionCode",
   "resource:///modules/AttributionCode.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ProfileAge",
   "resource://gre/modules/ProfileAge.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WindowsRegistry",
   "resource://gre/modules/WindowsRegistry.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "UpdateUtils",
-  "resource://gre/modules/UpdateUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "fxAccounts",
-  "resource://gre/modules/FxAccounts.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WindowsVersionInfo",
   "resource://gre/modules/components-utils/WindowsVersionInfo.jsm"
 );
@@ -247,32 +247,56 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.cache.memory.enable", { what: RECORD_PREF_VALUE }],
   ["browser.cache.offline.enable", { what: RECORD_PREF_VALUE }],
   ["browser.formfill.enable", { what: RECORD_PREF_VALUE }],
+  ["browser.fixup.alternate.enabled", { what: RECORD_DEFAULTPREF_VALUE }],
   ["browser.newtabpage.enabled", { what: RECORD_PREF_VALUE }],
   ["browser.shell.checkDefaultBrowser", { what: RECORD_PREF_VALUE }],
-  ["browser.search.ignoredJAREngines", { what: RECORD_DEFAULTPREF_VALUE }],
   ["browser.search.region", { what: RECORD_PREF_VALUE }],
   ["browser.search.suggest.enabled", { what: RECORD_PREF_VALUE }],
   ["browser.search.widget.inNavBar", { what: RECORD_DEFAULTPREF_VALUE }],
   ["browser.startup.homepage", { what: RECORD_PREF_STATE }],
   ["browser.startup.page", { what: RECORD_PREF_VALUE }],
+  ["browser.tabs.firefox-view", { what: RECORD_PREF_VALUE }],
+  ["browser.urlbar.autoFill", { what: RECORD_DEFAULTPREF_VALUE }],
+  [
+    "browser.urlbar.autoFill.adaptiveHistory.enabled",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
+  [
+    "browser.urlbar.dnsResolveSingleWordsAfterSearch",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
+  [
+    "browser.urlbar.quicksuggest.onboardingDialogChoice",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
+  [
+    "browser.urlbar.quicksuggest.dataCollection.enabled",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
   ["browser.urlbar.showSearchSuggestionsFirst", { what: RECORD_PREF_VALUE }],
-  ["browser.urlbar.suggest.quicksuggest", { what: RECORD_DEFAULTPREF_VALUE }],
+  [
+    "browser.urlbar.suggest.quicksuggest.nonsponsored",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
   [
     "browser.urlbar.suggest.quicksuggest.sponsored",
     { what: RECORD_DEFAULTPREF_VALUE },
   ],
+  ["browser.urlbar.suggest.bestmatch", { what: RECORD_DEFAULTPREF_VALUE }],
   ["browser.urlbar.suggest.searches", { what: RECORD_PREF_VALUE }],
   ["devtools.chrome.enabled", { what: RECORD_PREF_VALUE }],
   ["devtools.debugger.enabled", { what: RECORD_PREF_VALUE }],
   ["devtools.debugger.remote-enabled", { what: RECORD_PREF_VALUE }],
   ["doh-rollout.doorhanger-decision", { what: RECORD_PREF_VALUE }],
   ["dom.ipc.plugins.enabled", { what: RECORD_PREF_VALUE }],
-  ["dom.ipc.plugins.sandbox-level.flash", { what: RECORD_PREF_VALUE }],
   ["dom.ipc.processCount", { what: RECORD_PREF_VALUE }],
   ["dom.max_script_run_time", { what: RECORD_PREF_VALUE }],
+  ["extensions.InstallTrigger.enabled", { what: RECORD_PREF_VALUE }],
+  ["extensions.InstallTriggerImpl.enabled", { what: RECORD_PREF_VALUE }],
   ["extensions.autoDisableScopes", { what: RECORD_PREF_VALUE }],
-  ["extensions.enabledScopes", { what: RECORD_PREF_VALUE }],
   ["extensions.blocklist.enabled", { what: RECORD_PREF_VALUE }],
+  ["extensions.enabledScopes", { what: RECORD_PREF_VALUE }],
+  ["extensions.eventPages.enabled", { what: RECORD_PREF_VALUE }],
   ["extensions.formautofill.addresses.enabled", { what: RECORD_PREF_VALUE }],
   [
     "extensions.formautofill.addresses.capture.enabled",
@@ -284,6 +308,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
     { what: RECORD_PREF_VALUE },
   ],
   ["extensions.formautofill.creditCards.used", { what: RECORD_PREF_VALUE }],
+  ["extensions.manifestV3.enabled", { what: RECORD_PREF_VALUE }],
   ["extensions.strictCompatibility", { what: RECORD_PREF_VALUE }],
   ["extensions.update.enabled", { what: RECORD_PREF_VALUE }],
   ["extensions.update.url", { what: RECORD_PREF_VALUE }],
@@ -309,11 +334,22 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["layers.prefer-d3d9", { what: RECORD_PREF_VALUE }],
   ["layers.prefer-opengl", { what: RECORD_PREF_VALUE }],
   ["layout.css.devPixelsPerPx", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.enabled", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastInstallFailed", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastInstallStart", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastDownload", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastDownloadFailed", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastDownloadFailReason", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.lastUpdate", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-gmpopenh264.visible", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-manager.lastCheck", { what: RECORD_PREF_VALUE }],
+  ["media.gmp-manager.lastEmptyCheck", { what: RECORD_PREF_VALUE }],
   ["network.http.windows-sso.enabled", { what: RECORD_PREF_VALUE }],
   ["network.proxy.autoconfig_url", { what: RECORD_PREF_STATE }],
   ["network.proxy.http", { what: RECORD_PREF_STATE }],
   ["network.proxy.ssl", { what: RECORD_PREF_STATE }],
   ["network.trr.mode", { what: RECORD_PREF_VALUE }],
+  ["network.trr.strict_native_fallback", { what: RECORD_DEFAULTPREF_VALUE }],
   ["pdfjs.disabled", { what: RECORD_PREF_VALUE }],
   ["places.history.enabled", { what: RECORD_PREF_VALUE }],
   ["plugins.show_infobar", { what: RECORD_PREF_VALUE }],
@@ -361,7 +397,7 @@ const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
 const SEARCH_SERVICE_TOPIC = "browser-search-service";
 const SESSIONSTORE_WINDOWS_RESTORED_TOPIC = "sessionstore-windows-restored";
 const PREF_CHANGED_TOPIC = "nsPref:changed";
-const BLOCKLIST_LOADED_TOPIC = "plugin-blocklist-loaded";
+const GMP_PROVIDER_REGISTERED_TOPIC = "gmp-provider-registered";
 const AUTO_UPDATE_PREF_CHANGE_TOPIC =
   UpdateUtils.PER_INSTALLATION_PREFS["app.update.auto"].observerTopic;
 const BACKGROUND_UPDATE_PREF_CHANGE_TOPIC =
@@ -557,7 +593,7 @@ function EnvironmentAddonBuilder(environment) {
 
   // Have we added an observer to listen for blocklist changes that still needs to be
   // removed:
-  this._blocklistObserverAdded = false;
+  this._gmpProviderObserverAdded = false;
 
   // Set to true once initial load is complete and we're watching for changes.
   this._loaded = false;
@@ -581,7 +617,7 @@ EnvironmentAddonBuilder.prototype = {
       try {
         this._shutdownState = "Awaiting _updateAddons";
         // Gather initial addons details
-        await this._updateAddons(true);
+        await this._updateAddons();
 
         if (!this._environment._addonsAreFull) {
           // The addon database has not been loaded, wait for it to
@@ -640,9 +676,9 @@ EnvironmentAddonBuilder.prototype = {
   // nsIObserver
   observe(aSubject, aTopic, aData) {
     this._environment._log.trace("observe - Topic " + aTopic);
-    if (aTopic == BLOCKLIST_LOADED_TOPIC) {
-      Services.obs.removeObserver(this, BLOCKLIST_LOADED_TOPIC);
-      this._blocklistObserverAdded = false;
+    if (aTopic == GMP_PROVIDER_REGISTERED_TOPIC) {
+      Services.obs.removeObserver(this, GMP_PROVIDER_REGISTERED_TOPIC);
+      this._gmpProviderObserverAdded = false;
       let gmpPluginsPromise = this._getActiveGMPlugins();
       gmpPluginsPromise.then(
         gmpPlugins => {
@@ -694,8 +730,8 @@ EnvironmentAddonBuilder.prototype = {
   _shutdownBlocker() {
     if (this._loaded) {
       AddonManager.removeAddonListener(this);
-      if (this._blocklistObserverAdded) {
-        Services.obs.removeObserver(this, BLOCKLIST_LOADED_TOPIC);
+      if (this._gmpProviderObserverAdded) {
+        Services.obs.removeObserver(this, GMP_PROVIDER_REGISTERED_TOPIC);
       }
     }
 
@@ -713,21 +749,17 @@ EnvironmentAddonBuilder.prototype = {
    * This should only be called from _pendingTask; otherwise we risk
    * running this during addon manager shutdown.
    *
-   * @param {boolean} [atStartup]
-   *        True if this is the first check we're performing at startup. In that
-   *        situation, we defer some more expensive initialization.
-   *
    * @returns Promise<Object> This returns a Promise resolved with a status object with the following members:
    *   changed - Whether the environment changed.
    *   oldEnvironment - Only set if a change occured, contains the environment data before the change.
    */
-  async _updateAddons(atStartup) {
+  async _updateAddons() {
     this._environment._log.trace("_updateAddons");
 
     let addons = {
       activeAddons: await this._getActiveAddons(),
       theme: await this._getActiveTheme(),
-      activeGMPlugins: await this._getActiveGMPlugins(atStartup),
+      activeGMPlugins: await this._getActiveGMPlugins(),
     };
 
     let result = {
@@ -743,7 +775,7 @@ EnvironmentAddonBuilder.prototype = {
       this._environment._log.trace("_updateAddons: addons differ");
       result.oldEnvironment = Cu.cloneInto(
         this._environment._currentEnvironment,
-        myScope
+        {}
       );
     }
     this._environment._currentEnvironment.addons = addons;
@@ -757,10 +789,12 @@ EnvironmentAddonBuilder.prototype = {
    */
   async _getActiveAddons() {
     // Request addons, asynchronously.
-    let { addons: allAddons, fullData } = await AddonManager.getActiveAddons([
-      "extension",
-      "service",
-    ]);
+    // "theme" is excluded because it is already handled by _getActiveTheme.
+    let { addons: allAddons, fullData } = await AddonManager.getActiveAddons(
+      AddonManagerPrivate.getAddonTypesByProvider("XPIProvider").filter(
+        addonType => addonType != "theme"
+      )
+    );
 
     this._environment._addonsAreFull = fullData;
     let activeAddons = {};
@@ -859,22 +893,18 @@ EnvironmentAddonBuilder.prototype = {
   /**
    * Get the GMPlugins data in object form.
    *
-   * @param {boolean} [atStartup]
-   *        True if this is the first check we're performing at startup. In that
-   *        situation, we defer some more expensive initialization.
-   *
    * @return Object containing the GMPlugins data.
    *
    * This should only be called from _pendingTask; otherwise we risk
    * running this during addon manager shutdown.
    */
-  async _getActiveGMPlugins(atStartup) {
+  async _getActiveGMPlugins() {
     // If we haven't yet loaded the blocklist, pass back dummy data for now,
     // and add an observer to update this data as soon as we get it.
-    if (atStartup || !Services.blocklist.isLoaded) {
-      if (!this._blocklistObserverAdded) {
-        Services.obs.addObserver(this, BLOCKLIST_LOADED_TOPIC);
-        this._blocklistObserverAdded = true;
+    if (!AddonManager.hasProvider("GMPProvider")) {
+      if (!this._gmpProviderObserverAdded) {
+        Services.obs.addObserver(this, GMP_PROVIDER_REGISTERED_TOPIC);
+        this._gmpProviderObserverAdded = true;
       }
       return {
         "dummy-gmp": {
@@ -994,7 +1024,7 @@ EnvironmentCache.prototype = {
    * @returns object
    */
   get currentEnvironment() {
-    return Cu.cloneInto(this._currentEnvironment, myScope);
+    return Cu.cloneInto(this._currentEnvironment, {});
   },
 
   /**
@@ -1139,7 +1169,7 @@ EnvironmentCache.prototype = {
       }
     }
 
-    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
+    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, {});
     // Add the experiment annotation.
     let experiments = this._currentEnvironment.experiments || {};
     experiments[saneId] = { branch: saneBranch };
@@ -1159,7 +1189,7 @@ EnvironmentCache.prototype = {
     let experiments = this._currentEnvironment.experiments || {};
     if (id in experiments) {
       // Only attempt to notify if a previous annotation was found and removed.
-      let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
+      let oldEnvironment = Cu.cloneInto(this._currentEnvironment, {});
       // Remove the experiment annotation.
       delete this._currentEnvironment.experiments[id];
       // Notify of the change.
@@ -1171,7 +1201,7 @@ EnvironmentCache.prototype = {
   },
 
   getActiveExperiments() {
-    return Cu.cloneInto(this._currentEnvironment.experiments || {}, myScope);
+    return Cu.cloneInto(this._currentEnvironment.experiments || {}, {});
   },
 
   shutdown() {
@@ -1183,10 +1213,10 @@ EnvironmentCache.prototype = {
    * Only used in tests, set the preferences to watch.
    * @param aPreferences A map of preferences names and their recording policy.
    */
-  async _watchPreferences(aPreferences) {
+  _watchPreferences(aPreferences) {
     this._stopWatchingPrefs();
     this._watchedPrefs = aPreferences;
-    await this._updateSettings();
+    this._updateSettings();
     this._startWatchingPrefs();
   },
 
@@ -1267,7 +1297,7 @@ EnvironmentCache.prototype = {
 
   _onPrefChanged(aData) {
     this._log.trace("_onPrefChanged");
-    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
+    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, {});
     this._currentEnvironment.settings.userPrefs[aData] = this._getPrefValue(
       aData,
       this._watchedPrefs.get(aData).what
@@ -1398,7 +1428,7 @@ EnvironmentCache.prototype = {
   /**
    * Update the default search engine value.
    */
-  async _updateSearchEngine() {
+  _updateSearchEngine() {
     if (!this._canQuerySearch) {
       this._log.trace("_updateSearchEngine - ignoring early call");
       return;
@@ -1415,7 +1445,7 @@ EnvironmentCache.prototype = {
     this._currentEnvironment.settings = this._currentEnvironment.settings || {};
 
     // Update the search engine entry in the current environment.
-    const defaultEngineInfo = await Services.search.getDefaultEngineInfo();
+    const defaultEngineInfo = Services.search.getDefaultEngineInfo();
     this._currentEnvironment.settings.defaultSearchEngine =
       defaultEngineInfo.defaultSearchEngine;
     this._currentEnvironment.settings.defaultSearchEngineData = {
@@ -1435,12 +1465,12 @@ EnvironmentCache.prototype = {
   /**
    * Update the default search engine value and trigger the environment change.
    */
-  async _onSearchEngineChange() {
+  _onSearchEngineChange() {
     this._log.trace("_onSearchEngineChange");
 
     // Finally trigger the environment change notification.
-    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
-    await this._updateSearchEngine();
+    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, {});
+    this._updateSearchEngine();
     this._onEnvironmentChange("search-engine-changed", oldEnvironment);
   },
 
@@ -1453,7 +1483,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_onCompositorProcessAborted");
 
     // Trigger the environment change notification.
-    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
+    let oldEnvironment = Cu.cloneInto(this._currentEnvironment, {});
     this._updateGraphicsFeatures();
     this._onEnvironmentChange("gfx-features-changed", oldEnvironment);
   },
@@ -1560,7 +1590,7 @@ EnvironmentCache.prototype = {
   /**
    * Update the cached settings data.
    */
-  async _updateSettings() {
+  _updateSettings() {
     let updateChannel = null;
     try {
       updateChannel = Utils.getUpdateChannel();
@@ -1601,7 +1631,7 @@ EnvironmentCache.prototype = {
       this._updateAttribution();
     }
     this._updateDefaultBrowser();
-    await this._updateSearchEngine();
+    this._updateSearchEngine();
     this._loadAsyncUpdateSettingsFromCache();
   },
 
@@ -1615,14 +1645,8 @@ EnvironmentCache.prototype = {
       effectiveContentProcessLevel =
         sandboxSettings.effectiveContentSandboxLevel;
 
-      // See `ContentWin32kLockdownState` in
-      // <security/sandbox/common/SandboxSettings.h>
-      //
-      // Values:
-      // 1 = LockdownEnabled
-      // 2 = MissingWebRender
-      // 3 = OperatingSystemNotSupported
-      // 4 = PrefNotSet
+      // The possible values for this are defined in the ContentWin32kLockdownState
+      // enum in security/sandbox/common/SandboxSettings.h
       contentWin32kLockdownState = sandboxSettings.contentWin32kLockdownState;
     } catch (e) {}
     return {
@@ -1636,7 +1660,7 @@ EnvironmentCache.prototype = {
    * @returns Promise<> resolved when the I/O is complete.
    */
   async _updateProfile() {
-    let profileAccessor = await ProfileAge();
+    let profileAccessor = await lazy.ProfileAge();
 
     let creationDate = await profileAccessor.created;
     let resetDate = await profileAccessor.reset;
@@ -1663,7 +1687,7 @@ EnvironmentCache.prototype = {
    */
   async _loadAttributionAsync() {
     try {
-      await AttributionCode.getAttrDataAsync();
+      await lazy.AttributionCode.getAttrDataAsync();
     } catch (e) {
       // The AttributionCode.jsm module might not be always available
       // (e.g. tests). Gracefully handle this.
@@ -1678,7 +1702,7 @@ EnvironmentCache.prototype = {
   _updateAttribution() {
     let data = null;
     try {
-      data = AttributionCode.getCachedAttributionData();
+      data = lazy.AttributionCode.getCachedAttributionData();
     } catch (e) {
       // The AttributionCode.jsm module might not be always available
       // (e.g. tests). Gracefully handle this.
@@ -1690,10 +1714,12 @@ EnvironmentCache.prototype = {
 
     let attributionData = {};
     for (let key in data) {
-      attributionData[key] = limitStringToLength(
-        data[key],
-        MAX_ATTRIBUTION_STRING_LENGTH
-      );
+      attributionData[key] =
+        // At least one of these may be boolean, and limitStringToLength
+        // returns null for non-string inputs.
+        typeof data[key] === "string"
+          ? limitStringToLength(data[key], MAX_ATTRIBUTION_STRING_LENGTH)
+          : data[key];
     }
     this._currentEnvironment.settings.attribution = attributionData;
   },
@@ -1740,7 +1766,7 @@ EnvironmentCache.prototype = {
   },
   // This exists as a separate function for testing.
   async _getFxaSignedInUser() {
-    return fxAccounts.getSignedInUser();
+    return lazy.fxAccounts.getSignedInUser();
   },
 
   async _updateServicesInfo() {
@@ -1780,7 +1806,7 @@ EnvironmentCache.prototype = {
    */
   _updateFirefoxSuggest() {
     let prefs = [
-      "browser.urlbar.suggest.quicksuggest",
+      "browser.urlbar.suggest.quicksuggest.nonsponsored",
       "browser.urlbar.suggest.quicksuggest.sponsored",
     ];
     for (let p of prefs) {
@@ -1795,22 +1821,22 @@ EnvironmentCache.prototype = {
    * @return Object containing the partner data.
    */
   _getPartner() {
+    let defaults = Services.prefs.getDefaultBranch(null);
     let partnerData = {
-      distributionId: Services.prefs.getStringPref(PREF_DISTRIBUTION_ID, null),
-      distributionVersion: Services.prefs.getStringPref(
+      distributionId: defaults.getStringPref(PREF_DISTRIBUTION_ID, null),
+      distributionVersion: defaults.getCharPref(
         PREF_DISTRIBUTION_VERSION,
         null
       ),
-      partnerId: Services.prefs.getStringPref(PREF_PARTNER_ID, null),
-      distributor: Services.prefs.getStringPref(PREF_DISTRIBUTOR, null),
-      distributorChannel: Services.prefs.getStringPref(
-        PREF_DISTRIBUTOR_CHANNEL,
-        null
-      ),
+      partnerId: defaults.getCharPref(PREF_PARTNER_ID, null),
+      distributor: defaults.getCharPref(PREF_DISTRIBUTOR, null),
+      distributorChannel: defaults.getCharPref(PREF_DISTRIBUTOR_CHANNEL, null),
     };
 
     // Get the PREF_APP_PARTNER_BRANCH branch and append its children to partner data.
-    let partnerBranch = Services.prefs.getBranch(PREF_APP_PARTNER_BRANCH);
+    let partnerBranch = Services.prefs.getDefaultBranch(
+      PREF_APP_PARTNER_BRANCH
+    );
     partnerData.partnerNames = partnerBranch.getChildList("");
 
     return partnerData;
@@ -1914,7 +1940,7 @@ EnvironmentCache.prototype = {
       const WINDOWS_UBR_KEY_PATH =
         "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
 
-      let versionInfo = WindowsVersionInfo.get({ throwOnError: false });
+      let versionInfo = lazy.WindowsVersionInfo.get({ throwOnError: false });
       this._osData.servicePackMajor = versionInfo.servicePackMajor;
       this._osData.servicePackMinor = versionInfo.servicePackMinor;
       this._osData.windowsBuildNumber = versionInfo.buildNumber;
@@ -1925,7 +1951,7 @@ EnvironmentCache.prototype = {
       ) {
         // Query the UBR key and only add it to the environment if it's available.
         // |readRegKey| doesn't throw, but rather returns 'undefined' on error.
-        let ubr = WindowsRegistry.readRegKey(
+        let ubr = lazy.WindowsRegistry.readRegKey(
           Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
           WINDOWS_UBR_KEY_PATH,
           "UBR",
@@ -2063,6 +2089,14 @@ EnvironmentCache.prototype = {
     };
 
     if (AppConstants.platform === "win") {
+      // This is only sent for Mozilla produced MSIX packages
+      let winPackageFamilyName = getSysinfoProperty("winPackageFamilyName", "");
+      if (
+        winPackageFamilyName.startsWith("Mozilla.") ||
+        winPackageFamilyName.startsWith("MozillaCorporation.")
+      ) {
+        data = { winPackageFamilyName };
+      }
       data = { ...this._getProcessData(), ...data };
     } else if (AppConstants.platform == "android") {
       data.device = this._getDeviceData();

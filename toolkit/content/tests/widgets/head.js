@@ -34,6 +34,16 @@ function getElementWithinVideo(video, aValue) {
   return shadowRoot.getElementById(aValue);
 }
 
+/**
+ * Runs querySelectorAll on an element's shadow root.
+ * @param {Element} element
+ * @param {string} selector
+ */
+function shadowRootQuerySelectorAll(element, selector) {
+  const shadowRoot = SpecialPowers.wrap(element).openOrClosedShadowRoot;
+  return shadowRoot?.querySelectorAll(selector);
+}
+
 function executeTests() {
   return tests
     .map(fn => () => new Promise(fn))
@@ -54,4 +64,24 @@ function once(target, name, cb) {
     p.then(cb);
   }
   return p;
+}
+
+class EventLogger {
+  constructor(expectedNumberOfEvents = Number.MAX_VALUE) {
+    this._log = [];
+    this._eventsPromise = new Promise(r => (this._countReached = r));
+    this._expectedNumberOfEvents = expectedNumberOfEvents;
+  }
+  handleEvent(event) {
+    this._log.push(event);
+    if (this._log.length >= this._expectedNumberOfEvents) {
+      this._countReached(this._log);
+    }
+  }
+  get log() {
+    return this._log;
+  }
+  waitForExpectedEvents() {
+    return this._eventsPromise;
+  }
 }

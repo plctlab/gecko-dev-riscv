@@ -8,7 +8,6 @@
 var { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
   this,
@@ -42,7 +41,7 @@ let gSiteDataSettings = {
     function addColumnItem(l10n, flexWidth, tooltipText) {
       let box = document.createXULElement("hbox");
       box.className = "item-box";
-      box.setAttribute("flex", flexWidth);
+      box.setAttribute("style", `-moz-box-flex: ${flexWidth}`);
       let label = document.createXULElement("label");
       label.setAttribute("crop", "end");
       if (l10n) {
@@ -323,6 +322,11 @@ let gSiteDataSettings = {
       (AppConstants.platform == "macosx" &&
         e.keyCode == KeyEvent.DOM_VK_BACK_SPACE)
     ) {
+      if (!e.target.closest("#sitesList")) {
+        // The user is typing or has not selected an item from the list to remove
+        return;
+      }
+      // The users intention is to delete site data
       this.removeSelected();
     }
   },

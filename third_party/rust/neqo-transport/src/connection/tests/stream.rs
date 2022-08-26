@@ -15,7 +15,7 @@ use crate::send_stream::{SendStreamState, SEND_BUFFER_SIZE};
 use crate::tparams::{self, TransportParameter};
 use crate::tracking::DEFAULT_ACK_PACKET_TOLERANCE;
 use crate::{Connection, ConnectionError, ConnectionParameters};
-use crate::{Error, StreamId, StreamType};
+use crate::{Error, StreamType};
 
 use neqo_common::{event::Provider, qdebug};
 use std::cmp::max;
@@ -101,16 +101,14 @@ fn transfer() {
         .next()
         .expect("should have a second new stream event");
     assert!(stream_ids.next().is_none());
-    let (received1, fin1) = server.stream_recv(first_stream.as_u64(), &mut buf).unwrap();
+    let (received1, fin1) = server.stream_recv(first_stream, &mut buf).unwrap();
     assert_eq!(received1, 4000);
     assert!(!fin1);
-    let (received2, fin2) = server.stream_recv(first_stream.as_u64(), &mut buf).unwrap();
+    let (received2, fin2) = server.stream_recv(first_stream, &mut buf).unwrap();
     assert_eq!(received2, 140);
     assert!(!fin2);
 
-    let (received3, fin3) = server
-        .stream_recv(second_stream.as_u64(), &mut buf)
-        .unwrap();
+    let (received3, fin3) = server.stream_recv(second_stream, &mut buf).unwrap();
     assert_eq!(received3, 60);
     assert!(fin3);
 }
@@ -228,13 +226,13 @@ fn max_data() {
     assert_eq!(client.stream_send(stream_id, b"hello").unwrap(), 0);
     client
         .streams
-        .get_send_stream_mut(stream_id.into())
+        .get_send_stream_mut(stream_id)
         .unwrap()
         .mark_as_sent(0, 4096, false);
     assert_eq!(client.events().count(), 0);
     client
         .streams
-        .get_send_stream_mut(stream_id.into())
+        .get_send_stream_mut(stream_id)
         .unwrap()
         .mark_as_acked(0, 4096, false);
     assert_eq!(client.events().count(), 0);
@@ -253,7 +251,7 @@ fn max_data() {
     // Increase max stream data. Avail space now limited by tx buffer
     client
         .streams
-        .get_send_stream_mut(stream_id.into())
+        .get_send_stream_mut(stream_id)
         .unwrap()
         .set_max_stream_data(100_000_000);
     assert_eq!(
@@ -506,10 +504,7 @@ fn stream_data_blocked_generates_max_stream_data() {
     assert!(!end);
 
     // Now send `STREAM_DATA_BLOCKED`.
-    let internal_stream = server
-        .streams
-        .get_send_stream_mut(StreamId::from(stream_id))
-        .unwrap();
+    let internal_stream = server.streams.get_send_stream_mut(stream_id).unwrap();
     if let SendStreamState::Send { fc, .. } = internal_stream.state() {
         fc.blocked();
     } else {
@@ -920,4 +915,50 @@ fn session_flow_control_affects_all_streams() {
         client.stream_avail_send_space(stream_id2).unwrap(),
         SMALL_MAX_DATA
     );
+}
+
+fn connect_w_different_limit(bidi_limit: u64, unidi_limit: u64) {
+    let mut client = default_client();
+    let out = client.process(None, now());
+    let mut server = new_server(
+        ConnectionParameters::default()
+            .max_streams(StreamType::BiDi, bidi_limit)
+            .max_streams(StreamType::UniDi, unidi_limit),
+    );
+    let out = server.process(out.dgram(), now());
+
+    let out = client.process(out.dgram(), now());
+    mem::drop(server.process(out.dgram(), now()));
+
+    assert!(maybe_authenticate(&mut client));
+
+    let mut bidi_events = 0;
+    let mut unidi_events = 0;
+    let mut connected_events = 0;
+    for e in client.events() {
+        match e {
+            ConnectionEvent::SendStreamCreatable { stream_type } => {
+                if stream_type == StreamType::BiDi {
+                    bidi_events += 1;
+                } else {
+                    unidi_events += 1;
+                }
+            }
+            ConnectionEvent::StateChange(state) if state == State::Connected => {
+                connected_events += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(bidi_events, usize::from(bidi_limit > 0));
+    assert_eq!(unidi_events, usize::from(unidi_limit > 0));
+    assert_eq!(connected_events, 1);
+}
+
+#[test]
+fn client_stream_creatable_event() {
+    connect_w_different_limit(0, 0);
+    connect_w_different_limit(0, 1);
+    connect_w_different_limit(1, 0);
+    connect_w_different_limit(1, 1);
 }

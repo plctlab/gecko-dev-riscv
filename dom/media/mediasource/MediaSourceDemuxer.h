@@ -50,9 +50,12 @@ class MediaSourceDemuxer : public MediaDataDemuxer,
   TaskQueue* GetTaskQueue() { return mTaskQueue; }
   void NotifyInitDataArrived();
 
-  // Returns a structure describing the state of the MediaSource internal
+  // Populates aInfo with info describing the state of the MediaSource internal
   // buffered data. Used for debugging purposes.
-  void GetDebugInfo(dom::MediaSourceDemuxerDebugInfo& aInfo);
+  // aInfo should *not* be accessed until the returned promise has been resolved
+  // or rejected.
+  RefPtr<GenericPromise> GetDebugInfo(
+      dom::MediaSourceDemuxerDebugInfo& aInfo) const;
 
   void AddSizeOfResources(MediaSourceDecoder::ResourceSizes* aSizes);
 
@@ -83,7 +86,7 @@ class MediaSourceDemuxer : public MediaDataDemuxer,
   MozPromiseHolder<InitPromise> mInitPromise;
 
   // Monitor to protect members below across multiple threads.
-  mutable Monitor mMonitor;
+  mutable Monitor mMonitor MOZ_UNANNOTATED;
   RefPtr<TrackBuffersManager> mAudioTrack;
   RefPtr<TrackBuffersManager> mVideoTrack;
   MediaInfo mInfo;
@@ -120,12 +123,7 @@ class MediaSourceTrackDemuxer
   void DetachManager();
 
  private:
-  bool OnTaskQueue() const {
-    MOZ_ASSERT(mParent);
-    auto taskQueue = mParent->GetTaskQueue();
-    MOZ_ASSERT(taskQueue);
-    return taskQueue->IsCurrentThreadIn();
-  }
+  bool OnTaskQueue() const { return mTaskQueue->IsCurrentThreadIn(); }
 
   RefPtr<SeekPromise> DoSeek(const media::TimeUnit& aTime);
   RefPtr<SamplesPromise> DoGetSamples(int32_t aNumSamples);
@@ -136,18 +134,22 @@ class MediaSourceTrackDemuxer
   media::TimeUnit GetNextRandomAccessPoint();
 
   RefPtr<MediaSourceDemuxer> mParent;
+  const RefPtr<TaskQueue> mTaskQueue;
+
   TrackInfo::TrackType mType;
   // Monitor protecting members below accessed from multiple threads.
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
   media::TimeUnit mNextRandomAccessPoint;
   // Would be accessed in MFR's demuxer proxy task queue and TaskQueue, and
   // only be set on the TaskQueue. It can be accessed while on TaskQueue without
   // the need for the lock.
   RefPtr<TrackBuffersManager> mManager;
 
+  // Only accessed on TaskQueue
   Maybe<RefPtr<MediaRawData>> mNextSample;
   // Set to true following a reset. Ensure that the next sample demuxed
   // is available at position 0.
+  // Only accessed on TaskQueue
   bool mReset;
 
   // Amount of pre-roll time when seeking.

@@ -7,7 +7,6 @@
 #include "mozilla/dom/SVGImageElement.h"
 
 #include "mozilla/ArrayUtils.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/gfx/2D.h"
 #include "nsCOMPtr.h"
 #include "nsIURI.h"
@@ -24,8 +23,7 @@ NS_IMPL_NS_NEW_SVG_ELEMENT(Image)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGImageElement::WrapNode(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {
@@ -62,7 +60,7 @@ SVGImageElement::SVGImageElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGImageElementBase(std::move(aNodeInfo)) {
   // We start out broken
-  AddStatesSilently(NS_EVENT_STATE_BROKEN);
+  AddStatesSilently(ElementState::BROKEN);
 }
 
 SVGImageElement::~SVGImageElement() { nsImageLoadingContent::Destroy(); }
@@ -232,7 +230,7 @@ void SVGImageElement::UnbindFromTree(bool aNullParent) {
   SVGImageElementBase::UnbindFromTree(aNullParent);
 }
 
-EventStates SVGImageElement::IntrinsicState() const {
+ElementState SVGImageElement::IntrinsicState() const {
   return SVGImageElementBase::IntrinsicState() |
          nsImageLoadingContent::ImageState();
 }
@@ -317,5 +315,4 @@ SVGElement::StringAttributesInfo SVGImageElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

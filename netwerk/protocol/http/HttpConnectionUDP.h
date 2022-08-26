@@ -13,7 +13,6 @@
 #include "nsCOMPtr.h"
 #include "nsProxyRelease.h"
 #include "prinrval.h"
-#include "TunnelUtils.h"
 #include "mozilla/Mutex.h"
 #include "ARefBase.h"
 #include "TimingStruct.h"
@@ -28,6 +27,7 @@
 
 class nsISocketTransport;
 class nsISSLSocketControl;
+class nsIDNSRecord;
 
 namespace mozilla {
 namespace net {

@@ -169,10 +169,10 @@ Point FlattenedPath::ComputePointAtLength(Float aLength, Point* aTangent) {
     }
   }
 
-  Point currentVector = currentPoint - lastPointSinceMove;
   if (aTangent) {
-    if (hypotf(currentVector.x, currentVector.y)) {
-      *aTangent = currentVector / hypotf(currentVector.x, currentVector.y);
+    Point currentVector = currentPoint - lastPointSinceMove;
+    if (auto h = hypotf(currentVector.x, currentVector.y)) {
+      *aTangent = currentVector / h;
     } else {
       *aTangent = Point();
     }
@@ -534,6 +534,12 @@ void FlattenBezier(const BezierControlPoints& aControlPoints, PathSink* aSink,
       return;
     }
   }
+}
+
+Rect Path::GetFastBounds(const Matrix& aTransform,
+                         const StrokeOptions* aStrokeOptions) const {
+  return aStrokeOptions ? GetStrokedBounds(*aStrokeOptions, aTransform)
+                        : GetBounds(aTransform);
 }
 
 }  // namespace gfx

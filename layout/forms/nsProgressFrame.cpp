@@ -109,8 +109,6 @@ void nsProgressFrame::Reflow(nsPresContext* aPresContext,
   FinishAndStoreOverflow(&aDesiredSize);
 
   aStatus.Reset();  // This type of frame can't be split.
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsProgressFrame::ReflowChildFrame(nsIFrame* aChild,
@@ -244,8 +242,7 @@ bool nsProgressFrame::ShouldUseNativeStyle() const {
   //   background.
   return StyleDisplay()->EffectiveAppearance() ==
              StyleAppearance::ProgressBar &&
-         !Style()->HasAuthorSpecifiedBorderOrBackground() &&
-         barFrame &&
+         !Style()->HasAuthorSpecifiedBorderOrBackground() && barFrame &&
          barFrame->StyleDisplay()->EffectiveAppearance() ==
              StyleAppearance::Progresschunk &&
          !barFrame->Style()->HasAuthorSpecifiedBorderOrBackground();

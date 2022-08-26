@@ -2,7 +2,12 @@ Telemetry
 =========
 
 This section describes existing telemetry probes measuring interaction with
-search engines.
+search engines from the browser UI.
+
+Other search-related telemetry is recorded by Toolkit such as search service
+telemetry and telemetry related to fetching search suggestions. Toolkit search
+telemetry is relevant to Firefox as well as other consumers of Toolkit. See
+:doc:`/toolkit/search/Telemetry` in the Toolkit documentation for details.
 
 .. toctree::
    :caption: Table of Contents
@@ -51,6 +56,7 @@ SEARCH_COUNTS - SAP usage
     - ``searchbar``
     - ``system``
     - ``urlbar`` Except aliases and search mode.
+    - ``urlbar_handoff`` Used when searching from about:newtab.
     - ``urlbar-searchmode`` Used when the Urlbar is in search mode.
     - ``webextension``
 
@@ -62,6 +68,7 @@ browser.engagement.navigation.*
   Possible SAPs are:
 
     - ``urlbar``  Except search mode.
+    - ``urlbar_handoff`` Used when searching from about:newtab.
     - ``urlbar_searchmode``  Used when the Urlbar is in search mode.
     - ``searchbar``
     - ``about_home``
@@ -102,19 +109,20 @@ This telemetry is handled by `SearchSERPTelemetry.jsm and the associated parent/
 SEARCH_COUNTS - SERP results
   This histogram records search counts for visits to SERP in-content pages.
   For in-content searches, the format is
-  ``<provider>.in-content:[sap|sap-follow-on|organic]:[code|none]``.
+  ``<provider>.in-content:[sap|sap-follow-on|organic]:[<code>|other|none]``.
 
   This is obsolete, browser.search.content.* should be preferred.
 
 browser.search.content.*
   These keyed scalar track counts of SERP page loads. The key format is
-  ``<provider>:[tagged|tagged-follow-on|organic]:[<code>|none]``.
+  ``<provider>:[tagged|tagged-follow-on|organic]:[<code>|other|none]``.
 
   These will eventually replace the SEARCH_COUNTS - SERP results.
 
   They are broken down by the originating SAP where known:
 
   - ``urlbar``  Except search mode.
+  - ``urlbar_handoff`` Used when searching from about:newtab.
   - ``urlbar_searchmode``  Used when the Urlbar is in search mode.
   - ``searchbar``
   - ``about_home``

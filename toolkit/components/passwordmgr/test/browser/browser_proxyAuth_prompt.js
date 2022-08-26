@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-"use-strict";
+"use strict";
 
 let proxyChannel;
 
@@ -46,7 +46,7 @@ function initProxy() {
     let pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService();
 
     let channel = Services.io.newChannel(
-      "http://example.com",
+      "https://example.com",
       null,
       null,
       null, // aLoadingNode
@@ -59,7 +59,7 @@ function initProxy() {
   });
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
     // This test relies on tab auth prompts.
     set: [["prompts.modalType.httpAuth", Services.prompt.MODAL_TYPE_TAB]],

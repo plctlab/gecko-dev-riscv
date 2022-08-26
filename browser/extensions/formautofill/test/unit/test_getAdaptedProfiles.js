@@ -38,8 +38,26 @@ const DEFAULT_CREDITCARD_RECORD = {
   "cc-exp": "2025-01",
 };
 
+const DEFAULT_EXPECTED_CREDITCARD_RECORD = {
+  guid: "123",
+  "cc-exp-month": 1,
+  "cc-exp-year": 2025,
+  "cc-exp": "01/2025",
+};
+
 const getCCExpMonthFormatted = () => {
   return DEFAULT_CREDITCARD_RECORD["cc-exp-month"].toString().padStart(2, "0");
+};
+
+const getCCExpYearFormatted = () => {
+  return DEFAULT_CREDITCARD_RECORD["cc-exp-year"].toString().substring(2);
+};
+
+// Bug 1767130: If a form has separate inputs for expiry month and year,
+// we will always transform month into MM
+const DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY = {
+  ...DEFAULT_CREDITCARD_RECORD,
+  "cc-exp-month-formatted": getCCExpMonthFormatted(),
 };
 
 const TESTCASES = [
@@ -50,7 +68,7 @@ const TESTCASES = [
                <input autocomplete="family-name">
                <input id="street-addr" autocomplete="street-address">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -74,7 +92,7 @@ const TESTCASES = [
                <input id="line2" autocomplete="address-line2">
                <input id="line3" autocomplete="address-line3">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -97,7 +115,7 @@ const TESTCASES = [
                <input id="street-addr" autocomplete="street-address">
                <input id="line1" autocomplete="address-line1">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -120,7 +138,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -145,7 +163,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line3" autocomplete="address-line3">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -172,7 +190,7 @@ const TESTCASES = [
                <input id="address-line1">
                <input id="address-line3">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -203,7 +221,7 @@ const TESTCASES = [
                  <option id="option-country-US" value="US">United States</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -238,7 +256,7 @@ const TESTCASES = [
                  <option id="option-country-OO" value="OO">United States</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -273,7 +291,7 @@ const TESTCASES = [
                  <option id="option-country-2" value="">United States</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -308,7 +326,7 @@ const TESTCASES = [
                  <option id="option-country-same2" value="sametoo">United States</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -344,7 +362,7 @@ const TESTCASES = [
                  <option id="option-country-dummy2" value="">Dummy 2</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -366,7 +384,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -390,7 +408,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -414,7 +432,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -438,7 +456,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -462,7 +480,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -486,7 +504,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -510,7 +528,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -533,7 +551,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -557,7 +575,7 @@ const TESTCASES = [
                <input id="line1" autocomplete="address-line1">
                <input id="line2" autocomplete="address-line2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_ADDRESS_RECORD)],
+    profileData: [{ ...DEFAULT_ADDRESS_RECORD }],
     expectedResult: [
       {
         guid: "123",
@@ -581,7 +599,7 @@ const TESTCASES = [
                <input autocomplete="family-name" maxlength="1">
                <input autocomplete="postal-code" maxlength="5">
                </form>`,
-    profileData: [Object.assign({}, ADDRESS_RECORD_2)],
+    profileData: [{ ...ADDRESS_RECORD_2 }],
     expectedResult: [
       {
         guid: "address2",
@@ -600,7 +618,7 @@ const TESTCASES = [
                <input autocomplete="additional-name" maxlength="0">
                <input autocomplete="family-name" maxlength="1">
                </form>`,
-    profileData: [Object.assign({}, ADDRESS_RECORD_2)],
+    profileData: [{ ...ADDRESS_RECORD_2 }],
     expectedResult: [
       {
         guid: "address2",
@@ -609,6 +627,17 @@ const TESTCASES = [
         "postal-code": "940012345",
       },
     ],
+  },
+  {
+    description:
+      "Credit card form with separate fields for expiration month and year",
+    document: `<form>
+                <input autocomplete="cc-number">
+                <input autocomplete="cc-exp-month">
+                <input autocomplete="cc-exp-year">
+              </form`,
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [{ ...DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY }],
   },
   {
     description:
@@ -644,7 +673,7 @@ const TESTCASES = [
                  <option id="option-cc-exp-year-28" value="2028">28</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [DEFAULT_CREDITCARD_RECORD],
     expectedOptionElements: [
       {
@@ -695,7 +724,7 @@ const TESTCASES = [
                  <option label="2035" id="option-cc-exp-year-35" value="object:47">dummy</option>
                </select>
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [DEFAULT_CREDITCARD_RECORD],
     expectedOptionElements: [
       {
@@ -712,8 +741,8 @@ const TESTCASES = [
                  <option value="3/17">3/17</option>
                  <option value="1/25" id="selected-cc-exp">1/25</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -724,8 +753,8 @@ const TESTCASES = [
                  <option value="3/2017">3/2017</option>
                  <option value="1/2025" id="selected-cc-exp">1/2025</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -736,8 +765,8 @@ const TESTCASES = [
                  <option value="03/17">03/17</option>
                  <option value="01/25" id="selected-cc-exp">01/25</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -748,8 +777,8 @@ const TESTCASES = [
                  <option value="03/2017">03/2017</option>
                  <option value="01/2025" id="selected-cc-exp">01/2025</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -760,8 +789,8 @@ const TESTCASES = [
                  <option value="3-17">3-17</option>
                  <option value="1-25" id="selected-cc-exp">1-25</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -772,8 +801,8 @@ const TESTCASES = [
                  <option value="3-2017">3-2017</option>
                  <option value="1-2025" id="selected-cc-exp">1-2025</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -784,8 +813,8 @@ const TESTCASES = [
                  <option value="03-17">03-17</option>
                  <option value="01-25" id="selected-cc-exp">01-25</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -796,8 +825,8 @@ const TESTCASES = [
                  <option value="03-2017">03-2017</option>
                  <option value="01-2025" id="selected-cc-exp">01-2025</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -808,8 +837,8 @@ const TESTCASES = [
                  <option value="17-03">17-03</option>
                  <option value="25-01" id="selected-cc-exp">25-01</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -820,8 +849,8 @@ const TESTCASES = [
                  <option value="2017-03">2017-03</option>
                  <option value="2025-01" id="selected-cc-exp">2025-01</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -832,8 +861,8 @@ const TESTCASES = [
                  <option value="2017/3">2017/3</option>
                  <option value="2025/1" id="selected-cc-exp">2025/1</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -844,8 +873,8 @@ const TESTCASES = [
                  <option value="0317">0317</option>
                  <option value="0125" id="selected-cc-exp">0125</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -856,8 +885,8 @@ const TESTCASES = [
                  <option value="1703">1703</option>
                  <option value="2501" id="selected-cc-exp">2501</option>
                </select></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [DEFAULT_CREDITCARD_RECORD],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
     expectedOptionElements: [{ "cc-exp": "selected-cc-exp" }],
   },
   {
@@ -869,13 +898,10 @@ const TESTCASES = [
                  <option value="01/25">01/25</option>
                </select></form>`,
     profileData: [
-      Object.assign(
-        {},
-        {
-          guid: "123",
-          "cc-exp-year": 2025,
-        }
-      ),
+      {
+        guid: "123",
+        "cc-exp-year": 2025,
+      },
     ],
     expectedResult: [
       {
@@ -894,13 +920,10 @@ const TESTCASES = [
                  <option value="01/25">01/25</option>
                </select></form>`,
     profileData: [
-      Object.assign(
-        {},
-        {
-          guid: "123",
-          "cc-exp-month": 1,
-        }
-      ),
+      {
+        guid: "123",
+        "cc-exp-month": 1,
+      },
     ],
     expectedResult: [
       {
@@ -924,13 +947,10 @@ const TESTCASES = [
                </select>
                </form>`,
     profileData: [
-      Object.assign(
-        {},
-        {
-          guid: "123",
-          "cc-exp-year": 2025,
-        }
-      ),
+      {
+        guid: "123",
+        "cc-exp-year": 2025,
+      },
     ],
     expectedResult: [
       {
@@ -954,13 +974,10 @@ const TESTCASES = [
                </select>
                </form>`,
     profileData: [
-      Object.assign(
-        {},
-        {
-          guid: "123",
-          "cc-exp-month": 1,
-        }
-      ),
+      {
+        guid: "123",
+        "cc-exp-month": 1,
+      },
     ],
     expectedResult: [
       {
@@ -971,110 +988,180 @@ const TESTCASES = [
     expectedOptionElements: [],
   },
   {
+    description:
+      "Fill a cc-exp field using adjacent label (MM/YY) as expiry string placeholder",
+    document: `<form>
+                <input autocomplete="cc-number">
+                <label>Expiry (MM/YY)</label>
+                <input autocomplete="cc-exp">
+              </form>
+              `,
+    profileData: [DEFAULT_CREDITCARD_RECORD],
+    expectedResult: [
+      { ...DEFAULT_EXPECTED_CREDITCARD_RECORD, "cc-exp": "01/25" },
+    ],
+  },
+  {
+    description:
+      "Fill a cc-exp field using adjacent label (MM - YY) as expiry string placeholder",
+    document: `<form>
+                <input autocomplete="cc-number">
+                <label>Expiry (MM - YY)</label>
+                <input autocomplete="cc-exp">
+              </form>
+              `,
+    profileData: [DEFAULT_CREDITCARD_RECORD],
+    expectedResult: [
+      { ...DEFAULT_EXPECTED_CREDITCARD_RECORD, "cc-exp": "01-25" },
+    ],
+  },
+  {
+    description: "Fill a cc-exp field correctly while ignoring unrelated label",
+    document: `<form>
+                <label>Credit card number label</label>
+                <input autocomplete="cc-number">
+                <input autocomplete="cc-exp">
+              </form>
+              `,
+    profileData: [DEFAULT_CREDITCARD_RECORD],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
+  },
+  {
     description: "Fill a cc-exp without placeholder on the cc-exp field",
     document: `<form><input autocomplete="cc-number">
                <input autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [DEFAULT_CREDITCARD_RECORD],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
+  },
+  {
+    description:
+      "Fill a cc-exp with whitespace placeholder on the cc-exp field",
+    document: `<form><input autocomplete="cc-number">
+               <input autocomplete="cc-exp" placeholder=" "></form>`,
+    profileData: [DEFAULT_CREDITCARD_RECORD],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm/yy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm/yy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01/25",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm / yy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm / yy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01/25",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [MM / YY].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="MM / YY" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01/25",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm / yyyy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm / yyyy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01/2025",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm - yyyy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm - yyyy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01-2025",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [yyyy-mm].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="yyyy-mm" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "2025-01",
-      }),
+      },
     ],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mmm yyyy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mmm yyyy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm foo yyyy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm foo yyyy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
   },
   {
     description: "Use placeholder to adjust cc-exp format [mm - - yyyy].",
     document: `<form><input autocomplete="cc-number">
                <input placeholder="mm - - yyyy" autocomplete="cc-exp"></form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD],
   },
   {
     description: "Use placeholder to adjust cc-exp-month field [mm].",
     document: `<form>
                 <input autocomplete="cc-number">
                 <input autocomplete="cc-exp-month" placeholder="MM">
+                <input autocomplete="cc-exp-year">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp-month-formatted": getCCExpMonthFormatted(),
-      }),
+      },
+    ],
+  },
+  {
+    description: "Use placeholder to adjust cc-exp-year field [yy].",
+    document: `<form>
+                <input autocomplete="cc-number">
+                <input autocomplete="cc-exp-month">
+                <input autocomplete="cc-exp-year" placeholder="YY">
+               </form>`,
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [
+      {
+        ...DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY,
+        "cc-exp-year-formatted": getCCExpYearFormatted(),
+      },
     ],
   },
   {
@@ -1084,11 +1171,12 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="2">
                  <input autocomplete="cc-exp-year" maxlength="2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY,
         "cc-exp-year": 25,
-      }),
+      },
     ],
   },
   {
@@ -1098,8 +1186,8 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="4">
                  <input autocomplete="cc-exp-year" maxlength="4">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY],
   },
   // Bug 1687679: The default value of an expiration month, when filled in an input element,
   // is a two character length string. Because of this, testing a maxlength of 1 is invalid.
@@ -1110,12 +1198,13 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="1">
                  <input autocomplete="cc-exp-year" maxlength="1">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY,
         "cc-exp-year": 5,
         "cc-exp-month": 1,
-      }),
+      },
     ],
   },
   {
@@ -1125,7 +1214,7 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="0">
                  <input autocomplete="cc-exp-year" maxlength="0">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
       {
         guid: DEFAULT_CREDITCARD_RECORD.guid,
@@ -1141,8 +1230,8 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="-2">
                  <input autocomplete="cc-exp-year" maxlength="-2">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY],
   },
   {
     description: "Test maxlength=10 on numeric fields.",
@@ -1151,8 +1240,8 @@ const TESTCASES = [
                  <input autocomplete="cc-exp-month" maxlength="10">
                  <input autocomplete="cc-exp-year" maxlength="10">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
-    expectedResult: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
+    expectedResult: [DEFAULT_EXPECTED_CREDITCARD_RECORD_SEPARATE_EXPIRY],
   },
   {
     description: "Test (special case) maxlength=5 on cc-exp field.",
@@ -1160,11 +1249,12 @@ const TESTCASES = [
                  <input autocomplete="cc-number">
                  <input autocomplete="cc-exp" maxlength="5">
                </form>`,
-    profileData: [Object.assign({}, DEFAULT_CREDITCARD_RECORD)],
+    profileData: [{ ...DEFAULT_CREDITCARD_RECORD }],
     expectedResult: [
-      Object.assign({}, DEFAULT_CREDITCARD_RECORD, {
+      {
+        ...DEFAULT_CREDITCARD_RECORD,
         "cc-exp": "01/25",
-      }),
+      },
     ],
   },
 ];
@@ -1183,6 +1273,7 @@ for (let testcase of TESTCASES) {
 
     handler.collectFormFields();
     handler.focusedInput = form.elements[0];
+
     let adaptedRecords = handler.activeSection.getAdaptedProfiles(
       testcase.profileData
     );

@@ -208,21 +208,21 @@ class Talos(
                 },
             ],
             [
-                ["--enable-webrender"],
+                ["--disable-fission"],
                 {
-                    "action": "store_true",
-                    "dest": "enable_webrender",
-                    "default": False,
-                    "help": "Enable the WebRender compositor in Gecko.",
+                    "action": "store_false",
+                    "dest": "fission",
+                    "default": True,
+                    "help": "Disable Fission (site isolation) in Gecko.",
                 },
             ],
             [
-                ["--enable-fission"],
+                ["--project"],
                 {
-                    "action": "store_true",
-                    "dest": "enable_fission",
-                    "default": False,
-                    "help": "Enable Fission (site isolation) in Gecko.",
+                    "dest": "project",
+                    "type": "str",
+                    "help": "The project branch we're running tests on. Used for "
+                    "disabling/skipping tests.",
                 },
             ],
             [
@@ -458,7 +458,7 @@ class Talos(
             return self.webextensions_zip
 
     def get_suite_from_test(self):
-        """ Retrieve the talos suite name from a given talos test name."""
+        """Retrieve the talos suite name from a given talos test name."""
         # running locally, single test name provided instead of suite; go through tests and
         # find suite name
         suite_name = None
@@ -483,8 +483,14 @@ class Talos(
             self.fatal("Talos json config not found, cannot verify suite")
         return suite_name
 
+    def query_suite_extra_prefs(self):
+        if self.query_talos_json_config() and self.suite is not None:
+            return self.talos_json_config["suites"][self.suite].get("extra_prefs", [])
+
+        return []
+
     def validate_suite(self):
-        """ Ensure suite name is a valid talos suite. """
+        """Ensure suite name is a valid talos suite."""
         if self.query_talos_json_config() and self.suite is not None:
             if self.suite not in self.talos_json_config.get("suites"):
                 self.fatal(
@@ -514,6 +520,8 @@ class Talos(
             kw_options["title"] = self.config["title"]
         if self.symbols_path:
             kw_options["symbolsPath"] = self.symbols_path
+        if self.config.get("project", None):
+            kw_options["project"] = self.config["project"]
 
         kw_options.update(kw)
         # talos expects tests to be in the format (e.g.) 'ts:tp5:tsvg'
@@ -532,19 +540,21 @@ class Talos(
             options += self.config["talos_extra_options"]
         if self.config.get("code_coverage", False):
             options.extend(["--code-coverage"])
+
+        # Add extra_prefs defined by individual test suites in talos.json
+        extra_prefs = self.query_suite_extra_prefs()
+        # Add extra_prefs from the configuration
         if self.config["extra_prefs"]:
-            options.extend(
-                ["--setpref={}".format(p) for p in self.config["extra_prefs"]]
-            )
-        if self.config["enable_webrender"]:
-            options.extend(["--enable-webrender"])
-        # enabling fission can come from the --enable-fission cmd line argument; or in CI
+            extra_prefs.extend(self.config["extra_prefs"])
+
+        options.extend(["--setpref={}".format(p) for p in extra_prefs])
+
+        # disabling fission can come from the --disable-fission cmd line argument; or in CI
         # it comes from a taskcluster transform which adds a --setpref for fission.autostart
-        if (
-            self.config["enable_fission"]
-            or "fission.autostart=true" in self.config["extra_prefs"]
-        ):
-            options.extend(["--enable-fission"])
+        if (not self.config["fission"]) or "fission.autostart=false" in self.config[
+            "extra_prefs"
+        ]:
+            options.extend(["--disable-fission"])
 
         return options
 

@@ -32,15 +32,12 @@ class Runnable;
 // cancelAsynchronousOpening:. Can only be called on the main thread.
 - (NSInteger)asynchronouslyOpenMenu:(NSMenu*)aMenu
                    atScreenPosition:(NSPoint)aPosition
-                            forView:(NSView*)aView;
+                            forView:(NSView*)aView
+                     withAppearance:(NSAppearance*)aAppearance;
 
 // If the menu opening request for aHandle hasn't been processed yet, cancel it.
 // Can only be called on the main thread.
 - (void)cancelAsynchronousOpening:(NSInteger)aHandle;
-
-// Run aRunnable once the nested event loop of the currently open menu has been exited.
-// If no menu is currently open, post the runnable with NS_DispatchToCurrentThread.
-- (void)runAfterMenuClosed:(RefPtr<mozilla::Runnable>&&)aRunnable;
 
 // This field is a terrible workaround for a gnarly problem.
 // It should be set to YES by the caller of -[NSMenu cancelTracking(WithoutAnimation)].

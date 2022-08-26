@@ -6,22 +6,25 @@
 const { actionCreators: ac, actionTypes: at } = ChromeUtils.import(
   "resource://activity-stream/common/Actions.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Prefs } = ChromeUtils.import(
   "resource://activity-stream/lib/ActivityStreamPrefs.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   Region: "resource://gre/modules/Region.jsm",
 });
 
-this.PrefsFeed = class PrefsFeed {
+class PrefsFeed {
   constructor(prefMap) {
     this._prefMap = prefMap;
     this._prefs = new Prefs();
@@ -66,7 +69,7 @@ this.PrefsFeed = class PrefsFeed {
    * Handler for when experiment data updates.
    */
   onExperimentUpdated(event, reason) {
-    const value = NimbusFeatures.newtab.getAllVariables() || {};
+    const value = lazy.NimbusFeatures.newtab.getAllVariables() || {};
     this.store.dispatch(
       ac.BroadcastToContent({
         type: at.PREF_CHANGED,
@@ -82,7 +85,7 @@ this.PrefsFeed = class PrefsFeed {
    * Handler for Pocket specific experiment data updates.
    */
   onPocketExperimentUpdated(event, reason) {
-    const value = NimbusFeatures.pocketNewtab.getAllVariables() || {};
+    const value = lazy.NimbusFeatures.pocketNewtab.getAllVariables() || {};
     this.store.dispatch(
       ac.BroadcastToContent({
         type: at.PREF_CHANGED,
@@ -96,8 +99,8 @@ this.PrefsFeed = class PrefsFeed {
 
   init() {
     this._prefs.observeBranch(this);
-    NimbusFeatures.newtab.onUpdate(this.onExperimentUpdated);
-    NimbusFeatures.pocketNewtab.onUpdate(this.onPocketExperimentUpdated);
+    lazy.NimbusFeatures.newtab.onUpdate(this.onExperimentUpdated);
+    lazy.NimbusFeatures.pocketNewtab.onUpdate(this.onPocketExperimentUpdated);
 
     this._storage = this.store.dbStorage.getDbTable("sectionPrefs");
 
@@ -109,16 +112,16 @@ this.PrefsFeed = class PrefsFeed {
 
     // These are not prefs, but are needed to determine stuff in content that can only be
     // computed in main process
-    values.isPrivateBrowsingEnabled = PrivateBrowsingUtils.enabled;
+    values.isPrivateBrowsingEnabled = lazy.PrivateBrowsingUtils.enabled;
     values.platform = AppConstants.platform;
 
     // Save the geo pref if we have it
-    if (Region.home) {
-      values.region = Region.home;
+    if (lazy.Region.home) {
+      values.region = lazy.Region.home;
       this.geo = values.region;
     } else if (this.geo !== "") {
       // Watch for geo changes and use a dummy value for now
-      Services.obs.addObserver(this, Region.REGION_TOPIC);
+      Services.obs.addObserver(this, lazy.Region.REGION_TOPIC);
       this.geo = "";
     }
 
@@ -172,8 +175,9 @@ this.PrefsFeed = class PrefsFeed {
     });
 
     // Add experiment values and default values
-    values.featureConfig = NimbusFeatures.newtab.getAllVariables() || {};
-    values.pocketConfig = NimbusFeatures.pocketNewtab.getAllVariables() || {};
+    values.featureConfig = lazy.NimbusFeatures.newtab.getAllVariables() || {};
+    values.pocketConfig =
+      lazy.NimbusFeatures.pocketNewtab.getAllVariables() || {};
     this._setBoolPref(values, "logowordmark.alwaysVisible", false);
     this._setBoolPref(values, "feeds.section.topstories", false);
     this._setBoolPref(values, "discoverystream.enabled", false);
@@ -184,8 +188,6 @@ this.PrefsFeed = class PrefsFeed {
     );
     this._setBoolPref(values, "discoverystream.isCollectionDismissible", false);
     this._setBoolPref(values, "discoverystream.hardcoded-basic-layout", false);
-    this._setBoolPref(values, "discoverystream.recs.personalized", false);
-    this._setBoolPref(values, "discoverystream.spocs.personalized", false);
     this._setBoolPref(values, "discoverystream.personalization.enabled", false);
     this._setBoolPref(values, "discoverystream.personalization.override");
     this._setStringPref(
@@ -215,10 +217,10 @@ this.PrefsFeed = class PrefsFeed {
 
   removeListeners() {
     this._prefs.ignoreBranch(this);
-    NimbusFeatures.newtab.off(this.onExperimentUpdated);
-    NimbusFeatures.newtab.off(this.onPocketExperimentUpdated);
+    lazy.NimbusFeatures.newtab.off(this.onExperimentUpdated);
+    lazy.NimbusFeatures.pocketNewtab.off(this.onPocketExperimentUpdated);
     if (this.geo === "") {
-      Services.obs.removeObserver(this, Region.REGION_TOPIC);
+      Services.obs.removeObserver(this, lazy.Region.REGION_TOPIC);
     }
   }
 
@@ -233,11 +235,11 @@ this.PrefsFeed = class PrefsFeed {
 
   observe(subject, topic, data) {
     switch (topic) {
-      case Region.REGION_TOPIC:
+      case lazy.Region.REGION_TOPIC:
         this.store.dispatch(
           ac.BroadcastToContent({
             type: at.PREF_CHANGED,
-            data: { name: "region", value: Region.home },
+            data: { name: "region", value: lazy.Region.home },
           })
         );
         break;
@@ -263,6 +265,6 @@ this.PrefsFeed = class PrefsFeed {
         break;
     }
   }
-};
+}
 
 const EXPORTED_SYMBOLS = ["PrefsFeed"];

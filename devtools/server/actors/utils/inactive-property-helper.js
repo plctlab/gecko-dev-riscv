@@ -47,6 +47,32 @@ const VISITED_INVALID_PROPERTIES = allCssPropertiesExcept([
   "text-emphasis-color",
 ]);
 
+// Set of node names which are always treated as replaced elements:
+const REPLACED_ELEMENTS_NAMES = new Set([
+  "audio",
+  "br",
+  "button",
+  "canvas",
+  "embed",
+  "hr",
+  "iframe",
+  // Inputs are generally replaced elements. E.g. checkboxes and radios are replaced
+  // unless they have `appearance: none`. However unconditionally treating them
+  // as replaced is enough for our purpose here, and avoids extra complexity that
+  // will likely not be necessary in most cases.
+  "input",
+  "math",
+  "object",
+  "picture",
+  // Select is a replaced element if it has `size<=1` or no size specified, but
+  // unconditionally treating it as replaced is enough for our purpose here, and
+  // avoids extra complexity that will likely not be necessary in most cases.
+  "select",
+  "svg",
+  "textarea",
+  "video",
+]);
+
 class InactivePropertyHelper {
   /**
    * A list of rules for when CSS properties have no effect.
@@ -74,8 +100,6 @@ class InactivePropertyHelper {
    *   msgId:
    *     A Fluent id containing an error message explaining why a property is
    *     inactive in this situation.
-   *   numFixProps:
-   *     The number of properties we suggest in the fixId string.
    * }
    *
    * If you add a new rule, also add a test for it in:
@@ -106,7 +130,6 @@ class InactivePropertyHelper {
         when: () => !this.flexContainer,
         fixId: "inactive-css-not-flex-container-fix",
         msgId: "inactive-css-not-flex-container",
-        numFixProps: 2,
       },
       // Flex item property used on non-flex item.
       {
@@ -114,7 +137,6 @@ class InactivePropertyHelper {
         when: () => !this.flexItem,
         fixId: "inactive-css-not-flex-item-fix-2",
         msgId: "inactive-css-not-flex-item",
-        numFixProps: 2,
       },
       // Grid container property used on non-grid container.
       {
@@ -131,7 +153,6 @@ class InactivePropertyHelper {
         when: () => !this.gridContainer,
         fixId: "inactive-css-not-grid-container-fix",
         msgId: "inactive-css-not-grid-container",
-        numFixProps: 2,
       },
       // Grid item property used on non-grid item.
       {
@@ -148,7 +169,6 @@ class InactivePropertyHelper {
         when: () => !this.gridItem && !this.isAbsPosGridElement(),
         fixId: "inactive-css-not-grid-item-fix-2",
         msgId: "inactive-css-not-grid-item",
-        numFixProps: 2,
       },
       // Grid and flex item properties used on non-grid or non-flex item.
       {
@@ -157,7 +177,6 @@ class InactivePropertyHelper {
           !this.gridItem && !this.flexItem && !this.isAbsPosGridElement(),
         fixId: "inactive-css-not-grid-or-flex-item-fix-3",
         msgId: "inactive-css-not-grid-or-flex-item",
-        numFixProps: 4,
       },
       // Grid and flex container properties used on non-grid or non-flex container.
       {
@@ -169,13 +188,11 @@ class InactivePropertyHelper {
           "row-gap",
           // grid-*-gap are supported legacy shorthands for the corresponding *-gap properties.
           // See https://drafts.csswg.org/css-align-3/#gap-legacy for more information.
-          "grid-gap",
           "grid-row-gap",
         ],
         when: () => !this.gridContainer && !this.flexContainer,
         fixId: "inactive-css-not-grid-or-flex-container-fix",
         msgId: "inactive-css-not-grid-or-flex-container",
-        numFixProps: 2,
       },
       // align-content is special as align-content:baseline does have an effect on all
       // grid items, flex items and table cells, regardless of what type of box they are.
@@ -188,13 +205,13 @@ class InactivePropertyHelper {
           !this.flexContainer,
         fixId: "inactive-css-not-grid-or-flex-container-fix",
         msgId: "inactive-css-not-grid-or-flex-container",
-        numFixProps: 2,
       },
       // column-gap and shorthands used on non-grid or non-flex or non-multi-col container.
       {
         invalidProperties: [
           "column-gap",
           "gap",
+          "grid-gap",
           // grid-*-gap are supported legacy shorthands for the corresponding *-gap properties.
           // See https://drafts.csswg.org/css-align-3/#gap-legacy for more information.
           "grid-column-gap",
@@ -204,7 +221,6 @@ class InactivePropertyHelper {
         fixId:
           "inactive-css-not-grid-or-flex-container-or-multicol-container-fix",
         msgId: "inactive-css-not-grid-or-flex-container-or-multicol-container",
-        numFixProps: 3,
       },
       // Inline properties used on non-inline-level elements.
       {
@@ -221,7 +237,6 @@ class InactivePropertyHelper {
         },
         fixId: "inactive-css-not-inline-or-tablecell-fix",
         msgId: "inactive-css-not-inline-or-tablecell",
-        numFixProps: 2,
       },
       // (max-|min-)width used on inline elements, table rows, or row groups.
       {
@@ -232,7 +247,6 @@ class InactivePropertyHelper {
           this.horizontalTableTrackGroup,
         fixId: "inactive-css-non-replaced-inline-or-table-row-or-row-group-fix",
         msgId: "inactive-css-property-because-of-display",
-        numFixProps: 2,
       },
       // (max-|min-)height used on inline elements, table columns, or column groups.
       {
@@ -244,7 +258,6 @@ class InactivePropertyHelper {
         fixId:
           "inactive-css-non-replaced-inline-or-table-column-or-column-group-fix",
         msgId: "inactive-css-property-because-of-display",
-        numFixProps: 1,
       },
       {
         invalidProperties: ["display"],
@@ -267,7 +280,6 @@ class InactivePropertyHelper {
           ]),
         fixId: "inactive-css-not-display-block-on-floated-fix",
         msgId: "inactive-css-not-display-block-on-floated",
-        numFixProps: 2,
       },
       // The property is impossible to override due to :visited restriction.
       {
@@ -275,7 +287,6 @@ class InactivePropertyHelper {
         when: () => this.isVisitedRule(),
         fixId: "learn-more",
         msgId: "inactive-css-property-is-impossible-to-override-in-visited",
-        numFixProps: 1,
         learnMoreURL: VISITED_MDN_LINK,
       },
       // top, right, bottom, left properties used on non positioned boxes.
@@ -284,7 +295,6 @@ class InactivePropertyHelper {
         when: () => !this.isPositioned,
         fixId: "inactive-css-position-property-on-unpositioned-box-fix",
         msgId: "inactive-css-position-property-on-unpositioned-box",
-        numFixProps: 1,
       },
       // z-index property used on non positioned boxes that are not grid/flex items.
       {
@@ -292,7 +302,6 @@ class InactivePropertyHelper {
         when: () => !this.isPositioned && !this.gridItem && !this.flexItem,
         fixId: "inactive-css-position-property-on-unpositioned-box-fix",
         msgId: "inactive-css-position-property-on-unpositioned-box",
-        numFixProps: 1,
       },
       // text-overflow property used on elements for which overflow is not set to hidden.
       // Note that this validator only checks if overflow:hidden is set on the element.
@@ -308,7 +317,6 @@ class InactivePropertyHelper {
         when: () => !this.hasInlineOverflow,
         fixId: "inactive-text-overflow-when-no-overflow-fix",
         msgId: "inactive-text-overflow-when-no-overflow",
-        numFixProps: 1,
       },
       // margin properties used on table internal elements.
       {
@@ -328,7 +336,6 @@ class InactivePropertyHelper {
         when: () => this.internalTableElement,
         fixId: "inactive-css-not-for-internal-table-elements-fix",
         msgId: "inactive-css-not-for-internal-table-elements",
-        numFixProps: 1,
       },
       // padding properties used on table internal elements except table cells.
       {
@@ -352,7 +359,6 @@ class InactivePropertyHelper {
           "inactive-css-not-for-internal-table-elements-except-table-cells-fix",
         msgId:
           "inactive-css-not-for-internal-table-elements-except-table-cells",
-        numFixProps: 1,
       },
       // table-layout used on non-table elements.
       {
@@ -361,7 +367,6 @@ class InactivePropertyHelper {
           !this.checkComputedStyle("display", ["table", "inline-table"]),
         fixId: "inactive-css-not-table-fix",
         msgId: "inactive-css-not-table",
-        numFixProps: 1,
       },
       // scroll-padding-* properties used on non-scrollable elements.
       {
@@ -381,7 +386,36 @@ class InactivePropertyHelper {
         when: () => !this.isScrollContainer,
         fixId: "inactive-scroll-padding-when-not-scroll-container-fix",
         msgId: "inactive-scroll-padding-when-not-scroll-container",
-        numFixProps: 1,
+      },
+      // border-image properties used on internal table with border collapse.
+      {
+        invalidProperties: [
+          "border-image",
+          "border-image-outset",
+          "border-image-repeat",
+          "border-image-slice",
+          "border-image-source",
+          "border-image-width",
+        ],
+        when: () =>
+          this.internalTableElement &&
+          this.checkTableParentHasBorderCollapsed(),
+        fixId: "inactive-css-border-image-fix",
+        msgId: "inactive-css-border-image",
+      },
+      // width & height properties used on ruby elements.
+      {
+        invalidProperties: [
+          "height",
+          "min-height",
+          "max-height",
+          "width",
+          "min-width",
+          "max-width",
+        ],
+        when: () => this.checkComputedStyle("display", ["ruby", "ruby-text"]),
+        fixId: "inactive-css-ruby-element-fix",
+        msgId: "inactive-css-ruby-element",
       },
     ];
   }
@@ -423,8 +457,6 @@ class InactivePropertyHelper {
    * @return {String} object.msgId
    *         A Fluent id containing an error message explaining why a property
    *         is inactive in this situation.
-   * @return {Integer} object.numFixProps
-   *         The number of properties we suggest in the fixId string.
    * @return {String} object.property
    *         The inactive property name.
    * @return {String} object.learnMoreURL
@@ -443,7 +475,6 @@ class InactivePropertyHelper {
 
     let fixId = "";
     let msgId = "";
-    let numFixProps = 0;
     let learnMoreURL = null;
     let used = true;
 
@@ -466,7 +497,6 @@ class InactivePropertyHelper {
       if (validator.when()) {
         fixId = validator.fixId;
         msgId = validator.msgId;
-        numFixProps = validator.numFixProps;
         learnMoreURL = validator.learnMoreURL;
         used = false;
 
@@ -489,7 +519,6 @@ class InactivePropertyHelper {
       display,
       fixId,
       msgId,
-      numFixProps,
       property,
       learnMoreURL,
       used,
@@ -837,39 +866,12 @@ class InactivePropertyHelper {
    * elements.
    */
   get replaced() {
-    // The <applet> element was removed in Gecko 56 so we can ignore them.
-    // These are always treated as replaced elements:
-    if (
-      this.nodeNameOneOf([
-        "audio",
-        "br",
-        "button",
-        "canvas",
-        "embed",
-        "hr",
-        "iframe",
-        // Inputs are generally replaced elements. E.g. checkboxes and radios are replaced
-        // unless they have `appearance: none`. However unconditionally treating them
-        // as replaced is enough for our purpose here, and avoids extra complexity that
-        // will likely not be necessary in most cases.
-        "input",
-        "math",
-        "object",
-        "picture",
-        // Select is a replaced element if it has `size<=1` or no size specified, but
-        // unconditionally treating it as replaced is enough for our purpose here, and
-        // avoids extra complexity that will likely not be necessary in most cases.
-        "select",
-        "svg",
-        "textarea",
-        "video",
-      ])
-    ) {
+    if (REPLACED_ELEMENTS_NAMES.has(this.localName)) {
       return true;
     }
 
     // img tags are replaced elements only when the image has finished loading.
-    if (this.nodeName === "img" && this.node.complete) {
+    if (this.localName === "img" && this.node.complete) {
       return true;
     }
 
@@ -877,12 +879,12 @@ class InactivePropertyHelper {
   }
 
   /**
-   * Return the current node's nodeName.
+   * Return the current node's localName.
    *
    * @returns {String}
    */
-  get nodeName() {
-    return this.node.nodeName ? this.node.nodeName.toLowerCase() : null;
+  get localName() {
+    return this.node.localName;
   }
 
   /**
@@ -897,17 +899,6 @@ class InactivePropertyHelper {
    */
   get isSvg() {
     return this.node.namespaceURI === "http://www.w3.org/2000/svg";
-  }
-
-  /**
-   * Check if the current node's nodeName matches a value inside the value array.
-   *
-   * @param {Array} values
-   *        Array of values to compare against.
-   * @returns {Boolean}
-   */
-  nodeNameOneOf(values) {
-    return values.includes(this.nodeName);
   }
 
   /**
@@ -1105,9 +1096,43 @@ class InactivePropertyHelper {
 
     return current;
   }
-}
 
-exports.inactivePropertyHelper = new InactivePropertyHelper();
+  /**
+   * Get the parent table element of the current element.
+   *
+   * @return {DOMNode|null}
+   *         The closest table element or null if there are none.
+   */
+  getTableParent() {
+    let current = this.node.parentNode;
+
+    // Find the table parent
+    while (current && computedStyle(current).display !== "table") {
+      current = current.parentNode;
+
+      // If we reached the document element, stop.
+      if (current == this.node.ownerDocument.documentElement) {
+        return null;
+      }
+    }
+
+    return current;
+  }
+
+  /**
+   * Assuming the current element is an internal table element,
+   * check wether its parent table element has `border-collapse` set to `collapse`.
+   *
+   * @returns {Boolean}
+   */
+  checkTableParentHasBorderCollapsed() {
+    const parent = this.getTableParent();
+    if (!parent) {
+      return false;
+    }
+    return computedStyle(parent).borderCollapse === "collapse";
+  }
+}
 
 /**
  * Returns all CSS property names except given properties.
@@ -1141,3 +1166,10 @@ function allCssPropertiesExcept(propertiesToIgnore) {
 function computedStyle(node, window = node.ownerGlobal) {
   return window.getComputedStyle(node);
 }
+
+const inactivePropertyHelper = new InactivePropertyHelper();
+
+// The only public method from this module is `isPropertyUsed`.
+exports.isPropertyUsed = inactivePropertyHelper.isPropertyUsed.bind(
+  inactivePropertyHelper
+);

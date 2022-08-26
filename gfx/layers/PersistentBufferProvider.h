@@ -10,6 +10,7 @@
 #include "mozilla/Assertions.h"  // for MOZ_ASSERT, etc
 #include "mozilla/RefPtr.h"      // for RefPtr, already_AddRefed, etc
 #include "mozilla/layers/KnowsCompositor.h"
+#include "mozilla/layers/LayersSurfaces.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/gfx/Types.h"
@@ -18,9 +19,12 @@
 
 namespace mozilla {
 
+class ClientWebGLContext;
+
 namespace gfx {
 class SourceSurface;
 class DrawTarget;
+class DrawTargetWebgl;
 }  // namespace gfx
 
 namespace layers {
@@ -41,7 +45,8 @@ class PersistentBufferProvider : public RefCounted<PersistentBufferProvider>,
 
   virtual ~PersistentBufferProvider() = default;
 
-  virtual LayersBackend GetType() { return LayersBackend::LAYERS_NONE; }
+  virtual bool IsShared() const { return false; }
+  virtual bool IsAccelerated() const { return false; }
 
   /**
    * Get a DrawTarget from the PersistentBufferProvider.
@@ -67,6 +72,8 @@ class PersistentBufferProvider : public RefCounted<PersistentBufferProvider>,
 
   virtual TextureClient* GetTextureClient() { return nullptr; }
 
+  virtual void OnMemoryPressure() {}
+
   virtual void OnShutdown() {}
 
   virtual bool SetKnowsCompositor(KnowsCompositor* aKnowsCompositor) {
@@ -83,6 +90,20 @@ class PersistentBufferProvider : public RefCounted<PersistentBufferProvider>,
    * costly (cf. bug 1294351).
    */
   virtual bool PreservesDrawingState() const = 0;
+
+  /**
+   * Whether or not the provider should be recreated, such as when profiling
+   * heuristics determine this type of provider is no longer advantageous to
+   * use.
+   */
+  virtual bool RequiresRefresh() const { return false; }
+
+  /**
+   * Provide a WebGL front buffer for compositing, if available.
+   */
+  virtual Maybe<layers::SurfaceDescriptor> GetFrontBuffer() {
+    return Nothing();
+  }
 };
 
 class PersistentBufferProviderBasic : public PersistentBufferProvider {
@@ -95,8 +116,6 @@ class PersistentBufferProviderBasic : public PersistentBufferProvider {
       gfx::BackendType aBackend);
 
   explicit PersistentBufferProviderBasic(gfx::DrawTarget* aTarget);
-
-  LayersBackend GetType() override { return LayersBackend::LAYERS_BASIC; }
 
   already_AddRefed<gfx::DrawTarget> BorrowDrawTarget(
       const gfx::IntRect& aPersistedRect) override;
@@ -114,11 +133,39 @@ class PersistentBufferProviderBasic : public PersistentBufferProvider {
  protected:
   void Destroy();
 
- private:
-  virtual ~PersistentBufferProviderBasic();
+  ~PersistentBufferProviderBasic() override;
 
   RefPtr<gfx::DrawTarget> mDrawTarget;
   RefPtr<gfx::SourceSurface> mSnapshot;
+};
+
+class PersistentBufferProviderAccelerated
+    : public PersistentBufferProviderBasic {
+ public:
+  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(PersistentBufferProviderAccelerated,
+                                          override)
+
+  explicit PersistentBufferProviderAccelerated(gfx::DrawTarget* aTarget);
+
+  bool IsAccelerated() const override { return true; }
+
+  Maybe<layers::SurfaceDescriptor> GetFrontBuffer() override;
+
+  already_AddRefed<gfx::DrawTarget> BorrowDrawTarget(
+      const gfx::IntRect& aPersistedRect) override;
+
+  bool ReturnDrawTarget(already_AddRefed<gfx::DrawTarget> aDT) override;
+
+  already_AddRefed<gfx::SourceSurface> BorrowSnapshot() override;
+
+  bool RequiresRefresh() const override;
+
+  void OnMemoryPressure() override;
+
+ protected:
+  ~PersistentBufferProviderAccelerated() override;
+
+  gfx::DrawTargetWebgl* GetDrawTargetWebgl() const;
 };
 
 /**
@@ -135,7 +182,7 @@ class PersistentBufferProviderShared : public PersistentBufferProvider,
       gfx::IntSize aSize, gfx::SurfaceFormat aFormat,
       KnowsCompositor* aKnowsCompositor);
 
-  LayersBackend GetType() override;
+  bool IsShared() const override { return true; }
 
   already_AddRefed<gfx::DrawTarget> BorrowDrawTarget(
       const gfx::IntRect& aPersistedRect) override;
@@ -178,16 +225,12 @@ class PersistentBufferProviderShared : public PersistentBufferProvider,
   // a separate permanent back buffer and copy into the shared back buffer when
   // the DrawTarget is returned, before making it the new front buffer.
   RefPtr<TextureClient> mPermanentBackBuffer;
-  // We may need two extra textures if webrender is enabled.
-  static const size_t kMaxTexturesAllowed = 4;
+  static const size_t kMaxTexturesAllowed = 5;
   Vector<RefPtr<TextureClient>, kMaxTexturesAllowed + 2> mTextures;
   // Offset of the texture in mTextures that the canvas uses.
   Maybe<uint32_t> mBack;
   // Offset of the texture in mTextures that is presented to the compositor.
   Maybe<uint32_t> mFront;
-  // Offset of the texture in mTextures which texture's readlock is unreliable.
-  // Therefore it should not be used as next back buffer.
-  Maybe<uint32_t> mTextureLockIsUnreliable;
 
   RefPtr<gfx::DrawTarget> mDrawTarget;
   RefPtr<gfx::SourceSurface> mSnapshot;

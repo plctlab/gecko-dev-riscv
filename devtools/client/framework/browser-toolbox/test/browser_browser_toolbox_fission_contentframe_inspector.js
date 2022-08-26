@@ -24,6 +24,7 @@ requestLongerTimeout(4);
  * test locally.
  */
 add_task(async function() {
+  await pushPref("devtools.browsertoolbox.scope", "everything");
   const ToolboxTask = await initBrowserToolboxTask({
     enableBrowserToolboxFission: true,
   });
@@ -36,7 +37,7 @@ add_task(async function() {
   });
 
   const tab = await addTab(
-    `http://example.com/browser/devtools/client/framework/browser-toolbox/test/doc_browser_toolbox_fission_contentframe_inspector_page.html`
+    `https://example.com/browser/devtools/client/framework/browser-toolbox/test/doc_browser_toolbox_fission_contentframe_inspector_page.html`
   );
 
   // Set a custom attribute on the tab's browser, in order to easily select it in the markup view

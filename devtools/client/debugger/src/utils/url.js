@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import { memoize } from "lodash";
-import { URL as URLParser } from "whatwg-url";
-
 const defaultUrl = {
   hash: "",
   host: "",
@@ -22,31 +19,15 @@ const defaultUrl = {
   username: "",
 };
 
-export const stripQuery = memoize(function stripQueryAndHash(url) {
-  let queryStart = url.indexOf("?");
-
-  let before = url;
-  let after = "";
-  if (queryStart >= 0) {
-    const hashStart = url.indexOf("#");
-    if (hashStart >= 0) {
-      if (hashStart < queryStart) {
-        queryStart = hashStart;
-      }
-
-      after = url.slice(hashStart);
-    }
-
-    before = url.slice(0, queryStart);
+const parseCache = new Map();
+export function parse(url) {
+  if (parseCache.has(url)) {
+    return parseCache.get(url);
   }
 
-  return before + after;
-});
-
-export const parse = memoize(function parse(url) {
   let urlObj;
   try {
-    urlObj = new URLParser(url);
+    urlObj = new URL(url);
   } catch (err) {
     urlObj = { ...defaultUrl };
     // If we're given simply a filename...
@@ -78,10 +59,16 @@ export const parse = memoize(function parse(url) {
       urlObj.pathname = url;
     }
   }
+  // When provided a special URL like "webpack:///webpack/foo",
+  // prevents passing the three slashes in the path, and pass only onea.
+  // This will prevent displaying modules in empty-name sub folders.
+  urlObj.pathname = urlObj.pathname.replace(/\/+/, "/");
   urlObj.path = urlObj.pathname + urlObj.search;
 
+  // Cache the result
+  parseCache.set(url, urlObj);
   return urlObj;
-});
+}
 
 export function sameOrigin(firstUrl, secondUrl) {
   return parse(firstUrl).origin == parse(secondUrl).origin;

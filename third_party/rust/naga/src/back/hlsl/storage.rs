@@ -1,10 +1,12 @@
-//! Logic related to `ByteAddressBuffer` operations.
-//!
-//! HLSL backend uses byte address buffers for all storage buffers in IR.
+/*!
+Logic related to `ByteAddressBuffer` operations.
+
+HLSL backend uses byte address buffers for all storage buffers in IR.
+*/
 
 use super::{super::FunctionCtx, BackendResult, Error};
 use crate::{
-    proc::{NameKey, TypeResolution},
+    proc::{Alignment, NameKey, TypeResolution},
     Handle,
 };
 
@@ -42,6 +44,9 @@ impl<W: fmt::Write> super::Writer<'_, W> {
         chain: &[SubAccess],
         func_ctx: &FunctionCtx,
     ) -> BackendResult {
+        if chain.is_empty() {
+            write!(self.out, "0")?;
+        }
         for (i, access) in chain.iter().enumerate() {
             if i != 0 {
                 write!(self.out, "+")?;
@@ -120,20 +125,15 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     self.out,
                     "{}{}x{}(",
                     crate::ScalarKind::Float.to_hlsl_str(width)?,
-                    rows as u8,
                     columns as u8,
+                    rows as u8,
                 )?;
 
                 // Note: Matrices containing vec3s, due to padding, act like they contain vec4s.
-                let padded_columns = match columns {
-                    crate::VectorSize::Tri => 4,
-                    columns => columns as u32,
-                };
-
-                let row_stride = width as u32 * padded_columns;
-                let iter = (0..rows as u32).map(|i| {
+                let row_stride = Alignment::from(rows) * width as u32;
+                let iter = (0..columns as u32).map(|i| {
                     let ty_inner = crate::TypeInner::Vector {
-                        size: columns,
+                        size: rows,
                         kind: crate::ScalarKind::Float,
                         width,
                     };
@@ -149,18 +149,22 @@ impl<W: fmt::Write> super::Writer<'_, W> {
             } => {
                 write!(self.out, "{{")?;
                 let count = module.constants[const_handle].to_array_length().unwrap();
-                let stride = module.types[base].inner.span(&module.constants);
+                let stride = module.types[base].inner.size(&module.constants);
                 let iter = (0..count).map(|i| (TypeResolution::Handle(base), stride * i));
                 self.write_storage_load_sequence(module, var_handle, iter, func_ctx)?;
                 write!(self.out, "}}")?;
             }
             crate::TypeInner::Struct { ref members, .. } => {
-                write!(self.out, "{{")?;
+                let constructor = super::help::WrappedConstructor {
+                    ty: result_ty.handle().unwrap(),
+                };
+                self.write_wrapped_constructor_function_name(module, constructor)?;
+                write!(self.out, "(")?;
                 let iter = members
                     .iter()
                     .map(|m| (TypeResolution::Handle(m.ty), m.offset));
                 self.write_storage_load_sequence(module, var_handle, iter, func_ctx)?;
-                write!(self.out, "}}")?;
+                write!(self.out, ")")?;
             }
             _ => unreachable!(),
         }
@@ -260,20 +264,23 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     "{}{}{}x{} {}{} = ",
                     level.next(),
                     crate::ScalarKind::Float.to_hlsl_str(width)?,
-                    rows as u8,
                     columns as u8,
+                    rows as u8,
                     STORE_TEMP_NAME,
                     depth,
                 )?;
                 self.write_store_value(module, &value, func_ctx)?;
                 writeln!(self.out, ";")?;
+
+                // Note: Matrices containing vec3s, due to padding, act like they contain vec4s.
+                let row_stride = Alignment::from(rows) * width as u32;
+
                 // then iterate the stores
-                let row_stride = width as u32 * columns as u32;
-                for i in 0..rows as u32 {
+                for i in 0..columns as u32 {
                     self.temp_access_chain
                         .push(SubAccess::Offset(i * row_stride));
                     let ty_inner = crate::TypeInner::Vector {
-                        size: columns,
+                        size: rows,
                         kind: crate::ScalarKind::Float,
                         width,
                     };
@@ -299,13 +306,13 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 self.write_value_type(module, &module.types[base].inner)?;
                 let depth = level.next().0;
                 write!(self.out, " {}{}", STORE_TEMP_NAME, depth)?;
-                self.write_array_size(module, crate::ArraySize::Constant(const_handle))?;
+                self.write_array_size(module, base, crate::ArraySize::Constant(const_handle))?;
                 write!(self.out, " = ")?;
                 self.write_store_value(module, &value, func_ctx)?;
                 writeln!(self.out, ";")?;
                 // then iterate the stores
                 let count = module.constants[const_handle].to_array_length().unwrap();
-                let stride = module.types[base].inner.span(&module.constants);
+                let stride = module.types[base].inner.size(&module.constants);
                 for i in 0..count {
                     self.temp_access_chain.push(SubAccess::Offset(i * stride));
                     let sv = StoreValue::TempIndex {
@@ -361,39 +368,22 @@ impl<W: fmt::Write> super::Writer<'_, W> {
         mut cur_expr: Handle<crate::Expression>,
         func_ctx: &FunctionCtx,
     ) -> Result<Handle<crate::GlobalVariable>, Error> {
+        enum AccessIndex {
+            Expression(Handle<crate::Expression>),
+            Constant(u32),
+        }
+        enum Parent<'a> {
+            Array { stride: u32 },
+            Struct(&'a [crate::StructMember]),
+        }
         self.temp_access_chain.clear();
-        loop {
-            // determine the size of the pointee
-            let stride = match *func_ctx.info[cur_expr].ty.inner_with(&module.types) {
-                crate::TypeInner::Pointer { base, class: _ } => {
-                    module.types[base].inner.span(&module.constants)
-                }
-                crate::TypeInner::ValuePointer { size, width, .. } => {
-                    size.map_or(1, |s| s as u32) * width as u32
-                }
-                _ => 0,
-            };
 
-            let (next_expr, sub) = match func_ctx.expressions[cur_expr] {
+        loop {
+            let (next_expr, access_index) = match func_ctx.expressions[cur_expr] {
                 crate::Expression::GlobalVariable(handle) => return Ok(handle),
-                crate::Expression::Access { base, index } => (
-                    base,
-                    SubAccess::Index {
-                        value: index,
-                        stride,
-                    },
-                ),
+                crate::Expression::Access { base, index } => (base, AccessIndex::Expression(index)),
                 crate::Expression::AccessIndex { base, index } => {
-                    let sub = match *func_ctx.info[base].ty.inner_with(&module.types) {
-                        crate::TypeInner::Pointer { base, .. } => match module.types[base].inner {
-                            crate::TypeInner::Struct { ref members, .. } => {
-                                SubAccess::Offset(members[index as usize].offset)
-                            }
-                            _ => SubAccess::Offset(index * stride),
-                        },
-                        _ => SubAccess::Offset(index * stride),
-                    };
-                    (base, sub)
+                    (base, AccessIndex::Constant(index))
                 }
                 ref other => {
                     return Err(Error::Unimplemented(format!(
@@ -402,6 +392,38 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     )))
                 }
             };
+
+            let parent = match *func_ctx.info[next_expr].ty.inner_with(&module.types) {
+                crate::TypeInner::Pointer { base, .. } => match module.types[base].inner {
+                    crate::TypeInner::Struct { ref members, .. } => Parent::Struct(members),
+                    crate::TypeInner::Array { stride, .. } => Parent::Array { stride },
+                    crate::TypeInner::Vector { width, .. } => Parent::Array {
+                        stride: width as u32,
+                    },
+                    crate::TypeInner::Matrix { columns, width, .. } => Parent::Array {
+                        stride: Alignment::from(columns) * width as u32,
+                    },
+                    _ => unreachable!(),
+                },
+                crate::TypeInner::ValuePointer { width, .. } => Parent::Array {
+                    stride: width as u32,
+                },
+                _ => unreachable!(),
+            };
+
+            let sub = match (parent, access_index) {
+                (Parent::Array { stride }, AccessIndex::Expression(value)) => {
+                    SubAccess::Index { value, stride }
+                }
+                (Parent::Array { stride }, AccessIndex::Constant(index)) => {
+                    SubAccess::Offset(stride * index)
+                }
+                (Parent::Struct(members), AccessIndex::Constant(index)) => {
+                    SubAccess::Offset(members[index as usize].offset)
+                }
+                (Parent::Struct(_), AccessIndex::Expression(_)) => unreachable!(),
+            };
+
             self.temp_access_chain.push(sub);
             cur_expr = next_expr;
         }

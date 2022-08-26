@@ -34,9 +34,6 @@
 #include "nsTArrayForwardDeclare.h"
 #include "nsTHashSet.h"
 
-// XXX Things that could be replaced by a forward header
-#include "mozilla/ipc/Transport.h"  // for Transport
-
 // XXX Things that could be moved to ProtocolUtils.cpp
 #include "base/process_util.h"  // for CloseProcessHandle
 #include "prenv.h"              // for PR_GetEnv
@@ -58,14 +55,20 @@ namespace {
 // protocol 0.  Oops!  We can get away with this until protocol 0
 // starts approaching its 65,536th message.
 enum {
+  // Message types used by DataPipe
+  DATA_PIPE_CLOSED_MESSAGE_TYPE = kuint16max - 18,
+  DATA_PIPE_BYTES_CONSUMED_MESSAGE_TYPE = kuint16max - 17,
+
   // Message types used by NodeChannel
-  ACCEPT_INVITE_MESSAGE_TYPE = kuint16max - 14,
-  REQUEST_INTRODUCTION_MESSAGE_TYPE = kuint16max - 13,
-  INTRODUCE_MESSAGE_TYPE = kuint16max - 12,
-  BROADCAST_MESSAGE_TYPE = kuint16max - 11,
-  EVENT_MESSAGE_TYPE = kuint16max - 10,
+  ACCEPT_INVITE_MESSAGE_TYPE = kuint16max - 16,
+  REQUEST_INTRODUCTION_MESSAGE_TYPE = kuint16max - 15,
+  INTRODUCE_MESSAGE_TYPE = kuint16max - 14,
+  BROADCAST_MESSAGE_TYPE = kuint16max - 13,
+  EVENT_MESSAGE_TYPE = kuint16max - 12,
 
   // Message types used by MessageChannel
+  MANAGED_ENDPOINT_DROPPED_MESSAGE_TYPE = kuint16max - 11,
+  MANAGED_ENDPOINT_BOUND_MESSAGE_TYPE = kuint16max - 10,
   IMPENDING_SHUTDOWN_MESSAGE_TYPE = kuint16max - 9,
   BUILD_IDS_MATCH_MESSAGE_TYPE = kuint16max - 8,
   BUILD_ID_MESSAGE_TYPE = kuint16max - 7,  // unused
@@ -101,29 +104,14 @@ namespace ipc {
 class ProtocolFuzzerHelper;
 #endif
 
-#ifdef XP_WIN
-const base::ProcessHandle kInvalidProcessHandle = INVALID_HANDLE_VALUE;
-
-// In theory, on Windows, this is a valid process ID, but in practice they are
-// currently divisible by four. Process IDs share the kernel handle allocation
-// code and they are guaranteed to be divisible by four.
-// As this could change for process IDs we shouldn't generally rely on this
-// property, however even if that were to change, it seems safe to rely on this
-// particular value never being used.
-const base::ProcessId kInvalidProcessId = kuint32max;
-#else
-const base::ProcessHandle kInvalidProcessHandle = -1;
-const base::ProcessId kInvalidProcessId = -1;
-#endif
-
 // Scoped base::ProcessHandle to ensure base::CloseProcessHandle is called.
 struct ScopedProcessHandleTraits {
   typedef base::ProcessHandle type;
 
-  static type empty() { return kInvalidProcessHandle; }
+  static type empty() { return base::kInvalidProcessHandle; }
 
   static void release(type aProcessHandle) {
-    if (aProcessHandle && aProcessHandle != kInvalidProcessHandle) {
+    if (aProcessHandle && aProcessHandle != base::kInvalidProcessHandle) {
       base::CloseProcessHandle(aProcessHandle);
     }
   }
@@ -175,6 +163,7 @@ class IToplevelProtocol;
 class ActorLifecycleProxy;
 class WeakActorLifecycleProxy;
 class IPDLResolverInner;
+class UntypedManagedEndpoint;
 
 class IProtocol : public HasResultCodes {
  public:
@@ -183,12 +172,12 @@ class IProtocol : public HasResultCodes {
     Deletion,
     AncestorDeletion,
     NormalShutdown,
-    AbnormalShutdown
+    AbnormalShutdown,
+    ManagedEndpointDropped
   };
 
   typedef base::ProcessId ProcessId;
   typedef IPC::Message Message;
-  typedef IPC::MessageInfo MessageInfo;
 
   IProtocol(ProtocolId aProtoId, Side aSide)
       : mId(0),
@@ -200,6 +189,7 @@ class IProtocol : public HasResultCodes {
         mToplevel(nullptr) {}
 
   IToplevelProtocol* ToplevelProtocol() { return mToplevel; }
+  const IToplevelProtocol* ToplevelProtocol() const { return mToplevel; }
 
   // The following methods either directly forward to the toplevel protocol, or
   // almost directly do.
@@ -208,9 +198,8 @@ class IProtocol : public HasResultCodes {
   IProtocol* Lookup(int32_t aId);
   void Unregister(int32_t aId);
 
-  Shmem::SharedMemory* CreateSharedMemory(size_t aSize,
-                                          SharedMemory::SharedMemoryType aType,
-                                          bool aUnsafe, int32_t* aId);
+  Shmem::SharedMemory* CreateSharedMemory(size_t aSize, bool aUnsafe,
+                                          int32_t* aId);
   Shmem::SharedMemory* LookupSharedMemory(int32_t aId);
   bool IsTrackingSharedMemory(Shmem::SharedMemory* aSegment);
   bool DestroySharedMemory(Shmem& aShmem);
@@ -218,25 +207,10 @@ class IProtocol : public HasResultCodes {
   MessageChannel* GetIPCChannel();
   const MessageChannel* GetIPCChannel() const;
 
-  // Sets an event target to which all messages for aActor will be
-  // dispatched. This method must be called before right before the SendPFoo
-  // message for aActor is sent. And SendPFoo *must* be called if
-  // SetEventTargetForActor is called. The receiver when calling
-  // SetEventTargetForActor must be the actor that will be the manager for
-  // aActor.
-  void SetEventTargetForActor(IProtocol* aActor,
-                              nsISerialEventTarget* aEventTarget);
-
-  // Replace the event target for the messages of aActor. There must not be
-  // any messages of aActor in the task queue, or we might run into some
-  // unexpected behavior.
-  void ReplaceEventTargetForActor(IProtocol* aActor,
-                                  nsISerialEventTarget* aEventTarget);
-
+  // Get the nsISerialEventTarget which all messages sent to this actor will be
+  // processed on. Unless stated otherwise, all operations on IProtocol which
+  // don't occur on this `nsISerialEventTarget` are unsafe.
   nsISerialEventTarget* GetActorEventTarget();
-  already_AddRefed<nsISerialEventTarget> GetActorEventTarget(IProtocol* aActor);
-
-  ProcessId OtherPid() const;
 
   // Actor lifecycle and other properties.
   ProtocolId GetProtocolId() const { return mProtocolId; }
@@ -246,6 +220,7 @@ class IProtocol : public HasResultCodes {
   IProtocol* Manager() const { return mManager; }
 
   ActorLifecycleProxy* GetLifecycleProxy() { return mLifecycleProxy; }
+  WeakActorLifecycleProxy* GetWeakLifecycleProxy();
 
   Side GetSide() const { return mSide; }
   bool CanSend() const { return mLinkStatus == LinkStatus::Connected; }
@@ -258,20 +233,17 @@ class IProtocol : public HasResultCodes {
   virtual void RemoveManagee(int32_t, IProtocol*) = 0;
   virtual void DeallocManagee(int32_t, IProtocol*) = 0;
 
-  Maybe<IProtocol*> ReadActor(const IPC::Message* aMessage,
-                              PickleIterator* aIter, bool aNullable,
+  Maybe<IProtocol*> ReadActor(IPC::MessageReader* aReader, bool aNullable,
                               const char* aActorDescription,
                               int32_t aProtocolTypeId);
 
   virtual Result OnMessageReceived(const Message& aMessage) = 0;
   virtual Result OnMessageReceived(const Message& aMessage,
-                                   Message*& aReply) = 0;
-  virtual Result OnCallReceived(const Message& aMessage, Message*& aReply) = 0;
-  bool AllocShmem(size_t aSize, Shmem::SharedMemory::SharedMemoryType aType,
-                  Shmem* aOutMem);
-  bool AllocUnsafeShmem(size_t aSize,
-                        Shmem::SharedMemory::SharedMemoryType aType,
-                        Shmem* aOutMem);
+                                   UniquePtr<Message>& aReply) = 0;
+  virtual Result OnCallReceived(const Message& aMessage,
+                                UniquePtr<Message>& aReply) = 0;
+  bool AllocShmem(size_t aSize, Shmem* aOutMem);
+  bool AllocUnsafeShmem(size_t aSize, Shmem* aOutMem);
   bool DeallocShmem(Shmem& aMem);
 
   void FatalError(const char* const aErrorMsg) const;
@@ -283,6 +255,7 @@ class IProtocol : public HasResultCodes {
   friend class IToplevelProtocol;
   friend class ActorLifecycleProxy;
   friend class IPDLResolverInner;
+  friend class UntypedManagedEndpoint;
 
   void SetId(int32_t aId);
 
@@ -297,18 +270,18 @@ class IProtocol : public HasResultCodes {
   void SetManagerAndRegister(IProtocol* aManager, int32_t aId);
 
   // Helpers for calling `Send` on our underlying IPC channel.
-  bool ChannelSend(IPC::Message* aMsg);
-  bool ChannelSend(IPC::Message* aMsg, IPC::Message* aReply);
-  bool ChannelCall(IPC::Message* aMsg, IPC::Message* aReply);
+  bool ChannelSend(UniquePtr<IPC::Message> aMsg);
+  bool ChannelSend(UniquePtr<IPC::Message> aMsg,
+                   UniquePtr<IPC::Message>* aReply);
   template <typename Value>
-  void ChannelSend(IPC::Message* aMsg, ResolveCallback<Value>&& aResolve,
+  void ChannelSend(UniquePtr<IPC::Message> aMsg,
+                   ResolveCallback<Value>&& aResolve,
                    RejectCallback&& aReject) {
-    UniquePtr<IPC::Message> msg(aMsg);
     if (CanSend()) {
-      GetIPCChannel()->Send(std::move(msg), this, std::move(aResolve),
+      GetIPCChannel()->Send(std::move(aMsg), this, std::move(aResolve),
                             std::move(aReject));
     } else {
-      NS_WARNING("IPC message discarded: actor cannot send");
+      WarnMessageDiscarded(aMsg.get());
       aReject(ResponseRejectReason::SendError);
     }
   }
@@ -352,6 +325,12 @@ class IProtocol : public HasResultCodes {
   static const int32_t kFreedActorId = 1;
 
  private:
+#ifdef DEBUG
+  void WarnMessageDiscarded(IPC::Message* aMsg);
+#else
+  void WarnMessageDiscarded(IPC::Message*) {}
+#endif
+
   int32_t mId;
   ProtocolId mProtocolId;
   Side mSide;
@@ -384,6 +363,8 @@ class IPCResult {
   explicit IPCResult(bool aResult) : mSuccess(aResult) {}
   bool mSuccess;
 };
+
+class UntypedEndpoint;
 
 template <class PFooSide>
 class Endpoint;
@@ -418,9 +399,8 @@ class IToplevelProtocol : public IProtocol {
   IProtocol* Lookup(int32_t aId);
   void Unregister(int32_t aId);
 
-  Shmem::SharedMemory* CreateSharedMemory(size_t aSize,
-                                          SharedMemory::SharedMemoryType aType,
-                                          bool aUnsafe, int32_t* aId);
+  Shmem::SharedMemory* CreateSharedMemory(size_t aSize, bool aUnsafe,
+                                          int32_t* aId);
   Shmem::SharedMemory* LookupSharedMemory(int32_t aId);
   bool IsTrackingSharedMemory(Shmem::SharedMemory* aSegment);
   bool DestroySharedMemory(Shmem& aShmem);
@@ -428,24 +408,17 @@ class IToplevelProtocol : public IProtocol {
   MessageChannel* GetIPCChannel() { return &mChannel; }
   const MessageChannel* GetIPCChannel() const { return &mChannel; }
 
-  // NOTE: The target actor's Manager must already be set.
-  void SetEventTargetForActorInternal(IProtocol* aActor,
-                                      nsISerialEventTarget* aEventTarget);
-  void ReplaceEventTargetForActor(IProtocol* aActor,
-                                  nsISerialEventTarget* aEventTarget);
-  nsISerialEventTarget* GetActorEventTarget();
-  already_AddRefed<nsISerialEventTarget> GetActorEventTarget(IProtocol* aActor);
-
-  ProcessId OtherPid() const;
   void SetOtherProcessId(base::ProcessId aOtherPid);
 
   virtual void OnChannelClose() = 0;
   virtual void OnChannelError() = 0;
   virtual void ProcessingError(Result aError, const char* aMsgName) {}
 
-  bool Open(ScopedPort aPort, base::ProcessId aOtherPid);
+  bool Open(ScopedPort aPort, const nsID& aMessageChannelId,
+            base::ProcessId aOtherPid,
+            nsISerialEventTarget* aEventTarget = nullptr);
 
-  bool Open(MessageChannel* aChannel, nsISerialEventTarget* aEventTarget,
+  bool Open(IToplevelProtocol* aTarget, nsISerialEventTarget* aEventTarget,
             mozilla::ipc::Side aSide = mozilla::ipc::UnknownSide);
 
   // Open a toplevel actor such that both ends of the actor's channel are on
@@ -454,7 +427,7 @@ class IToplevelProtocol : public IProtocol {
   //
   // WARNING: Attempting to send a sync or intr message on the same thread
   // will crash.
-  bool OpenOnSameThread(MessageChannel* aChannel,
+  bool OpenOnSameThread(IToplevelProtocol* aTarget,
                         mozilla::ipc::Side aSide = mozilla::ipc::UnknownSide);
 
   /**
@@ -499,17 +472,7 @@ class IToplevelProtocol : public IProtocol {
   void ArtificialSleep() {}
 #endif
 
-  virtual void EnteredCxxStack() {}
-  virtual void ExitedCxxStack() {}
-  virtual void EnteredCall() {}
-  virtual void ExitedCall() {}
-
   bool IsOnCxxStack() const;
-
-  virtual RacyInterruptPolicy MediateInterruptRace(const MessageInfo& parent,
-                                                   const MessageInfo& child) {
-    return RIPChildWins;
-  }
 
   /**
    * Return true if windows messages can be handled while waiting for a reply
@@ -517,17 +480,11 @@ class IToplevelProtocol : public IProtocol {
    */
   virtual bool HandleWindowsMessages(const Message& aMsg) const { return true; }
 
-  virtual void OnEnteredSyncSend() {}
-  virtual void OnExitedSyncSend() {}
-
   virtual void ProcessRemoteNativeEventsInInterruptCall() {}
 
   virtual void OnChannelReceivedMessage(const Message& aMsg) {}
 
   void OnIPCChannelOpened() { ActorConnected(); }
-
-  already_AddRefed<nsISerialEventTarget> GetMessageEventTarget(
-      const Message& aMsg);
 
   base::ProcessId OtherPidMaybeInvalid() const { return mOtherPid; }
 
@@ -545,36 +502,24 @@ class IToplevelProtocol : public IProtocol {
   IDMap<IProtocol*> mActorMap;
   IDMap<Shmem::SharedMemory*> mShmemMap;
 
-  // XXX: We no longer need mEventTargetMap for Quantum DOM, so it may be
-  // worthwhile to remove it before people start depending on it for other weird
-  // things.
-  Mutex mEventTargetMutex;
-  IDMap<nsCOMPtr<nsISerialEventTarget>> mEventTargetMap;
-
   MessageChannel mChannel;
 };
 
 class IShmemAllocator {
  public:
-  virtual bool AllocShmem(size_t aSize,
-                          mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
-                          mozilla::ipc::Shmem* aShmem) = 0;
-  virtual bool AllocUnsafeShmem(
-      size_t aSize, mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
-      mozilla::ipc::Shmem* aShmem) = 0;
+  virtual bool AllocShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) = 0;
+  virtual bool AllocUnsafeShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) = 0;
   virtual bool DeallocShmem(mozilla::ipc::Shmem& aShmem) = 0;
 };
 
 #define FORWARD_SHMEM_ALLOCATOR_TO(aImplClass)                             \
-  virtual bool AllocShmem(                                                 \
-      size_t aSize, mozilla::ipc::SharedMemory::SharedMemoryType aShmType, \
-      mozilla::ipc::Shmem* aShmem) override {                              \
-    return aImplClass::AllocShmem(aSize, aShmType, aShmem);                \
+  virtual bool AllocShmem(size_t aSize, mozilla::ipc::Shmem* aShmem)       \
+      override {                                                           \
+    return aImplClass::AllocShmem(aSize, aShmem);                          \
   }                                                                        \
-  virtual bool AllocUnsafeShmem(                                           \
-      size_t aSize, mozilla::ipc::SharedMemory::SharedMemoryType aShmType, \
-      mozilla::ipc::Shmem* aShmem) override {                              \
-    return aImplClass::AllocUnsafeShmem(aSize, aShmType, aShmem);          \
+  virtual bool AllocUnsafeShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) \
+      override {                                                           \
+    return aImplClass::AllocUnsafeShmem(aSize, aShmem);                    \
   }                                                                        \
   virtual bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override {        \
     return aImplClass::DeallocShmem(aShmem);                               \
@@ -608,6 +553,10 @@ MOZ_NEVER_INLINE void LogMessageForProtocol(const char* aTopLevelProtocol,
 
 MOZ_NEVER_INLINE void ProtocolErrorBreakpoint(const char* aMsg);
 
+// IPC::MessageReader and IPC::MessageWriter call this function for FatalError
+// calls which come from serialization/deserialization.
+MOZ_NEVER_INLINE void PickleFatalError(const char* aMsg, IProtocol* aActor);
+
 // The code generator calls this function for errors which come from the
 // methods of protocols.  Doing this saves codesize by making the error
 // cases significantly smaller.
@@ -632,16 +581,6 @@ MOZ_NEVER_INLINE void UnionTypeReadError(const char* aUnionName);
 MOZ_NEVER_INLINE void ArrayLengthReadError(const char* aElementName);
 
 MOZ_NEVER_INLINE void SentinelReadError(const char* aElementName);
-
-#if defined(XP_WIN)
-// This is a restricted version of Windows' DuplicateHandle() function
-// that works inside the sandbox and can send handles but not retrieve
-// them.  Unlike DuplicateHandle(), it takes a process ID rather than
-// a process handle.  It returns true on success, false otherwise.
-bool DuplicateHandle(HANDLE aSourceHandle, DWORD aTargetProcessId,
-                     HANDLE* aTargetHandle, DWORD aDesiredAccess,
-                     DWORD aOptions);
-#endif
 
 /**
  * Annotate the crash reporter with the error code from the most recent system

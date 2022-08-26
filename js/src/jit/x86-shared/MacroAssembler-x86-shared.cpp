@@ -65,10 +65,9 @@ void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
 }
 
 bool MacroAssemblerX86Shared::buildOOLFakeExitFrame(void* fakeReturnAddr) {
-  uint32_t descriptor = MakeFrameDescriptor(
-      asMasm().framePushed(), FrameType::IonJS, ExitFrameLayout::Size());
-  asMasm().Push(Imm32(descriptor));
+  asMasm().PushFrameDescriptor(FrameType::IonJS);
   asMasm().Push(ImmPtr(fakeReturnAddr));
+  asMasm().Push(FramePointer);
   return true;
 }
 
@@ -165,6 +164,19 @@ void MacroAssemblerX86Shared::binarySimd128(
     (asMasm().*regOp)(Operand(scratch), lhsDest, lhsDest);
   } else {
     (asMasm().*constOp)(rhs, lhsDest);
+  }
+}
+
+void MacroAssemblerX86Shared::binarySimd128(
+    FloatRegister lhs, const SimdConstant& rhs, FloatRegister dest,
+    void (MacroAssembler::*regOp)(const Operand&, FloatRegister, FloatRegister),
+    void (MacroAssembler::*constOp)(const SimdConstant&, FloatRegister,
+                                    FloatRegister)) {
+  ScratchSimd128Scope scratch(asMasm());
+  if (maybeInlineSimd128Int(rhs, scratch)) {
+    (asMasm().*regOp)(Operand(scratch), lhs, dest);
+  } else {
+    (asMasm().*constOp)(rhs, lhs, dest);
   }
 }
 
@@ -283,6 +295,36 @@ void MacroAssemblerX86Shared::minMaxFloat32(FloatRegister first,
 
   bind(&done);
 }
+
+#ifdef ENABLE_WASM_SIMD
+bool MacroAssembler::MustMaskShiftCountSimd128(wasm::SimdOp op, int32_t* mask) {
+  switch (op) {
+    case wasm::SimdOp::I8x16Shl:
+    case wasm::SimdOp::I8x16ShrU:
+    case wasm::SimdOp::I8x16ShrS:
+      *mask = 7;
+      break;
+    case wasm::SimdOp::I16x8Shl:
+    case wasm::SimdOp::I16x8ShrU:
+    case wasm::SimdOp::I16x8ShrS:
+      *mask = 15;
+      break;
+    case wasm::SimdOp::I32x4Shl:
+    case wasm::SimdOp::I32x4ShrU:
+    case wasm::SimdOp::I32x4ShrS:
+      *mask = 31;
+      break;
+    case wasm::SimdOp::I64x2Shl:
+    case wasm::SimdOp::I64x2ShrU:
+    case wasm::SimdOp::I64x2ShrS:
+      *mask = 63;
+      break;
+    default:
+      MOZ_CRASH("Unexpected shift operation");
+  }
+  return true;
+}
+#endif
 
 //{{{ check_macroassembler_style
 // ===============================================================
@@ -705,19 +747,18 @@ uint32_t MacroAssembler::pushFakeReturnAddress(Register scratch) {
 CodeOffset MacroAssembler::wasmTrapInstruction() { return ud2(); }
 
 void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
-                                       Register boundsCheckLimit,
-                                       Label* label) {
+                                       Register boundsCheckLimit, Label* ok) {
   cmp32(index, boundsCheckLimit);
-  j(cond, label);
+  j(cond, ok);
   if (JitOptions.spectreIndexMasking) {
     cmovCCl(cond, Operand(boundsCheckLimit), index);
   }
 }
 
 void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
-                                       Address boundsCheckLimit, Label* label) {
+                                       Address boundsCheckLimit, Label* ok) {
   cmp32(index, Operand(boundsCheckLimit));
-  j(cond, label);
+  j(cond, ok);
   if (JitOptions.spectreIndexMasking) {
     cmovCCl(cond, Operand(boundsCheckLimit), index);
   }
@@ -1079,6 +1120,8 @@ static void CompareExchange(MacroAssembler& masm,
     masm.append(*access, masm.size());
   }
 
+  // NOTE: the generated code must match the assembly code in gen_cmpxchg in
+  // GenerateAtomicOperations.py
   switch (Scalar::byteSize(type)) {
     case 1:
       CheckBytereg(newval);
@@ -1124,7 +1167,8 @@ static void AtomicExchange(MacroAssembler& masm,
                            const wasm::MemoryAccessDesc* access,
                            Scalar::Type type, const T& mem, Register value,
                            Register output)
-
+// NOTE: the generated code must match the assembly code in gen_exchange in
+// GenerateAtomicOperations.py
 {
   if (value != output) {
     masm.movl(value, output);
@@ -1201,6 +1245,8 @@ static void AtomicFetchOp(MacroAssembler& masm,
                           const T& mem, Register temp, Register output) {
   // Note value can be an Imm or a Register.
 
+  // NOTE: the generated code must match the assembly code in gen_fetchop in
+  // GenerateAtomicOperations.py
 #define ATOMIC_BITOP_BODY(LOAD, OP, LOCK_CMPXCHG)  \
   do {                                             \
     MOZ_ASSERT(output != temp);                    \
@@ -2044,13 +2090,25 @@ void MacroAssembler::copySignDouble(FloatRegister lhs, FloatRegister rhs,
                                     FloatRegister output) {
   ScratchDoubleScope scratch(*this);
 
-  double clearSignMask = mozilla::BitwiseCast<double>(INT64_MAX);
-  loadConstantDouble(clearSignMask, scratch);
-  vandpd(scratch, lhs, output);
+  // TODO Support AVX2
+  if (rhs == output) {
+    MOZ_ASSERT(lhs != rhs);
+    double keepSignMask = mozilla::BitwiseCast<double>(INT64_MIN);
+    loadConstantDouble(keepSignMask, scratch);
+    vandpd(scratch, rhs, output);
 
-  double keepSignMask = mozilla::BitwiseCast<double>(INT64_MIN);
-  loadConstantDouble(keepSignMask, scratch);
-  vandpd(rhs, scratch, scratch);
+    double clearSignMask = mozilla::BitwiseCast<double>(INT64_MAX);
+    loadConstantDouble(clearSignMask, scratch);
+    vandpd(lhs, scratch, scratch);
+  } else {
+    double clearSignMask = mozilla::BitwiseCast<double>(INT64_MAX);
+    loadConstantDouble(clearSignMask, scratch);
+    vandpd(scratch, lhs, output);
+
+    double keepSignMask = mozilla::BitwiseCast<double>(INT64_MIN);
+    loadConstantDouble(keepSignMask, scratch);
+    vandpd(rhs, scratch, scratch);
+  }
 
   vorpd(scratch, output, output);
 }
@@ -2059,15 +2117,38 @@ void MacroAssembler::copySignFloat32(FloatRegister lhs, FloatRegister rhs,
                                      FloatRegister output) {
   ScratchFloat32Scope scratch(*this);
 
-  float clearSignMask = mozilla::BitwiseCast<float>(INT32_MAX);
-  loadConstantFloat32(clearSignMask, scratch);
-  vandps(scratch, lhs, output);
+  // TODO Support AVX2
+  if (rhs == output) {
+    MOZ_ASSERT(lhs != rhs);
+    float keepSignMask = mozilla::BitwiseCast<float>(INT32_MIN);
+    loadConstantFloat32(keepSignMask, scratch);
+    vandps(scratch, output, output);
 
-  float keepSignMask = mozilla::BitwiseCast<float>(INT32_MIN);
-  loadConstantFloat32(keepSignMask, scratch);
-  vandps(rhs, scratch, scratch);
+    float clearSignMask = mozilla::BitwiseCast<float>(INT32_MAX);
+    loadConstantFloat32(clearSignMask, scratch);
+    vandps(lhs, scratch, scratch);
+  } else {
+    float clearSignMask = mozilla::BitwiseCast<float>(INT32_MAX);
+    loadConstantFloat32(clearSignMask, scratch);
+    vandps(scratch, lhs, output);
+
+    float keepSignMask = mozilla::BitwiseCast<float>(INT32_MIN);
+    loadConstantFloat32(keepSignMask, scratch);
+    vandps(rhs, scratch, scratch);
+  }
 
   vorps(scratch, output, output);
+}
+
+void MacroAssembler::shiftIndex32AndAdd(Register indexTemp32, int shift,
+                                        Register pointer) {
+  if (IsShiftInScaleRange(shift)) {
+    computeEffectiveAddress(
+        BaseIndex(pointer, indexTemp32, ShiftToScale(shift)), pointer);
+    return;
+  }
+  lshift32(Imm32(shift), indexTemp32);
+  addPtr(indexTemp32, pointer);
 }
 
 //}}} check_macroassembler_style

@@ -9,27 +9,29 @@
 #include <math.h>
 #include <new>
 #include <utility>
+#include "COLRFonts.h"
 #include "ThebesRLBoxTypes.h"
 #include "gfxFontUtils.h"
 #include "gfxFontVariations.h"
 #include "gfxRect.h"
 #include "gfxTypes.h"
 #include "harfbuzz/hb.h"
-#include "ipc/EnumSerializer.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/RWLock.h"
 #include "mozilla/TypedEnumBits.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/intl/UnicodeScriptCodes.h"
 #include "nsTHashMap.h"
 #include "nsDebug.h"
 #include "nsHashKeys.h"
 #include "nsISupports.h"
 #include "nsStringFwd.h"
 #include "nsTArray.h"
-#include "nsUnicodeScriptCodes.h"
 #include "nscore.h"
 
 class FontInfoData;
@@ -56,9 +58,6 @@ namespace fontlist {
 struct Face;
 struct Family;
 }  // namespace fontlist
-namespace gfx {
-struct DeviceColor;
-}
 }  // namespace mozilla
 
 typedef struct gr_face gr_face;
@@ -80,9 +79,9 @@ class gfxCharacterMap : public gfxSparseBitSet {
     --mRefCnt;
     NS_LOG_RELEASE(this, mRefCnt, "gfxCharacterMap");
     if (mRefCnt == 0) {
-      NotifyReleased();
-      // |this| has been deleted.
-      return 0;
+      // Because we have a raw pointer in gfxPlatformFontList that we may race
+      // access with, we may not release here.
+      return NotifyMaybeReleased();
     }
     return mRefCnt;
   }
@@ -111,9 +110,9 @@ class gfxCharacterMap : public gfxSparseBitSet {
   bool mShared;
 
  protected:
-  void NotifyReleased();
+  nsrefcnt NotifyMaybeReleased();
 
-  nsAutoRefCnt mRefCnt;
+  mozilla::ThreadSafeAutoRefCnt mRefCnt;
 
  private:
   gfxCharacterMap(const gfxCharacterMap&);
@@ -131,7 +130,7 @@ struct gfxFontFeatureInfo {
 class gfxFontEntry {
  public:
   typedef mozilla::gfx::DrawTarget DrawTarget;
-  typedef mozilla::unicode::Script Script;
+  typedef mozilla::intl::Script Script;
   typedef mozilla::FontWeight FontWeight;
   typedef mozilla::FontSlantStyle FontSlantStyle;
   typedef mozilla::FontStretch FontStretch;
@@ -143,6 +142,10 @@ class gfxFontEntry {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(gfxFontEntry)
 
   explicit gfxFontEntry(const nsACString& aName, bool aIsStandardFace = false);
+
+  gfxFontEntry() = delete;
+  gfxFontEntry(const gfxFontEntry&) = delete;
+  gfxFontEntry& operator=(const gfxFontEntry&) = delete;
 
   // Create a new entry that refers to the same font as this, but without
   // additional state that may have been set up (such as family name).
@@ -188,10 +191,10 @@ class gfxFontEntry {
   // If this is false, we might want to fall back to a different face and
   // possibly apply synthetic styling.
   bool IsNormalStyle() const {
-    return IsUpright() && Weight().Min() <= FontWeight::Normal() &&
-           Weight().Max() >= FontWeight::Normal() &&
-           Stretch().Min() <= FontStretch::Normal() &&
-           Stretch().Max() >= FontStretch::Normal();
+    return IsUpright() && Weight().Min() <= FontWeight::NORMAL &&
+           Weight().Max() >= FontWeight::NORMAL &&
+           Stretch().Min() <= FontStretch::NORMAL &&
+           Stretch().Max() >= FontStretch::NORMAL;
   }
 
   // whether a feature is supported by the font (limited to a small set
@@ -224,15 +227,16 @@ class gfxFontEntry {
 
   inline bool HasCharacter(uint32_t ch) {
     if (mShmemCharacterMap) {
-      return mShmemCharacterMap->test(ch);
+      return GetShmemCharacterMap()->test(ch);
     }
     if (mCharacterMap) {
       if (mShmemFace && TrySetShmemCharacterMap()) {
         // Forget our temporary local copy, now we can use the shared cmap
-        mCharacterMap = nullptr;
-        return mShmemCharacterMap->test(ch);
+        auto* oldCmap = mCharacterMap.exchange(nullptr);
+        NS_IF_RELEASE(oldCmap);
+        return GetShmemCharacterMap()->test(ch);
       }
-      if (mCharacterMap->test(ch)) {
+      if (GetCharacterMap()->test(ch)) {
         return true;
       }
     }
@@ -240,7 +244,7 @@ class gfxFontEntry {
   }
 
   virtual bool SkipDuringSystemFallback() { return false; }
-  nsresult InitializeUVSMap();
+  void EnsureUVSMapInitialized();
   uint16_t GetUVSGlyph(uint32_t aCh, uint32_t aVS);
 
   // All concrete gfxFontEntry subclasses (except gfxUserFontEntry) need
@@ -251,7 +255,7 @@ class gfxFontEntry {
   // can be safely dereferenced.
   virtual nsresult ReadCMAP(FontInfoData* aFontInfoData = nullptr);
 
-  bool TryGetSVGData(gfxFont* aFont);
+  bool TryGetSVGData(const gfxFont* aFont);
   bool HasSVGGlyph(uint32_t aGlyphId);
   bool GetSVGGlyphExtents(DrawTarget* aDrawTarget, uint32_t aGlyphId,
                           gfxFloat aSize, gfxRect* aResult);
@@ -262,14 +266,6 @@ class gfxFontEntry {
   void NotifyGlyphsChanged();
 
   bool TryGetColorGlyphs();
-  bool GetColorLayersInfo(uint32_t aGlyphId,
-                          const mozilla::gfx::DeviceColor& aDefaultColor,
-                          nsTArray<uint16_t>& layerGlyphs,
-                          nsTArray<mozilla::gfx::DeviceColor>& layerColors);
-  bool HasColorLayersForGlyph(uint32_t aGlyphId) {
-    MOZ_ASSERT(mCOLR);
-    return gfxFontUtils::HasColorLayersForGlyph(mCOLR, aGlyphId);
-  }
 
   bool HasColorBitmapTable() {
     if (!mCheckedForColorBitmapTables) {
@@ -323,8 +319,8 @@ class gfxFontEntry {
   // cached instance; but we also don't return already_AddRefed, because
   // the caller may only need to use the font temporarily and doesn't need
   // a strong reference.
-  gfxFont* FindOrMakeFont(const gfxFontStyle* aStyle,
-                          gfxCharacterMap* aUnicodeRangeMap = nullptr);
+  already_AddRefed<gfxFont> FindOrMakeFont(
+      const gfxFontStyle* aStyle, gfxCharacterMap* aUnicodeRangeMap = nullptr);
 
   // Get an existing font table cache entry in aBlob if it has been
   // registered, or return false if not.  Callers must call
@@ -357,11 +353,30 @@ class gfxFontEntry {
   // NOTE that harfbuzz and graphite handle ownership/lifetime of the face
   // object in completely different ways.
 
-  // Get HarfBuzz face corresponding to this font file.
-  // Caller must release with hb_face_destroy() when finished with it,
-  // and the font entry will be notified via ForgetHBFace.
-  hb_face_t* GetHBFace();
-  void ForgetHBFace();
+  // Create a HarfBuzz face corresponding to this font file.
+  // Our reference to the underlying hb_face_t will be released when the
+  // returned AutoHBFace goes out of scope, but the hb_face_t itself may
+  // be kept alive by other references (e.g. if an hb_font_t has been
+  // instantiated for it).
+  class MOZ_STACK_CLASS AutoHBFace {
+   public:
+    explicit AutoHBFace(hb_face_t* aFace) : mFace(aFace) {}
+    ~AutoHBFace() { hb_face_destroy(mFace); }
+
+    operator hb_face_t*() const { return mFace; }
+
+    // Not default-constructible, not copyable.
+    AutoHBFace() = delete;
+    AutoHBFace(const AutoHBFace&) = delete;
+    AutoHBFace& operator=(const AutoHBFace&) = delete;
+
+   private:
+    hb_face_t* mFace;
+  };
+
+  AutoHBFace GetHBFace() {
+    return AutoHBFace(hb_face_create_for_tables(HBGetTable, this, nullptr));
+  }
 
   // Get the sandbox instance that graphite is running in.
   rlbox_sandbox_gr* GetGrSandbox();
@@ -463,24 +478,44 @@ class gfxFontEntry {
   nsCString mName;
   nsCString mFamilyName;
 
-  RefPtr<gfxCharacterMap> mCharacterMap;
+  // These are mutable so that we can take a read lock within a const method.
+  mutable mozilla::RWLock mLock;
+  mutable mozilla::Mutex mFeatureInfoLock;
+
+  mozilla::Atomic<gfxCharacterMap*> mCharacterMap;  // strong ref
+  gfxCharacterMap* GetCharacterMap() const { return mCharacterMap; }
 
   mozilla::fontlist::Face* mShmemFace = nullptr;
-  const SharedBitSet* mShmemCharacterMap = nullptr;
 
-  mozilla::UniquePtr<uint8_t[]> mUVSData;
+  mozilla::Atomic<const SharedBitSet*> mShmemCharacterMap;
+  const SharedBitSet* GetShmemCharacterMap() const {
+    return mShmemCharacterMap;
+  }
+
+  mozilla::Atomic<const uint8_t*> mUVSData;
+  const uint8_t* GetUVSData() const { return mUVSData; }
+
   mozilla::UniquePtr<gfxUserFontData> mUserFontData;
-  mozilla::UniquePtr<gfxSVGGlyphs> mSVGGlyphs;
+
+  mozilla::Atomic<gfxSVGGlyphs*> mSVGGlyphs;
+  gfxSVGGlyphs* GetSVGGlyphs() const { return mSVGGlyphs; }
+
   // list of gfxFonts that are using SVG glyphs
-  nsTArray<gfxFont*> mFontsUsingSVGGlyphs;
+  nsTArray<const gfxFont*> mFontsUsingSVGGlyphs MOZ_GUARDED_BY(mLock);
   nsTArray<gfxFontFeature> mFeatureSettings;
   nsTArray<gfxFontVariation> mVariationSettings;
-  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, bool>> mSupportedFeatures;
-  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, hb_set_t*>> mFeatureInputs;
 
-  // Color Layer font support
-  hb_blob_t* mCOLR = nullptr;
-  hb_blob_t* mCPAL = nullptr;
+  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, bool>> mSupportedFeatures
+      MOZ_GUARDED_BY(mFeatureInfoLock);
+  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, hb_set_t*>> mFeatureInputs
+      MOZ_GUARDED_BY(mFeatureInfoLock);
+
+  // Color Layer font support. These tables are inert once loaded, so we don't
+  // need to hold a lock when reading them.
+  mozilla::Atomic<hb_blob_t*> mCOLR;
+  mozilla::Atomic<hb_blob_t*> mCPAL;
+  hb_blob_t* GetCOLR() const { return mCOLR; }
+  hb_blob_t* GetCPAL() const { return mCPAL; }
 
   // bitvector of substitution space features per script, one each
   // for default and non-default features
@@ -488,13 +523,13 @@ class gfxFontEntry {
   uint32_t
       mNonDefaultSubSpaceFeatures[(int(Script::NUM_SCRIPT_CODES) + 31) / 32];
 
-  uint32_t mUVSOffset = 0;
+  mozilla::Atomic<uint32_t> mUVSOffset;
 
   uint32_t mLanguageOverride = NO_FONT_LANGUAGE_OVERRIDE;
 
-  WeightRange mWeightRange = WeightRange(FontWeight(500));
-  StretchRange mStretchRange = StretchRange(FontStretch::Normal());
-  SlantStyleRange mStyleRange = SlantStyleRange(FontSlantStyle::Normal());
+  WeightRange mWeightRange = WeightRange(FontWeight::FromInt(500));
+  StretchRange mStretchRange = StretchRange(FontStretch::NORMAL);
+  SlantStyleRange mStyleRange = SlantStyleRange(FontSlantStyle::NORMAL);
 
   // Font metrics overrides (as multiples of used font size); negative values
   // indicate no override to be applied.
@@ -544,31 +579,30 @@ class gfxFontEntry {
   bool mStandardFace : 1;
   bool mIgnoreGDEF : 1;
   bool mIgnoreGSUB : 1;
-  bool mSVGInitialized : 1;
-  bool mHasSpaceFeaturesInitialized : 1;
-  bool mHasSpaceFeatures : 1;
-  bool mHasSpaceFeaturesKerning : 1;
-  bool mHasSpaceFeaturesNonKerning : 1;
   bool mSkipDefaultFeatureSpaceCheck : 1;
-  bool mGraphiteSpaceContextualsInitialized : 1;
-  bool mHasGraphiteSpaceContextuals : 1;
-  bool mSpaceGlyphIsInvisible : 1;
-  bool mSpaceGlyphIsInvisibleInitialized : 1;
-  bool mHasGraphiteTables : 1;
-  bool mCheckedForGraphiteTables : 1;
-  bool mHasCmapTable : 1;
-  bool mGrFaceInitialized : 1;
-  bool mCheckedForColorGlyph : 1;
-  bool mCheckedForVariationAxes : 1;
-  bool mHasColorBitmapTable : 1;
-  bool mCheckedForColorBitmapTables : 1;
+
+  mozilla::Atomic<bool> mSVGInitialized;
+  mozilla::Atomic<bool> mHasSpaceFeaturesInitialized;
+  mozilla::Atomic<bool> mHasSpaceFeatures;
+  mozilla::Atomic<bool> mHasSpaceFeaturesKerning;
+  mozilla::Atomic<bool> mHasSpaceFeaturesNonKerning;
+  mozilla::Atomic<bool> mGraphiteSpaceContextualsInitialized;
+  mozilla::Atomic<bool> mHasGraphiteSpaceContextuals;
+  mozilla::Atomic<bool> mSpaceGlyphIsInvisible;
+  mozilla::Atomic<bool> mSpaceGlyphIsInvisibleInitialized;
+  mozilla::Atomic<bool> mHasGraphiteTables;
+  mozilla::Atomic<bool> mCheckedForGraphiteTables;
+  mozilla::Atomic<bool> mHasCmapTable;
+  mozilla::Atomic<bool> mGrFaceInitialized;
+  mozilla::Atomic<bool> mCheckedForColorGlyph;
+  mozilla::Atomic<bool> mCheckedForVariationAxes;
+  mozilla::Atomic<bool> mHasColorBitmapTable;
+  mozilla::Atomic<bool> mCheckedForColorBitmapTables;
 
  protected:
   friend class gfxPlatformFontList;
   friend class gfxFontFamily;
   friend class gfxUserFontEntry;
-
-  gfxFontEntry();
 
   // Protected destructor, to discourage deletion outside of Release():
   virtual ~gfxFontEntry();
@@ -590,7 +624,7 @@ class gfxFontEntry {
   // Helper for HasTrackingTable; check/parse the table and cache pointers
   // to the subtables we need. Returns false on failure, in which case the
   // table is unusable.
-  bool ParseTrakTable();
+  bool ParseTrakTable() MOZ_REQUIRES(mLock);
 
   // lookup the cmap in cached font data
   virtual already_AddRefed<gfxCharacterMap> GetCMAPFromFontInfo(
@@ -619,7 +653,7 @@ class gfxFontEntry {
   // in its destructor. The font entry has only this non-owning reference to
   // the face; when the face is deleted, it will tell the font entry to forget
   // it, so that a new face will be created next time it is needed.
-  hb_face_t* mHBFace = nullptr;
+  mozilla::Atomic<hb_face_t*> mHBFace;
 
   static hb_blob_t* HBGetTable(hb_face_t* face, uint32_t aTag, void* aUserData);
 
@@ -628,6 +662,7 @@ class gfxFontEntry {
 
   // All libGraphite functionality is sandboxed in an rlbox sandbox. This
   // contains data for the sandbox instance.
+  // Currently graphite shaping is only supported on the main thread.
   struct GrSandboxData;
   GrSandboxData* mSandboxData = nullptr;
 
@@ -639,14 +674,16 @@ class gfxFontEntry {
 
   // For AAT font, a strong reference to the 'trak' table (if present).
   hb_blob_t* const kTrakTableUninitialized = (hb_blob_t*)(intptr_t(-1));
-  hb_blob_t* mTrakTable = kTrakTableUninitialized;
+  mozilla::Atomic<hb_blob_t*> mTrakTable;
+  hb_blob_t* GetTrakTable() const { return mTrakTable; }
   bool TrakTableInitialized() const {
     return mTrakTable != kTrakTableUninitialized;
   }
 
   // Cached pointers to tables within 'trak', initialized by ParseTrakTable.
-  const mozilla::AutoSwap_PRInt16* mTrakValues;
-  const mozilla::AutoSwap_PRInt32* mTrakSizeTable;
+  // This data is inert once loaded, so locking is not required to read it.
+  const mozilla::AutoSwap_PRInt16* mTrakValues = nullptr;
+  const mozilla::AutoSwap_PRInt32* mTrakSizeTable = nullptr;
 
   // number of current users of this entry's mGrFace
   nsrefcnt mGrFaceRefCnt = 0;
@@ -669,7 +706,7 @@ class gfxFontEntry {
   // kInvalidUPEM for non-sfnt font formats)
   uint16_t mUnitsPerEm = 0;
 
-  uint16_t mNumTrakSizes;
+  uint16_t mNumTrakSizes = 0;
 
  private:
   /**
@@ -760,10 +797,9 @@ class gfxFontEntry {
     hb_blob_t* mBlob;
   };
 
-  mozilla::UniquePtr<nsTHashtable<FontTableHashEntry>> mFontTableCache;
-
-  gfxFontEntry(const gfxFontEntry&);
-  gfxFontEntry& operator=(const gfxFontEntry&);
+  using FontTableCache = nsTHashtable<FontTableHashEntry>;
+  mozilla::Atomic<FontTableCache*> mFontTableCache;
+  FontTableCache* GetFontTableCache() const { return mFontTableCache; }
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(gfxFontEntry::RangeFlags)
@@ -806,14 +842,6 @@ struct GlobalFontMatch {
   double mMatchDistance = INFINITY;  // metric indicating closest match
 };
 
-// The actual FontVisibility enum is defined in gfxTypes.h
-namespace IPC {
-template <>
-struct ParamTraits<FontVisibility>
-    : public ContiguousEnumSerializer<FontVisibility, FontVisibility::Unknown,
-                                      FontVisibility::Count> {};
-}  // namespace IPC
-
 class gfxFontFamily {
  public:
   // Used by stylo
@@ -821,17 +849,12 @@ class gfxFontFamily {
 
   gfxFontFamily(const nsACString& aName, FontVisibility aVisibility)
       : mName(aName),
+        mLock("gfxFontFamily lock"),
         mVisibility(aVisibility),
-        mOtherFamilyNamesInitialized(false),
-        mHasOtherFamilyNames(false),
-        mFaceNamesInitialized(false),
-        mHasStyles(false),
         mIsSimpleFamily(false),
         mIsBadUnderlineFamily(false),
-        mFamilyCharacterMapInitialized(false),
         mSkipDefaultFeatureSpaceCheck(false),
-        mCheckForFallbackFaces(false),
-        mCheckedForLegacyFamilyNames(false) {}
+        mCheckForFallbackFaces(false) {}
 
   const nsCString& Name() const { return mName; }
 
@@ -844,11 +867,32 @@ class gfxFontFamily {
   // faces in a large family into separate "styled families" because of
   // GDI's 4-faces-per-family limitation). If found, the styled family
   // name will be added to the font list's "other family names" table.
+  // Note that the caller must already hold the gfxPlatformFontList lock.
   bool CheckForLegacyFamilyNames(gfxPlatformFontList* aFontList);
 
-  nsTArray<RefPtr<gfxFontEntry>>& GetFontList() { return mAvailableFonts; }
+  // Callers must hold a read-lock for as long as they're using the list.
+  const nsTArray<RefPtr<gfxFontEntry>>& GetFontList()
+      MOZ_REQUIRES_SHARED(mLock) {
+    return mAvailableFonts;
+  }
+  void ReadLock() MOZ_ACQUIRE_SHARED(mLock) { mLock.ReadLock(); }
+  void ReadUnlock() MOZ_RELEASE_SHARED(mLock) { mLock.ReadUnlock(); }
+
+  uint32_t FontListLength() const {
+    mozilla::AutoReadLock lock(mLock);
+    return mAvailableFonts.Length();
+  }
 
   void AddFontEntry(RefPtr<gfxFontEntry> aFontEntry) {
+    mozilla::AutoWriteLock lock(mLock);
+    AddFontEntryLocked(aFontEntry);
+  }
+
+  void AddFontEntryLocked(RefPtr<gfxFontEntry> aFontEntry) MOZ_REQUIRES(mLock) {
+    // Avoid potentially duplicating entries.
+    if (mAvailableFonts.Contains(aFontEntry)) {
+      return;
+    }
     // bug 589682 - set the IgnoreGDEF flag on entries for Italic faces
     // of Times New Roman, because of buggy table in those fonts
     if (aFontEntry->IsItalic() && !aFontEntry->IsUserFont() &&
@@ -873,8 +917,12 @@ class gfxFontFamily {
   }
 
   // note that the styles for this family have been added
-  bool HasStyles() { return mHasStyles; }
+  bool HasStyles() const { return mHasStyles; }
   void SetHasStyles(bool aHasStyles) { mHasStyles = aHasStyles; }
+
+  void SetCheckedForLegacyFamilyNames(bool aChecked) {
+    mCheckedForLegacyFamilyNames = aChecked;
+  }
 
   // choose a specific face to match a style using CSS font matching
   // rules (weight matching occurs here).  may return a face that doesn't
@@ -886,8 +934,10 @@ class gfxFontFamily {
                                     nsTArray<gfxFontEntry*>& aFontEntryList,
                                     bool aIgnoreSizeTolerance = false);
 
-  // checks for a matching font within the family
-  // used as part of the font fallback process
+  // Checks for a matching font within the family; used as part of the font
+  // fallback process.
+  // Note that when this is called, the caller must already be holding the
+  // gfxPlatformFontList lock.
   void FindFontForChar(GlobalFontMatch* aMatchData);
 
   // checks all fonts for a matching font within the family
@@ -899,36 +949,52 @@ class gfxFontFamily {
   // set when other family names have been read in
   void SetOtherFamilyNamesInitialized() { mOtherFamilyNamesInitialized = true; }
 
-  // read in other localized family names, fullnames and Postscript names
-  // for all faces and append to lookup tables
+  // Read in other localized family names, fullnames and Postscript names
+  // for all faces and append to lookup tables.
+  // Note that when this is called, the caller must already be holding the
+  // gfxPlatformFontList lock.
   virtual void ReadFaceNames(gfxPlatformFontList* aPlatformFontList,
                              bool aNeedFullnamePostscriptNames,
                              FontInfoData* aFontInfoData = nullptr);
 
-  // find faces belonging to this family (platform implementations override
-  // this; should be made pure virtual once all subclasses have been updated)
-  virtual void FindStyleVariations(FontInfoData* aFontInfoData = nullptr) {}
+  // Find faces belonging to this family (platform implementations override).
+  // This is a no-op in cases where the family is explicitly populated by other
+  // means, rather than being asked to find its faces via system API.
+  virtual void FindStyleVariationsLocked(FontInfoData* aFontInfoData = nullptr)
+      MOZ_REQUIRES(mLock){};
+  void FindStyleVariations(FontInfoData* aFontInfoData = nullptr) {
+    if (mHasStyles) {
+      return;
+    }
+    mozilla::AutoWriteLock lock(mLock);
+    FindStyleVariationsLocked(aFontInfoData);
+  }
 
   // search for a specific face using the Postscript name
-  gfxFontEntry* FindFont(const nsACString& aPostscriptName);
+  gfxFontEntry* FindFont(const nsACString& aFontName,
+                         const nsCStringComparator& aCmp) const;
 
-  // read in cmaps for all the faces
+  // Read in cmaps for all the faces.
+  // Note that when this is called, the caller must already be holding the
+  // gfxPlatformFontList lock.
   void ReadAllCMAPs(FontInfoData* aFontInfoData = nullptr);
 
   bool TestCharacterMap(uint32_t aCh) {
     if (!mFamilyCharacterMapInitialized) {
       ReadAllCMAPs();
     }
+    mozilla::AutoReadLock lock(mLock);
     return mFamilyCharacterMap.test(aCh);
   }
 
-  void ResetCharacterMap() {
+  void ResetCharacterMap() MOZ_REQUIRES(mLock) {
     mFamilyCharacterMap.reset();
     mFamilyCharacterMapInitialized = false;
   }
 
   // mark this family as being in the "bad" underline offset blocklist
   void SetBadUnderlineFamily() {
+    mozilla::AutoWriteLock lock(mLock);
     mIsBadUnderlineFamily = true;
     if (mHasStyles) {
       SetBadUnderlineFonts();
@@ -941,12 +1007,12 @@ class gfxFontFamily {
   bool CheckForFallbackFaces() const { return mCheckForFallbackFaces; }
 
   // sort available fonts to put preferred (standard) faces towards the end
-  void SortAvailableFonts();
+  void SortAvailableFonts() MOZ_REQUIRES(mLock);
 
   // check whether the family fits into the simple 4-face model,
   // so we can use simplified style-matching;
   // if so set the mIsSimpleFamily flag (defaults to False before we've checked)
-  void CheckForSimpleFamily();
+  void CheckForSimpleFamily() MOZ_REQUIRES(mLock);
 
   // For memory reporter
   virtual void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
@@ -989,31 +1055,33 @@ class gfxFontFamily {
                                    bool useFullName = false);
 
   // set whether this font family is in "bad" underline offset blocklist.
-  void SetBadUnderlineFonts() {
-    uint32_t i, numFonts = mAvailableFonts.Length();
-    for (i = 0; i < numFonts; i++) {
-      if (mAvailableFonts[i]) {
-        mAvailableFonts[i]->mIsBadUnderlineFont = true;
+  void SetBadUnderlineFonts() MOZ_REQUIRES(mLock) {
+    for (auto& f : mAvailableFonts) {
+      if (f) {
+        f->mIsBadUnderlineFont = true;
       }
     }
   }
 
   nsCString mName;
-  nsTArray<RefPtr<gfxFontEntry>> mAvailableFonts;
-  gfxSparseBitSet mFamilyCharacterMap;
+  nsTArray<RefPtr<gfxFontEntry>> mAvailableFonts MOZ_GUARDED_BY(mLock);
+  gfxSparseBitSet mFamilyCharacterMap MOZ_GUARDED_BY(mLock);
+
+  mutable mozilla::RWLock mLock;
 
   FontVisibility mVisibility;
 
-  bool mOtherFamilyNamesInitialized : 1;
-  bool mHasOtherFamilyNames : 1;
-  bool mFaceNamesInitialized : 1;
-  bool mHasStyles : 1;
-  bool mIsSimpleFamily : 1;
+  mozilla::Atomic<bool> mOtherFamilyNamesInitialized;
+  mozilla::Atomic<bool> mFaceNamesInitialized;
+  mozilla::Atomic<bool> mHasStyles;
+  mozilla::Atomic<bool> mFamilyCharacterMapInitialized;
+  mozilla::Atomic<bool> mCheckedForLegacyFamilyNames;
+  mozilla::Atomic<bool> mHasOtherFamilyNames;
+
+  bool mIsSimpleFamily : 1 MOZ_GUARDED_BY(mLock);
   bool mIsBadUnderlineFamily : 1;
-  bool mFamilyCharacterMapInitialized : 1;
   bool mSkipDefaultFeatureSpaceCheck : 1;
   bool mCheckForFallbackFaces : 1;  // check other faces for character
-  bool mCheckedForLegacyFamilyNames : 1;
 
   enum {
     // for "simple" families, the faces are stored in mAvailableFonts

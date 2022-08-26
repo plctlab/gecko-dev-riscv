@@ -7,18 +7,18 @@
 
 var EXPORTED_SYMBOLS = ["WebSocketConnection"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Log: "chrome://remote/content/shared/Log.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   WebSocketTransport: "chrome://remote/content/server/WebSocketTransport.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "logger", () => Log.get());
+XPCOMUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
 
 class WebSocketConnection {
   /**
@@ -28,14 +28,18 @@ class WebSocketConnection {
    *     Reference to the httpd.js's connection needed for clean-up.
    */
   constructor(webSocket, httpdConnection) {
-    this.id = Services.uuid.generateUUID().toString();
+    this.id = Services.uuid
+      .generateUUID()
+      .toString()
+      .slice(1, -1);
+
     this.httpdConnection = httpdConnection;
 
-    this.transport = new WebSocketTransport(webSocket);
+    this.transport = new lazy.WebSocketTransport(webSocket);
     this.transport.hooks = this;
     this.transport.ready();
 
-    logger.debug(`${this.constructor.name} ${this.id} accepted`);
+    lazy.logger.debug(`${this.constructor.name} ${this.id} accepted`);
   }
 
   /**
@@ -109,7 +113,7 @@ class WebSocketConnection {
    * Called by the `transport` when the connection is closed.
    */
   onClosed(status) {
-    logger.debug(`${this.constructor.name} ${this.id} closed`);
+    lazy.logger.debug(`${this.constructor.name} ${this.id} closed`);
   }
 
   /**

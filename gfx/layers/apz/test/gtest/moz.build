@@ -7,7 +7,8 @@
 UNIFIED_SOURCES += [
     "APZTestAccess.cpp",
     "APZTestCommon.cpp",
-    "InternalHitTester.cpp",
+    "MockHitTester.cpp",
+    "TestAxisLock.cpp",
     "TestBasic.cpp",
     "TestEventRegions.cpp",
     "TestEventResult.cpp",
@@ -35,6 +36,3 @@ LOCAL_INCLUDES += [
 ]
 
 FINAL_LIBRARY = "xul-gtest"
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]

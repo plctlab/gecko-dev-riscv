@@ -1,6 +1,16 @@
 "use strict";
 
 add_task(async function() {
+  // The startupCache is removed whenever the buildid changes by code that runs
+  // during Firefox startup but not during xpcshell startup, remove it by hand
+  // before running this test to avoid failures with --conditioned-profile
+  let file = PathUtils.join(
+    Services.dirsvc.get("ProfLD", Ci.nsIFile).path,
+    "startupCache",
+    "webext.sc.lz4"
+  );
+  await IOUtils.remove(file, { ignoreAbsent: true });
+
   const acceptedExtensionIdsPref =
     "extensions.geckoProfiler.acceptedExtensionIds";
   Services.prefs.setCharPref(
@@ -40,12 +50,14 @@ add_task(async function() {
   // Check that the list of available values in the ProfilerFeature enum
   // matches the list of features supported by the profiler.
   for (const feature of allFeaturesAcceptedByProfiler) {
+    // If this fails, check the lists in {,Base}ProfilerState.h and geckoProfiler.json.
     ok(
       acceptedFeatures.includes(feature),
       `The schema of the geckoProfiler.start() method should accept the "${feature}" feature.`
     );
   }
   for (const feature of acceptedFeatures) {
+    // If this fails, check the lists in {,Base}ProfilerState.h and geckoProfiler.json.
     ok(
       // Bug 1594566 - ignore Responsiveness until the extension is updated
       allFeaturesAcceptedByProfiler.includes(feature) ||

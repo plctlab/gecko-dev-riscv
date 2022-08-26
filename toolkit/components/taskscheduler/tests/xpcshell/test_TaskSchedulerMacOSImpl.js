@@ -8,10 +8,6 @@
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm"
-);
 
 const { updateAppInfo } = ChromeUtils.import(
   "resource://testing-common/AppInfo.jsm"
@@ -21,7 +17,7 @@ updateAppInfo();
 const { TaskScheduler } = ChromeUtils.import(
   "resource://gre/modules/TaskScheduler.jsm"
 );
-const { _TaskSchedulerMacOSImpl: MacOSImpl } = ChromeUtils.import(
+const { MacOSImpl } = ChromeUtils.import(
   "resource://gre/modules/TaskSchedulerMacOSImpl.jsm"
 );
 

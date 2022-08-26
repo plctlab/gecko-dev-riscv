@@ -7,12 +7,12 @@
 var { DelayedInit } = ChromeUtils.import(
   "resource://gre/modules/DelayedInit.jsm"
 );
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  Blocklist: "resource://gre/modules/Blocklist.jsm",
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
   GeckoViewActorManager: "resource://gre/modules/GeckoViewActorManager.jsm",
@@ -27,6 +27,12 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 
 XPCOMUtils.defineLazyGetter(this, "WindowEventDispatcher", () =>
   EventDispatcher.for(window)
+);
+
+XPCOMUtils.defineLazyScriptGetter(
+  this,
+  "PrintUtils",
+  "chrome://global/content/printUtils.js"
 );
 
 // This file assumes `warn` and `debug` are imported into scope
@@ -114,6 +120,10 @@ var ModuleManager = {
     });
 
     MODULES_INIT_PROBE.finish();
+  },
+
+  onNewPrintWindow(aParams) {
+    return PrintUtils.handleStaticCloneCreatedForPrint(aParams.openWindowInfo);
   },
 
   get window() {
@@ -467,7 +477,12 @@ class ModuleInfo {
       throw new Error(`No impl for message: ${aMessage.name}.`);
     }
 
-    this._impl.receiveMessage(aMessage);
+    try {
+      this._impl.receiveMessage(aMessage);
+    } catch (error) {
+      warn`this._impl.receiveMessage failed ${aMessage.name}`;
+      throw error;
+    }
   }
 
   onContentModuleLoaded() {
@@ -492,7 +507,10 @@ class ModuleInfo {
 function createBrowser() {
   const browser = (window.browser = document.createXULElement("browser"));
   // Identify this `<browser>` element uniquely to Marionette, devtools, etc.
-  browser.permanentKey = {};
+  // Use the JSM global to create the permanentKey, so that if the
+  // permanentKey is held by something after this window closes, it
+  // doesn't keep the window alive. See also Bug 1501789.
+  browser.permanentKey = new (Cu.getGlobalForObject(Services).Object)();
 
   browser.setAttribute("nodefaultsrc", "true");
   browser.setAttribute("type", "content");
@@ -502,6 +520,14 @@ function createBrowser() {
   browser.setAttribute("remote", "true");
   browser.setAttribute("remoteType", E10SUtils.DEFAULT_REMOTE_TYPE);
   browser.setAttribute("messagemanagergroup", "browsers");
+
+  // This is only needed for mochitests, so that they honor the
+  // prefers-color-scheme.content-override pref. GeckoView doesn't set this
+  // pref to anything other than the default value otherwise.
+  browser.setAttribute(
+    "style",
+    "color-scheme: env(-moz-content-preferred-color-scheme)"
+  );
 
   return browser;
 }
@@ -515,12 +541,6 @@ function startup() {
 
   const browser = createBrowser();
   ModuleManager.init(browser, [
-    {
-      name: "ExtensionContent",
-      onInit: {
-        frameScript: "chrome://geckoview/content/extension-content.js",
-      },
-    },
     {
       name: "GeckoViewContent",
       onInit: {
@@ -538,6 +558,7 @@ function startup() {
               },
             },
             allFrames: true,
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -562,6 +583,7 @@ function startup() {
               },
             },
             allFrames: true,
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -595,6 +617,7 @@ function startup() {
                 pageshow: { capture: false, mozSystemGroup: true },
               },
             },
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -604,12 +627,16 @@ function startup() {
       onEnable: {
         actors: {
           ScrollDelegate: {
+            parent: {
+              moduleURI: "resource:///actors/ScrollDelegateParent.jsm",
+            },
             child: {
               moduleURI: "resource:///actors/ScrollDelegateChild.jsm",
               events: {
                 mozvisualscroll: { mozSystemGroup: true },
               },
             },
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -617,8 +644,12 @@ function startup() {
     {
       name: "GeckoViewSelectionAction",
       onEnable: {
+        resource: "resource://gre/modules/GeckoViewSelectionAction.jsm",
         actors: {
           SelectionActionDelegate: {
+            parent: {
+              moduleURI: "resource:///actors/SelectionActionDelegateParent.jsm",
+            },
             child: {
               moduleURI: "resource:///actors/SelectionActionDelegateChild.jsm",
               events: {
@@ -628,6 +659,7 @@ function startup() {
               },
             },
             allFrames: true,
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -668,6 +700,9 @@ function startup() {
       onInit: {
         actors: {
           GeckoViewAutoFill: {
+            parent: {
+              moduleURI: "resource:///actors/GeckoViewAutoFillParent.jsm",
+            },
             child: {
               moduleURI: "resource:///actors/GeckoViewAutoFillChild.jsm",
               events: {
@@ -695,10 +730,11 @@ function startup() {
                   mozSystemGroup: true,
                   capture: false,
                 },
-                "PasswordManager:onFormSubmit": {},
+                "PasswordManager:ShowDoorhanger": {},
               },
             },
             allFrames: true,
+            messageManagerGroups: ["browsers"],
           },
         },
       },
@@ -707,7 +743,22 @@ function startup() {
       name: "GeckoViewMediaControl",
       onEnable: {
         resource: "resource://gre/modules/GeckoViewMediaControl.jsm",
-        frameScript: "chrome://geckoview/content/GeckoViewMediaControlChild.js",
+        actors: {
+          MediaControlDelegate: {
+            parent: {
+              moduleURI: "resource:///actors/MediaControlDelegateParent.jsm",
+            },
+            child: {
+              moduleURI: "resource:///actors/MediaControlDelegateChild.jsm",
+              events: {
+                "MozDOMFullscreen:Entered": {},
+                "MozDOMFullscreen:Exited": {},
+              },
+            },
+            allFrames: true,
+            messageManagerGroups: ["browsers"],
+          },
+        },
       },
     },
     {
@@ -726,6 +777,24 @@ function startup() {
               },
             },
             allFrames: true,
+            messageManagerGroups: ["browsers"],
+          },
+        },
+      },
+    },
+    {
+      name: "GeckoViewPrompter",
+      onInit: {
+        actors: {
+          GeckoViewPrompter: {
+            parent: {
+              moduleURI: "resource:///actors/GeckoViewPrompterParent.jsm",
+            },
+            child: {
+              moduleURI: "resource:///actors/GeckoViewPrompterChild.jsm",
+            },
+            allFrames: true,
+            includeChrome: true,
           },
         },
       },
@@ -749,6 +818,10 @@ function startup() {
 
   // Allows actors to access ModuleManager.
   window.moduleManager = ModuleManager;
+
+  window.prompts = () => {
+    return window.ModuleManager.getActor("GeckoViewPrompter").getPrompts();
+  };
 
   Services.tm.dispatchToMainThread(() => {
     // This should always be the first thing we do here - any additional delayed
@@ -780,6 +853,18 @@ function startup() {
       SafeBrowsing.init();
     });
 
+    InitLater(() => {
+      // It's enough to run this once to set up FOG.
+      // (See also bug 1730026.)
+      Services.fog.registerCustomPings();
+    });
+
+    InitLater(() => {
+      // Initialize the blocklist module.
+      // TODO bug 1730026: this runs too often. It should run once.
+      Blocklist.loadBlocklistAsync();
+    });
+
     // This should always go last, since the idle tasks (except for the ones with
     // timeouts) should execute in order. Note that this observer notification is
     // not guaranteed to fire, since the window could close before we get here.
@@ -793,18 +878,6 @@ function startup() {
         "browser-idle-startup-tasks-finished"
       )
     );
-
-    InitLater(() => {
-      // This lets Marionette and the Remote Agent (used for our CDP and the
-      // upcoming WebDriver BiDi implementation) start listening (when enabled).
-      // Both GeckoView and these two remote protocols do most of their
-      // initialization in "profile-after-change", and there is no order enforced
-      // between them.  Therefore we defer asking both components to startup
-      // until after all "profile-after-change" handlers (including this one)
-      // have completed.
-      Services.obs.notifyObservers(null, "marionette-startup-requested");
-      Services.obs.notifyObservers(null, "remote-startup-requested");
-    });
   });
 
   // Move focus to the content window at the end of startup,

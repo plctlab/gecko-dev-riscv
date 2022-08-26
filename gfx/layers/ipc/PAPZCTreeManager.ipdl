@@ -20,6 +20,7 @@ using mozilla::layers::ScrollableLayerGuid::ViewID from "mozilla/layers/Scrollab
 using mozilla::layers::TouchBehaviorFlags from "mozilla/layers/LayersTypes.h";
 using mozilla::layers::AsyncDragMetrics from "mozilla/layers/AsyncDragMetrics.h";
 using mozilla::layers::GeckoContentController_TapType from "mozilla/layers/GeckoContentControllerTypes.h";
+using mozilla::layers::APZHandledResult from "mozilla/layers/APZInputBridge.h";
 using class mozilla::layers::KeyboardMap from "mozilla/layers/KeyboardMap.h";
 using mozilla::wr::RenderRoot from "mozilla/webrender/WebRenderTypes.h";
 
@@ -38,6 +39,7 @@ namespace layers {
  * lives in the main thread of the main or the content process. APZCTreeManagerParent
  * and APZCTreeManagerChild implement this protocol.
  */
+[ManualDealloc]
 protocol PAPZCTreeManager
 {
 manager PCompositorBridge;
@@ -81,6 +83,8 @@ child:
                            Modifiers aModifiers);
 
   async CancelAutoscroll(ViewID aScrollId);
+
+  async NotifyScaleGestureComplete(ViewID aScrollId, float aScale);
 };
 
 } // namespace gfx

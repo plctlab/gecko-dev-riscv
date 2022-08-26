@@ -6,9 +6,11 @@
 
 #include "mozilla/glean/bindings/Rate.h"
 
+#include "jsapi.h"
 #include "nsString.h"
 #include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/glean/bindings/Common.h"
 #include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
 #include "nsIClassInfoImpl.h"
@@ -19,32 +21,24 @@ namespace impl {
 
 void RateMetric::AddToNumerator(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
-  if (scalarId) {
+  if (scalarId && aAmount >= 0) {
     Telemetry::ScalarAdd(scalarId.extract(), u"numerator"_ns, aAmount);
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_rate_add_to_numerator(mId, aAmount);
-#endif
 }
 
 void RateMetric::AddToDenominator(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
-  if (scalarId) {
+  if (scalarId && aAmount >= 0) {
     Telemetry::ScalarAdd(scalarId.extract(), u"denominator"_ns, aAmount);
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_rate_add_to_denominator(mId, aAmount);
-#endif
 }
 
 Result<Maybe<std::pair<int32_t, int32_t>>, nsCString> RateMetric::TestGetValue(
     const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<std::pair<int32_t, int32_t>>();
-#else
   nsCString err;
-  if (fog_rate_test_get_error(mId, &aPingName, &err)) {
+  if (fog_rate_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_rate_test_has_value(mId, &aPingName)) {
@@ -54,7 +48,6 @@ Result<Maybe<std::pair<int32_t, int32_t>>, nsCString> RateMetric::TestGetValue(
   int32_t den = 0;
   fog_rate_test_get_value(mId, &aPingName, &num, &den);
   return Some(std::make_pair(num, den));
-#endif
 }
 
 }  // namespace impl
@@ -76,7 +69,7 @@ GleanRate::AddToDenominator(int32_t aAmount) {
 
 NS_IMETHODIMP
 GleanRate::TestGetValue(const nsACString& aPingName, JSContext* aCx,
-                        JS::MutableHandleValue aResult) {
+                        JS::MutableHandle<JS::Value> aResult) {
   auto result = mRate.TestGetValue(aPingName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());
@@ -89,7 +82,7 @@ GleanRate::TestGetValue(const nsACString& aPingName, JSContext* aCx,
     aResult.set(JS::UndefinedValue());
   } else {
     // Build return value of the form: { numerator: n, denominator: d }
-    JS::RootedObject root(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> root(aCx, JS_NewPlainObject(aCx));
     if (!root) {
       return NS_ERROR_FAILURE;
     }

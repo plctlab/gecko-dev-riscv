@@ -127,6 +127,7 @@ add_task(async function() {
     "Should increase float numbers correctly"
   );
 
+  widget.destroy();
   triggerKey = null;
 });
 
@@ -140,7 +141,7 @@ function triggerKey(key, modifier) {
     target: input,
     keyCode: key,
     [modifier]: true,
-    preventDefault: function() {},
+    preventDefault() {},
   });
 }
 

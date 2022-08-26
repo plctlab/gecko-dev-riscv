@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FormHistory",
   "resource://gre/modules/FormHistory.jsm"
 );
@@ -23,11 +23,11 @@ FormHistoryStartup.prototype = {
   observe(subject, topic, data) {
     switch (topic) {
       case "nsPref:changed":
-        FormHistory.updatePrefs();
+        lazy.FormHistory.updatePrefs();
         break;
       case "idle-daily":
       case "formhistory-expire-now":
-        FormHistory.expireOldEntries();
+        lazy.FormHistory.expireOldEntries();
         break;
       case "profile-after-change":
         this.init();
@@ -97,7 +97,7 @@ FormHistoryStartup.prototype = {
           },
         };
 
-        query = FormHistory.getAutoCompleteResults(
+        query = lazy.FormHistory.getAutoCompleteResults(
           searchString,
           params,
           processResults
@@ -108,7 +108,7 @@ FormHistoryStartup.prototype = {
 
       case "FormHistory:RemoveEntry": {
         let { inputName, value, guid } = message.data;
-        FormHistory.update({
+        lazy.FormHistory.update({
           op: "remove",
           fieldname: inputName,
           value,

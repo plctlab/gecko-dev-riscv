@@ -80,7 +80,7 @@ class ImageBridgeParent final : public PImageBridgeParent,
                                      const uint64_t& aFwdTransactionId);
 
   PTextureParent* AllocPTextureParent(
-      const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+      const SurfaceDescriptor& aSharedData, ReadLockDescriptor& aReadLock,
       const LayersBackend& aLayersBackend, const TextureFlags& aFlags,
       const uint64_t& aSerial,
       const wr::MaybeExternalImageId& aExternalImageId);
@@ -102,11 +102,9 @@ class ImageBridgeParent final : public PImageBridgeParent,
 
   // IShmemAllocator
 
-  bool AllocShmem(size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-                  ipc::Shmem* aShmem) override;
+  bool AllocShmem(size_t aSize, ipc::Shmem* aShmem) override;
 
-  bool AllocUnsafeShmem(size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-                        ipc::Shmem* aShmem) override;
+  bool AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) override;
 
   bool DeallocShmem(ipc::Shmem& aShmem) override;
 

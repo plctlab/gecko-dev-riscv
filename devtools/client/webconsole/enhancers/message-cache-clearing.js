@@ -14,10 +14,17 @@ const { MESSAGES_CLEAR } = require("devtools/client/webconsole/constants");
 function enableMessagesCacheClearing(webConsoleUI) {
   return next => (reducer, initialState, enhancer) => {
     function messagesCacheClearingEnhancer(state, action) {
+      const storeHadMessages =
+        state?.messages?.mutableMessagesById &&
+        state.messages.mutableMessagesById.size > 0;
       state = reducer(state, action);
 
-      if (webConsoleUI && action.type === MESSAGES_CLEAR) {
+      if (storeHadMessages && webConsoleUI && action.type === MESSAGES_CLEAR) {
         webConsoleUI.clearMessagesCache();
+
+        // cleans up all the network data provider internal state
+        webConsoleUI.networkDataProvider?.destroy();
+
         if (webConsoleUI.hud?.toolbox) {
           webConsoleUI.hud.toolbox.setErrorCount(0);
         }

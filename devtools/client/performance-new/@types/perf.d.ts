@@ -14,7 +14,12 @@ import {
 export interface PanelWindow {
   gToolbox?: any;
   gStore?: Store;
-  gInit(perfFront: PerfFront, pageContext: PageContext): Promise<void>;
+  gInit(
+    perfFront: PerfFront,
+    traits: RootTraits,
+    pageContext: PageContext,
+    openAboutProfiling: () => void
+  ): Promise<void>;
   gDestroy(): void;
   gIsPanelDestroyed?: boolean;
 }
@@ -39,6 +44,13 @@ export interface Toolbox {
  */
 export interface Commands {
   client: any;
+  targetCommand: {
+    targetFront: {
+      getTrait: (
+        traitName: string
+      ) => unknown;
+    };
+  };
 }
 
 /**
@@ -54,7 +66,6 @@ export interface PerfFront {
   ) => Promise<[number[], number[], number[]]>;
   isActive: () => Promise<boolean>;
   isSupportedPlatform: () => Promise<boolean>;
-  isLockedForPrivateBrowsing: () => Promise<boolean>;
   on: (type: string, listener: () => void) => void;
   off: (type: string, listener: () => void) => void;
   destroy: () => void;
@@ -74,6 +85,10 @@ export interface PreferenceFront {
   setIntPref: (prefName: string, value: number) => Promise<void>;
 }
 
+export interface RootTraits {
+  // There are no traits used by the performance front end at the moment.
+}
+
 export type RecordingState =
   // The initial state before we've queried the PerfActor
   | "not-yet-known"
@@ -87,9 +102,7 @@ export type RecordingState =
   | "request-to-stop-profiler"
   // The profiler notified us that our request to start it actually started
   // it, or it was already started.
-  | "recording"
-  // Profiling is not available when in private browsing mode.
-  | "locked-by-private-browsing";
+  | "recording";
 
 // We are currently migrating to a new UX workflow with about:profiling.
 // This type provides an easy way to change the implementation based
@@ -242,19 +255,12 @@ export type Action =
   | {
       type: "REPORT_PROFILER_READY";
       isActive: boolean;
-      isLockedForPrivateBrowsing: boolean;
     }
   | {
       type: "REPORT_PROFILER_STARTED";
     }
   | {
       type: "REPORT_PROFILER_STOPPED";
-    }
-  | {
-      type: "REPORT_PRIVATE_BROWSING_STARTED";
-    }
-  | {
-      type: "REPORT_PRIVATE_BROWSING_STOPPED";
     }
   | {
       type: "REQUESTING_TO_START_RECORDING";
@@ -372,10 +378,17 @@ export interface PerformancePref {
    */
   UIBaseUrl: "devtools.performance.recording.ui-base-url";
   /**
-   * This pref allows tests to override the /from-addon in order to more easily
+   * This pref allows tests to override the /from-browser in order to more easily
    * test the profile injection mechanism.
    */
   UIBaseUrlPathPref: "devtools.performance.recording.ui-base-url-path";
+  /**
+   * This controls whether we enable the active tab view when capturing in web
+   * developer preset.
+   * We're not enabling the active-tab view in all environments until we
+   * iron out all its issues.
+   */
+  UIEnableActiveTabView: "devtools.performance.recording.active-tab-view.enabled";
   /**
    * The profiler popup has some introductory text explaining what it is the first
    * time that you open it. After that, it is not displayed by default.
@@ -421,6 +434,7 @@ export interface ScaleFunctions {
   fromFractionToValue: NumberScaler;
   fromValueToFraction: NumberScaler;
   fromFractionToSingleDigitValue: NumberScaler;
+  steps: number;
 }
 
 /**
@@ -430,40 +444,107 @@ export interface ScaleFunctions {
 export type ProfilerViewMode = "full" | "active-tab" | "origins";
 
 export interface PresetDefinition {
-  label: string;
-  description: string;
   entries: number;
   interval: number;
   features: string[];
   threads: string[];
   duration: number;
   profilerViewMode?: ProfilerViewMode;
+  l10nIds: {
+    popup: {
+      label: string;
+      description: string;
+    };
+    devtools: {
+      label: string;
+      description: string;
+    };
+  };
 }
 
 export interface Presets {
   [presetName: string]: PresetDefinition;
 }
 
-export type MessageFromFrontend =
-  | {
-      type: "STATUS_QUERY";
-      requestId: number;
-    }
-  | {
-      type: "ENABLE_MENU_BUTTON";
-      requestId: number;
-    };
+// Should be kept in sync with the types in https://github.com/firefox-devtools/profiler/blob/main/src/app-logic/web-channel.js .
+// Compatibility is handled as follows:
+//  - The front-end needs to worry about compatibility and handle older browser versions.
+//  - The browser can require the latest front-end version and does not need to keep any legacy functionality for older front-end versions.
 
-export type MessageToFrontend =
-  | {
-      type: "STATUS_RESPONSE";
-      menuButtonIsEnabled: boolean;
-      requestId: number;
-    }
-  | {
-      type: "ENABLE_MENU_BUTTON_DONE";
-      requestId: number;
-    };
+type MessageFromFrontend = {
+  requestId: number;
+} & RequestFromFrontend;
+
+export type RequestFromFrontend =
+  | StatusQueryRequest
+  | EnableMenuButtonRequest
+  | GetProfileRequest
+  | GetSymbolTableRequest
+  | QuerySymbolicationApiRequest;
+
+type StatusQueryRequest = { type: "STATUS_QUERY" };
+type EnableMenuButtonRequest = { type: "ENABLE_MENU_BUTTON" };
+type GetProfileRequest = { type: "GET_PROFILE" };
+type GetSymbolTableRequest = {
+  type: "GET_SYMBOL_TABLE";
+  debugName: string;
+  breakpadId: string;
+};
+type QuerySymbolicationApiRequest = {
+  type: "QUERY_SYMBOLICATION_API";
+  path: string;
+  requestJson: string;
+};
+
+export type MessageToFrontend<R> =
+  | OutOfBandErrorMessageToFrontend
+  | ErrorResponseMessageToFrontend
+  | SuccessResponseMessageToFrontend<R>;
+
+type OutOfBandErrorMessageToFrontend = {
+  errno: number;
+  error: string;
+};
+
+type ErrorResponseMessageToFrontend = {
+  type: "ERROR_RESPONSE";
+  requestId: number;
+  error: string;
+};
+
+type SuccessResponseMessageToFrontend<R> = {
+  type: "SUCCESS_RESPONSE";
+  requestId: number;
+  response: R;
+};
+
+export type ResponseToFrontend =
+  | StatusQueryResponse
+  | EnableMenuButtonResponse
+  | GetProfileResponse
+  | GetSymbolTableResponse
+  | QuerySymbolicationApiResponse;
+
+type StatusQueryResponse = {
+  menuButtonIsEnabled: boolean;
+  // The version indicates which message types are supported by the browser.
+  // No version:
+  //   Shipped in Firefox 76.
+  //   Supports the following message types:
+  //    - STATUS_QUERY
+  //    - ENABLE_MENU_BUTTON
+  // Version 1:
+  //   Shipped in Firefox 93.
+  //   Adds support for the following message types:
+  //    - GET_PROFILE
+  //    - GET_SYMBOL_TABLE
+  //    - QUERY_SYMBOLICATION_API
+  version: number;
+};
+type EnableMenuButtonResponse = void;
+type GetProfileResponse = ArrayBuffer | MinimallyTypedGeckoProfile;
+type GetSymbolTableResponse = SymbolTableAsTuple;
+type QuerySymbolicationApiResponse = string;
 
 /**
  * This represents an event channel that can talk to a content page on the web.
@@ -476,7 +557,7 @@ export type MessageToFrontend =
 export class ProfilerWebChannel {
   constructor(id: string, url: MockedExports.nsIURI);
   send: (
-    message: MessageToFrontend,
+    message: MessageToFrontend<ResponseToFrontend>,
     target: MockedExports.WebChannelTarget
   ) => void;
   listen: (
@@ -487,6 +568,26 @@ export class ProfilerWebChannel {
     ) => void
   ) => void;
 }
+
+/**
+ * The per-tab information that is stored when a new profile is captured
+ * and a profiler tab is opened, to serve the correct profile to the tab
+ * that sends the WebChannel message.
+ */
+export type ProfilerBrowserInfo = {
+  profileCaptureResult: ProfileCaptureResult;
+  symbolicationService: SymbolicationService;
+};
+
+export type ProfileCaptureResult =
+  | {
+      type: "SUCCESS";
+      profile: MinimallyTypedGeckoProfile | ArrayBuffer;
+    }
+  | {
+      type: "ERROR";
+      error: Error;
+    };
 
 /**
  * Describes all of the profiling features that can be turned on and

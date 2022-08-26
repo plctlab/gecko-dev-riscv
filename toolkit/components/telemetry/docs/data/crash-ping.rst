@@ -56,14 +56,16 @@ Structure:
           AvailablePhysicalMemory: <size>, // Windows-only, available physical memory in bytes
           AvailableSwapMemory: <size>, // macOS- and Linux-only, available swap space
           AvailableVirtualMemory: <size>, // Windows-only, available virtual memory in bytes
+          BackgroundTaskName: "task_name", // Optional, if the app was invoked in background task mode via `--backgroundtask task_name`
           BlockedDllList: <list>, // Windows-only, see WindowsDllBlocklist.cpp for details
           BlocklistInitFailed: "1", // Windows-only, present only if the DLL blocklist initialization failed
           CrashTime: <time>, // Seconds since the Epoch
-          ContainsMemoryReport: "1", // Optional, if set indicates that the crash had a memory report attached
           DOMFissionEnabled: "1", // Optional, if set indicates that a Fission window had been opened
           EventLoopNestingLevel: <levels>, // Optional, present only if >0, indicates the nesting level of the event-loop
           ExperimentalFeatures: <features>, // Optional, a comma-separated string that specifies the enabled experimental features from about:preferences#experimental
+          FontName: <name>, // Optional, the font family name that is being loaded when the crash occurred
           GPUProcessLaunchCount: <num>, // Number of times the GPU process was launched
+          HeadlessMode: "1", // Optional, "1" if the app was invoked in headless mode via `--headless ...` or `--backgroundtask ...`
           ipc_channel_error: <error string>, // Optional, contains the string processing error reason for an ipc-based content crash
           IsGarbageCollecting: "1", // Optional, if set indicates that the crash occurred while the garbage collector was running
           LowCommitSpaceEvents: <num>, // Windows-only, present only if >0, number of low commit space events detected by the available memory tracker
@@ -85,6 +87,7 @@ Structure:
           UptimeTS: <duration>, // Seconds since Firefox was started, this can have a fractional component
           User32BeforeBlocklist: "1", // Windows-only, present only if user32.dll was loaded before the DLL blocklist has been initialized
           WindowsErrorReporting: "1", // Windows-only, present only if the crash was intercepted by the WER runtime exception module
+          WindowsPackageFamilyName: <string>, // Windows-only, a string containing the "Package Family Name" of Firefox, if installed through an MSIX package
         },
         hasCrashEnvironment: bool
       }
@@ -236,9 +239,11 @@ Version History
 - Firefox 76: Added DOMFissionEnabled (`bug 1602918 <https://bugzilla.mozilla.org/show_bug.cgi?id=1602918>`_).
 - Firefox 79: Added ExperimentalFeatures (`bug 1644544 <https://bugzilla.mozilla.org/show_bug.cgi?id=1644544>`_).
 - Firefox 85: Added QuotaManagerShutdownTimeout, removed IndexedDBShutdownTimeout and LocalStorageShutdownTimeout
-  (`bug 1672369 <https://bugzilla.mozilla.org/show_bug.cgi?id=1672369>`_)
+  (`bug 1672369 <https://bugzilla.mozilla.org/show_bug.cgi?id=1672369>`_).
 - Firefox 89: Added GPUProcessLaunchCount (`bug 1710448 <https://bugzilla.mozilla.org/show_bug.cgi?id=1710448>`_)
   and ProfilerChildShutdownPhase (`bug 1704680 <https://bugzilla.mozilla.org/show_bug.cgi?id=1704680>`_).
 - Firefox 90: Removed MemoryErrorCorrection (`bug 1710152 <https://bugzilla.mozilla.org/show_bug.cgi?id=1710152>`_)
   and added WindowsErrorReporting (`bug 1703761 <https://bugzilla.mozilla.org/show_bug.cgi?id=1703761>`_).
-  
+- Firefox 95: Added HeadlessMode and BackgroundTaskName (`bug 1697875 <https://bugzilla.mozilla.org/show_bug.cgi?id=1697875>`_).
+- Firefox 96: Added WindowsPackageFamilyName (`bug 1738375 <https://bugzilla.mozilla.org/show_bug.cgi?id=1738375>`_).
+- Firefox 103: Removed ContainsMemoryReport (`bug 1776279 <https://bugzilla.mozilla.org/show_bug.cgi?id=1776279>` _).

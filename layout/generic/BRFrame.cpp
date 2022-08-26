@@ -165,8 +165,6 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   aMetrics.SetOverflowAreasToDesiredBounds();
 
   mAscent = aMetrics.BlockStartAscent();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aMetrics);
 }
 
 /* virtual */
@@ -210,7 +208,7 @@ nsIFrame::ContentOffsets BRFrame::CalcContentOffsetsFromFramePoint(
   ContentOffsets offsets;
   offsets.content = mContent->GetParent();
   if (offsets.content) {
-    offsets.offset = offsets.content->ComputeIndexOf(mContent);
+    offsets.offset = offsets.content->ComputeIndexOf_Deprecated(mContent);
     offsets.secondaryOffset = offsets.offset;
     offsets.associate = CARET_ASSOCIATE_AFTER;
   }

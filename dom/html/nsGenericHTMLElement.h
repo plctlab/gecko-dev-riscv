@@ -32,12 +32,10 @@ class EventChainPostVisitor;
 class EventChainPreVisitor;
 class EventChainVisitor;
 class EventListenerManager;
-class EventStates;
 class PresState;
 namespace dom {
 class ElementInternals;
 class HTMLFormElement;
-class HTMLMenuElement;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -55,7 +53,7 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
       : nsGenericHTMLElementBase(std::move(aNodeInfo)) {
     NS_ASSERTION(mNodeInfo->NamespaceID() == kNameSpaceID_XHTML,
                  "Unexpected namespace");
-    AddStatesSilently(NS_EVENT_STATE_LTR);
+    AddStatesSilently(mozilla::dom::ElementState::LTR);
     SetFlags(NODE_HAS_DIRECTION_LTR);
   }
 
@@ -89,7 +87,7 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   void SetInert(bool aInert, mozilla::ErrorResult& aError) {
     SetHTMLBoolAttr(nsGkAtoms::inert, aInert, aError);
   }
-  void Click(mozilla::dom::CallerType aCallerType);
+  MOZ_CAN_RUN_SCRIPT void Click(mozilla::dom::CallerType aCallerType);
   void GetAccessKey(nsString& aAccessKey) {
     GetHTMLAttr(nsGkAtoms::accesskey, aAccessKey);
   }
@@ -161,7 +159,6 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
    */
   uint32_t EditableInclusiveDescendantCount();
 
-  mozilla::dom::HTMLMenuElement* GetContextMenu() const;
   bool Spellcheck();
   void SetSpellcheck(bool aSpellcheck, mozilla::ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::spellcheck, aSpellcheck ? u"true"_ns : u"false"_ns,
@@ -169,9 +166,14 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   }
 
   MOZ_CAN_RUN_SCRIPT
-  void GetInnerText(mozilla::dom::DOMString& aValue,
-                    mozilla::ErrorResult& aError);
-  void SetInnerText(const nsAString& aValue);
+  void GetInnerText(mozilla::dom::DOMString& aValue, ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT
+  void GetOuterText(mozilla::dom::DOMString& aValue, ErrorResult& aError) {
+    return GetInnerText(aValue, aError);
+  }
+  MOZ_CAN_RUN_SCRIPT void SetInnerText(const nsAString& aValue);
+  MOZ_CAN_RUN_SCRIPT void SetOuterText(const nsAString& aValue,
+                                       ErrorResult& aRv);
 
   void GetInputMode(nsAString& aValue) {
     GetEnumAttr(nsGkAtoms::inputmode, nullptr, aValue);
@@ -262,6 +264,10 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   virtual already_AddRefed<mozilla::dom::ElementInternals> AttachInternals(
       ErrorResult& aRv);
 
+  mozilla::dom::ElementInternals* GetInternals() const;
+
+  bool IsFormAssociatedCustomElements() const;
+
   // Returns true if the event should not be handled from GetEventTargetParent.
   virtual bool IsDisabledForEvents(mozilla::WidgetEvent* aEvent) {
     return false;
@@ -307,7 +313,7 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
 
   virtual void UpdateEditableState(bool aNotify) override;
 
-  virtual mozilla::EventStates IntrinsicState() const override;
+  virtual mozilla::dom::ElementState IntrinsicState() const override;
 
   // Helper for setting our editable flag and notifying
   void DoSetEditableFlag(bool aEditable, bool aNotify) {
@@ -526,6 +532,16 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
                                          mozilla::MappedDeclarations&,
                                          MapAspectRatio = MapAspectRatio::No);
   /**
+   * Helper to map the iamge source attributes into a style stuct.
+   * Note:
+   * This will override the declaration created by the presentation attributes
+   * of HTMLImageElement (i.e. mapped by MapImageSizeAttributeInto).
+   * https://html.spec.whatwg.org/multipage/embedded-content.html#the-source-element
+   */
+  static void MapPictureSourceSizeAttributesInto(const nsMappedAttributes*,
+                                                 mozilla::MappedDeclarations&);
+
+  /**
    * Helper to map the width and height attributes into the aspect-ratio
    * property.
    *
@@ -608,8 +624,6 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
    */
   mozilla::dom::HTMLFormElement* FindAncestorForm(
       mozilla::dom::HTMLFormElement* aCurrentForm = nullptr);
-
-  virtual void RecompileScriptEventListeners() override;
 
   /**
    * See if the document being tested has nav-quirks mode enabled.
@@ -696,22 +710,27 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   virtual nsresult BeforeSetAttr(int32_t aNamespaceID, nsAtom* aName,
                                  const nsAttrValueOrString* aValue,
                                  bool aNotify) override;
-  virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aMaybeScriptedPrincipal,
-                                bool aNotify) override;
+  // TODO: Convert AfterSetAttr to MOZ_CAN_RUN_SCRIPT and get rid of
+  // kungFuDeathGrip in it.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual nsresult AfterSetAttr(
+      int32_t aNamespaceID, nsAtom* aName, const nsAttrValue* aValue,
+      const nsAttrValue* aOldValue, nsIPrincipal* aMaybeScriptedPrincipal,
+      bool aNotify) override;
 
   virtual mozilla::EventListenerManager* GetEventListenerManagerForAttr(
       nsAtom* aAttrName, bool* aDefer) override;
 
-  /** Handles dispatching a simulated click on `this` on space or enter. */
-  void HandleKeyboardActivation(mozilla::EventChainPostVisitor&);
+  /**
+   * Handles dispatching a simulated click on `this` on space or enter.
+   * TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+   */
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void HandleKeyboardActivation(
+      mozilla::EventChainPostVisitor&);
 
   /** Dispatch a simulated mouse click by keyboard to the given element. */
-  static nsresult DispatchSimulatedClick(nsGenericHTMLElement* aElement,
-                                         bool aIsTrusted,
-                                         nsPresContext* aPresContext);
+  MOZ_CAN_RUN_SCRIPT static nsresult DispatchSimulatedClick(
+      nsGenericHTMLElement* aElement, bool aIsTrusted,
+      nsPresContext* aPresContext);
 
   /**
    * Create a URI for the given aURISpec string.
@@ -905,11 +924,9 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   void ChangeEditableState(int32_t aChange);
 };
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class HTMLFieldSetElement;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #define HTML_ELEMENT_FLAG_BIT(n_) \
   NODE_FLAG_BIT(ELEMENT_TYPE_SPECIFIC_BITS_OFFSET + (n_))
@@ -979,12 +996,6 @@ class nsGenericHTMLFormElement : public nsGenericHTMLElement {
    */
   virtual void FieldSetDisabledChanged(bool aNotify);
 
-  /**
-   * Check our disabled content attribute and fieldset's (if it exists) disabled
-   * state to decide whether our disabled flag should be toggled.
-   */
-  void UpdateDisabledState(bool aNotify);
-
   void FieldSetFirstLegendChanged(bool aNotify) { UpdateFieldSet(aNotify); }
 
   /**
@@ -1015,6 +1026,12 @@ class nsGenericHTMLFormElement : public nsGenericHTMLElement {
 
   virtual void AfterClearForm(bool aUnbindOrDelete) {}
 
+  /**
+   * Check our disabled content attribute and fieldset's (if it exists) disabled
+   * state to decide whether our disabled flag should be toggled.
+   */
+  virtual void UpdateDisabledState(bool aNotify);
+
   virtual void SetFormInternal(mozilla::dom::HTMLFormElement* aForm,
                                bool aBindToTree) {}
 
@@ -1040,7 +1057,7 @@ class nsGenericHTMLFormElement : public nsGenericHTMLElement {
    * @note Callers of UpdateFormOwner have to be sure the element is in a
    * document (GetUncomposedDoc() != nullptr).
    */
-  void UpdateFormOwner(bool aBindToTree, Element* aFormIdElement);
+  virtual void UpdateFormOwner(bool aBindToTree, Element* aFormIdElement);
 
   /**
    * This method will update mFieldset and set it to the first fieldset parent.
@@ -1134,7 +1151,7 @@ class nsGenericHTMLFormControlElement : public nsGenericHTMLFormElement,
   virtual ~nsGenericHTMLFormControlElement();
 
   // Element
-  virtual mozilla::EventStates IntrinsicState() const override;
+  virtual mozilla::dom::ElementState IntrinsicState() const override;
   virtual bool IsLabelable() const override;
 
   // nsGenericHTMLFormElement
@@ -1250,15 +1267,13 @@ class nsGenericHTMLFormControlElementWithState
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(_interface,        \
                                      mNodeInfo->Equals(nsGkAtoms::_tag))
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using HTMLContentCreatorFunction =
     nsGenericHTMLElement* (*)(already_AddRefed<mozilla::dom::NodeInfo>&&,
                               mozilla::dom::FromParser);
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 /**
  * A macro to declare the NS_NewHTMLXXXElement() functions.
@@ -1354,7 +1369,6 @@ NS_DECLARE_NS_NEW_HTML_ELEMENT(Link)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Marquee)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Map)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Menu)
-NS_DECLARE_NS_NEW_HTML_ELEMENT(MenuItem)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Meta)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Meter)
 NS_DECLARE_NS_NEW_HTML_ELEMENT(Object)

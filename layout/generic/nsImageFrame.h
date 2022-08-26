@@ -84,8 +84,9 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   }
   void Reflow(nsPresContext*, ReflowOutput&, const ReflowInput&,
               nsReflowStatus&) override;
+  bool IsLeafDynamic() const override;
 
-  nsresult GetContentForEvent(mozilla::WidgetEvent*,
+  nsresult GetContentForEvent(const mozilla::WidgetEvent*,
                               nsIContent** aContent) final;
   nsresult HandleEvent(nsPresContext*, mozilla::WidgetGUIEvent*,
                        nsEventStatus*) override;
@@ -100,6 +101,8 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   void ResponsiveContentDensityChanged();
   void SetupForContentURLRequest();
   bool ShouldShowBrokenImageIcon() const;
+
+  bool IsForElement() const { return mKind == Kind::ImageElement; }
 
   const mozilla::StyleImage* GetImageFromStyle() const;
 
@@ -134,12 +137,19 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   void Notify(imgIRequest*, int32_t aType, const nsIntRect* aData);
 
   /**
+   * Returns whether we should replace an element with an image corresponding to
+   * its 'content' CSS property.
+   */
+  static bool ShouldCreateImageFrameForContent(const mozilla::dom::Element&,
+                                               const ComputedStyle&);
+
+  /**
    * Function to test whether given an element and its style, that element
    * should get an image frame.  Note that this method is only used by the
    * frame constructor; it's only here because it uses gIconLoad for now.
    */
   static bool ShouldCreateImageFrameFor(const mozilla::dom::Element&,
-                                        ComputedStyle&);
+                                        const ComputedStyle&);
 
   ImgDrawResult DisplayAltFeedback(gfxContext& aRenderingContext,
                                    const nsRect& aDirtyRect, nsPoint aPt,
@@ -151,8 +161,6 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
       const mozilla::layers::StackingContextHelper&,
       mozilla::layers::RenderRootStateManager*, nsDisplayListBuilder*,
       nsPoint aPt, uint32_t aFlags);
-
-  nsRect GetInnerArea() const;
 
   /**
    * Return a map element associated with this image.
@@ -207,6 +215,9 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 
   nsImageFrame(ComputedStyle*, nsPresContext* aPresContext, ClassID, Kind);
 
+  void ReflowChildren(nsPresContext*, const ReflowInput&,
+                      const mozilla::LogicalSize& aImageSize);
+
  protected:
   nsImageFrame(ComputedStyle* aStyle, nsPresContext* aPresContext, ClassID aID)
       : nsImageFrame(aStyle, aPresContext, aID, Kind::ImageElement) {}
@@ -229,7 +240,10 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 
   bool IsServerImageMap();
 
-  void TranslateEventCoords(const nsPoint& aPoint, nsIntPoint& aResult);
+  // Translate a point that is relative to our frame into a localized CSS pixel
+  // coordinate that is relative to the content area of this frame (inside the
+  // border+padding).
+  mozilla::CSSIntPoint TranslateEventCoords(const nsPoint& aPoint);
 
   bool GetAnchorHREFTargetAndNode(nsIURI** aHref, nsString& aTarget,
                                   nsIContent** aNode);
@@ -283,6 +297,13 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 
   /// Always sync decode our image when painting if @aForce is true.
   void SetForceSyncDecoding(bool aForce) { mForceSyncDecoding = aForce; }
+
+  void AssertSyncDecodingHintIsInSync() const
+#ifndef DEBUG
+      {}
+#else
+      ;
+#endif
 
   /**
    * Computes the predicted dest rect that we'll draw into, in app units, based
@@ -356,6 +377,10 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   void InvalidateSelf(const nsIntRect* aLayerInvalidRect,
                       const nsRect* aFrameInvalidRect);
 
+  void MaybeSendIntrinsicSizeAndRatioToEmbedder();
+  void MaybeSendIntrinsicSizeAndRatioToEmbedder(Maybe<mozilla::IntrinsicSize>,
+                                                Maybe<mozilla::AspectRatio>);
+
   RefPtr<nsImageMap> mImageMap;
 
   RefPtr<nsImageListener> mListener;
@@ -365,7 +390,11 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
 
   nsCOMPtr<imgIContainer> mImage;
   nsCOMPtr<imgIContainer> mPrevImage;
+
+  // The content-box size as if we are not fragmented, cached in the most recent
+  // reflow.
   nsSize mComputedSize;
+
   mozilla::IntrinsicSize mIntrinsicSize;
 
   // Stores mImage's intrinsic ratio, or a default AspectRatio if there's no
@@ -378,6 +407,8 @@ class nsImageFrame : public nsAtomicContainerFrame, public nsIReflowCallback {
   bool mFirstFrameComplete;
   bool mReflowCallbackPosted;
   bool mForceSyncDecoding;
+
+  bool mIsInObjectOrEmbed = false;
 
   /* loading / broken image icon support */
 
@@ -456,10 +487,6 @@ class nsDisplayImage final : public nsPaintedDisplayItem {
   }
   ~nsDisplayImage() final { MOZ_COUNT_DTOR(nsDisplayImage); }
 
-  nsDisplayItemGeometry* AllocateGeometry(nsDisplayListBuilder*) final;
-  void ComputeInvalidationRegion(nsDisplayListBuilder*,
-                                 const nsDisplayItemGeometry*,
-                                 nsRegion* aInvalidRegion) const final;
   void Paint(nsDisplayListBuilder*, gfxContext* aCtx) final;
 
   /**
@@ -470,9 +497,7 @@ class nsDisplayImage final : public nsPaintedDisplayItem {
 
   nsRect GetBounds(bool* aSnap) const {
     *aSnap = true;
-
-    nsImageFrame* imageFrame = static_cast<nsImageFrame*>(mFrame);
-    return imageFrame->GetInnerArea() + ToReferenceFrame();
+    return Frame()->GetContentRectRelativeToSelf() + ToReferenceFrame();
   }
 
   nsRect GetBounds(nsDisplayListBuilder*, bool* aSnap) const final {

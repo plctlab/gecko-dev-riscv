@@ -106,8 +106,8 @@ impl Version {
             major: self.major,
             minor: self.minor,
             patch: self.patch,
-            pre: vec![],
-            build: vec![],
+            pre: semver::Prerelease::EMPTY,
+            build: semver::BuildMetadata::EMPTY,
         }
     }
 
@@ -249,7 +249,7 @@ pub fn firefox_binary_version(binary: &Path) -> VersionResult<Version> {
     if let Some(x) = output {
         let output_str = str::from_utf8(&*x.stdout)
             .map_err(|_| Error::VersionError("Couldn't parse version output as UTF8".into()))?;
-        parse_binary_version(&output_str)
+        parse_binary_version(output_str)
     } else {
         Err(Error::VersionError("Running binary failed".into()))
     }
@@ -274,7 +274,7 @@ pub enum Error {
     /// Error reading application metadata
     MetadataError(String),
     /// Error processing a string as a semver comparator
-    SemVerError(semver::ReqParseError),
+    SemVerError(String),
 }
 
 impl Display for Error {
@@ -296,18 +296,15 @@ impl Display for Error {
     }
 }
 
-impl From<semver::ReqParseError> for Error {
-    fn from(err: semver::ReqParseError) -> Error {
-        Error::SemVerError(err)
+impl From<semver::Error> for Error {
+    fn from(err: semver::Error) -> Error {
+        Error::SemVerError(err.to_string())
     }
 }
 
 impl error::Error for Error {
     fn cause(&self) -> Option<&dyn error::Error> {
-        match *self {
-            Error::SemVerError(ref e) => Some(e),
-            Error::VersionError(_) | Error::MetadataError(_) => None,
-        }
+        None
     }
 }
 

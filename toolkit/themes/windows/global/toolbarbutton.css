@@ -27,22 +27,22 @@ toolbarbutton.tabbable {
 }
 
 toolbarbutton:-moz-focusring {
-  outline: 1px dotted;
-  outline-offset: -2px;
+  outline: var(--default-focusring);
+  outline-offset: calc(-1 * var(--default-focusring-width) - 1px);
 }
 
-toolbarbutton[disabled="true"] {
+toolbarbutton:where([disabled="true"]) {
   color: GrayText;
   text-shadow: none;
 }
 
 @media (-moz-windows-classic) {
   @media not (prefers-contrast) {
-    toolbarbutton[disabled="true"] {
+    toolbarbutton:where([disabled="true"]) {
       text-shadow: 1px 1px ThreeDHighlight;
     }
   }
-  toolbarbutton[disabled="true"] {
+  toolbarbutton:where([disabled="true"]) {
     color: ThreeDShadow;
   }
 }

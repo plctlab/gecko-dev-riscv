@@ -55,10 +55,13 @@ const parentProcessTargetPrototype = extend({}, windowGlobalTargetPrototype);
  *        - window: {Window} If the upper class already knows against which
  *          window the actor should attach, it is passed as a constructor
  *          argument here.
+ *        - sessionContext Object
+ *          The Session Context to help know what is debugged.
+ *          See devtools/server/actors/watcher/session-context.js
  */
 parentProcessTargetPrototype.initialize = function(
   connection,
-  { isTopLevelTarget, window }
+  { isTopLevelTarget, window, sessionContext }
 ) {
   // Defines the default docshell selected for the target actor
   if (!window) {
@@ -80,6 +83,7 @@ parentProcessTargetPrototype.initialize = function(
   WindowGlobalTargetActor.prototype.initialize.call(this, connection, {
     docShell: window.docShell,
     isTopLevelTarget,
+    sessionContext,
   });
 
   // This creates a Debugger instance for chrome debugging all globals.
@@ -90,47 +94,6 @@ parentProcessTargetPrototype.initialize = function(
 
   // Ensure catching the creation of any new content docshell
   this.watchNewDocShells = true;
-};
-
-parentProcessTargetPrototype.isRootActor = true;
-
-/**
- * Getter for the list of all docshells in this targetActor
- * @return {Array}
- */
-Object.defineProperty(parentProcessTargetPrototype, "docShells", {
-  get: function() {
-    // Iterate over all top-level windows and all their docshells.
-    let docShells = [];
-    for (const { docShell } of Services.ww.getWindowEnumerator()) {
-      docShells = docShells.concat(getChildDocShells(docShell));
-    }
-
-    return docShells;
-  },
-});
-
-parentProcessTargetPrototype.observe = function(subject, topic, data) {
-  WindowGlobalTargetActor.prototype.observe.call(this, subject, topic, data);
-  if (!this.attached) {
-    return;
-  }
-
-  subject.QueryInterface(Ci.nsIDocShell);
-
-  if (topic == "chrome-webnavigation-create") {
-    this._onDocShellCreated(subject);
-  } else if (topic == "chrome-webnavigation-destroy") {
-    this._onDocShellDestroy(subject);
-  }
-};
-
-parentProcessTargetPrototype._attach = function() {
-  if (this.attached) {
-    return false;
-  }
-
-  WindowGlobalTargetActor.prototype._attach.call(this);
 
   // Listen for any new/destroyed chrome docshell
   Services.obs.addObserver(this, "chrome-webnavigation-create");
@@ -143,11 +106,43 @@ parentProcessTargetPrototype._attach = function() {
     }
     this._progressListener.watch(docShell);
   }
-  return undefined;
+};
+
+parentProcessTargetPrototype.isRootActor = true;
+
+/**
+ * Getter for the list of all docshells in this targetActor
+ * @return {Array}
+ */
+Object.defineProperty(parentProcessTargetPrototype, "docShells", {
+  get() {
+    // Iterate over all top-level windows and all their docshells.
+    let docShells = [];
+    for (const { docShell } of Services.ww.getWindowEnumerator()) {
+      docShells = docShells.concat(getChildDocShells(docShell));
+    }
+
+    return docShells;
+  },
+});
+
+parentProcessTargetPrototype.observe = function(subject, topic, data) {
+  WindowGlobalTargetActor.prototype.observe.call(this, subject, topic, data);
+  if (this.isDestroyed()) {
+    return;
+  }
+
+  subject.QueryInterface(Ci.nsIDocShell);
+
+  if (topic == "chrome-webnavigation-create") {
+    this._onDocShellCreated(subject);
+  } else if (topic == "chrome-webnavigation-destroy") {
+    this._onDocShellDestroy(subject);
+  }
 };
 
 parentProcessTargetPrototype._detach = function() {
-  if (!this.attached) {
+  if (this.isDestroyed()) {
     return false;
   }
 

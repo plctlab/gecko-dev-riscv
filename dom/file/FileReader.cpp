@@ -474,7 +474,7 @@ nsresult FileReader::GetAsText(Blob* aBlob, const nsACString& aCharset,
 
   auto data = Span(reinterpret_cast<const uint8_t*>(aFileData), aDataLen);
   nsresult rv;
-  Tie(rv, encoding) = encoding->Decode(data, aResult);
+  std::tie(rv, std::ignore) = encoding->Decode(data, aResult);
   return NS_FAILED(rv) ? rv : NS_OK;
 }
 
@@ -501,6 +501,14 @@ JSObject* FileReader::WrapObject(JSContext* aCx,
 }
 
 void FileReader::StartProgressEventTimer() {
+  if (!NS_IsMainThread() && !mWeakWorkerRef) {
+    // The worker is possibly shutting down if dispatching a DOM event right
+    // before this call triggered an InterruptCallback call.
+    // XXX Note, the check is limited to workers for now, since it is unclear
+    // in the spec how FileReader should behave in this case on the main thread.
+    return;
+  }
+
   if (!mProgressNotifier) {
     mProgressNotifier = NS_NewTimer(mTarget);
   }
@@ -616,14 +624,14 @@ FileReader::Notify(nsITimer* aTimer) {
 // InputStreamCallback
 NS_IMETHODIMP
 FileReader::OnInputStreamReady(nsIAsyncInputStream* aStream) {
-  if (mReadyState != LOADING || aStream != mAsyncStream) {
-    return NS_OK;
-  }
-
   // We use this class to decrease the busy counter at the end of this method.
   // In theory we can do it immediatelly but, for debugging reasons, we want to
   // be 100% sure we have a workerRef when OnLoadEnd() is called.
   FileReaderDecreaseBusyCounter RAII(this);
+
+  if (mReadyState != LOADING || aStream != mAsyncStream) {
+    return NS_OK;
+  }
 
   uint64_t count;
   nsresult rv = aStream->Available(&count);
@@ -723,14 +731,7 @@ void FileReader::Abort() {
 
   MOZ_ASSERT(mReadyState == LOADING);
 
-  ClearProgressEventTimer();
-
-  if (mAsyncWaitRunnable) {
-    mAsyncWaitRunnable->Cancel();
-    mAsyncWaitRunnable = nullptr;
-  }
-
-  mReadyState = DONE;
+  Cleanup();
 
   // XXX The spec doesn't say this
   mError = DOMException::Create(NS_ERROR_DOM_ABORT_ERR);
@@ -739,30 +740,12 @@ void FileReader::Abort() {
   SetDOMStringToNull(mResult);
   mResultArrayBuffer = nullptr;
 
-  // If we have the stream and the busy-count is not 0, it means that we are
-  // waiting for an OnInputStreamReady() call. Let's abort the current
-  // AsyncWait() calling it again with a nullptr callback. See
-  // nsIAsyncInputStream.idl.
-  if (mAsyncStream && mBusyCount) {
-    mAsyncStream->AsyncWait(/* callback */ nullptr,
-                            /* aFlags*/ 0,
-                            /* aRequestedCount */ 0, mTarget);
-    DecreaseBusyCounter();
-    MOZ_ASSERT(mBusyCount == 0);
-
-    mAsyncStream->Close();
-  }
-
-  mAsyncStream = nullptr;
   mBlob = nullptr;
-
-  // Clean up memory buffer
-  FreeFileData();
 
   // Dispatch the events
   DispatchProgressEvent(nsLiteralString(ABORT_STR));
   DispatchProgressEvent(nsLiteralString(LOADEND_STR));
-}  // namespace dom
+}
 
 nsresult FileReader::IncreaseBusyCounter() {
   if (mWeakWorkerRef && mBusyCount++ == 0) {
@@ -792,7 +775,7 @@ void FileReader::DecreaseBusyCounter() {
   }
 }
 
-void FileReader::Shutdown() {
+void FileReader::Cleanup() {
   mReadyState = DONE;
 
   if (mAsyncWaitRunnable) {
@@ -805,13 +788,15 @@ void FileReader::Shutdown() {
     mAsyncStream = nullptr;
   }
 
+  ClearProgressEventTimer();
   FreeFileData();
   mResultArrayBuffer = nullptr;
+}
 
-  if (mWeakWorkerRef && mBusyCount != 0) {
-    mStrongWorkerRef = nullptr;
+void FileReader::Shutdown() {
+  Cleanup();
+  if (mWeakWorkerRef) {
     mWeakWorkerRef = nullptr;
-    mBusyCount = 0;
   }
 }
 

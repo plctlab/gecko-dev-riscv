@@ -8,16 +8,18 @@
 
 var EXPORTED_SYMBOLS = ["WebSocketTransport"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   EventEmitter: "resource://gre/modules/EventEmitter.jsm",
 });
 
 function WebSocketTransport(socket) {
-  EventEmitter.decorate(this);
+  lazy.EventEmitter.decorate(this);
 
   this.active = false;
   this.hooks = null;

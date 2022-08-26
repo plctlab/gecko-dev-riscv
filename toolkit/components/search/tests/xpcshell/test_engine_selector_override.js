@@ -3,8 +3,8 @@
 
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.sys.mjs",
 });
 
 const TEST_CONFIG = [
@@ -45,6 +45,32 @@ const TEST_CONFIG = [
         override: true,
         experiment: "experiment1",
         sendAttributionRequest: true,
+      },
+    ],
+    default: "yes",
+  },
+  {
+    webExtension: {
+      id: "altavista@example.com",
+    },
+    appliesTo: [
+      {
+        included: { everywhere: true },
+      },
+      {
+        override: true,
+        application: {
+          distributions: ["distro2"],
+        },
+        included: { regions: ["gb"] },
+        params: {
+          searchUrlGetParams: [
+            {
+              name: "field-keywords2",
+              value: "{searchTerms}",
+            },
+          ],
+        },
       },
     ],
     default: "yes",
@@ -116,5 +142,40 @@ add_task(async function test_engine_selector_override_experiments() {
     engine.sendAttributionRequest,
     true,
     "Should have overriden the sendAttributionRequest field of the engine."
+  );
+});
+
+add_task(async function test_engine_selector_override_with_included() {
+  let { engines } = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "us",
+    distroID: "distro2",
+  });
+
+  let engine = engines.find(e => e.webExtension.id == "altavista@example.com");
+  Assert.ok(
+    !("params" in engine),
+    "Should not have overriden the parameters of the engine."
+  );
+
+  let result = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "gb",
+    distroID: "distro2",
+  });
+  engine = result.engines.find(
+    e => e.webExtension.id == "altavista@example.com"
+  );
+  Assert.deepEqual(
+    engine.params,
+    {
+      searchUrlGetParams: [
+        {
+          name: "field-keywords2",
+          value: "{searchTerms}",
+        },
+      ],
+    },
+    "Should have overriden the parameters of the engine."
   );
 });

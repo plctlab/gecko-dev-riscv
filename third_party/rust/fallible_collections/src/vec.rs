@@ -431,7 +431,18 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     }
 }
 
-#[cfg(not(feature = "unstable"))]
+/// Grow capacity exponentially
+#[cold]
+fn vec_try_reserve_for_growth<T>(v: &mut Vec<T>, additional: usize) -> Result<(), TryReserveError> {
+    // saturating, because can't use CapacityOverflow here if rust_1_57 flag is enabled
+    FallibleVec::try_reserve(v, additional.max(v.capacity().saturating_mul(2) - v.len()))
+}
+
+fn needs_to_grow<T>(v: &Vec<T>, len: usize) -> bool {
+    v.len().checked_add(len).map_or(true, |needed| needed > v.capacity())
+}
+
+#[cfg(not(any(feature = "unstable", feature = "rust_1_57")))]
 fn vec_try_reserve<T>(v: &mut Vec<T>, additional: usize) -> Result<(), TryReserveError> {
     let available = v.capacity().checked_sub(v.len()).expect("capacity >= len");
     if additional > available {
@@ -449,7 +460,7 @@ fn vec_try_reserve<T>(v: &mut Vec<T>, additional: usize) -> Result<(), TryReserv
     Ok(())
 }
 
-#[cfg(not(feature = "unstable"))]
+#[cfg(not(any(feature = "unstable", feature = "rust_1_57")))]
 fn vec_try_extend<T>(v: &mut Vec<T>, new_cap: usize) -> Result<(), TryReserveError> {
     let old_len = v.len();
     let old_cap: usize = v.capacity();
@@ -496,30 +507,41 @@ fn vec_try_extend<T>(v: &mut Vec<T>, new_cap: usize) -> Result<(), TryReserveErr
 }
 
 impl<T> FallibleVec<T> for Vec<T> {
-
     #[inline(always)]
     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        #[cfg(feature = "unstable")]
+        #[cfg(all(feature = "unstable", not(feature = "rust_1_57")))]
         {
             self.try_reserve(additional)
         }
 
-        #[cfg(not(feature = "unstable"))]
+        #[cfg(not(feature = "rust_1_57"))]
         {
             vec_try_reserve(self, additional)
+        }
+
+        #[cfg(feature = "rust_1_57")]
+        {
+            // TryReserveError is an opaque type in 1.57
+            self.try_reserve(additional).map_err(|_| {
+                crate::make_try_reserve_error(self.len(), additional, core::mem::size_of::<T>(), core::mem::align_of::<T>())
+            })
         }
     }
 
     #[inline]
     fn try_push(&mut self, elem: T) -> Result<(), TryReserveError> {
-        FallibleVec::try_reserve(self, 1)?;
+        if self.len() == self.capacity() {
+            vec_try_reserve_for_growth(self, 1)?;
+        }
         Ok(self.push(elem))
     }
 
     #[inline]
     fn try_push_give_back(&mut self, elem: T) -> Result<(), (T, TryReserveError)> {
-        if let Err(e) = FallibleVec::try_reserve(self, 1) {
-            return Err((elem, e));
+        if self.len() == self.capacity() {
+            if let Err(e) = vec_try_reserve_for_growth(self, 1) {
+                return Err((elem, e));
+            }
         }
         Ok(self.push(elem))
     }
@@ -536,8 +558,10 @@ impl<T> FallibleVec<T> for Vec<T> {
 
     #[inline]
     fn try_insert(&mut self, index: usize, element: T) -> Result<(), (T, TryReserveError)> {
-        if let Err(e) = FallibleVec::try_reserve(self, 1) {
-            return Err((element, e));
+        if self.len() == self.capacity() {
+            if let Err(e) = vec_try_reserve_for_growth(self, 1) {
+                return Err((element, e));
+            }
         }
         Ok(self.insert(index, element))
     }
@@ -583,15 +607,19 @@ impl<T> FallibleVec<T> for Vec<T> {
     where
         T: Clone,
     {
-        FallibleVec::try_reserve(self, other.len())?;
+        if needs_to_grow(self, other.len()) {
+            vec_try_reserve_for_growth(self, other.len())?;
+        }
         Ok(self.extend_from_slice(other))
     }
     fn try_extend_from_slice_no_copy(&mut self, other: &[T]) -> Result<(), TryReserveError>
     where
         T: TryClone,
     {
+        if needs_to_grow(self, other.len()) {
+            vec_try_reserve_for_growth(self, other.len())?;
+        }
         let mut len = self.len();
-        FallibleVec::try_reserve(self, other.len())?;
         let mut iterator = other.iter();
         while let Some(element) = iterator.next() {
             unsafe {
@@ -637,7 +665,9 @@ impl<T> TryExtend<T> for Vec<T> {
         n: usize,
         mut value: E,
     ) -> Result<(), TryReserveError> {
-        FallibleVec::try_reserve(self, n)?;
+        if needs_to_grow(self, n) {
+            vec_try_reserve_for_growth(self, n)?;
+        }
 
         unsafe {
             let mut ptr = self.as_mut_ptr().add(self.len());
@@ -717,7 +747,7 @@ impl SpecFromElem for u8 {
     #[inline]
     fn try_from_elem(elem: u8, n: usize) -> Result<Vec<u8>, TryReserveError> {
         unsafe {
-            let mut v = FallibleVec::try_with_capacity(n)?;
+            let mut v: Vec<u8> = FallibleVec::try_with_capacity(n)?;
             core::ptr::write_bytes(v.as_mut_ptr(), elem, n);
             v.set_len(n);
             Ok(v)
@@ -893,8 +923,16 @@ mod tests {
     #[test]
     fn extend_from_slice() {
         let mut vec: Vec<u8> = b"foo".as_ref().into();
+        vec.shrink_to_fit();
+        vec.reserve(5);
+        assert_eq!(8, vec.capacity());
         vec.try_extend_from_slice(b"bar").unwrap();
         assert_eq!(vec, b"foobar".as_ref());
+        vec.try_extend_from_slice(b"1").unwrap();
+        assert_eq!(vec, b"foobar1".as_ref());
+        assert_eq!(8, vec.capacity());
+        vec.try_extend_from_slice(b"11").unwrap();
+        assert_eq!(16, vec.capacity());
     }
 
     #[test]
@@ -905,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "unstable"))]
+    #[cfg(not(any(feature = "unstable", feature = "rust_1_57")))]
     fn try_extend_zst() {
         let mut vec: Vec<()> = Vec::new();
         assert_eq!(vec.capacity(), core::usize::MAX);

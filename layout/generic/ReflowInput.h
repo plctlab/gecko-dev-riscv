@@ -327,8 +327,19 @@ struct ReflowInput : public SizeComputationInput {
     return mComputedMaxSize.BSize(mWritingMode);
   }
 
-  nscoord& AvailableISize() { return mAvailableSize.ISize(mWritingMode); }
-  nscoord& AvailableBSize() { return mAvailableSize.BSize(mWritingMode); }
+  // WARNING: In general, adjusting available inline-size or block-size is not
+  // safe because ReflowInput has members whose values depend on the available
+  // size passing through the constructor. For example,
+  // CalculateBlockSideMargins() is called during initialization, and uses
+  // AvailableSize(). Make sure your use case doesn't lead to stale member
+  // values in ReflowInput!
+  void SetAvailableISize(nscoord aAvailableISize) {
+    mAvailableSize.ISize(mWritingMode) = aAvailableISize;
+  }
+  void SetAvailableBSize(nscoord aAvailableBSize) {
+    mAvailableSize.BSize(mWritingMode) = aAvailableBSize;
+  }
+
   nscoord& ComputedISize() { return mComputedSize.ISize(mWritingMode); }
   nscoord& ComputedBSize() { return mComputedSize.BSize(mWritingMode); }
   nscoord& ComputedMinISize() { return mComputedMinSize.ISize(mWritingMode); }
@@ -404,12 +415,9 @@ struct ReflowInput : public SizeComputationInput {
 
   // Cached pointers to the various style structs used during initialization.
   const nsStyleDisplay* mStyleDisplay = nullptr;
-  const nsStyleVisibility* mStyleVisibility = nullptr;
   const nsStylePosition* mStylePosition = nullptr;
   const nsStyleBorder* mStyleBorder = nullptr;
   const nsStyleMargin* mStyleMargin = nullptr;
-  const nsStylePadding* mStylePadding = nullptr;
-  const nsStyleText* mStyleText = nullptr;
 
   enum class BreakType : uint8_t {
     Auto,
@@ -724,7 +732,7 @@ struct ReflowInput : public SizeComputationInput {
    *                           calculation.
    */
   static nscoord CalcLineHeight(nsIContent* aContent,
-                                ComputedStyle* aComputedStyle,
+                                const ComputedStyle* aComputedStyle,
                                 nsPresContext* aPresContext,
                                 nscoord aBlockBSize, float aFontSizeInflation);
 
@@ -835,12 +843,18 @@ struct ReflowInput : public SizeComputationInput {
     ComputedBSize() = aComputedBSize;
   }
 
-  void SetTruncated(const ReflowOutput& aMetrics,
-                    nsReflowStatus* aStatus) const;
-
   bool WillReflowAgainForClearance() const {
     return mDiscoveredClearance && *mDiscoveredClearance;
   }
+
+  // Returns true if we should apply automatic minimum on the block axis.
+  //
+  // The automatic minimum size in the ratio-dependent axis of a box with a
+  // preferred aspect ratio that is neither a replaced element nor a scroll
+  // container is its min-content size clamped from above by its maximum size.
+  //
+  // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-minimum
+  bool ShouldApplyAutomaticMinimumOnBlockAxis() const;
 
   // Compute the offsets for a relative position element
   //
@@ -849,26 +863,24 @@ struct ReflowInput : public SizeComputationInput {
       mozilla::WritingMode aWM, nsIFrame* aFrame,
       const mozilla::LogicalSize& aCBSize);
 
-  // If a relatively positioned element, adjust the position appropriately.
+  // If aFrame is a relatively or sticky positioned element, adjust aPosition
+  // appropriately.
+  //
+  // @param aComputedOffsets aFrame's relative offset, either from the cached
+  //        nsIFrame::ComputedOffsetProperty() or ComputedPhysicalOffsets().
+  //        Note: This parameter is used only when aFrame is relatively
+  //        positioned, not sticky positioned.
+  // @param aPosition [in/out] Pass aFrame's normal position (pre-relative
+  //        positioning), and this method will update it to indicate aFrame's
+  //        actual position.
   static void ApplyRelativePositioning(nsIFrame* aFrame,
                                        const nsMargin& aComputedOffsets,
                                        nsPoint* aPosition);
-
-  void ApplyRelativePositioning(nsPoint* aPosition) const {
-    ApplyRelativePositioning(mFrame, ComputedPhysicalOffsets(), aPosition);
-  }
 
   static void ApplyRelativePositioning(
       nsIFrame* aFrame, mozilla::WritingMode aWritingMode,
       const mozilla::LogicalMargin& aComputedOffsets,
       mozilla::LogicalPoint* aPosition, const nsSize& aContainerSize);
-
-  void ApplyRelativePositioning(mozilla::LogicalPoint* aPosition,
-                                const nsSize& aContainerSize) const {
-    ApplyRelativePositioning(mFrame, mWritingMode,
-                             ComputedLogicalOffsets(mWritingMode), aPosition,
-                             aContainerSize);
-  }
 
   // Resolve any block-axis 'auto' margins (if any) for an absolutely positioned
   // frame. aMargin and aOffsets are both outparams (though we only touch

@@ -10,22 +10,19 @@
 
 var EXPORTED_SYMBOLS = ["DownloadUIHelper"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+const lazy = {};
+
+ChromeUtils.defineModuleGetter(lazy, "OS", "resource://gre/modules/osfile.jsm");
 
 // BrowserWindowTracker and PrivateBrowsingUtils are only used when opening downloaded files into a browser window
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
 });
@@ -87,7 +84,7 @@ var DownloadUIHelper = {
   ) {
     let fileURI = Services.io.newFileURI(file);
     let allowPrivate =
-      isPrivate || PrivateBrowsingUtils.permanentPrivateBrowsing;
+      isPrivate || lazy.PrivateBrowsingUtils.permanentPrivateBrowsing;
 
     if (
       !browserWin ||
@@ -96,7 +93,7 @@ var DownloadUIHelper = {
     ) {
       // we'll need a private window for a private download, or if we're in private-only mode
       // but otherwise we want to open files in a non-private window
-      browserWin = BrowserWindowTracker.getTopWindow({
+      browserWin = lazy.BrowserWindowTracker.getTopWindow({
         private: allowPrivate,
       });
     }
@@ -206,7 +203,7 @@ DownloadPrompter.prototype = {
       // If the preference does not exist, continue with the prompt.
     }
 
-    let leafName = OS.Path.basename(path);
+    let leafName = lazy.OS.Path.basename(path);
 
     let s = DownloadUIHelper.strings;
     return this._prompter.confirm(

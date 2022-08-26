@@ -267,6 +267,8 @@ static cairo_surface_t* CreateSubImageForData(unsigned char* aData,
   cairo_surface_t* image = cairo_image_surface_create_for_data(
       data, GfxFormatToCairoFormat(aFormat), aRect.Width(), aRect.Height(),
       aStride);
+  // Set the subimage's device offset so that in remains in the same place
+  // relative to the parent
   cairo_surface_set_device_offset(image, -aRect.X(), -aRect.Y());
   return image;
 }
@@ -664,12 +666,25 @@ void DrawTargetCairo::Link(const char* aDestination, const Rect& aRect) {
 
   // We need to \-escape any single-quotes in the destination string, in order
   // to pass it via the attributes arg to cairo_tag_begin.
+  //
+  // We also need to escape any backslashes (bug 1748077), as per doc at
+  // https://www.cairographics.org/manual/cairo-Tags-and-Links.html#cairo-tag-begin
+  // The cairo-pdf-interchange backend (used on all platforms EXCEPT macOS)
+  // actually requires that we *doubly* escape the backslashes (this may be a
+  // cairo bug), while the quartz backend is fine with them singly-escaped.
+  //
   // (Encoding of non-ASCII chars etc gets handled later by the PDF backend.)
   nsAutoCString dest(aDestination);
   for (size_t i = dest.Length(); i > 0;) {
     --i;
     if (dest[i] == '\'') {
       dest.ReplaceLiteral(i, 1, "\\'");
+    } else if (dest[i] == '\\') {
+#ifdef XP_MACOSX
+      dest.ReplaceLiteral(i, 1, "\\\\");
+#else
+      dest.ReplaceLiteral(i, 1, "\\\\\\\\");
+#endif
     }
   }
 
@@ -869,7 +884,17 @@ void DrawTargetCairo::DrawSurface(SourceSurface* aSurface, const Rect& aDest,
   cairo_pattern_set_matrix(pat, &src_mat);
   cairo_pattern_set_filter(
       pat, GfxSamplingFilterToCairoFilter(aSurfOptions.mSamplingFilter));
-  cairo_pattern_set_extend(pat, CAIRO_EXTEND_PAD);
+  // For PDF output, we avoid using EXTEND_PAD here because floating-point
+  // error accumulation may lead cairo_pdf_surface to conclude that padding
+  // is needed due to an apparent one- or two-pixel mismatch between source
+  // pattern and destination rect sizes when we're rendering a pdf.js page,
+  // and this forces undesirable fallback to the rasterization codepath
+  // instead of simply replaying the recording.
+  // (See bug 1777209.)
+  cairo_pattern_set_extend(
+      pat, cairo_surface_get_type(mSurface) == CAIRO_SURFACE_TYPE_PDF
+               ? CAIRO_EXTEND_NONE
+               : CAIRO_EXTEND_PAD);
 
   cairo_set_antialias(mContext,
                       GfxAntialiasToCairoAntialias(aOptions.mAntialiasMode));
@@ -909,8 +934,7 @@ void DrawTargetCairo::DrawFilter(FilterNode* aNode, const Rect& aSourceRect,
 
 void DrawTargetCairo::DrawSurfaceWithShadow(SourceSurface* aSurface,
                                             const Point& aDest,
-                                            const DeviceColor& aColor,
-                                            const Point& aOffset, Float aSigma,
+                                            const ShadowOptions& aShadow,
                                             CompositionOp aOperator) {
   if (!IsValid() || !aSurface) {
     gfxCriticalNote << "DrawSurfaceWithShadow with bad surface "
@@ -942,11 +966,11 @@ void DrawTargetCairo::DrawSurfaceWithShadow(SourceSurface* aSurface,
     surf = sourcesurf;
   }
 
-  if (aSigma != 0.0f) {
+  if (aShadow.mSigma != 0.0f) {
     MOZ_ASSERT(cairo_surface_get_type(blursurf) == CAIRO_SURFACE_TYPE_IMAGE);
     Rect extents(0, 0, width, height);
-    AlphaBoxBlur blur(extents, cairo_image_surface_get_stride(blursurf), aSigma,
-                      aSigma);
+    AlphaBoxBlur blur(extents, cairo_image_surface_get_stride(blursurf),
+                      aShadow.mSigma, aShadow.mSigma);
     blur.Blur(cairo_image_surface_get_data(blursurf));
   }
 
@@ -963,8 +987,9 @@ void DrawTargetCairo::DrawSurfaceWithShadow(SourceSurface* aSurface,
     cairo_push_group(mContext);
   }
 
-  cairo_set_source_rgba(mContext, aColor.r, aColor.g, aColor.b, aColor.a);
-  cairo_mask_surface(mContext, blursurf, aOffset.x, aOffset.y);
+  cairo_set_source_rgba(mContext, aShadow.mColor.r, aShadow.mColor.g,
+                        aShadow.mColor.b, aShadow.mColor.a);
+  cairo_mask_surface(mContext, blursurf, aShadow.mOffset.x, aShadow.mOffset.y);
 
   if (blursurf != surf || aSurface->GetFormat() != SurfaceFormat::A8) {
     // Now that the shadow has been drawn, we can draw the surface on top.
@@ -1621,7 +1646,7 @@ void DrawTargetCairo::PushLayerWithBlend(bool aOpaque, Float aOpacity,
 }
 
 void DrawTargetCairo::PopLayer() {
-  MOZ_ASSERT(mPushedLayers.size());
+  MOZ_ASSERT(!mPushedLayers.empty());
 
   cairo_set_operator(mContext, CAIRO_OPERATOR_OVER);
 
@@ -1728,6 +1753,13 @@ already_AddRefed<DrawTarget> DrawTargetCairo::CreateSimilarDrawTarget(
     case CAIRO_SURFACE_TYPE_WIN32:
       similar = cairo_win32_surface_create_with_dib(
           GfxFormatToCairoFormat(aFormat), aSize.width, aSize.height);
+      break;
+#endif
+#ifdef CAIRO_HAS_QUARTZ_SURFACE
+    case CAIRO_SURFACE_TYPE_QUARTZ:
+      similar = cairo_quartz_surface_create_cg_layer(
+          mSurface, GfxFormatToCairoContent(aFormat), aSize.width,
+          aSize.height);
       break;
 #endif
     default:

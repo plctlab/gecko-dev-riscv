@@ -9,28 +9,24 @@
 
 #include "nsDisplayList.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/TypedEnumBits.h"
+#include "mozilla/EnumSet.h"
 
 class nsWindowSizes;
 
 namespace mozilla {
 
+class nsDisplayItem;
+class nsDisplayList;
+
 /**
- * RetainedDisplayListData contains frame invalidation information. It is stored
- * in root frames, and used by RetainedDisplayListBuilder.
+ * RetainedDisplayListData contains frame invalidation information.
  * Currently this is implemented as a map of frame pointers to flags.
  */
 struct RetainedDisplayListData {
-  NS_DECLARE_FRAME_PROPERTY_DELETABLE(DisplayListData, RetainedDisplayListData)
+  enum class FrameFlag : uint8_t { Modified, HasProps, HadWillChange };
+  using FrameFlags = mozilla::EnumSet<FrameFlag, uint8_t>;
 
-  enum class FrameFlags : uint8_t {
-    None = 0,
-    Modified = 1 << 0,
-    HasProps = 1 << 1,
-    HadWillChange = 1 << 2
-  };
-
-  RetainedDisplayListData() : mModifiedFramesCount(0) {}
+  RetainedDisplayListData();
 
   /**
    * Adds the frame to modified frames list.
@@ -42,13 +38,11 @@ struct RetainedDisplayListData {
    */
   void Clear() {
     mFrames.Clear();
-    mModifiedFramesCount = 0;
+    mModifiedFrameCount = 0;
   }
 
   /**
-   * Returns a mutable reference to flags set for the given |aFrame|. If the
-   * frame does not exist in this RetainedDisplayListData, it is added with
-   * default constructible flags FrameFlags::None.
+   * Returns a mutable reference to flags set for the given |aFrame|.
    */
   FrameFlags& Flags(nsIFrame* aFrame) { return mFrames.LookupOrInsert(aFrame); }
 
@@ -58,15 +52,29 @@ struct RetainedDisplayListData {
    */
   FrameFlags GetFlags(nsIFrame* aFrame) const { return mFrames.Get(aFrame); }
 
+  bool IsModified(nsIFrame* aFrame) const {
+    return GetFlags(aFrame).contains(FrameFlag::Modified);
+  }
+
+  bool HasProps(nsIFrame* aFrame) const {
+    return GetFlags(aFrame).contains(FrameFlag::HasProps);
+  }
+
+  bool HadWillChange(nsIFrame* aFrame) const {
+    return GetFlags(aFrame).contains(FrameFlag::HadWillChange);
+  }
+
   /**
    * Returns an iterator to the underlying frame storage.
    */
   auto ConstIterator() { return mFrames.ConstIter(); }
 
   /**
-   * Returns the count of modified frames in this RetainedDisplayListData.
+   * Returns true if the modified frame limit has been reached.
    */
-  uint32_t ModifiedFramesCount() const { return mModifiedFramesCount; }
+  bool AtModifiedFrameLimit() {
+    return mModifiedFrameCount >= mModifiedFrameLimit;
+  }
 
   /**
    * Removes the given |aFrame| from this RetainedDisplayListData.
@@ -75,22 +83,9 @@ struct RetainedDisplayListData {
 
  private:
   nsTHashMap<nsPtrHashKey<nsIFrame>, FrameFlags> mFrames;
-  uint32_t mModifiedFramesCount;
+  uint32_t mModifiedFrameCount = 0;
+  uint32_t mModifiedFrameLimit;  // initialized to a pref value in constructor
 };
-
-MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(RetainedDisplayListData::FrameFlags)
-
-/**
- * Returns RetainedDisplayListData property for the given |aRootFrame|, or
- * nullptr if the property is not set.
- */
-RetainedDisplayListData* GetRetainedDisplayListData(nsIFrame* aRootFrame);
-
-/**
- * Returns RetainedDisplayListData property for the given |aRootFrame|. Creates
- * and sets a new RetainedDisplayListData property if it is not already set.
- */
-RetainedDisplayListData* GetOrSetRetainedDisplayListData(nsIFrame* aRootFrame);
 
 enum class PartialUpdateResult { Failed, NoChange, Updated };
 
@@ -166,10 +161,11 @@ struct RetainedDisplayListMetrics {
   PartialUpdateResult mPartialUpdateResult;
 };
 
-struct RetainedDisplayListBuilder {
+class RetainedDisplayListBuilder {
+ public:
   RetainedDisplayListBuilder(nsIFrame* aReferenceFrame,
                              nsDisplayListBuilderMode aMode, bool aBuildCaret)
-      : mBuilder(aReferenceFrame, aMode, aBuildCaret, true) {}
+      : mBuilder(aReferenceFrame, aMode, aBuildCaret, true), mList(&mBuilder) {}
   ~RetainedDisplayListBuilder() { mList.DeleteAll(&mBuilder); }
 
   nsDisplayListBuilder* Builder() { return &mBuilder; }
@@ -178,20 +174,27 @@ struct RetainedDisplayListBuilder {
 
   RetainedDisplayListMetrics* Metrics() { return &mMetrics; }
 
+  RetainedDisplayListData* Data() { return &mData; }
+
   PartialUpdateResult AttemptPartialUpdate(nscolor aBackstop);
 
   /**
-   * Iterates through the display list builder reference frame document and
-   * subdocuments, and clears the modified frame lists from the root frames.
-   * Also clears the frame properties set by RetainedDisplayListBuilder for all
-   * the frames in the modified frame lists.
+   * Clears the modified state for frames in the retained display list data.
    */
   void ClearFramesWithProps();
+
+  void ClearRetainedData();
+
+  void ClearReuseableDisplayItems() { mBuilder.ClearReuseableDisplayItems(); }
+
   void AddSizeOfIncludingThis(nsWindowSizes&) const;
 
   NS_DECLARE_FRAME_PROPERTY_DELETABLE(Cached, RetainedDisplayListBuilder)
 
  private:
+  void GetModifiedAndFramesWithProps(nsTArray<nsIFrame*>* aOutModifiedFrames,
+                                     nsTArray<nsIFrame*>* aOutFramesWithProps);
+
   void IncrementSubDocPresShellPaintCount(nsDisplayItem* aItem);
 
   /**
@@ -248,15 +251,32 @@ struct RetainedDisplayListBuilder {
                     const bool aStopAtStackingContext, nsRect* aOutDirty,
                     nsIFrame** aOutModifiedAGR);
 
+  nsIFrame* RootReferenceFrame() { return mBuilder.RootReferenceFrame(); }
+
+  /**
+   * Tries to perform a simple partial display list build without display list
+   * merging. In this mode, only the top-level stacking context items and their
+   * contents are reused, when the frame subtree has not been modified.
+   */
+  bool TrySimpleUpdate(const nsTArray<nsIFrame*>& aModifiedFrames,
+                       nsTArray<nsIFrame*>& aOutFramesWithProps);
+
   friend class MergeState;
 
   nsDisplayListBuilder mBuilder;
   RetainedDisplayList mList;
-  nsRect mPreviousVisibleRect;
   WeakFrame mPreviousCaret;
   RetainedDisplayListMetrics mMetrics;
+  RetainedDisplayListData mData;
 };
 
+namespace RDLUtils {
+
+void AssertFrameSubtreeUnmodified(const nsIFrame* aFrame);
+void AssertDisplayItemUnmodified(nsDisplayItem* aItem);
+void AssertDisplayListUnmodified(nsDisplayList* aList);
+
+}  // namespace RDLUtils
 }  // namespace mozilla
 
 #endif  // RETAINEDDISPLAYLISTBUILDER_H_

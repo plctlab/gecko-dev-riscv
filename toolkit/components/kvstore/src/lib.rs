@@ -25,11 +25,8 @@ mod task;
 use atomic_refcell::AtomicRefCell;
 use error::KeyValueError;
 use libc::c_void;
-use moz_task::{
-    create_background_task_queue, dispatch_background_task_with_options, DispatchOptions,
-    TaskRunnable,
-};
-use nserror::{nsresult, NS_ERROR_FAILURE, NS_ERROR_NO_AGGREGATION, NS_OK};
+use moz_task::{create_background_task_queue, DispatchOptions, TaskRunnable};
+use nserror::{nsresult, NS_ERROR_FAILURE, NS_OK};
 use nsstring::{nsACString, nsCString};
 use owned_value::{owned_to_variant, variant_to_owned};
 use rkv::backend::{SafeModeDatabase, SafeModeEnvironment};
@@ -47,8 +44,7 @@ use xpcom::{
     getter_addrefs,
     interfaces::{
         nsIKeyValueDatabaseCallback, nsIKeyValueEnumeratorCallback, nsIKeyValuePair,
-        nsIKeyValueVariantCallback, nsIKeyValueVoidCallback, nsISerialEventTarget, nsISupports,
-        nsIVariant,
+        nsIKeyValueVariantCallback, nsIKeyValueVoidCallback, nsISerialEventTarget, nsIVariant,
     },
     nsIID, xpcom, xpcom_method, RefPtr,
 };
@@ -59,15 +55,10 @@ type KeyValuePairResult = Result<(String, OwnedValue), KeyValueError>;
 
 #[no_mangle]
 pub unsafe extern "C" fn nsKeyValueServiceConstructor(
-    outer: *const nsISupports,
     iid: &nsIID,
     result: *mut *mut c_void,
 ) -> nsresult {
     *result = ptr::null_mut();
-
-    if !outer.is_null() {
-        return NS_ERROR_NO_AGGREGATION;
-    }
 
     let service = KeyValueService::new();
     service.QueryInterface(iid, result)
@@ -96,10 +87,8 @@ pub unsafe extern "C" fn nsKeyValueServiceConstructor(
 // The XPCOM methods are implemented using the xpcom_method! declarative macro
 // from the xpcom crate.
 
-#[derive(xpcom)]
-#[xpimplements(nsIKeyValueService)]
-#[refcnt = "atomic"]
-pub struct InitKeyValueService {}
+#[xpcom(implement(nsIKeyValueService), atomic)]
+pub struct KeyValueService {}
 
 impl KeyValueService {
     fn new() -> RefPtr<KeyValueService> {
@@ -126,17 +115,13 @@ impl KeyValueService {
             nsCString::from(name),
         ));
 
-        dispatch_background_task_with_options(
-            RefPtr::new(TaskRunnable::new("KVService::GetOrCreate", task)?.coerce()),
-            DispatchOptions::default().may_block(true),
-        )
+        TaskRunnable::new("KVService::GetOrCreate", task)?
+            .dispatch_background_task_with_options(DispatchOptions::default().may_block(true))
     }
 }
 
-#[derive(xpcom)]
-#[xpimplements(nsIKeyValueDatabase)]
-#[refcnt = "atomic"]
-pub struct InitKeyValueDatabase {
+#[xpcom(implement(nsIKeyValueDatabase), atomic)]
+pub struct KeyValueDatabase {
     rkv: Arc<RwLock<Rkv>>,
     store: SingleStore,
     queue: RefPtr<nsISerialEventTarget>,
@@ -185,18 +170,22 @@ impl KeyValueDatabase {
     xpcom_method!(
         write_many => WriteMany(
             callback: *const nsIKeyValueVoidCallback,
-            pairs: *const ThinVec<RefPtr<nsIKeyValuePair>>
+            pairs: *const ThinVec<Option<RefPtr<nsIKeyValuePair>>>
         )
     );
 
     fn write_many(
         &self,
         callback: &nsIKeyValueVoidCallback,
-        pairs: &ThinVec<RefPtr<nsIKeyValuePair>>,
+        pairs: &ThinVec<Option<RefPtr<nsIKeyValuePair>>>,
     ) -> Result<(), nsresult> {
         let mut entries = Vec::with_capacity(pairs.len());
 
         for pair in pairs {
+            let pair = pair
+                .as_ref()
+                .ok_or(nsresult::from(KeyValueError::UnexpectedValue))?;
+
             let mut key = nsCString::new();
             unsafe { pair.GetKey(&mut *key) }.to_result()?;
             if key.is_empty() {
@@ -319,10 +308,8 @@ impl KeyValueDatabase {
     }
 }
 
-#[derive(xpcom)]
-#[xpimplements(nsIKeyValueEnumerator)]
-#[refcnt = "atomic"]
-pub struct InitKeyValueEnumerator {
+#[xpcom(implement(nsIKeyValueEnumerator), atomic)]
+pub struct KeyValueEnumerator {
     iter: AtomicRefCell<IntoIter<KeyValuePairResult>>,
 }
 
@@ -356,10 +343,8 @@ impl KeyValueEnumerator {
     }
 }
 
-#[derive(xpcom)]
-#[xpimplements(nsIKeyValuePair)]
-#[refcnt = "atomic"]
-pub struct InitKeyValuePair {
+#[xpcom(implement(nsIKeyValuePair), atomic)]
+pub struct KeyValuePair {
     key: String,
     value: OwnedValue,
 }

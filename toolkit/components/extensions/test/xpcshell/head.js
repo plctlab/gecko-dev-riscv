@@ -1,15 +1,14 @@
 "use strict";
-
 /* exported createHttpServer, cleanupDir, clearCache, optionalPermissionsPromptHandler, promiseConsoleOutput,
             promiseQuotaManagerServiceReset, promiseQuotaManagerServiceClear,
-            runWithPrefs, testEnv, withHandlingUserInput, resetHandlingUserInput */
+            runWithPrefs, testEnv, withHandlingUserInput, resetHandlingUserInput,
+            assertPersistentListeners, promiseExtensionEvent */
 
 var { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 var {
   clearInterval,
@@ -41,6 +40,14 @@ PromiseTestUtils.allowMatchingRejectionsGlobally(
   /Message manager disconnected/
 );
 
+// Persistent Listener test functionality
+const { assertPersistentListeners } = ExtensionTestUtils.testAssertions;
+
+// https_first automatically upgrades http to https, but the tests are not
+// designed to expect that. And it is not easy to change that because
+// nsHttpServer does not support https (bug 1742061). So disable https_first.
+Services.prefs.setBoolPref("dom.security.https_first", false);
+
 // These values may be changed in later head files and tested in check_remote
 // below.
 Services.prefs.setBoolPref("browser.tabs.remote.autostart", false);
@@ -49,7 +56,7 @@ const testEnv = {
   expectRemote: false,
 };
 
-add_task(function check_remote() {
+add_setup(function check_remote() {
   Assert.equal(
     WebExtensionPolicy.useRemoteWebExtensions,
     testEnv.expectRemote,
@@ -306,3 +313,9 @@ const optionalPermissionsPromptHandler = {
     }
   },
 };
+
+function promiseExtensionEvent(wrapper, event) {
+  return new Promise(resolve => {
+    wrapper.extension.once(event, resolve);
+  });
+}

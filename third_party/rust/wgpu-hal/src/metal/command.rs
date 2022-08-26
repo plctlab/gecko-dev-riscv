@@ -1,6 +1,7 @@
 use super::{conv, AsNative};
 use std::{mem, ops::Range};
 
+// has to match `Temp::binding_sizes`
 const WORD_SIZE: usize = 4;
 
 impl Default for super::CommandState {
@@ -15,6 +16,7 @@ impl Default for super::CommandState {
             stage_infos: Default::default(),
             storage_buffer_length_map: Default::default(),
             work_group_memory_sizes: Vec::new(),
+            push_constants: Vec::new(),
         }
     }
 }
@@ -23,8 +25,10 @@ impl super::CommandEncoder {
     fn enter_blit(&mut self) -> &mtl::BlitCommandEncoderRef {
         if self.state.blit.is_none() {
             debug_assert!(self.state.render.is_none() && self.state.compute.is_none());
-            let cmd_buf = self.raw_cmd_buf.as_ref().unwrap();
-            self.state.blit = Some(cmd_buf.new_blit_command_encoder().to_owned());
+            objc::rc::autoreleasepool(|| {
+                let cmd_buf = self.raw_cmd_buf.as_ref().unwrap();
+                self.state.blit = Some(cmd_buf.new_blit_command_encoder().to_owned());
+            });
         }
         self.state.blit.as_ref().unwrap()
     }
@@ -35,13 +39,15 @@ impl super::CommandEncoder {
         }
     }
 
-    fn enter_any(&mut self) -> &mtl::CommandEncoderRef {
+    fn enter_any(&mut self) -> Option<&mtl::CommandEncoderRef> {
         if let Some(ref encoder) = self.state.render {
-            encoder
+            Some(encoder)
         } else if let Some(ref encoder) = self.state.compute {
-            encoder
+            Some(encoder)
+        } else if let Some(ref encoder) = self.state.blit {
+            Some(encoder)
         } else {
-            self.enter_blit()
+            None
         }
     }
 
@@ -58,22 +64,31 @@ impl super::CommandState {
         self.stage_infos.fs.clear();
         self.stage_infos.cs.clear();
         self.work_group_memory_sizes.clear();
+        self.push_constants.clear();
     }
 
     fn make_sizes_buffer_update<'a>(
         &self,
         stage: naga::ShaderStage,
-        result_sizes: &'a mut Vec<wgt::BufferSize>,
-    ) -> Option<(u32, &'a [wgt::BufferSize])> {
+        result_sizes: &'a mut Vec<u32>,
+    ) -> Option<(u32, &'a [u32])> {
         let stage_info = &self.stage_infos[stage];
         let slot = stage_info.sizes_slot?;
+
         result_sizes.clear();
-        for br in stage_info.sized_bindings.iter() {
-            // If it's None, this isn't the right time to update the sizes
-            let size = self.storage_buffer_length_map.get(br)?;
-            result_sizes.push(*size);
+        result_sizes.extend(
+            stage_info
+                .sized_bindings
+                .iter()
+                .filter_map(|br| self.storage_buffer_length_map.get(br))
+                .map(|size| size.get().min(!0u32 as u64) as u32),
+        );
+
+        if !result_sizes.is_empty() {
+            Some((slot as _, result_sizes))
+        } else {
+            None
         }
-        Some((slot as _, result_sizes))
     }
 }
 
@@ -97,16 +112,29 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
 
         Ok(())
     }
+
     unsafe fn discard_encoding(&mut self) {
         self.leave_blit();
+        // when discarding, we don't have a guarantee that
+        // everything is in a good state, so check carefully
+        if let Some(encoder) = self.state.render.take() {
+            encoder.end_encoding();
+        }
+        if let Some(encoder) = self.state.compute.take() {
+            encoder.end_encoding();
+        }
         self.raw_cmd_buf = None;
     }
+
     unsafe fn end_encoding(&mut self) -> Result<super::CommandBuffer, crate::DeviceError> {
         self.leave_blit();
+        assert!(self.state.render.is_none());
+        assert!(self.state.compute.is_none());
         Ok(super::CommandBuffer {
             raw: self.raw_cmd_buf.take().unwrap(),
         })
     }
+
     unsafe fn reset_all<I>(&mut self, _cmd_bufs: I)
     where
         I: Iterator<Item = super::CommandBuffer>,
@@ -129,74 +157,6 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     unsafe fn clear_buffer(&mut self, buffer: &super::Buffer, range: crate::MemoryRange) {
         let encoder = self.enter_blit();
         encoder.fill_buffer(&buffer.raw, conv::map_range(&range), 0);
-    }
-
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &super::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    ) {
-        let shared = self.shared.clone();
-        let encoder = self.enter_blit();
-
-        let format_desc = texture.format.describe();
-
-        let mip_range = subresource_range.base_mip_level..match subresource_range.mip_level_count {
-            Some(c) => subresource_range.base_mip_level + c.get(),
-            None => texture.mip_levels,
-        };
-        let array_range = subresource_range.base_array_layer
-            ..match subresource_range.array_layer_count {
-                Some(c) => subresource_range.base_array_layer + c.get(),
-                None => texture.array_layers,
-            };
-
-        for mip_level in mip_range {
-            // Note that Metal requires this only to be a multiple of the pixel size, not some other constant like in other APIs.
-            let mip_size = texture.copy_size.at_mip_level(mip_level);
-            let bytes_per_row = mip_size.width as u64 / format_desc.block_dimensions.0 as u64
-                * format_desc.block_size as u64;
-            let max_rows_per_copy = super::ZERO_BUFFER_SIZE / bytes_per_row;
-            // round down to a multiple of rows needed by the texture format
-            let max_rows_per_copy = max_rows_per_copy / format_desc.block_dimensions.1 as u64
-                * format_desc.block_dimensions.1 as u64;
-            assert!(max_rows_per_copy > 0, "Zero buffer size is too small to fill a single row of a texture of type {:?}, size {:?} and format {:?}",
-                        texture.raw_type, texture.copy_size, texture.format);
-
-            for array_layer in array_range.clone() {
-                // 3D textures are quickly massive in memory size, so we don't bother trying to do more than one layer at once.
-                for z in 0..mip_size.depth as u64 {
-                    // May need multiple copies for each subresource! We assume that we never need to split a row.
-                    let mut num_rows_left = mip_size.height as u64;
-                    while num_rows_left > 0 {
-                        let num_rows = num_rows_left.min(max_rows_per_copy);
-                        let source_size = mtl::MTLSize {
-                            width: mip_size.width as u64,
-                            height: num_rows,
-                            depth: 1,
-                        };
-                        let destination_origion = mtl::MTLOrigin {
-                            x: 0,
-                            y: mip_size.height as u64 - num_rows_left,
-                            z,
-                        };
-                        encoder.copy_from_buffer_to_texture(
-                            &shared.zero_buffer,
-                            0,
-                            bytes_per_row,
-                            bytes_per_row * num_rows,
-                            source_size,
-                            &texture.raw,
-                            array_layer as u64,
-                            mip_level as u64,
-                            destination_origion,
-                            mtl::MTLBlitOption::empty(),
-                        );
-                        num_rows_left -= num_rows;
-                    }
-                }
-            }
-        }
     }
 
     unsafe fn copy_buffer_to_buffer<T>(
@@ -388,80 +348,84 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         self.begin_pass();
         self.state.index = None;
 
-        let descriptor = mtl::RenderPassDescriptor::new();
-        //TODO: set visibility results buffer
+        objc::rc::autoreleasepool(|| {
+            let descriptor = mtl::RenderPassDescriptor::new();
+            //TODO: set visibility results buffer
 
-        for (i, at) in desc.color_attachments.iter().enumerate() {
-            let at_descriptor = descriptor.color_attachments().object_at(i as u64).unwrap();
-            at_descriptor.set_texture(Some(&at.target.view.raw));
-            if let Some(ref resolve) = at.resolve_target {
-                //Note: the selection of levels and slices is already handled by `TextureView`
-                at_descriptor.set_resolve_texture(Some(&resolve.view.raw));
+            for (i, at) in desc.color_attachments.iter().enumerate() {
+                if let Some(at) = at.as_ref() {
+                    let at_descriptor = descriptor.color_attachments().object_at(i as u64).unwrap();
+                    at_descriptor.set_texture(Some(&at.target.view.raw));
+                    if let Some(ref resolve) = at.resolve_target {
+                        //Note: the selection of levels and slices is already handled by `TextureView`
+                        at_descriptor.set_resolve_texture(Some(&resolve.view.raw));
+                    }
+                    let load_action = if at.ops.contains(crate::AttachmentOps::LOAD) {
+                        mtl::MTLLoadAction::Load
+                    } else {
+                        at_descriptor.set_clear_color(conv::map_clear_color(&at.clear_value));
+                        mtl::MTLLoadAction::Clear
+                    };
+                    let store_action = conv::map_store_action(
+                        at.ops.contains(crate::AttachmentOps::STORE),
+                        at.resolve_target.is_some(),
+                    );
+                    at_descriptor.set_load_action(load_action);
+                    at_descriptor.set_store_action(store_action);
+                }
             }
-            let load_action = if at.ops.contains(crate::AttachmentOps::LOAD) {
-                mtl::MTLLoadAction::Load
-            } else {
-                at_descriptor.set_clear_color(conv::map_clear_color(&at.clear_value));
-                mtl::MTLLoadAction::Clear
-            };
-            let store_action = conv::map_store_action(
-                at.ops.contains(crate::AttachmentOps::STORE),
-                at.resolve_target.is_some(),
-            );
-            at_descriptor.set_load_action(load_action);
-            at_descriptor.set_store_action(store_action);
-        }
 
-        if let Some(ref at) = desc.depth_stencil_attachment {
-            if at.target.view.aspects.contains(crate::FormatAspects::DEPTH) {
-                let at_descriptor = descriptor.depth_attachment().unwrap();
-                at_descriptor.set_texture(Some(&at.target.view.raw));
+            if let Some(ref at) = desc.depth_stencil_attachment {
+                if at.target.view.aspects.contains(crate::FormatAspects::DEPTH) {
+                    let at_descriptor = descriptor.depth_attachment().unwrap();
+                    at_descriptor.set_texture(Some(&at.target.view.raw));
 
-                let load_action = if at.depth_ops.contains(crate::AttachmentOps::LOAD) {
-                    mtl::MTLLoadAction::Load
-                } else {
-                    at_descriptor.set_clear_depth(at.clear_value.0 as f64);
-                    mtl::MTLLoadAction::Clear
-                };
-                let store_action = if at.depth_ops.contains(crate::AttachmentOps::STORE) {
-                    mtl::MTLStoreAction::Store
-                } else {
-                    mtl::MTLStoreAction::DontCare
-                };
-                at_descriptor.set_load_action(load_action);
-                at_descriptor.set_store_action(store_action);
+                    let load_action = if at.depth_ops.contains(crate::AttachmentOps::LOAD) {
+                        mtl::MTLLoadAction::Load
+                    } else {
+                        at_descriptor.set_clear_depth(at.clear_value.0 as f64);
+                        mtl::MTLLoadAction::Clear
+                    };
+                    let store_action = if at.depth_ops.contains(crate::AttachmentOps::STORE) {
+                        mtl::MTLStoreAction::Store
+                    } else {
+                        mtl::MTLStoreAction::DontCare
+                    };
+                    at_descriptor.set_load_action(load_action);
+                    at_descriptor.set_store_action(store_action);
+                }
+                if at
+                    .target
+                    .view
+                    .aspects
+                    .contains(crate::FormatAspects::STENCIL)
+                {
+                    let at_descriptor = descriptor.stencil_attachment().unwrap();
+                    at_descriptor.set_texture(Some(&at.target.view.raw));
+
+                    let load_action = if at.stencil_ops.contains(crate::AttachmentOps::LOAD) {
+                        mtl::MTLLoadAction::Load
+                    } else {
+                        at_descriptor.set_clear_stencil(at.clear_value.1);
+                        mtl::MTLLoadAction::Clear
+                    };
+                    let store_action = if at.stencil_ops.contains(crate::AttachmentOps::STORE) {
+                        mtl::MTLStoreAction::Store
+                    } else {
+                        mtl::MTLStoreAction::DontCare
+                    };
+                    at_descriptor.set_load_action(load_action);
+                    at_descriptor.set_store_action(store_action);
+                }
             }
-            if at
-                .target
-                .view
-                .aspects
-                .contains(crate::FormatAspects::STENCIL)
-            {
-                let at_descriptor = descriptor.stencil_attachment().unwrap();
-                at_descriptor.set_texture(Some(&at.target.view.raw));
 
-                let load_action = if at.depth_ops.contains(crate::AttachmentOps::LOAD) {
-                    mtl::MTLLoadAction::Load
-                } else {
-                    at_descriptor.set_clear_stencil(at.clear_value.1);
-                    mtl::MTLLoadAction::Clear
-                };
-                let store_action = if at.depth_ops.contains(crate::AttachmentOps::STORE) {
-                    mtl::MTLStoreAction::Store
-                } else {
-                    mtl::MTLStoreAction::DontCare
-                };
-                at_descriptor.set_load_action(load_action);
-                at_descriptor.set_store_action(store_action);
+            let raw = self.raw_cmd_buf.as_ref().unwrap();
+            let encoder = raw.new_render_command_encoder(descriptor);
+            if let Some(label) = desc.label {
+                encoder.set_label(label);
             }
-        }
-
-        let raw = self.raw_cmd_buf.as_ref().unwrap();
-        let encoder = raw.new_render_command_encoder(descriptor);
-        if let Some(label) = desc.label {
-            encoder.set_label(label);
-        }
-        self.state.render = Some(encoder.to_owned());
+            self.state.render = Some(encoder.to_owned());
+        });
     }
 
     unsafe fn end_render_pass(&mut self) {
@@ -637,22 +601,61 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
 
     unsafe fn set_push_constants(
         &mut self,
-        _layout: &super::PipelineLayout,
-        _stages: wgt::ShaderStages,
-        _offset: u32,
-        _data: &[u32],
+        layout: &super::PipelineLayout,
+        stages: wgt::ShaderStages,
+        offset: u32,
+        data: &[u32],
     ) {
-        //TODO
+        let state_pc = &mut self.state.push_constants;
+        if state_pc.len() < layout.total_push_constants as usize {
+            state_pc.resize(layout.total_push_constants as usize, 0);
+        }
+        assert_eq!(offset as usize % WORD_SIZE, 0);
+
+        let offset = offset as usize / WORD_SIZE;
+        state_pc[offset..offset + data.len()].copy_from_slice(data);
+
+        if stages.contains(wgt::ShaderStages::COMPUTE) {
+            self.state.compute.as_ref().unwrap().set_bytes(
+                layout.push_constants_infos.cs.unwrap().buffer_index as _,
+                (layout.total_push_constants as usize * WORD_SIZE) as _,
+                state_pc.as_ptr() as _,
+            )
+        }
+        if stages.contains(wgt::ShaderStages::VERTEX) {
+            self.state.render.as_ref().unwrap().set_vertex_bytes(
+                layout.push_constants_infos.vs.unwrap().buffer_index as _,
+                (layout.total_push_constants as usize * WORD_SIZE) as _,
+                state_pc.as_ptr() as _,
+            )
+        }
+        if stages.contains(wgt::ShaderStages::FRAGMENT) {
+            self.state.render.as_ref().unwrap().set_fragment_bytes(
+                layout.push_constants_infos.fs.unwrap().buffer_index as _,
+                (layout.total_push_constants as usize * WORD_SIZE) as _,
+                state_pc.as_ptr() as _,
+            )
+        }
     }
 
     unsafe fn insert_debug_marker(&mut self, label: &str) {
-        self.enter_any().insert_debug_signpost(label);
+        if let Some(encoder) = self.enter_any() {
+            encoder.insert_debug_signpost(label);
+        }
     }
     unsafe fn begin_debug_marker(&mut self, group_label: &str) {
-        self.enter_any().push_debug_group(group_label);
+        if let Some(encoder) = self.enter_any() {
+            encoder.push_debug_group(group_label);
+        } else if let Some(ref buf) = self.raw_cmd_buf {
+            buf.push_debug_group(group_label);
+        }
     }
     unsafe fn end_debug_marker(&mut self) {
-        self.enter_any().pop_debug_group();
+        if let Some(encoder) = self.enter_any() {
+            encoder.pop_debug_group();
+        } else if let Some(ref buf) = self.raw_cmd_buf {
+            buf.pop_debug_group();
+        }
     }
 
     unsafe fn set_render_pipeline(&mut self, pipeline: &super::RenderPipeline) {

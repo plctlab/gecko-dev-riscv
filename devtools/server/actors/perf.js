@@ -26,21 +26,16 @@ function _bridgeEvents(actor, names) {
  * The PerfActor wraps the Gecko Profiler interface
  */
 exports.PerfActor = ActorClassWithSpec(perfSpec, {
-  initialize: function(conn, targetActor) {
+  initialize(conn, targetActor) {
     Actor.prototype.initialize.call(this, conn);
     // The "bridge" is the actual implementation of the actor. It is separated
     // for historical reasons, and could be merged into this class.
     this.bridge = new ActorReadyGeckoProfilerInterface();
 
-    _bridgeEvents(this, [
-      "profile-locked-by-private-browsing",
-      "profile-unlocked-from-private-browsing",
-      "profiler-started",
-      "profiler-stopped",
-    ]);
+    _bridgeEvents(this, ["profiler-started", "profiler-stopped"]);
   },
 
-  destroy: function(conn) {
+  destroy(conn) {
     Actor.prototype.destroy.call(this, conn);
     this.bridge.destroy();
   },
@@ -54,6 +49,5 @@ exports.PerfActor = ActorClassWithSpec(perfSpec, {
   getProfileAndStopProfiler: actorBridgeWithSpec("getProfileAndStopProfiler"),
   isActive: actorBridgeWithSpec("isActive"),
   isSupportedPlatform: actorBridgeWithSpec("isSupportedPlatform"),
-  isLockedForPrivateBrowsing: actorBridgeWithSpec("isLockedForPrivateBrowsing"),
   getSupportedFeatures: actorBridgeWithSpec("getSupportedFeatures"),
 });

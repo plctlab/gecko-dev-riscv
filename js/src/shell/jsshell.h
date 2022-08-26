@@ -12,6 +12,7 @@
 #include "mozilla/TimeStamp.h"
 
 #include "builtin/MapObject.h"
+#include "js/CompileOptions.h"
 #include "js/GCVector.h"
 #include "shell/ModuleLoader.h"
 #include "threading/ConditionVariable.h"
@@ -105,6 +106,7 @@ extern bool encodeSelfHostedCode;
 extern bool enableCodeCoverage;
 extern bool enableDisassemblyDumps;
 extern bool offthreadCompilation;
+extern JS::DelazificationOption defaultDelazificationMode;
 extern bool enableAsmJS;
 extern bool enableWasm;
 extern bool enableSharedMemory;
@@ -112,12 +114,9 @@ extern bool enableWasmBaseline;
 extern bool enableWasmOptimizing;
 
 #define WASM_FEATURE(NAME, ...) extern bool enableWasm##NAME;
-JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE);
+JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE, WASM_FEATURE);
 #undef WASM_FEATURE
 
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-extern bool enableWasmSimdWormhole;
-#endif
 extern bool enableWasmVerbose;
 extern bool enableTestWasmAwaitTier2;
 extern bool enableSourcePragmas;
@@ -126,17 +125,24 @@ extern bool enableAsyncStackCaptureDebuggeeOnly;
 extern bool enableStreams;
 extern bool enableReadableByteStreams;
 extern bool enableBYOBStreamReaders;
-extern bool enableWritableStreams;
+
 extern bool enableReadableStreamPipeTo;
 extern bool enableWeakRefs;
 extern bool enableToSource;
 extern bool enablePropertyErrorMessageFix;
-extern bool useOffThreadParseGlobal;
 extern bool enableIteratorHelpers;
+extern bool enableShadowRealms;
+extern bool enableArrayGrouping;
 extern bool enablePrivateClassFields;
 extern bool enablePrivateClassMethods;
-extern bool enableErgonomicBrandChecks;
+#ifdef ENABLE_CHANGE_ARRAY_BY_COPY
+extern bool enableChangeArrayByCopy;
+#endif
+#ifdef ENABLE_NEW_SET_METHODS
+extern bool enableNewSetMethods;
+#endif
 extern bool enableClassStaticBlocks;
+extern bool enableImportAssertions;
 #ifdef JS_GC_ZEAL
 extern uint32_t gZealBits;
 extern uint32_t gZealFrequency;
@@ -170,17 +176,16 @@ extern UniqueChars processWideModuleLoadPath;
 bool CreateAlias(JSContext* cx, const char* dstName,
                  JS::HandleObject namespaceObj, const char* srcName);
 
-enum class ScriptKind { Script, ScriptStencil, DecodeScript, Module };
+enum class OffThreadJobKind { CompileScript, CompileModule, Decode };
 
 class NonshrinkingGCObjectVector
-    : public GCVector<JSObject*, 0, SystemAllocPolicy> {
+    : public GCVector<HeapPtr<JSObject*>, 0, SystemAllocPolicy> {
  public:
-  void sweep() {
-    for (JSObject*& obj : *this) {
-      if (JS::GCPolicy<JSObject*>::needsSweep(&obj)) {
-        obj = nullptr;
-      }
+  bool traceWeak(JSTracer* trc) {
+    for (HeapPtr<JSObject*>& obj : *this) {
+      TraceWeakEdge(trc, &obj, "NonshrinkingGCObjectVector element");
     }
+    return true;
   }
 };
 
@@ -223,7 +228,7 @@ struct ShellContext {
   /*
    * Watchdog thread state.
    */
-  js::Mutex watchdogLock;
+  js::Mutex watchdogLock MOZ_UNANNOTATED;
   js::ConditionVariable watchdogWakeup;
   mozilla::Maybe<js::Thread> watchdogThread;
   mozilla::Maybe<mozilla::TimeStamp> watchdogTimeout;
@@ -246,7 +251,7 @@ struct ShellContext {
   UniquePtr<MarkBitObservers> markObservers;
 
   // Off-thread parse state.
-  js::Monitor offThreadMonitor;
+  js::Monitor offThreadMonitor MOZ_UNANNOTATED;
   Vector<OffThreadJob*, 0, SystemAllocPolicy> offThreadJobs;
 
   // Queued finalization registry cleanup jobs.
@@ -258,9 +263,6 @@ extern ShellContext* GetShellContext(JSContext* cx);
 
 [[nodiscard]] extern bool PrintStackTrace(JSContext* cx,
                                           JS::Handle<JSObject*> stackObj);
-
-extern JSObject* CreateScriptPrivate(JSContext* cx,
-                                     HandleString path = nullptr);
 
 } /* namespace shell */
 } /* namespace js */

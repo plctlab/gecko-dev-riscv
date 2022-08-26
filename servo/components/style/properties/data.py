@@ -462,6 +462,8 @@ class Longhand(Property):
                 "Clear",
                 "ColumnCount",
                 "Contain",
+                "ContentVisibility",
+                "ContainerType",
                 "Display",
                 "FillRule",
                 "Float",
@@ -486,7 +488,6 @@ class Longhand(Property):
                 "MasonryAutoFlow",
                 "MozForceBrokenImageIcon",
                 "text::MozControlCharacterVisibility",
-                "MozListReversed",
                 "MathDepth",
                 "MozScriptMinSize",
                 "MozScriptSizeMultiplier",
@@ -502,12 +503,15 @@ class Longhand(Property):
                 "OverscrollBehavior",
                 "Percentage",
                 "PositiveIntegerOrNone",
+                "PrintColorAdjust",
                 "Resize",
                 "RubyPosition",
                 "SVGOpacity",
                 "SVGPaintOrder",
+                "ScrollbarGutter",
                 "ScrollSnapAlign",
                 "ScrollSnapAxis",
+                "ScrollSnapStop",
                 "ScrollSnapStrictness",
                 "ScrollSnapType",
                 "TextAlign",
@@ -602,6 +606,7 @@ class Alias(object):
         self.gecko_pref = gecko_pref
         self.transitionable = original.transitionable
         self.rule_types_allowed = original.rule_types_allowed
+        self.flags = original.flags
 
     @staticmethod
     def type():
@@ -888,6 +893,7 @@ class PropertyRestrictions:
                 "unicode-bidi",
                 "direction",
                 "content",
+                "line-height",
                 "-moz-osx-font-smoothing",
             ]
             + PropertyRestrictions.spec(data, "css-fonts")

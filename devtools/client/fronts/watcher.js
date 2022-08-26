@@ -60,7 +60,7 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
     this.emit("target-available", front);
   }
 
-  _onTargetDestroyed(form) {
+  _onTargetDestroyed(form, options = {}) {
     const front = this._getTargetFront(form);
 
     // When server side target switching is off,
@@ -71,7 +71,7 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
     // existing targets.
     // https://searchfox.org/mozilla-central/rev/af8e5d37fd56be90ccddae2203e7b875d3f3ae87/devtools/shared/commands/target/target-command.js#166-173
     if (front) {
-      this.emit("target-destroyed", front);
+      this.emit("target-destroyed", front, options);
     }
   }
 
@@ -97,6 +97,15 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
     return this.getWindowGlobalTarget(id);
   }
 
+  /**
+   * Memoized getter for the "blackboxing" actor
+   */
+  async getBlackboxingActor() {
+    if (!this._blackboxingActor) {
+      this._blackboxingActor = await super.getBlackboxingActor();
+    }
+    return this._blackboxingActor;
+  }
   /**
    * Memoized getter for the "breakpoint-list" actor
    */
@@ -157,6 +166,24 @@ class WatcherFront extends FrontClassWithSpec(watcherSpec) {
       return this.getWindowGlobalTarget(parentBrowsingContextID);
     }
 
+    return null;
+  }
+
+  getWindowGlobalTargetByInnerWindowId(innerWindowId) {
+    for (const front of this.poolChildren()) {
+      if (front.innerWindowId == innerWindowId) {
+        return front;
+      }
+    }
+    // Use getCachedTarget in order to have a fully synchronous method
+    // as the callsite in ResourceCommand benefit from being synchronous.
+    // Here we care only about already existing resource and do not need to
+    // wait for the next target to come.
+    const topLevelTarget = this.parentFront.getCachedTarget();
+    if (topLevelTarget?.innerWindowId == innerWindowId) {
+      return topLevelTarget;
+    }
+    console.error("Unable to find target with innerWindowId:" + innerWindowId);
     return null;
   }
 

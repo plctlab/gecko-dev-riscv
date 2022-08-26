@@ -16,7 +16,6 @@ const DEFAULT_ORIGIN = window.location.origin;
 
 function removeAllUserFacingLoginsInParent() {
   runInParent(function removeAllUserFacingLogins() {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
     Services.logins.removeAllUserFacingLogins();
   });
 }
@@ -61,7 +60,7 @@ let loadPromise = new Promise(resolve => {
   });
 });
 
-add_task(async function setup() {
+add_setup(async () => {
   info("Waiting for setup and page and window loads");
   await readyPromise;
   await loadPromise;
@@ -208,9 +207,9 @@ add_task(async function test_no_save_dialog_when_password_is_fully_munged() {
     let formSubmitListener = SpecialPowers.spawn(win, [], function() {
       return new Promise(resolve => {
         this.content.windowRoot.addEventListener(
-            "PasswordManager:onFormSubmit",
+            "PasswordManager:ShowDoorhanger",
             event => {
-              info(`PasswordManager:onFormSubmit called. Event: ${JSON.stringify(event)}`);
+              info(`PasswordManager:ShowDoorhanger called. Event: ${JSON.stringify(event)}`);
               resolve(event.detail.messageSent);
             }
           );

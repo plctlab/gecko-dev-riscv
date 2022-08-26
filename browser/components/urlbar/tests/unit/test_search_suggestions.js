@@ -6,20 +6,17 @@
  * UrlbarProviderSearchSuggestions.
  */
 
-const { FormHistory } = ChromeUtils.import(
-  "resource://gre/modules/FormHistory.jsm"
-);
-
 const SUGGEST_PREF = "browser.urlbar.suggest.searches";
 const SUGGEST_ENABLED_PREF = "browser.search.suggest.enabled";
 const PRIVATE_ENABLED_PREF = "browser.search.suggest.enabled.private";
 const PRIVATE_SEARCH_PREF = "browser.search.separatePrivateDefault.ui.enabled";
 const TAB_TO_SEARCH_PREF = "browser.urlbar.suggest.engines";
+const QUICKACTIONS_PREF = "browser.urlbar.suggest.quickactions";
 const MAX_RICH_RESULTS_PREF = "browser.urlbar.maxRichResults";
 const MAX_FORM_HISTORY_PREF = "browser.urlbar.maxHistoricalSearchSuggestions";
 const SHOW_SEARCH_SUGGESTIONS_FIRST_PREF =
   "browser.urlbar.showSearchSuggestionsFirst";
-const RESULT_BUCKETS_PREF = "browser.urlbar.resultGroups";
+const RESULT_GROUPS_PREF = "browser.urlbar.resultGroups";
 const SEARCH_STRING = "hello";
 
 const MAX_RESULTS = Services.prefs.getIntPref(MAX_RICH_RESULTS_PREF, 10);
@@ -95,9 +92,9 @@ function makeRemoteSuggestionResults(
   ];
 }
 
-function setResultBuckets(buckets) {
+function setResultGroups(groups) {
   Services.prefs.setCharPref(
-    RESULT_BUCKETS_PREF,
+    RESULT_GROUPS_PREF,
     JSON.stringify({
       children: [
         // heuristic
@@ -118,7 +115,7 @@ function setResultBuckets(buckets) {
           group: UrlbarUtils.RESULT_GROUP.OMNIBOX,
           maxResultCount: UrlbarUtils.MAX_OMNIBOX_RESULT_COUNT - 1,
         },
-        ...buckets,
+        ...groups,
       ],
     })
   );
@@ -140,10 +137,12 @@ add_task(async function setup() {
   registerCleanupFunction(async () => {
     Services.search.setDefault(oldDefaultEngine);
     Services.prefs.clearUserPref(PRIVATE_SEARCH_PREF);
+    Services.prefs.clearUserPref(QUICKACTIONS_PREF);
     Services.prefs.clearUserPref(TAB_TO_SEARCH_PREF);
   });
   Services.search.setDefault(engine);
   Services.prefs.setBoolPref(PRIVATE_SEARCH_PREF, false);
+  Services.prefs.setBoolPref(QUICKACTIONS_PREF, false);
   // Tab-to-search engines can introduce unexpected results, espescially because
   // they depend on real en-US engines.
   Services.prefs.setBoolPref(TAB_TO_SEARCH_PREF, false);
@@ -759,7 +758,7 @@ add_task(async function mixup_frecency() {
   });
 
   // Change the mixup.
-  setResultBuckets([
+  setResultGroups([
     // 1 suggestion
     {
       maxResultCount: 1,
@@ -841,7 +840,7 @@ add_task(async function mixup_frecency() {
     ],
   });
 
-  Services.prefs.clearUserPref(RESULT_BUCKETS_PREF);
+  Services.prefs.clearUserPref(RESULT_GROUPS_PREF);
   Services.prefs.clearUserPref(MAX_RICH_RESULTS_PREF);
   await cleanUpSuggestions();
 });
@@ -1765,7 +1764,7 @@ add_task(async function formHistory() {
       makeVisitResult(context, {
         source: UrlbarUtils.RESULT_SOURCE.HISTORY,
         uri: "http://foo.example.com/",
-        title: "foo.example.com",
+        title: "test visit for http://foo.example.com/",
         heuristic: true,
       }),
       makeFormHistoryResult(context, {
@@ -1791,7 +1790,7 @@ add_task(async function formHistory() {
   // "foo" form history should be excluded since it dupes the heuristic; the
   // "foobar" and "fooquux" form history should be included; the "food" SERP
   // should be included since it doesn't dupe either form history result; and
-  // the "foobar" and "fooBAR " SERPs depend on the result buckets, see below.
+  // the "foobar" and "fooBAR " SERPs depend on the result groups, see below.
   let engine = await Services.search.getDefault();
   let serpURLs = ["foobar", "fooBAR ", "food"].map(
     term => UrlbarUtils.getSearchQueryUrl(engine, term)[0]

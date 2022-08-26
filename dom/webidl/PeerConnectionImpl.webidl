@@ -15,6 +15,8 @@
 
 interface nsISupports;
 
+callback ChainedOperation = Promise<any> ();
+
 /* Must be created first. Observer events will be dispatched on the thread provided */
 [ChromeOnly,
  Exposed=Window]
@@ -23,9 +25,7 @@ interface PeerConnectionImpl  {
 
   /* Must be called first. Observer events dispatched on the thread provided */
   [Throws]
-  void initialize(PeerConnectionObserver observer, Window window,
-                  RTCConfiguration iceServers,
-                  nsISupports thread);
+  void initialize(PeerConnectionObserver observer, Window window);
 
   /* JSEP calls */
   [Throws]
@@ -43,14 +43,11 @@ interface PeerConnectionImpl  {
 
   /* Adds the tracks created by GetUserMedia */
   [Throws]
-  TransceiverImpl createTransceiverImpl(DOMString kind,
-                                        MediaStreamTrack? track);
-  [Throws]
-  boolean checkNegotiationNeeded();
+  RTCRtpTransceiver addTransceiver(RTCRtpTransceiverInit init,
+                                   DOMString kind,
+                                   MediaStreamTrack? sendTrack);
+  sequence<RTCRtpTransceiver> getTransceivers();
 
-  [Throws]
-  void replaceTrackNoRenegotiation(TransceiverImpl transceiverImpl,
-                                   MediaStreamTrack? withTrack);
   [Throws]
   void closeStreams();
 
@@ -79,8 +76,20 @@ interface PeerConnectionImpl  {
   [Throws]
   void close();
 
+  [Throws]
+  void setConfiguration(optional RTCConfiguration config = {});
+
+  void restartIce();
+  void restartIceNoRenegotiationNeeded();
+
   /* Notify DOM window if this plugin crash is ours. */
   boolean pluginCrash(unsigned long long pluginId, DOMString name);
+
+  // Only throws if promise creation fails
+  [Throws]
+  Promise<void> onSetDescriptionSuccess(RTCSdpType type, boolean remote);
+
+  void onSetDescriptionError();
 
   /* Attributes */
   /* This provides the implementation with the certificate it uses to
@@ -112,4 +121,10 @@ interface PeerConnectionImpl  {
     unsigned short type, boolean ordered,
     unsigned short maxTime, unsigned short maxNum,
     boolean externalNegotiated, unsigned short stream);
+
+  [Throws]
+  Promise<any> chain(ChainedOperation op);
+  void updateNegotiationNeeded(); 
+
+  boolean createdSender(RTCRtpSender sender);
 };

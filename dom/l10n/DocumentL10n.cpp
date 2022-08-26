@@ -6,11 +6,14 @@
 
 #include "DocumentL10n.h"
 #include "nsIContentSink.h"
+#include "nsContentUtils.h"
 #include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentL10nBinding.h"
 #include "mozilla/Telemetry.h"
 
+using namespace mozilla;
+using namespace mozilla::intl;
 using namespace mozilla::dom;
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(DocumentL10n)
@@ -67,14 +70,34 @@ class L10nReadyHandler final : public PromiseNativeHandler {
   explicit L10nReadyHandler(Promise* aPromise, DocumentL10n* aDocumentL10n)
       : mPromise(aPromise), mDocumentL10n(aDocumentL10n) {}
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mDocumentL10n->InitialTranslationCompleted(true);
     mPromise->MaybeResolveWithUndefined();
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mDocumentL10n->InitialTranslationCompleted(false);
-    mPromise->MaybeRejectWithUndefined();
+
+    nsTArray<nsCString> errors{
+        "[dom/l10n] Could not complete initial document translation."_ns,
+    };
+    IgnoredErrorResult rv;
+    MaybeReportErrorsToGecko(errors, rv, mDocumentL10n->GetParentObject());
+
+    /**
+     * We resolve the mReady here even if we encountered failures, because
+     * there is nothing actionable for the user pending on `mReady` to do here
+     * and we don't want to incentivized consumers of this API to plan the
+     * same pending operation for resolve and reject scenario.
+     *
+     * Additionally, without it, the stderr received "uncaught promise
+     * rejection" warning, which is noisy and not-actionable.
+     *
+     * So instead, we just resolve and report errors.
+     */
+    mPromise->MaybeResolveWithUndefined();
   }
 
  private:
@@ -94,9 +117,17 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(L10nReadyHandler)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(L10nReadyHandler)
 
 void DocumentL10n::TriggerInitialTranslation() {
+  MOZ_ASSERT(nsContentUtils::IsSafeToRunScript());
   if (mState >= DocumentL10nState::InitialTranslationTriggered) {
     return;
   }
+  if (!mReady) {
+    // If we don't have `mReady` it means that we are in shutdown mode.
+    // See bug 1687118 for details.
+    InitialTranslationCompleted(false);
+    return;
+  }
+
   mInitialTranslationStart = mozilla::TimeStamp::Now();
 
   AutoAllowLegacyScriptExecution exemption;
@@ -250,18 +281,18 @@ void DocumentL10n::MaybeRecordTelemetry() {
 
   nsCString key;
 
-  if (documentURI.Find("chrome://browser/content/browser.xhtml") == 0) {
+  if (documentURI.Find(u"chrome://browser/content/browser.xhtml") == 0) {
     if (mIsFirstBrowserWindow) {
       key = "browser_first_window";
       mIsFirstBrowserWindow = false;
     } else {
       key = "browser_new_window";
     }
-  } else if (documentURI.Find("about:home") == 0) {
+  } else if (documentURI.Find(u"about:home") == 0) {
     key = "about:home";
-  } else if (documentURI.Find("about:newtab") == 0) {
+  } else if (documentURI.Find(u"about:newtab") == 0) {
     key = "about:newtab";
-  } else if (documentURI.Find("about:preferences") == 0) {
+  } else if (documentURI.Find(u"about:preferences") == 0) {
     key = "about:preferences";
   } else {
     return;

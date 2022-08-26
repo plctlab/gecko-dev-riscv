@@ -13,6 +13,8 @@
 #include "nsSerializationHelper.h"
 #include "nsThreadUtils.h"
 #include "WebSocketConnection.h"
+#include "nsNetCID.h"
+#include "nsSocketTransportService2.h"
 
 namespace mozilla {
 namespace net {
@@ -114,6 +116,12 @@ WebSocketConnectionChild::OnUpgradeFailed(nsresult aReason) {
     Unused << SendOnUpgradeFailed(aReason);
   }
   return NS_OK;
+}
+
+NS_IMETHODIMP
+WebSocketConnectionChild::OnWebSocketConnectionAvailable(
+    WebSocketConnectionBase* aConnection) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 mozilla::ipc::IPCResult WebSocketConnectionChild::RecvWriteOutputData(

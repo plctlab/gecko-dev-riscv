@@ -5,15 +5,16 @@
 
 var EXPORTED_SYMBOLS = ["CustomizableUI"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   AddonManagerPrivate: "resource://gre/modules/AddonManager.jsm",
   SearchWidgetTracker: "resource:///modules/SearchWidgetTracker.jsm",
@@ -25,18 +26,11 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   HomePage: "resource:///modules/HomePage.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "gWidgetsBundle", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gWidgetsBundle", function() {
   const kUrl =
     "chrome://browser/locale/customizableui/customizableWidgets.properties";
   return Services.strings.createBundle(kUrl);
 });
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gBookmarksToolbar2h2020",
-  "browser.toolbars.bookmarks.2h2020",
-  false
-);
 
 const kDefaultThemeID = "default-theme@mozilla.org";
 
@@ -45,7 +39,7 @@ const kSpecialWidgetPfx = "customizableui-special-";
 const kPrefCustomizationState = "browser.uiCustomization.state";
 const kPrefCustomizationAutoAdd = "browser.uiCustomization.autoAdd";
 const kPrefCustomizationDebug = "browser.uiCustomization.debug";
-const kPrefDrawInTitlebar = "browser.tabs.drawInTitlebar";
+const kPrefDrawInTitlebar = "browser.tabs.inTitlebar";
 const kPrefUIDensity = "browser.uidensity";
 const kPrefAutoTouchMode = "browser.touchmode.auto";
 const kPrefAutoHideDownloadsButton = "browser.download.autohideButton";
@@ -187,35 +181,34 @@ var gUIStateBeforeReset = {
 };
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gDebuggingEnabled",
   kPrefCustomizationDebug,
   false,
   (pref, oldVal, newVal) => {
-    if (typeof log != "undefined") {
-      log.maxLogLevel = newVal ? "all" : "log";
+    if (typeof lazy.log != "undefined") {
+      lazy.log.maxLogLevel = newVal ? "all" : "log";
     }
   }
 );
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  let scope = {};
-  ChromeUtils.import("resource://gre/modules/Console.jsm", scope);
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   let consoleOptions = {
-    maxLogLevel: gDebuggingEnabled ? "all" : "log",
+    maxLogLevel: lazy.gDebuggingEnabled ? "all" : "log",
     prefix: "CustomizableUI",
   };
-  return new scope.ConsoleAPI(consoleOptions);
+  return new ConsoleAPI(consoleOptions);
 });
 
 var CustomizableUIInternal = {
   initialize() {
-    log.debug("Initializing");
+    lazy.log.debug("Initializing");
 
-    AddonManagerPrivate.databaseReady.then(async () => {
-      AddonManager.addAddonListener(this);
+    lazy.AddonManagerPrivate.databaseReady.then(async () => {
+      lazy.AddonManager.addAddonListener(this);
 
-      let addons = await AddonManager.getAddonsByTypes(["theme"]);
+      let addons = await lazy.AddonManager.getAddonsByTypes(["theme"]);
       gDefaultTheme = addons.find(addon => addon.id == kDefaultThemeID);
       gSelectedTheme = addons.find(addon => addon.isActive) || gDefaultTheme;
     });
@@ -280,11 +273,16 @@ var CustomizableUIInternal = {
       CustomizableUI.AREA_TABSTRIP,
       {
         type: CustomizableUI.TYPE_TOOLBAR,
-        defaultPlacements: [
-          "tabbrowser-tabs",
-          "new-tab-button",
-          "alltabs-button",
-        ],
+        defaultPlacements: Services.prefs.getBoolPref(
+          "browser.tabs.firefox-view"
+        )
+          ? [
+              "firefox-view-button",
+              "tabbrowser-tabs",
+              "new-tab-button",
+              "alltabs-button",
+            ]
+          : ["tabbrowser-tabs", "new-tab-button", "alltabs-button"],
         defaultCollapsed: null,
       },
       true
@@ -294,12 +292,12 @@ var CustomizableUIInternal = {
       {
         type: CustomizableUI.TYPE_TOOLBAR,
         defaultPlacements: ["personal-bookmarks"],
-        defaultCollapsed: gBookmarksToolbar2h2020 ? "newtab" : true,
+        defaultCollapsed: "newtab",
       },
       true
     );
 
-    SearchWidgetTracker.init();
+    lazy.SearchWidgetTracker.init();
 
     Services.obs.addObserver(this, "browser-set-toolbar-visibility");
   },
@@ -330,7 +328,7 @@ var CustomizableUIInternal = {
   },
 
   _defineBuiltInWidgets() {
-    for (let widgetDefinition of CustomizableWidgets) {
+    for (let widgetDefinition of lazy.CustomizableWidgets) {
       this.createBuiltinWidget(widgetDefinition);
     }
   },
@@ -634,7 +632,7 @@ var CustomizableUIInternal = {
 
     // Remove the home button if it hasn't been used and is set to about:home
     if (currentVersion < 1) {
-      let homePage = HomePage.get();
+      let homePage = lazy.HomePage.get();
       if (
         placements.includes("home-button") &&
         !Services.prefs.getBoolPref(kPrefHomeButtonUsed) &&
@@ -972,7 +970,7 @@ var CustomizableUIInternal = {
         gDirtyAreaCache.add(area);
       }
 
-      if (areaProperties.has("overflowable")) {
+      if (areaProperties.get("overflowable")) {
         aToolbar.overflowable = new OverflowableToolbar(aToolbar);
       }
 
@@ -1025,7 +1023,7 @@ var CustomizableUIInternal = {
   buildArea(aArea, aPlacements, aAreaNode) {
     let document = aAreaNode.ownerDocument;
     let window = document.defaultView;
-    let inPrivateWindow = PrivateBrowsingUtils.isWindowPrivate(window);
+    let inPrivateWindow = lazy.PrivateBrowsingUtils.isWindowPrivate(window);
     let container = this.getCustomizationTarget(aAreaNode);
     let areaIsPanel =
       gAreas.get(aArea).get("type") == CustomizableUI.TYPE_MENU_PANEL;
@@ -1075,7 +1073,7 @@ var CustomizableUIInternal = {
 
         let [provider, node] = this.getWidgetNode(id, window);
         if (!node) {
-          log.debug("Unknown widget: " + id);
+          lazy.log.debug("Unknown widget: " + id);
           continue;
         }
 
@@ -1147,7 +1145,7 @@ var CustomizableUIInternal = {
               }
             } else {
               node.setAttribute("removable", false);
-              log.debug(
+              lazy.log.debug(
                 "Adding non-removable widget to placements of " +
                   aArea +
                   ": " +
@@ -1254,7 +1252,7 @@ var CustomizableUIInternal = {
     if (widget) {
       // If we have an instance of this widget already, just use that.
       if (widget.instances.has(document)) {
-        log.debug(
+        lazy.log.debug(
           "An instance of widget " +
             aWidgetId +
             " already exists in this " +
@@ -1266,13 +1264,13 @@ var CustomizableUIInternal = {
       return [CustomizableUI.PROVIDER_API, this.buildWidget(document, widget)];
     }
 
-    log.debug("Searching for " + aWidgetId + " in toolbox.");
+    lazy.log.debug("Searching for " + aWidgetId + " in toolbox.");
     let node = this.findWidgetInWindow(aWidgetId, aWindow);
     if (node) {
       return [CustomizableUI.PROVIDER_XUL, node];
     }
 
-    log.debug("No node for " + aWidgetId + " found.");
+    lazy.log.debug("No node for " + aWidgetId + " found.");
     return [null, null];
   },
 
@@ -1326,7 +1324,7 @@ var CustomizableUIInternal = {
       let window = areaNode.ownerGlobal;
       if (
         !showInPrivateBrowsing &&
-        PrivateBrowsingUtils.isWindowPrivate(window)
+        lazy.PrivateBrowsingUtils.isWindowPrivate(window)
       ) {
         continue;
       }
@@ -1338,7 +1336,7 @@ var CustomizableUIInternal = {
       }
 
       if (!widgetNode || !container.contains(widgetNode)) {
-        log.info(
+        lazy.log.info(
           "Widget " + aWidgetId + " not found, unable to remove from " + aArea
         );
         continue;
@@ -1445,7 +1443,7 @@ var CustomizableUIInternal = {
             this.getCustomizationTarget(node),
             CustomizableUI.REASON_WINDOW_CLOSED
           );
-          if (areaProperties.has("overflowable")) {
+          if (areaProperties.get("overflowable")) {
             node.overflowable.uninit();
             node.overflowable = null;
           }
@@ -1503,7 +1501,7 @@ var CustomizableUIInternal = {
 
     let placements = gPlacements.get(aArea);
     if (!placements) {
-      log.error(
+      lazy.log.error(
         "Could not find any placements for " + aArea + " when moving a widget."
       );
       return;
@@ -1524,14 +1522,14 @@ var CustomizableUIInternal = {
 
     if (
       !showInPrivateBrowsing &&
-      PrivateBrowsingUtils.isWindowPrivate(window)
+      lazy.PrivateBrowsingUtils.isWindowPrivate(window)
     ) {
       return;
     }
 
     let [, widgetNode] = this.getWidgetNode(aWidgetId, window);
     if (!widgetNode) {
-      log.error("Widget '" + aWidgetId + "' not found, unable to move");
+      lazy.log.error("Widget '" + aWidgetId + "' not found, unable to move");
       return;
     }
 
@@ -1698,7 +1696,7 @@ var CustomizableUIInternal = {
     }
 
     if (!aId) {
-      log.error("findWidgetInWindow was passed an empty string.");
+      lazy.log.error("findWidgetInWindow was passed an empty string.");
       return null;
     }
 
@@ -1778,28 +1776,31 @@ var CustomizableUIInternal = {
     }
     if (
       !aWidget.showInPrivateBrowsing &&
-      PrivateBrowsingUtils.isWindowPrivate(aDocument.defaultView)
+      lazy.PrivateBrowsingUtils.isWindowPrivate(aDocument.defaultView)
     ) {
       return null;
     }
 
-    log.debug("Building " + aWidget.id + " of type " + aWidget.type);
+    lazy.log.debug("Building " + aWidget.id + " of type " + aWidget.type);
 
     let node;
     if (aWidget.type == "custom") {
       if (aWidget.onBuild) {
         node = aWidget.onBuild(aDocument);
       }
-      if (!node || !(node instanceof aDocument.defaultView.XULElement)) {
-        log.error(
+      if (!node || !aDocument.defaultView.XULElement.isInstance(node)) {
+        lazy.log.error(
           "Custom widget with id " +
             aWidget.id +
             " does not return a valid node"
         );
       }
     } else {
-      if (aWidget.onBeforeCreated) {
-        aWidget.onBeforeCreated(aDocument);
+      if (
+        aWidget.onBeforeCreated &&
+        aWidget.onBeforeCreated(aDocument) === false
+      ) {
+        return null;
       }
 
       let button = aDocument.createXULElement("toolbarbutton");
@@ -1850,9 +1851,9 @@ var CustomizableUIInternal = {
       if (aWidget.shortcutId) {
         let keyEl = aDocument.getElementById(aWidget.shortcutId);
         if (keyEl) {
-          shortcut = ShortcutUtils.prettifyShortcut(keyEl);
+          shortcut = lazy.ShortcutUtils.prettifyShortcut(keyEl);
         } else {
-          log.error(
+          lazy.log.error(
             "Key element with id '" +
               aWidget.shortcutId +
               "' for widget '" +
@@ -1864,12 +1865,27 @@ var CustomizableUIInternal = {
 
       if (aWidget.l10nId) {
         node.setAttribute("data-l10n-id", aWidget.l10nId);
+        if (button != node) {
+          // This is probably a "button-and-view" widget, such as the Profiler
+          // button. In that case, "node" is the "toolbaritem" container, and
+          // "button" the main button (see above).
+          // In this case, the values on the "node" is used in the Customize
+          // view, as well as the tooltips over both buttons; the values on the
+          // "button" are used in the overflow menu.
+          button.setAttribute("data-l10n-id", aWidget.l10nId);
+        }
+
         if (shortcut) {
           node.setAttribute("data-l10n-args", JSON.stringify({ shortcut }));
+          if (button != node) {
+            // This is probably a "button-and-view" widget.
+            button.setAttribute("data-l10n-args", JSON.stringify({ shortcut }));
+          }
         }
       } else {
         node.setAttribute("label", this.getLocalizedProperty(aWidget, "label"));
         if (button != node) {
+          // This is probably a "button-and-view" widget.
           button.setAttribute("label", node.getAttribute("label"));
         }
 
@@ -1881,6 +1897,7 @@ var CustomizableUIInternal = {
         if (tooltip) {
           node.setAttribute("tooltiptext", tooltip);
           if (button != node) {
+            // This is probably a "button-and-view" widget.
             button.setAttribute("tooltiptext", tooltip);
           }
         }
@@ -1898,7 +1915,7 @@ var CustomizableUIInternal = {
       // opening a view with the mouse. (When opened with the keyboard, the
       // first item in the view should be focused after opening.)
       if (viewbutton) {
-        log.debug(
+        lazy.log.debug(
           "Widget " +
             aWidget.id +
             " has a view. Auto-registering event handlers."
@@ -1907,13 +1924,6 @@ var CustomizableUIInternal = {
         if (aWidget.source == CustomizableUI.SOURCE_BUILTIN) {
           node.classList.add("subviewbutton-nav");
         }
-
-        let keyPressHandler = this.handleWidgetKeyPress.bind(
-          this,
-          aWidget,
-          node
-        );
-        viewbutton.addEventListener("keypress", keyPressHandler);
       }
 
       if (aWidget.onCreated) {
@@ -1941,7 +1951,7 @@ var CustomizableUIInternal = {
       }
     }
     viewNode._addedEventListeners = true;
-    log.debug(
+    lazy.log.debug(
       "Widget " + widget.id + " showing and hiding event handlers set."
     );
   },
@@ -1976,14 +1986,16 @@ var CustomizableUIInternal = {
     }
     try {
       if (Array.isArray(aFormatArgs) && aFormatArgs.length) {
-        return gWidgetsBundle.formatStringFromName(name, aFormatArgs) || def;
+        return (
+          lazy.gWidgetsBundle.formatStringFromName(name, aFormatArgs) || def
+        );
       }
-      return gWidgetsBundle.GetStringFromName(name) || def;
+      return lazy.gWidgetsBundle.GetStringFromName(name) || def;
     } catch (ex) {
       // If an empty string was explicitly passed, treat it as an actual
       // value rather than a missing property.
       if (!def && (name != "" || kReqStringProps.includes(aProp))) {
-        log.error("Could not localize property '" + name + "'.");
+        lazy.log.error("Could not localize property '" + name + "'.");
       }
     }
     return def;
@@ -2005,7 +2017,7 @@ var CustomizableUIInternal = {
     } else {
       let commandId = aShortcutNode.getAttribute("command");
       if (commandId) {
-        shortcut = ShortcutUtils.findShortcut(
+        shortcut = lazy.ShortcutUtils.findShortcut(
           document.getElementById(commandId)
         );
       }
@@ -2016,7 +2028,7 @@ var CustomizableUIInternal = {
 
     aTargetNode.setAttribute(
       "shortcut",
-      ShortcutUtils.prettifyShortcut(shortcut)
+      lazy.ShortcutUtils.prettifyShortcut(shortcut)
     );
   },
 
@@ -2025,7 +2037,7 @@ var CustomizableUIInternal = {
       try {
         aWidget.onCommand.call(null, aEvent);
       } catch (e) {
-        log.error(e);
+        lazy.log.error(e);
       }
     } else {
       // XXXunf Need to think this through more, and formalize.
@@ -2050,20 +2062,26 @@ var CustomizableUIInternal = {
         this.hidePanelForNode(aNode);
         anchor = wrapper.anchor;
       }
+    } else if (aWidget.disallowSubView) {
+      // Close the containing panel (e.g. overflow), PanelUI will reopen.
+      let wrapper = this.wrapWidget(aWidget.id).forWindow(ownerWindow);
+      if (wrapper?.anchor) {
+        this.hidePanelForNode(aNode);
+        anchor = wrapper.anchor;
+      }
     }
-
     ownerWindow.PanelUI.showSubView(aWidget.viewId, anchor, aEvent);
   },
 
   handleWidgetCommand(aWidget, aNode, aEvent) {
     // Note that aEvent can be a keypress event for widgets of type "view".
-    log.debug("handleWidgetCommand");
+    lazy.log.debug("handleWidgetCommand");
 
     if (aWidget.onBeforeCommand) {
       try {
         aWidget.onBeforeCommand.call(null, aEvent);
       } catch (e) {
-        log.error(e);
+        lazy.log.error(e);
       }
     }
 
@@ -2092,7 +2110,7 @@ var CustomizableUIInternal = {
   },
 
   handleWidgetClick(aWidget, aNode, aEvent) {
-    log.debug("handleWidgetClick");
+    lazy.log.debug("handleWidgetClick");
     if (aWidget.onClick) {
       try {
         aWidget.onClick.call(null, aEvent);
@@ -2109,15 +2127,6 @@ var CustomizableUIInternal = {
     }
   },
 
-  handleWidgetKeyPress(aWidget, aNode, aEvent) {
-    if (aEvent.key != " " && aEvent.key != "Enter") {
-      return;
-    }
-    aEvent.stopPropagation();
-    aEvent.preventDefault();
-    this.handleWidgetCommand(aWidget, aNode, aEvent);
-  },
-
   _getPanelForNode(aNode) {
     return aNode.closest("panel");
   },
@@ -2126,136 +2135,94 @@ var CustomizableUIInternal = {
    * If people put things in the panel which need more than single-click interaction,
    * we don't want to close it. Right now we check for text inputs and menu buttons.
    * We also check for being outside of any toolbaritem/toolbarbutton, ie on a blank
-   * part of the menu.
+   * part of the menu, or on another menu (like a context menu inside the panel).
    */
   _isOnInteractiveElement(aEvent) {
-    function getMenuPopupForDescendant(aNode) {
-      let lastPopup = null;
-      while (
-        aNode &&
-        aNode.parentNode &&
-        aNode.parentNode.localName.startsWith("menu")
-      ) {
-        lastPopup = aNode.localName == "menupopup" ? aNode : lastPopup;
-        aNode = aNode.parentNode;
-      }
-      return lastPopup;
-    }
-
-    let target = aEvent.originalTarget;
     let panel = this._getPanelForNode(aEvent.currentTarget);
     // This can happen in e.g. customize mode. If there's no panel,
     // there's clearly nothing for us to close; pretend we're interactive.
     if (!panel) {
       return true;
     }
-    // We keep track of:
-    // whether we're in an input container (text field)
-    let inInput = false;
-    // whether we're in a popup/context menu
-    let inMenu = false;
-    // whether we're in a toolbarbutton/toolbaritem
-    let inItem = false;
-    // whether the current menuitem has a valid closemenu attribute
-    let menuitemCloseMenu = "auto";
 
-    // While keeping track of that, we go from the original target back up,
-    // to the panel if we have to. We bail as soon as we find an input,
-    // a toolbarbutton/item, or the panel:
-    while (true && target) {
-      // Skip out of iframes etc:
+    function getNextTarget(target) {
       if (target.nodeType == target.DOCUMENT_NODE) {
         if (!target.defaultView) {
           // Err, we're done.
-          break;
+          return null;
         }
         // Find containing browser or iframe element in the parent doc.
-        target = target.defaultView.docShell.chromeEventHandler;
-        if (!target) {
-          break;
-        }
+        return target.defaultView.docShell.chromeEventHandler;
       }
-      let tagName = target.localName;
-      inInput = tagName == "input" || tagName == "searchbar";
-      inItem = tagName == "toolbaritem" || tagName == "toolbarbutton";
-      let isMenuItem = tagName == "menuitem";
-      inMenu = inMenu || isMenuItem;
+      // Skip any parent shadow roots
+      return target.parentNode?.host?.parentNode || target.parentNode;
+    }
 
-      if (isMenuItem && target.hasAttribute("closemenu")) {
-        let closemenuVal = target.getAttribute("closemenu");
-        menuitemCloseMenu =
-          closemenuVal == "single" || closemenuVal == "none"
-            ? closemenuVal
-            : "auto";
+    // While keeping track of that, we go from the original target back up,
+    // to the panel if we have to. We bail as soon as we find an input,
+    // a toolbarbutton/item, or a menuItem.
+    for (
+      let target = aEvent.originalTarget;
+      target && target != panel;
+      target = getNextTarget(target)
+    ) {
+      if (target.nodeType == target.DOCUMENT_NODE) {
+        // Skip out of iframes etc:
+        continue;
       }
+
       // Break out of the loop immediately for disabled items, as we need to
       // keep the menu open in that case.
       if (target.getAttribute("disabled") == "true") {
         return true;
       }
 
-      // This isn't in the loop condition because we want to break before
-      // changing |target| if any of these conditions are true
-      if (inInput || inItem || target == panel) {
-        break;
+      let tagName = target.localName;
+      if (tagName == "input" || tagName == "searchbar") {
+        return true;
       }
-      // We need specific code for popups: the item on which they were invoked
-      // isn't necessarily in their parentNode chain:
-      if (isMenuItem) {
-        let topmostMenuPopup = getMenuPopupForDescendant(target);
-        target =
-          (topmostMenuPopup && topmostMenuPopup.triggerNode) ||
-          target.parentNode;
-      } else {
-        // Skip any parent shadow roots
-        target = target.parentNode?.host?.parentNode || target.parentNode;
+      if (tagName == "toolbaritem" || tagName == "toolbarbutton") {
+        // If we are in a type="menu" toolbarbutton, we'll now interact with
+        // the menu.
+        return target.getAttribute("type") == "menu";
+      }
+      if (tagName == "menuitem") {
+        // If we're in a nested menu we don't need to close this panel.
+        return true;
       }
     }
 
-    // If the user clicked a menu item...
-    if (inMenu) {
-      // We care if we're in an input also,
-      // or if the user specified closemenu!="auto":
-      if (inInput || menuitemCloseMenu != "auto") {
-        return true;
-      }
-      // Otherwise, we're probably fine to close the panel
-      return false;
-    }
-    // If we're not in a menu, and we *are* in a type="menu" toolbarbutton,
-    // we'll now interact with the menu
-    if (inItem && target.getAttribute("type") == "menu") {
-      return true;
-    }
-    return inInput || !inItem;
+    // We don't know what we interacted with, assume interactive.
+    return true;
   },
 
   hidePanelForNode(aNode) {
     let panel = this._getPanelForNode(aNode);
     if (panel) {
-      PanelMultiView.hidePopup(panel);
+      lazy.PanelMultiView.hidePopup(panel);
     }
   },
 
   maybeAutoHidePanel(aEvent) {
-    if (aEvent.type == "keypress") {
-      if (aEvent.keyCode != aEvent.DOM_VK_RETURN) {
-        return;
-      }
-      // If the user hit enter/return, we don't check preventDefault - it makes sense
-      // that this was prevented, but we probably still want to close the panel.
-      // If consumers don't want this to happen, they should specify the closemenu
-      // attribute.
-    } else if (aEvent.type != "command") {
-      // mouse events:
-      if (aEvent.defaultPrevented || aEvent.button != 0) {
-        return;
-      }
-      let isInteractive = this._isOnInteractiveElement(aEvent);
-      log.debug("maybeAutoHidePanel: interactive ? " + isInteractive);
-      if (isInteractive) {
-        return;
-      }
+    let eventType = aEvent.type;
+    if (eventType == "keypress" && aEvent.keyCode != aEvent.DOM_VK_RETURN) {
+      return;
+    }
+
+    // If the user hit enter/return, we don't check preventDefault - it makes sense
+    // that this was prevented, but we probably still want to close the panel.
+    // If consumers don't want this to happen, they should specify the closemenu
+    // attribute.
+    if (
+      eventType != "command" &&
+      eventType != "keypress" &&
+      (aEvent.defaultPrevented || aEvent.button != 0)
+    ) {
+      return;
+    }
+
+    if (eventType != "command" && this._isOnInteractiveElement(aEvent)) {
+      return;
     }
 
     // We can't use event.target because we might have passed an anonymous
@@ -2281,7 +2248,7 @@ var CustomizableUIInternal = {
 
   getUnusedWidgets(aWindowPalette) {
     let window = aWindowPalette.ownerGlobal;
-    let isWindowPrivate = PrivateBrowsingUtils.isWindowPrivate(window);
+    let isWindowPrivate = lazy.PrivateBrowsingUtils.isWindowPrivate(window);
     // We use a Set because there can be overlap between the widgets in
     // gPalette and the items in the palette, especially after the first
     // customization, since programmatically generated widgets will remain
@@ -2299,9 +2266,9 @@ var CustomizableUIInternal = {
       }
     }
 
-    log.debug("Iterating the actual nodes of the window palette");
+    lazy.log.debug("Iterating the actual nodes of the window palette");
     for (let node of aWindowPalette.children) {
-      log.debug("In palette children: " + node.id);
+      lazy.log.debug("In palette children: " + node.id);
       if (node.id && !this.getPlacementOfWidget(node.id)) {
         widgets.add(node.id);
       }
@@ -2502,7 +2469,7 @@ var CustomizableUIInternal = {
   loadSavedState() {
     let state = Services.prefs.getCharPref(kPrefCustomizationState, "");
     if (!state) {
-      log.debug("No saved state found");
+      lazy.log.debug("No saved state found");
       // Nothing has been customized, so silently fall back to the defaults.
       return;
     }
@@ -2514,7 +2481,7 @@ var CustomizableUIInternal = {
     } catch (e) {
       Services.prefs.clearUserPref(kPrefCustomizationState);
       gSavedState = {};
-      log.debug(
+      lazy.log.debug(
         "Error loading saved UI customization state, falling back to defaults."
       );
     }
@@ -2541,7 +2508,7 @@ var CustomizableUIInternal = {
 
       let restored = false;
       if (placementsPreexisted) {
-        log.debug("Restoring " + aArea + " from pre-existing placements");
+        lazy.log.debug("Restoring " + aArea + " from pre-existing placements");
         for (let [position, id] of gPlacements.get(aArea).entries()) {
           this.moveWidgetWithinArea(id, position);
         }
@@ -2552,7 +2519,7 @@ var CustomizableUIInternal = {
       }
 
       if (!restored && gSavedState && aArea in gSavedState.placements) {
-        log.debug("Restoring " + aArea + " from saved state");
+        lazy.log.debug("Restoring " + aArea + " from saved state");
         let placements = gSavedState.placements[aArea];
         for (let id of placements) {
           this.addWidgetToArea(id, aArea);
@@ -2562,7 +2529,7 @@ var CustomizableUIInternal = {
       }
 
       if (!restored) {
-        log.debug("Restoring " + aArea + " from default state");
+        lazy.log.debug("Restoring " + aArea + " from default state");
         let defaults = gAreas.get(aArea).get("defaultPlacements");
         if (defaults) {
           for (let id of defaults) {
@@ -2576,13 +2543,17 @@ var CustomizableUIInternal = {
       // to be restored. This can occur when add-ons register widgets for a
       // lazily-restored area before it's been restored.
       if (gFuturePlacements.has(aArea)) {
+        let areaPlacements = gPlacements.get(aArea);
         for (let id of gFuturePlacements.get(aArea)) {
+          if (areaPlacements.includes(id)) {
+            continue;
+          }
           this.addWidgetToArea(id, aArea);
         }
         gFuturePlacements.delete(aArea);
       }
 
-      log.debug(
+      lazy.log.debug(
         "Placements for " +
           aArea +
           ":\n\t" +
@@ -2620,9 +2591,9 @@ var CustomizableUIInternal = {
       }
     }
 
-    log.debug("Saving state.");
+    lazy.log.debug("Saving state.");
     let serialized = JSON.stringify(state, this.serializerHelper);
-    log.debug("State saved as: " + serialized);
+    lazy.log.debug("State saved as: " + serialized);
     Services.prefs.setCharPref(kPrefCustomizationState, serialized);
     gDirty = false;
   },
@@ -2684,7 +2655,7 @@ var CustomizableUIInternal = {
           listener[aEvent].apply(listener, aArgs);
         }
       } catch (e) {
-        log.error(e + " -- " + e.fileName + ":" + e.lineNumber);
+        lazy.log.error(e + " -- " + e.fileName + ":" + e.lineNumber);
       }
     }
   },
@@ -2715,7 +2686,7 @@ var CustomizableUIInternal = {
     );
     // XXXunf This should probably throw.
     if (!widget) {
-      log.error("unable to normalize widget");
+      lazy.log.error("unable to normalize widget");
       return undefined;
     }
 
@@ -2853,11 +2824,11 @@ var CustomizableUIInternal = {
 
     let widget = this.normalizeWidget(aData, CustomizableUI.SOURCE_BUILTIN);
     if (!widget) {
-      log.error("Error creating builtin widget: " + aData.id);
+      lazy.log.error("Error creating builtin widget: " + aData.id);
       return;
     }
 
-    log.debug("Creating built-in widget with id: " + widget.id);
+    lazy.log.debug("Creating built-in widget with id: " + widget.id);
     gPalette.set(widget.id, widget);
 
     if (conditionalDestroyPromise) {
@@ -2902,10 +2873,11 @@ var CustomizableUIInternal = {
       showInPrivateBrowsing: true,
       _introducedInVersion: -1,
       keepBroadcastAttributesWhenCustomizing: false,
+      disallowSubView: false,
     };
 
     if (typeof aData.id != "string" || !/^[a-z0-9-_]{1,}$/i.test(aData.id)) {
-      log.error("Given an illegal id in normalizeWidget: " + aData.id);
+      lazy.log.error("Given an illegal id in normalizeWidget: " + aData.id);
       return null;
     }
 
@@ -2918,7 +2890,7 @@ var CustomizableUIInternal = {
     const kReqStringProps = ["id"];
     for (let prop of kReqStringProps) {
       if (typeof aData[prop] != "string") {
-        log.error(
+        lazy.log.error(
           "Missing required property '" +
             prop +
             "' in normalizeWidget: " +
@@ -2944,6 +2916,7 @@ var CustomizableUIInternal = {
       "locationSpecific",
       "localized",
       "keepBroadcastAttributesWhenCustomizing",
+      "disallowSubView",
     ];
     for (let prop of kOptBoolProps) {
       if (typeof aData[prop] == "boolean") {
@@ -2959,7 +2932,7 @@ var CustomizableUIInternal = {
     ) {
       widget.defaultArea = aData.defaultArea;
     } else if (!widget.removable) {
-      log.error(
+      lazy.log.error(
         "Widget '" +
           widget.id +
           "' is not removable but does not specify " +
@@ -2996,7 +2969,7 @@ var CustomizableUIInternal = {
     }
     if (widget.type == "view" || widget.type == "button-and-view") {
       if (typeof aData.viewId != "string") {
-        log.error(
+        lazy.log.error(
           "Expected a string for widget " +
             widget.id +
             " viewId, but got " +
@@ -3158,12 +3131,8 @@ var CustomizableUIInternal = {
 
   _resetUIState() {
     try {
-      // kPrefDrawInTitlebar may not be defined on Linux/Gtk+ which throws an exception
-      // and leads to whole test failure. Let's set a fallback default value to avoid that,
-      // both titlebar states are tested anyway and it's not important which state is tested first.
-      gUIStateBeforeReset.drawInTitlebar = Services.prefs.getBoolPref(
-        kPrefDrawInTitlebar,
-        false
+      gUIStateBeforeReset.drawInTitlebar = Services.prefs.getIntPref(
+        kPrefDrawInTitlebar
       );
       gUIStateBeforeReset.uiCustomizationState = Services.prefs.getCharPref(
         kPrefCustomizationState
@@ -3186,7 +3155,7 @@ var CustomizableUIInternal = {
     Services.prefs.clearUserPref(kPrefAutoHideDownloadsButton);
     gDefaultTheme.enable();
     gNewElementCount = 0;
-    log.debug("State reset");
+    lazy.log.debug("State reset");
 
     // Reset placements to make restoring default placements possible.
     gPlacements = new Map();
@@ -3253,7 +3222,7 @@ var CustomizableUIInternal = {
     this._clearPreviousUIState();
 
     Services.prefs.setCharPref(kPrefCustomizationState, uiCustomizationState);
-    Services.prefs.setBoolPref(kPrefDrawInTitlebar, drawInTitlebar);
+    Services.prefs.setIntPref(kPrefDrawInTitlebar, drawInTitlebar);
     Services.prefs.setIntPref(kPrefUIDensity, uiDensity);
     Services.prefs.setBoolPref(kPrefAutoTouchMode, autoTouchMode);
     Services.prefs.setBoolPref(
@@ -3451,10 +3420,7 @@ var CustomizableUIInternal = {
           let collapsed = null;
           let defaultCollapsed = props.get("defaultCollapsed");
           let nondefaultState = false;
-          if (
-            areaId == CustomizableUI.AREA_BOOKMARKS &&
-            gBookmarksToolbar2h2020
-          ) {
+          if (areaId == CustomizableUI.AREA_BOOKMARKS) {
             collapsed = Services.prefs.getCharPref(
               "browser.toolbars.bookmarks.visibility"
             );
@@ -3470,7 +3436,7 @@ var CustomizableUIInternal = {
             nondefaultState = collapsed != defaultCollapsed;
           }
           if (defaultCollapsed !== null && nondefaultState) {
-            log.debug(
+            lazy.log.debug(
               "Found " +
                 areaId +
                 " had non-default toolbar visibility" +
@@ -3484,7 +3450,7 @@ var CustomizableUIInternal = {
           }
         }
       }
-      log.debug(
+      lazy.log.debug(
         "Checking default state for " +
           areaId +
           ":\n" +
@@ -3502,7 +3468,7 @@ var CustomizableUIInternal = {
           currentPlacements[i] != defaultPlacements[i] &&
           !this.matchingSpecials(currentPlacements[i], defaultPlacements[i])
         ) {
-          log.debug(
+          lazy.log.debug(
             "Found " +
               currentPlacements[i] +
               " in " +
@@ -3517,23 +3483,23 @@ var CustomizableUIInternal = {
     }
 
     if (Services.prefs.prefHasUserValue(kPrefUIDensity)) {
-      log.debug(kPrefUIDensity + " pref is non-default");
+      lazy.log.debug(kPrefUIDensity + " pref is non-default");
       return false;
     }
 
     if (Services.prefs.prefHasUserValue(kPrefAutoTouchMode)) {
-      log.debug(kPrefAutoTouchMode + " pref is non-default");
+      lazy.log.debug(kPrefAutoTouchMode + " pref is non-default");
       return false;
     }
 
     if (Services.prefs.prefHasUserValue(kPrefDrawInTitlebar)) {
-      log.debug(kPrefDrawInTitlebar + " pref is non-default");
+      lazy.log.debug(kPrefDrawInTitlebar + " pref is non-default");
       return false;
     }
 
     // This should just be `gDefaultTheme.isActive`, but bugs...
     if (gDefaultTheme && gDefaultTheme.id != gSelectedTheme.id) {
-      log.debug(gSelectedTheme.id + " theme is non-default");
+      lazy.log.debug(gSelectedTheme.id + " theme is non-default");
       return false;
     }
 
@@ -3955,7 +3921,8 @@ var CustomizableUI = {
    *                  constructed, passing the document in which that will happen.
    *                  This is useful especially for 'view' type widgets that need
    *                  to construct their views on the fly (e.g. from bootstrapped
-   *                  add-ons)
+   *                  add-ons). If the function returns `false`, the widget will
+   *                  not be created.
    * - onCreated(aNode): Attached to all widgets; a function that will be invoked
    *                  whenever the widget has a DOM node constructed, passing the
    *                  constructed node as an argument.
@@ -4593,7 +4560,7 @@ var CustomizableUI = {
             let newEvent = new doc.defaultView.MouseEvent(event.type, event);
 
             // Telemetry should only pay attention to the original event.
-            BrowserUsageTelemetry.ignoreEvent(newEvent);
+            lazy.BrowserUsageTelemetry.ignoreEvent(newEvent);
             item.dispatchEvent(newEvent);
           });
         }
@@ -4617,7 +4584,7 @@ var CustomizableUI = {
             );
 
             // Telemetry should only pay attention to the original event.
-            BrowserUsageTelemetry.ignoreEvent(newEvent);
+            lazy.BrowserUsageTelemetry.ignoreEvent(newEvent);
             item.dispatchEvent(newEvent);
           });
         }
@@ -4669,6 +4636,47 @@ var CustomizableUI = {
   getCustomizationTarget(aElement) {
     return CustomizableUIInternal.getCustomizationTarget(aElement);
   },
+
+  getTestOnlyInternalProp(aProp) {
+    if (!Cu.isInAutomation) {
+      return null;
+    }
+    switch (aProp) {
+      case "CustomizableUIInternal":
+        return CustomizableUIInternal;
+      case "gAreas":
+        return gAreas;
+      case "gFuturePlacements":
+        return gFuturePlacements;
+      case "gPalette":
+        return gPalette;
+      case "gPlacements":
+        return gPlacements;
+      case "gSavedState":
+        return gSavedState;
+      case "gSeenWidgets":
+        return gSeenWidgets;
+      case "kVersion":
+        return kVersion;
+    }
+    return null;
+  },
+  setTestOnlyInternalProp(aProp, aValue) {
+    if (!Cu.isInAutomation) {
+      return;
+    }
+    switch (aProp) {
+      case "gSavedState":
+        gSavedState = aValue;
+        break;
+      case "kVersion":
+        kVersion = aValue;
+        break;
+      case "gDirty":
+        gDirty = aValue;
+        break;
+    }
+  },
 };
 Object.freeze(CustomizableUI);
 Object.freeze(CustomizableUI.windows);
@@ -4696,6 +4704,7 @@ function WidgetGroupWrapper(aWidget) {
     "tooltiptext",
     "showInPrivateBrowsing",
     "viewId",
+    "disallowSubView",
   ];
   for (let prop of kBareProps) {
     let propertyName = prop;
@@ -5050,7 +5059,7 @@ OverflowableToolbar.prototype = {
         if (aEvent.target == this._chevron) {
           this._onClickChevron(aEvent);
         } else {
-          PanelMultiView.hidePopup(this._panel);
+          lazy.PanelMultiView.hidePopup(this._panel);
         }
         break;
       case "keypress":
@@ -5070,7 +5079,7 @@ OverflowableToolbar.prototype = {
         }
         break;
       case "dragend":
-        PanelMultiView.hidePopup(this._panel);
+        lazy.PanelMultiView.hidePopup(this._panel);
         break;
       case "popuphiding":
         this._onPanelHiding(aEvent);
@@ -5132,7 +5141,7 @@ OverflowableToolbar.prototype = {
           { once: true }
         );
 
-        PanelMultiView.openPopup(this._panel, anchor || this._chevron, {
+        lazy.PanelMultiView.openPopup(this._panel, anchor || this._chevron, {
           triggerEvent: aEvent,
         });
         this._chevron.open = true;
@@ -5152,7 +5161,7 @@ OverflowableToolbar.prototype = {
   _onClickChevron(aEvent) {
     if (this._chevron.open) {
       this._chevron.open = false;
-      PanelMultiView.hidePopup(this._panel);
+      lazy.PanelMultiView.hidePopup(this._panel);
     } else if (this._panel.state != "hiding" && !this._chevron.disabled) {
       this.show(aEvent);
     }
@@ -5216,7 +5225,7 @@ OverflowableToolbar.prototype = {
       }
       targetWidth = this._target.clientWidth;
     });
-    log.debug(
+    lazy.log.debug(
       `Getting overflow info: target width: ${targetWidth}; available width: ${totalAvailWidth}`
     );
     return [targetWidth > totalAvailWidth, totalAvailWidth];
@@ -5239,7 +5248,7 @@ OverflowableToolbar.prototype = {
     // Stop if the window has closed or if we re-enter while waiting for
     // layout.
     if (win.closed || this._onOverflowHandle != onOverflowHandle) {
-      log.debug("Window closed or another overflow handler started.");
+      lazy.log.debug("Window closed or another overflow handler started.");
       return;
     }
 
@@ -5272,7 +5281,7 @@ OverflowableToolbar.prototype = {
       // Stop if the window has closed or if we re-enter while waiting for
       // layout.
       if (win.closed || this._onOverflowHandle != onOverflowHandle) {
-        log.debug("Window closed or another overflow handler started.");
+        lazy.log.debug("Window closed or another overflow handler started.");
         return;
       }
     }
@@ -5303,7 +5312,7 @@ OverflowableToolbar.prototype = {
    *        anyway.
    */
   async _moveItemsBackToTheirOrigin(shouldMoveAllItems, totalAvailWidth) {
-    log.debug(
+    lazy.log.debug(
       `Attempting to move ${shouldMoveAllItems ? "all" : "some"} items back`
     );
     let placements = gPlacements.get(this._toolbar.id);
@@ -5314,7 +5323,9 @@ OverflowableToolbar.prototype = {
     while (this._list.firstElementChild) {
       let child = this._list.firstElementChild;
       let minSize = this._collapsed.get(child.id);
-      log.debug(`Considering moving ${child.id} back, minSize: ${minSize}`);
+      lazy.log.debug(
+        `Considering moving ${child.id} back, minSize: ${minSize}`
+      );
 
       if (!shouldMoveAllItems && minSize) {
         if (!totalAvailWidth) {
@@ -5327,21 +5338,21 @@ OverflowableToolbar.prototype = {
             this._moveItemsBackToTheirOriginHandle !=
               moveItemsBackToTheirOriginHandle
           ) {
-            log.debug(
+            lazy.log.debug(
               "Window closed or _moveItemsBackToTheirOrigin called again."
             );
             return;
           }
         }
         if (totalAvailWidth <= minSize) {
-          log.debug(
+          lazy.log.debug(
             `Need ${minSize} but width is ${totalAvailWidth} so bailing`
           );
           break;
         }
       }
 
-      log.debug(`Moving ${child.id} back`);
+      lazy.log.debug(`Moving ${child.id} back`);
       this._collapsed.delete(child.id);
       let beforeNodeIndex = placements.indexOf(child.id) + 1;
       // If this is a skipintoolbarset item, meaning it doesn't occur in the placements list,
@@ -5400,7 +5411,7 @@ OverflowableToolbar.prototype = {
       return;
     }
 
-    log.debug("Checking overflow");
+    lazy.log.debug("Checking overflow");
     let [isOverflowing, totalAvailWidth] = await this._getOverflowInfo();
     if (win.closed) {
       return;
@@ -5586,7 +5597,7 @@ OverflowableToolbar.prototype = {
       }
       this._hideTimeoutId = window.setTimeout(() => {
         if (!this._panel.firstElementChild.matches(":hover")) {
-          PanelMultiView.hidePopup(this._panel);
+          lazy.PanelMultiView.hidePopup(this._panel);
         }
       }, OVERFLOW_PANEL_HIDE_DELAY_MS);
     });

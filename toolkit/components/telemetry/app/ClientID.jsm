@@ -6,24 +6,28 @@
 
 var EXPORTED_SYMBOLS = ["ClientID"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
 const LOGGER_NAME = "Toolkit.Telemetry";
 const LOGGER_PREFIX = "ClientID::";
 // Must match ID in TelemetryUtils
 const CANARY_CLIENT_ID = "c0ffeec0-ffee-c0ff-eec0-ffeec0ffeec0";
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CommonUtils",
   "resource://services-common/utils.js"
 );
 
-XPCOMUtils.defineLazyGetter(this, "CryptoHash", () => {
+XPCOMUtils.defineLazyGetter(lazy, "CryptoHash", () => {
   return Components.Constructor(
     "@mozilla.org/security/hash;1",
     "nsICryptoHash",
@@ -31,15 +35,15 @@ XPCOMUtils.defineLazyGetter(this, "CryptoHash", () => {
   );
 });
 
-XPCOMUtils.defineLazyGetter(this, "gDatareportingPath", () => {
+XPCOMUtils.defineLazyGetter(lazy, "gDatareportingPath", () => {
   return PathUtils.join(
     Services.dirsvc.get("ProfD", Ci.nsIFile).path,
     "datareporting"
   );
 });
 
-XPCOMUtils.defineLazyGetter(this, "gStateFilePath", () => {
-  return PathUtils.join(gDatareportingPath, "state.json");
+XPCOMUtils.defineLazyGetter(lazy, "gStateFilePath", () => {
+  return PathUtils.join(lazy.gDatareportingPath, "state.json");
 });
 
 const PREF_CACHED_CLIENTID = "toolkit.telemetry.cachedClientID";
@@ -148,24 +152,8 @@ var ClientIDImpl = {
     // Try to load the client id from the DRS state file.
     let hasCurrentClientID = false;
     try {
-      let state = await IOUtils.readJSON(gStateFilePath);
+      let state = await IOUtils.readJSON(lazy.gStateFilePath);
       if (state) {
-        try {
-          if (Services.prefs.prefHasUserValue(PREF_CACHED_CLIENTID)) {
-            let cachedID = Services.prefs.getStringPref(
-              PREF_CACHED_CLIENTID,
-              null
-            );
-            if (cachedID && cachedID != state.clientID) {
-              Services.telemetry.scalarAdd(
-                "telemetry.loaded_client_id_doesnt_match_pref",
-                1
-              );
-            }
-          }
-        } catch (e) {
-          // This data collection's not that important.
-        }
         hasCurrentClientID = this.updateClientID(state.clientID);
         if (hasCurrentClientID) {
           this._log.trace(`_doLoadClientID: Client IDs loaded from state.`);
@@ -175,7 +163,6 @@ var ClientIDImpl = {
         }
       }
     } catch (e) {
-      Services.telemetry.scalarAdd("telemetry.state_file_read_errors", 1);
       // fall through to next option
     }
 
@@ -184,7 +171,6 @@ var ClientIDImpl = {
       const cachedID = this.getCachedClientID();
       // Calling `updateClientID` with `null` logs an error, which breaks tests.
       if (cachedID) {
-        Services.telemetry.scalarAdd("telemetry.using_pref_client_id", 1);
         hasCurrentClientID = this.updateClientID(cachedID);
       }
     }
@@ -192,8 +178,7 @@ var ClientIDImpl = {
     // We're missing the ID from the DRS state file and prefs.
     // Generate a new one.
     if (!hasCurrentClientID) {
-      Services.telemetry.scalarSet("telemetry.generated_new_client_id", true);
-      this.updateClientID(CommonUtils.generateUUID());
+      this.updateClientID(lazy.CommonUtils.generateUUID());
     }
     this._saveClientIdTask = this._saveClientID();
 
@@ -220,15 +205,13 @@ var ClientIDImpl = {
       let obj = {
         clientID: this._clientID,
       };
-      await IOUtils.makeDirectory(gDatareportingPath);
-      await IOUtils.writeJSON(gStateFilePath, obj, {
-        tmpPath: `${gStateFilePath}.tmp`,
+      await IOUtils.makeDirectory(lazy.gDatareportingPath);
+      await IOUtils.writeJSON(lazy.gStateFilePath, obj, {
+        tmpPath: `${lazy.gStateFilePath}.tmp`,
       });
       this._saveClientIdTask = null;
     } catch (ex) {
-      Services.telemetry.scalarAdd("telemetry.state_file_save_errors", 1);
-
-      if (!(ex instanceof DOMException) || ex.name !== "AbortError") {
+      if (!DOMException.isInstance(ex) || ex.name !== "AbortError") {
         throw ex;
       }
     }
@@ -243,6 +226,9 @@ var ClientIDImpl = {
   async getClientID() {
     if (!this._clientID) {
       let { clientID } = await this._loadClientID();
+      if (AppConstants.platform != "android") {
+        Glean.legacyTelemetry.clientId.set(clientID);
+      }
       return clientID;
     }
 
@@ -296,9 +282,9 @@ var ClientIDImpl = {
   async getClientIdHash() {
     if (!this._clientIDHash) {
       let byteArr = new TextEncoder().encode(await this.getClientID());
-      let hash = new CryptoHash("sha256");
+      let hash = new lazy.CryptoHash("sha256");
       hash.update(byteArr, byteArr.length);
-      this._clientIDHash = CommonUtils.bytesAsHex(hash.finish(false));
+      this._clientIDHash = lazy.CommonUtils.bytesAsHex(hash.finish(false));
     }
     return this._clientIDHash;
   },
@@ -336,12 +322,16 @@ var ClientIDImpl = {
     await this._saveClientIdTask;
 
     // Remove the client-id-containing state file from disk
-    await IOUtils.remove(gStateFilePath);
+    await IOUtils.remove(lazy.gStateFilePath);
   },
 
   async removeClientID() {
     this._log.trace("removeClientID");
-    Services.telemetry.scalarAdd("telemetry.removed_client_ids", 1);
+
+    if (AppConstants.platform != "android") {
+      // We can't clear the client_id in Glean, but we can make it the canary.
+      Glean.legacyTelemetry.clientId.set(CANARY_CLIENT_ID);
+    }
 
     // Wait for the removal.
     // Asynchronous calls to getClientID will also be blocked on this.
@@ -367,6 +357,9 @@ var ClientIDImpl = {
     }
 
     this._clientID = id;
+    if (AppConstants.platform != "android") {
+      Glean.legacyTelemetry.clientId.set(id);
+    }
 
     this._clientIDHash = null;
     Services.prefs.setStringPref(PREF_CACHED_CLIENTID, this._clientID);

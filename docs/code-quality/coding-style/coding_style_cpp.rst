@@ -384,7 +384,7 @@ C/C++ practices
    `DebugOnly<T> <https://developer.mozilla.org/docs/Mozilla/Debugging/DebugOnly%3CT%3E>`__
    helper when declaring them.
 -  You should `use the static preference
-   API <https://developer.mozilla.org/docs/Mozilla/Preferences/Using_preferences_from_application_code>`__ for
+   API <https://firefox-source-docs.mozilla.org/modules/libpref/index.html>`__ for
    working with preferences.
 -  One-argument constructors, that are not copy or move constructors,
    should generally be marked explicit. Exceptions should be annotated
@@ -392,6 +392,8 @@ C/C++ practices
 -  Use ``char32_t`` as the return type or argument type of a method that
    returns or takes as argument a single Unicode scalar value. (Don't
    use UTF-32 strings, though.)
+-  Prefer unsigned types for semantically-non-negative integer values.
+-  When operating on integers that could overflow, use ``CheckedInt``.
 -  Avoid the usage of ``typedef``, instead, please use ``using`` instead.
 
 .. note::
@@ -1141,3 +1143,9 @@ been replaced with ``mozilla::Abs`` calls, in `bug
 code in ``Firefox/core/toolkit`` needs to ``#include "nsAlgorithm.h"`` and
 use the ``NS_foo`` variants instead of ``PR_foo``, or
 ``#include "mozilla/MathAlgorithms.h"`` for ``mozilla::Abs``.
+
+Use of SpiderMonkey rooting typedefs
+------------------------------------
+The rooting typedefs in ``js/public/TypeDecls.h``, such as ``HandleObject`` and
+``RootedObject``, are deprecated both in and outside of SpiderMonkey. They will
+eventually be removed and should not be used in new code.

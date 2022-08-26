@@ -16,8 +16,8 @@
 #include "RemoteAccessible.h"
 #include "DocAccessibleParent.h"
 #include "RootAccessible.h"
-#include "TableAccessible.h"
-#include "TableCellAccessible.h"
+#include "mozilla/a11y/TableAccessibleBase.h"
+#include "mozilla/a11y/TableCellAccessibleBase.h"
 #include "nsMai.h"
 #include "nsMaiHyperlink.h"
 #include "nsString.h"
@@ -30,6 +30,7 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Sprintf.h"
+#include "mozilla/StaticPrefs_accessibility.h"
 #include "nsComponentManagerUtils.h"
 
 using namespace mozilla;
@@ -658,20 +659,12 @@ static AtkAttributeSet* ConvertToAtkAttributeSet(AccAttributes* aAttributes) {
   return objAttributeSet;
 }
 
-AtkAttributeSet* GetAttributeSet(LocalAccessible* aAccessible) {
-  RefPtr<AccAttributes> attributes = aAccessible->Attributes();
-  return ConvertToAtkAttributeSet(attributes);
-}
-
 AtkAttributeSet* getAttributesCB(AtkObject* aAtkObj) {
-  AccessibleWrap* accWrap = GetAccessibleWrap(aAtkObj);
-  if (accWrap) return GetAttributeSet(accWrap);
-
-  RemoteAccessible* proxy = GetProxy(aAtkObj);
-  if (!proxy) return nullptr;
-
-  RefPtr<AccAttributes> attributes = nullptr;
-  proxy->Attributes(&attributes);
+  Accessible* acc = GetInternalObj(aAtkObj);
+  if (!acc) {
+    return nullptr;
+  }
+  RefPtr<AccAttributes> attributes = acc->Attributes();
   return ConvertToAtkAttributeSet(attributes);
 }
 
@@ -700,28 +693,11 @@ AtkObject* getParentCB(AtkObject* aAtkObj) {
 }
 
 gint getChildCountCB(AtkObject* aAtkObj) {
-  if (AccessibleWrap* accWrap = GetAccessibleWrap(aAtkObj)) {
-    if (nsAccUtils::MustPrune(accWrap)) {
-      return 0;
-    }
-
-    uint32_t count = accWrap->EmbeddedChildCount();
-    if (count) {
-      return static_cast<gint>(count);
-    }
-
-    OuterDocAccessible* outerDoc = accWrap->AsOuterDoc();
-    if (outerDoc && outerDoc->RemoteChildDoc()) {
-      return 1;
-    }
+  Accessible* acc = GetInternalObj(aAtkObj);
+  if (!acc || nsAccUtils::MustPrune(acc)) {
+    return 0;
   }
-
-  RemoteAccessible* proxy = GetProxy(aAtkObj);
-  if (proxy && !nsAccUtils::MustPrune(proxy)) {
-    return proxy->EmbeddedChildCount();
-  }
-
-  return 0;
+  return static_cast<gint>(acc->EmbeddedChildCount());
 }
 
 AtkObject* refChildCB(AtkObject* aAtkObj, gint aChildIndex) {
@@ -737,7 +713,7 @@ AtkObject* refChildCB(AtkObject* aAtkObj, gint aChildIndex) {
       return nullptr;
     }
 
-    LocalAccessible* accChild = accWrap->GetEmbeddedChildAt(aChildIndex);
+    LocalAccessible* accChild = accWrap->EmbeddedChildAt(aChildIndex);
     if (accChild) {
       childAtkObj = AccessibleWrap::GetAtkObject(accChild);
     } else {
@@ -752,8 +728,10 @@ AtkObject* refChildCB(AtkObject* aAtkObj, gint aChildIndex) {
       return nullptr;
     }
 
-    RemoteAccessible* child = proxy->EmbeddedChildAt(aChildIndex);
-    if (child) childAtkObj = GetWrapperFor(child);
+    Accessible* child = proxy->EmbeddedChildAt(aChildIndex);
+    if (child) {
+      childAtkObj = GetWrapperFor(child->AsRemote());
+    }
   } else {
     return nullptr;
   }
@@ -773,27 +751,18 @@ AtkObject* refChildCB(AtkObject* aAtkObj, gint aChildIndex) {
 gint getIndexInParentCB(AtkObject* aAtkObj) {
   // We don't use LocalAccessible::IndexInParent() because we don't include text
   // leaf nodes as children in ATK.
-  if (RemoteAccessible* proxy = GetProxy(aAtkObj)) {
-    if (RemoteAccessible* parent = proxy->RemoteParent()) {
-      return parent->IndexOfEmbeddedChild(proxy);
-    }
-
-    if (proxy->OuterDocOfRemoteBrowser()) {
-      return 0;
-    }
-
+  Accessible* acc = GetInternalObj(aAtkObj);
+  if (!acc) {
     return -1;
   }
-
-  AccessibleWrap* accWrap = GetAccessibleWrap(aAtkObj);
-  if (!accWrap) {
+  if (acc->IsDoc()) {
+    return 0;
+  }
+  Accessible* parent = acc->Parent();
+  if (!parent) {
     return -1;
   }
-
-  LocalAccessible* parent = accWrap->LocalParent();
-  if (!parent) return -1;  // No parent
-
-  return parent->GetIndexOfEmbeddedChild(accWrap);
+  return parent->IndexOfEmbeddedChild(acc);
 }
 
 static void TranslateStates(uint64_t aState, roles::Role aRole,
@@ -838,7 +807,7 @@ AtkStateSet* refStateSetCB(AtkObject* aAtkObj) {
   return state_set;
 }
 
-static void UpdateAtkRelation(RelationType aType, LocalAccessible* aAcc,
+static void UpdateAtkRelation(RelationType aType, Accessible* aAcc,
                               AtkRelationType aAtkType,
                               AtkRelationSet* aAtkSet) {
   if (aAtkType == ATK_RELATION_NULL) return;
@@ -849,16 +818,9 @@ static void UpdateAtkRelation(RelationType aType, LocalAccessible* aAcc,
 
   Relation rel(aAcc->RelationByType(aType));
   nsTArray<AtkObject*> targets;
-  LocalAccessible* tempAcc = nullptr;
+  Accessible* tempAcc = nullptr;
   while ((tempAcc = rel.Next())) {
-    targets.AppendElement(AccessibleWrap::GetAtkObject(tempAcc));
-  }
-
-  if (aType == RelationType::EMBEDS && aAcc->IsRoot()) {
-    if (RemoteAccessible* proxyDoc =
-            aAcc->AsRoot()->GetPrimaryRemoteTopLevelContentDoc()) {
-      targets.AppendElement(GetWrapperFor(proxyDoc));
-    }
+    targets.AppendElement(GetWrapperFor(tempAcc));
   }
 
   if (targets.Length()) {
@@ -873,13 +835,15 @@ AtkRelationSet* refRelationSetCB(AtkObject* aAtkObj) {
   AtkRelationSet* relation_set =
       ATK_OBJECT_CLASS(parent_class)->ref_relation_set(aAtkObj);
 
-  const AtkRelationType typeMap[] = {
+  Accessible* acc = GetInternalObj(aAtkObj);
+  if (!StaticPrefs::accessibility_cache_enabled_AtStartup() &&
+      acc->IsRemote()) {
+    RemoteAccessible* proxy = acc->AsRemote();
+    const AtkRelationType typeMap[] = {
 #define RELATIONTYPE(gecko, s, atk, m, i) atk,
 #include "RelationTypeMap.h"
 #undef RELATIONTYPE
-  };
-
-  if (RemoteAccessible* proxy = GetProxy(aAtkObj)) {
+    };
     nsTArray<RelationType> types;
     nsTArray<nsTArray<RemoteAccessible*>> targetSets;
     proxy->Relations(&types, &targetSets);
@@ -906,13 +870,11 @@ AtkRelationSet* refRelationSetCB(AtkObject* aAtkObj) {
       atk_relation_set_add(relation_set, atkRelation);
       g_object_unref(atkRelation);
     }
+    return relation_set;
   }
 
-  AccessibleWrap* accWrap = GetAccessibleWrap(aAtkObj);
-  if (!accWrap) return relation_set;
-
 #define RELATIONTYPE(geckoType, geckoTypeName, atkType, msaaType, ia2Type) \
-  UpdateAtkRelation(RelationType::geckoType, accWrap, atkType, relation_set);
+  UpdateAtkRelation(RelationType::geckoType, acc, atkType, relation_set);
 
 #include "RelationTypeMap.h"
 
@@ -1291,7 +1253,9 @@ nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
     } break;
 
     case nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_COMPLETE:
-      g_signal_emit_by_name(atkObj, "load_complete");
+      if (accessible->IsDoc()) {
+        g_signal_emit_by_name(atkObj, "load_complete");
+      }
       // XXX - Handle native dialog accessibles.
       if (!accessible->IsRoot() && accessible->HasARIARole() &&
           accessible->ARIARole() == roles::DIALOG) {
@@ -1301,11 +1265,15 @@ nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
       break;
 
     case nsIAccessibleEvent::EVENT_DOCUMENT_RELOAD:
-      g_signal_emit_by_name(atkObj, "reload");
+      if (accessible->IsDoc()) {
+        g_signal_emit_by_name(atkObj, "reload");
+      }
       break;
 
     case nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_STOPPED:
-      g_signal_emit_by_name(atkObj, "load_stopped");
+      if (accessible->IsDoc()) {
+        g_signal_emit_by_name(atkObj, "load_stopped");
+      }
       break;
 
     case nsIAccessibleEvent::EVENT_MENUPOPUP_START:
@@ -1332,13 +1300,19 @@ void a11y::ProxyEvent(RemoteAccessible* aTarget, uint32_t aEventType) {
       atk_object_notify_state_change(wrapper, ATK_STATE_FOCUSED, true);
       break;
     case nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_COMPLETE:
-      g_signal_emit_by_name(wrapper, "load_complete");
+      if (aTarget->IsDoc()) {
+        g_signal_emit_by_name(wrapper, "load_complete");
+      }
       break;
     case nsIAccessibleEvent::EVENT_DOCUMENT_RELOAD:
-      g_signal_emit_by_name(wrapper, "reload");
+      if (aTarget->IsDoc()) {
+        g_signal_emit_by_name(wrapper, "reload");
+      }
       break;
     case nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_STOPPED:
-      g_signal_emit_by_name(wrapper, "load_stopped");
+      if (aTarget->IsDoc()) {
+        g_signal_emit_by_name(wrapper, "load_stopped");
+      }
       break;
     case nsIAccessibleEvent::EVENT_MENUPOPUP_START:
       atk_focus_tracker_notify(wrapper);  // fire extra focus event
@@ -1375,7 +1349,8 @@ void a11y::ProxyStateChangeEvent(RemoteAccessible* aTarget, uint64_t aState,
 }
 
 void a11y::ProxyCaretMoveEvent(RemoteAccessible* aTarget, int32_t aOffset,
-                               bool aIsSelectionCollapsed) {
+                               bool aIsSelectionCollapsed,
+                               int32_t aGranularity) {
   AtkObject* wrapper = GetWrapperFor(aTarget);
   g_signal_emit_by_name(wrapper, "text_caret_moved", aOffset);
 }
@@ -1409,9 +1384,9 @@ void MaiAtkObject::FireStateChangeEvent(uint64_t aState, bool aEnabled) {
   }
 }
 
-void a11y::ProxyTextChangeEvent(RemoteAccessible* aTarget, const nsString& aStr,
-                                int32_t aStart, uint32_t aLen, bool aIsInsert,
-                                bool aFromUser) {
+void a11y::ProxyTextChangeEvent(RemoteAccessible* aTarget,
+                                const nsAString& aStr, int32_t aStart,
+                                uint32_t aLen, bool aIsInsert, bool aFromUser) {
   MaiAtkObject* atkObj = MAI_ATK_OBJECT(GetWrapperFor(aTarget));
   atkObj->FireTextChangeEvent(aStr, aStart, aLen, aIsInsert, aFromUser);
 }
@@ -1429,7 +1404,7 @@ static const char* textChangedStrings[2][2] = {
     {TEXT_REMOVED NON_USER_DETAIL, TEXT_INSERTED NON_USER_DETAIL},
     {TEXT_REMOVED, TEXT_INSERTED}};
 
-void MaiAtkObject::FireTextChangeEvent(const nsString& aStr, int32_t aStart,
+void MaiAtkObject::FireTextChangeEvent(const nsAString& aStr, int32_t aStart,
                                        uint32_t aLen, bool aIsInsert,
                                        bool aFromUser) {
   if (gAvailableAtkSignals == eUnknown) {
@@ -1480,7 +1455,7 @@ void a11y::ProxySelectionEvent(RemoteAccessible*, RemoteAccessible* aWidget,
 }
 
 // static
-void AccessibleWrap::GetKeyBinding(LocalAccessible* aAccessible,
+void AccessibleWrap::GetKeyBinding(Accessible* aAccessible,
                                    nsAString& aResult) {
   // Return all key bindings including access key and keyboard shortcut.
 
@@ -1490,7 +1465,7 @@ void AccessibleWrap::GetKeyBinding(LocalAccessible* aAccessible,
   if (!keyBinding.IsEmpty()) {
     keyBinding.AppendToString(keyBindingsStr, KeyBinding::eAtkFormat);
 
-    LocalAccessible* parent = aAccessible->LocalParent();
+    Accessible* parent = aAccessible->Parent();
     roles::Role role = parent ? parent->Role() : roles::NOTHING;
     if (role == roles::PARENT_MENUITEM || role == roles::MENUITEM ||
         role == roles::RADIO_MENU_ITEM || role == roles::CHECK_MENU_ITEM) {
@@ -1506,8 +1481,7 @@ void AccessibleWrap::GetKeyBinding(LocalAccessible* aAccessible,
 
           keysInHierarchyStr.Insert(str, 0);
         }
-      } while ((parent = parent->LocalParent()) &&
-               parent->Role() != roles::MENUBAR);
+      } while ((parent = parent->Parent()) && parent->Role() != roles::MENUBAR);
 
       keyBindingsStr.Append(';');
       keyBindingsStr.Append(keysInHierarchyStr);
@@ -1519,21 +1493,23 @@ void AccessibleWrap::GetKeyBinding(LocalAccessible* aAccessible,
 
   // Get keyboard shortcut.
   keyBindingsStr.Append(';');
-  keyBinding = aAccessible->KeyboardShortcut();
-  if (!keyBinding.IsEmpty()) {
-    keyBinding.AppendToString(keyBindingsStr, KeyBinding::eAtkFormat);
+  if (LocalAccessible* localAcc = aAccessible->AsLocal()) {
+    keyBinding = localAcc->KeyboardShortcut();
+    if (!keyBinding.IsEmpty()) {
+      keyBinding.AppendToString(keyBindingsStr, KeyBinding::eAtkFormat);
+    }
   }
   aResult = keyBindingsStr;
 }
 
 // static
-LocalAccessible* AccessibleWrap::GetColumnHeader(TableAccessible* aAccessible,
-                                                 int32_t aColIdx) {
+Accessible* AccessibleWrap::GetColumnHeader(TableAccessibleBase* aAccessible,
+                                            int32_t aColIdx) {
   if (!aAccessible) {
     return nullptr;
   }
 
-  LocalAccessible* cell = aAccessible->CellAt(0, aColIdx);
+  Accessible* cell = aAccessible->CellAt(0, aColIdx);
   if (!cell) {
     return nullptr;
   }
@@ -1545,12 +1521,12 @@ LocalAccessible* AccessibleWrap::GetColumnHeader(TableAccessible* aAccessible,
   }
 
   // otherwise get column header for the data cell at the first row.
-  TableCellAccessible* tableCell = cell->AsTableCell();
+  TableCellAccessibleBase* tableCell = cell->AsTableCellBase();
   if (!tableCell) {
     return nullptr;
   }
 
-  AutoTArray<LocalAccessible*, 10> headerCells;
+  AutoTArray<Accessible*, 10> headerCells;
   tableCell->ColHeaderCells(&headerCells);
   if (headerCells.IsEmpty()) {
     return nullptr;
@@ -1560,13 +1536,13 @@ LocalAccessible* AccessibleWrap::GetColumnHeader(TableAccessible* aAccessible,
 }
 
 // static
-LocalAccessible* AccessibleWrap::GetRowHeader(TableAccessible* aAccessible,
-                                              int32_t aRowIdx) {
+Accessible* AccessibleWrap::GetRowHeader(TableAccessibleBase* aAccessible,
+                                         int32_t aRowIdx) {
   if (!aAccessible) {
     return nullptr;
   }
 
-  LocalAccessible* cell = aAccessible->CellAt(aRowIdx, 0);
+  Accessible* cell = aAccessible->CellAt(aRowIdx, 0);
   if (!cell) {
     return nullptr;
   }
@@ -1578,12 +1554,12 @@ LocalAccessible* AccessibleWrap::GetRowHeader(TableAccessible* aAccessible,
   }
 
   // otherwise get row header for the data cell at the first column.
-  TableCellAccessible* tableCell = cell->AsTableCell();
+  TableCellAccessibleBase* tableCell = cell->AsTableCellBase();
   if (!tableCell) {
     return nullptr;
   }
 
-  AutoTArray<LocalAccessible*, 10> headerCells;
+  AutoTArray<Accessible*, 10> headerCells;
   tableCell->RowHeaderCells(&headerCells);
   if (headerCells.IsEmpty()) {
     return nullptr;

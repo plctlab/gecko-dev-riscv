@@ -4,15 +4,16 @@
 
 var EXPORTED_SYMBOLS = ["EnterprisePoliciesManager"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   WindowsGPOParser: "resource://gre/modules/policies/WindowsGPOParser.jsm",
   macOSPoliciesParser:
     "resource://gre/modules/policies/macOSPoliciesParser.jsm",
@@ -50,7 +51,7 @@ const PREF_DISALLOW_ENTERPRISE = "browser.policies.testing.disallowEnterprise";
 // To allow for cleaning up old policies
 const PREF_POLICIES_APPLIED = "browser.policies.applied";
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     prefix: "Enterprise Policies",
@@ -96,8 +97,8 @@ EnterprisePoliciesManager.prototype = {
 
   _initialize() {
     if (Services.prefs.getBoolPref(PREF_POLICIES_APPLIED, false)) {
-      if ("_cleanup" in Policies) {
-        let policyImpl = Policies._cleanup;
+      if ("_cleanup" in lazy.Policies) {
+        let policyImpl = lazy.Policies._cleanup;
 
         for (let timing of Object.keys(this._callbacks)) {
           let policyCallback = policyImpl[timing];
@@ -140,9 +141,12 @@ EnterprisePoliciesManager.prototype = {
 
   _chooseProvider() {
     let platformProvider = null;
-    if (AppConstants.platform == "win") {
+    if (AppConstants.platform == "win" && AppConstants.MOZ_SYSTEM_POLICIES) {
       platformProvider = new WindowsGPOPoliciesProvider();
-    } else if (AppConstants.platform == "macosx") {
+    } else if (
+      AppConstants.platform == "macosx" &&
+      AppConstants.MOZ_SYSTEM_POLICIES
+    ) {
       platformProvider = new macOSPoliciesProvider();
     }
     let jsonProvider = new JSONPoliciesProvider();
@@ -165,29 +169,37 @@ EnterprisePoliciesManager.prototype = {
       let policyParameters = unparsedPolicies[policyName];
 
       if (!policySchema) {
-        log.error(`Unknown policy: ${policyName}`);
+        lazy.log.error(`Unknown policy: ${policyName}`);
         continue;
       }
 
       if (policySchema.enterprise_only && !areEnterpriseOnlyPoliciesAllowed()) {
-        log.error(`Policy ${policyName} is only allowed on ESR`);
+        lazy.log.error(`Policy ${policyName} is only allowed on ESR`);
         continue;
       }
 
       let {
         valid: parametersAreValid,
         parsedValue: parsedParameters,
-      } = JsonSchemaValidator.validate(policyParameters, policySchema, {
+      } = lazy.JsonSchemaValidator.validate(policyParameters, policySchema, {
         allowExtraProperties: true,
       });
 
       if (!parametersAreValid) {
-        log.error(`Invalid parameters specified for ${policyName}.`);
+        lazy.log.error(`Invalid parameters specified for ${policyName}.`);
+        continue;
+      }
+
+      let policyImpl = lazy.Policies[policyName];
+
+      if (policyImpl.validate && !policyImpl.validate(parsedParameters)) {
+        lazy.log.error(
+          `Parameters for ${policyName} did not validate successfully.`
+        );
         continue;
       }
 
       this._parsedPolicies[policyName] = parsedParameters;
-      let policyImpl = Policies[policyName];
 
       for (let timing of Object.keys(this._callbacks)) {
         let policyCallback = policyImpl[timing];
@@ -237,7 +249,7 @@ EnterprisePoliciesManager.prototype = {
       try {
         callback();
       } catch (ex) {
-        log.error("Error running ", callback, `for ${timing}:`, ex);
+        lazy.log.error("Error running ", callback, `for ${timing}:`, ex);
       }
     }
   },
@@ -249,6 +261,7 @@ EnterprisePoliciesManager.prototype = {
     Services.ppmm.sharedData.delete("EnterprisePolicies:DisallowedFeatures");
 
     this._status = Ci.nsIEnterprisePolicies.UNINITIALIZED;
+    this._parsedPolicies = undefined;
     for (let timing of Object.keys(this._callbacks)) {
       this._callbacks[timing] = [];
     }
@@ -426,6 +439,32 @@ EnterprisePoliciesManager.prototype = {
   allowedInstallSource(uri) {
     return InstallSources ? InstallSources.matches(uri) : true;
   },
+
+  isExemptExecutableExtension(url, extension) {
+    let urlObject;
+    try {
+      urlObject = new URL(url);
+    } catch (e) {
+      return false;
+    }
+    let { hostname } = urlObject;
+    let exemptArray = this.getActivePolicies()
+      ?.ExemptDomainFileTypePairsFromFileTypeDownloadWarnings;
+    if (!hostname || !extension || !exemptArray) {
+      return false;
+    }
+    extension = extension.toLowerCase();
+    let domains = exemptArray
+      .filter(item => item.file_extension.toLowerCase() == extension)
+      .map(item => item.domains)
+      .flat();
+    for (let domain of domains) {
+      if (Services.eTLD.hasRootDomain(hostname, domain)) {
+        return true;
+      }
+    }
+    return false;
+  },
 };
 
 let DisallowedFeatures = {};
@@ -492,7 +531,7 @@ class JSONPoliciesProvider {
   _getConfigurationFile() {
     let configFile = null;
 
-    if (AppConstants.platform == "linux") {
+    if (AppConstants.platform == "linux" && AppConstants.MOZ_SYSTEM_POLICIES) {
       let systemConfigFile = Cc["@mozilla.org/file/local;1"].createInstance(
         Ci.nsIFile
       );
@@ -561,10 +600,12 @@ class JSONPoliciesProvider {
     try {
       let data = Cu.readUTF8File(configFile);
       if (data) {
+        lazy.log.debug(`policies.json path = ${configFile.path}`);
+        lazy.log.debug(`policies.json content = ${data}`);
         this._policies = JSON.parse(data).policies;
 
         if (!this._policies) {
-          log.error("Policies file doesn't contain a 'policies' object");
+          lazy.log.error("Policies file doesn't contain a 'policies' object");
           this._failed = true;
         }
       }
@@ -575,10 +616,10 @@ class JSONPoliciesProvider {
       ) {
         // Do nothing, _policies will remain null
       } else if (ex instanceof SyntaxError) {
-        log.error(`Error parsing JSON file: ${ex}`);
+        lazy.log.error(`Error parsing JSON file: ${ex}`);
         this._failed = true;
       } else {
-        log.error(`Error reading JSON file: ${ex}`);
+        lazy.log.error(`Error reading JSON file: ${ex}`);
         this._failed = true;
       }
     }
@@ -595,11 +636,9 @@ class WindowsGPOPoliciesProvider {
 
     // Machine policies override user policies, so we read
     // user policies first and then replace them if necessary.
-    log.debug("root = HKEY_CURRENT_USER");
     this._readData(wrk, wrk.ROOT_KEY_CURRENT_USER);
     // We don't access machine policies in testing
     if (!Cu.isInAutomation && !isXpcshell) {
-      log.debug("root = HKEY_LOCAL_MACHINE");
       this._readData(wrk, wrk.ROOT_KEY_LOCAL_MACHINE);
     }
   }
@@ -626,11 +665,21 @@ class WindowsGPOPoliciesProvider {
       }
       wrk.open(root, regLocation, wrk.ACCESS_READ);
       if (wrk.hasChild("Mozilla\\" + Services.appinfo.name)) {
-        this._policies = WindowsGPOParser.readPolicies(wrk, this._policies);
+        lazy.log.debug(
+          `root = ${
+            root == wrk.ROOT_KEY_CURRENT_USER
+              ? "HKEY_CURRENT_USER"
+              : "HKEY_LOCAL_MACHINE"
+          }`
+        );
+        this._policies = lazy.WindowsGPOParser.readPolicies(
+          wrk,
+          this._policies
+        );
       }
       wrk.close();
     } catch (e) {
-      log.error("Unable to access registry - ", e);
+      lazy.log.error("Unable to access registry - ", e);
     }
   }
 }
@@ -644,7 +693,7 @@ class macOSPoliciesProvider {
     if (!prefReader.policiesEnabled()) {
       return;
     }
-    this._policies = macOSPoliciesParser.readPolicies(prefReader);
+    this._policies = lazy.macOSPoliciesParser.readPolicies(prefReader);
   }
 
   get hasPolicies() {

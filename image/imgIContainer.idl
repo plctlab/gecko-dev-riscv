@@ -48,6 +48,7 @@ namespace image {
 
 class ImageRegion;
 class ImageIntRegion;
+class WebRenderImageProvider;
 struct Orientation;
 struct Resolution;
 
@@ -70,16 +71,18 @@ native nsSize(nsSize);
 [ptr] native nsIFrame(nsIFrame);
 native TempRefImageContainer(already_AddRefed<mozilla::layers::ImageContainer>);
 [ptr] native ImageContainer(mozilla::layers::ImageContainer);
+[ptr] native WebRenderImageProvider(mozilla::image::WebRenderImageProvider);
 [ref] native ImageRegion(mozilla::image::ImageRegion);
 [ptr] native WindowRenderer(mozilla::WindowRenderer);
 native Orientation(mozilla::image::Orientation);
 native ImageResolution(mozilla::image::Resolution);
 [ref] native TimeStamp(mozilla::TimeStamp);
-[ref] native MaybeSVGImageContext(mozilla::Maybe<mozilla::SVGImageContext>);
+[ref] native SVGImageContext(mozilla::SVGImageContext);
 [ref] native MaybeImageIntRegion(mozilla::Maybe<mozilla::image::ImageIntRegion>);
 native TempRefSourceSurface(already_AddRefed<mozilla::gfx::SourceSurface>);
 native TempRefImgIContainer(already_AddRefed<imgIContainer>);
 native nsIntSizeByVal(nsIntSize);
+[ref] native MediaFeatureChange(mozilla::MediaFeatureChange);
 
 
 /**
@@ -168,9 +171,9 @@ interface imgIContainer : nsISupports
   readonly attribute boolean animated;
 
   /**
-   * Producer ID for image containers created by this image.
+   * Provider ID for image providers created by this image.
    */
-  [infallible] readonly attribute unsigned long producerId;
+  [infallible] readonly attribute unsigned long providerId;
 
   /**
    * Flags for imgIContainer operations.
@@ -316,6 +319,12 @@ interface imgIContainer : nsISupports
   [noscript, notxpcom] boolean willDrawOpaqueNow();
 
   /**
+   * Returns true if this image has a frame and the frame currently has a
+   * least 1 decoded pixel. Only valid for raster images.
+   */
+  [noscript, notxpcom] boolean hasDecodedPixels();
+
+  /**
    * @return true if getImageContainer() is expected to return a valid
    *         ImageContainer when passed the given @Renderer and @Flags
    *         parameters.
@@ -324,13 +333,11 @@ interface imgIContainer : nsISupports
                                                          in uint32_t aFlags);
 
   /**
-   * Attempts to create an ImageContainer (and Image) containing the current
-   * frame at the given size. Match the requested size is best effort; it's
-   * not guaranteed that the surface you get will be a perfect match. (Some
-   * reasons you may get a surface of a different size include: if you
-   * requested upscaling, or if downscale-during-decode is disabled.)
-   *
-   * Avoid calling this unless you're actually going to layerize this image.
+   * Attempts to find a WebRenderImageProvider containing the current frame at
+   * the given size. Match the requested size is best effort; it's not
+   * guaranteed that the surface you get will be a perfect match. (Some reasons
+   * you may get a surface of a different size include: if you requested
+   * upscaling, or if downscale-during-decode is disabled.)
    *
    * @param aRenderer The WindowRenderer which will be used to render the
    *                  ImageContainer.
@@ -341,16 +348,16 @@ interface imgIContainer : nsISupports
    * @param aFlags Decoding / drawing flags (in other words, FLAG_* flags).
    *               Currently only FLAG_SYNC_DECODE and FLAG_SYNC_DECODE_IF_FAST
    *               are supported.
-   * @param aContainer Return value for ImageContainer for the current frame.
-   *                   May be null depending on the draw result.
+   * @param aProvider Return value for WebRenderImageProvider for the current
+   *                  frame. May be null depending on the draw result.
    * @return The draw result for the current frame.
    */
-  [noscript, notxpcom] ImgDrawResult getImageContainerAtSize(in WindowRenderer aRenderer,
-                                                             [const] in nsIntSize aSize,
-                                                             [const] in MaybeSVGImageContext aSVGContext,
-                                                             [const] in MaybeImageIntRegion aRegion,
-                                                             in uint32_t aFlags,
-                                                             out ImageContainer aOutContainer);
+  [noscript, notxpcom] ImgDrawResult getImageProvider(in WindowRenderer aRenderer,
+                                                      [const] in nsIntSize aSize,
+                                                      [const] in SVGImageContext aSVGContext,
+                                                      [const] in MaybeImageIntRegion aRegion,
+                                                      in uint32_t aFlags,
+                                                      out WebRenderImageProvider aProvider);
 
   /**
    * Draw the requested frame of this image onto the context specified.
@@ -463,7 +470,7 @@ interface imgIContainer : nsISupports
        [const] in ImageRegion aRegion,
        in uint32_t aWhichFrame,
        in SamplingFilter aSamplingFilter,
-       [const] in MaybeSVGImageContext aSVGContext,
+       [const] in SVGImageContext aSVGContext,
        in uint32_t aFlags,
        in float aOpacity);
 
@@ -668,20 +675,18 @@ interface imgIContainer : nsISupports
    */
   [noscript, notxpcom] void propagateUseCounters(in Document aReferencingDocument);
 
-  %{C++
   /*
    * Called when media feature values that apply to all documents (such as
    * those based on system metrics) have changed.  If this image is a type
    * that can respond to media queries (i.e., an SVG image), this function
    * is overridden to handle restyling and invalidating the image.
    */
-  virtual void MediaFeatureValuesChangedAllDocuments(const mozilla::MediaFeatureChange& aChange) {}
+  [notxpcom, nostdcall] void mediaFeatureValuesChangedAllDocuments([const] in MediaFeatureChange aChange);
 
   /*
    * Get the set of sizes the image can decode to natively.
    */
-  virtual nsresult GetNativeSizes(nsTArray<nsIntSize>& aNativeSizes) const = 0;
+  [nostdcall] Array<nsIntSizeByVal> getNativeSizes();
 
-  virtual size_t GetNativeSizesLength() const = 0;
-  %}
+  [nostdcall, notxpcom] size_t getNativeSizesLength();
 };

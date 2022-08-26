@@ -7,6 +7,7 @@
 #include "WebSocketEventService.h"
 #include "WebSocketEventListenerParent.h"
 #include "mozilla/Unused.h"
+#include "WebSocketFrame.h"
 
 namespace mozilla {
 namespace net {
@@ -56,8 +57,7 @@ NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketCreated(uint32_t aWebSocketSerialID,
                                                const nsAString& aURI,
                                                const nsACString& aProtocols) {
-  Unused << SendWebSocketCreated(aWebSocketSerialID, nsString(aURI),
-                                 nsCString(aProtocols));
+  Unused << SendWebSocketCreated(aWebSocketSerialID, aURI, aProtocols);
   return NS_OK;
 }
 
@@ -67,9 +67,8 @@ WebSocketEventListenerParent::WebSocketOpened(uint32_t aWebSocketSerialID,
                                               const nsACString& aProtocols,
                                               const nsACString& aExtensions,
                                               uint64_t aHttpChannelId) {
-  Unused << SendWebSocketOpened(aWebSocketSerialID, nsString(aEffectiveURI),
-                                nsCString(aProtocols), nsCString(aExtensions),
-                                aHttpChannelId);
+  Unused << SendWebSocketOpened(aWebSocketSerialID, aEffectiveURI, aProtocols,
+                                aExtensions, aHttpChannelId);
   return NS_OK;
 }
 
@@ -77,8 +76,7 @@ NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketClosed(uint32_t aWebSocketSerialID,
                                               bool aWasClean, uint16_t aCode,
                                               const nsAString& aReason) {
-  Unused << SendWebSocketClosed(aWebSocketSerialID, aWasClean, aCode,
-                                nsString(aReason));
+  Unused << SendWebSocketClosed(aWebSocketSerialID, aWasClean, aCode, aReason);
   return NS_OK;
 }
 
@@ -86,7 +84,7 @@ NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketMessageAvailable(
     uint32_t aWebSocketSerialID, const nsACString& aData,
     uint16_t aMessageType) {
-  Unused << SendWebSocketMessageAvailable(aWebSocketSerialID, nsCString(aData),
+  Unused << SendWebSocketMessageAvailable(aWebSocketSerialID, aData,
                                           aMessageType);
   return NS_OK;
 }

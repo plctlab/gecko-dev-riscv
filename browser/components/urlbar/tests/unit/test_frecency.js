@@ -49,19 +49,13 @@ async function tagURI(uri, tags) {
   PlacesUtils.tagging.tagURI(uri, tags);
 }
 
-async function preSearch() {
-  await PlacesTestUtils.promiseAsyncUpdates();
-  await PlacesUtils.bookmarks.eraseEverything();
-  await PlacesUtils.history.clear();
-}
-
 var uri1 = Services.io.newURI("http://site.tld/1");
 var uri2 = Services.io.newURI("http://site.tld/2");
 var uri3 = Services.io.newURI("http://aaaaaaaaaa/1");
 var uri4 = Services.io.newURI("http://aaaaaaaaaa/2");
 
 // d1 is younger (should show up higher) than d2 (PRTime is in usecs not msec)
-// Make sure the dates fall into different frecency buckets
+// Make sure the dates fall into different frecency groups
 var d1 = new Date(Date.now() - 1000 * 60 * 60) * 1000;
 var d2 = new Date(Date.now() - 1000 * 60 * 60 * 24 * 10) * 1000;
 // c1 is larger (should show up higher) than c2
@@ -388,13 +382,21 @@ add_task(async function test_frecency() {
   Services.prefs.setBoolPref("browser.urlbar.suggest.openpage", false);
   Services.prefs.setBoolPref("browser.urlbar.suggest.searches", false);
   Services.prefs.setBoolPref("browser.urlbar.suggest.engines", false);
+  Services.prefs.setBoolPref("browser.urlbar.suggest.quickactions", false);
   for (let test of tests) {
     await PlacesUtils.bookmarks.eraseEverything();
     await PlacesUtils.history.clear();
 
     await test();
   }
-  for (let type of ["history", "bookmark", "openpage", "searches", "engines"]) {
+  for (let type of [
+    "history",
+    "bookmark",
+    "openpage",
+    "searches",
+    "engines",
+    "quickactions",
+  ]) {
     Services.prefs.clearUserPref("browser.urlbar.suggest." + type);
     Services.prefs.clearUserPref("browser.urlbar.autoFill");
   }

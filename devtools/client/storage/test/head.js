@@ -62,6 +62,7 @@ const DEBUGGERLOG_PREF = "devtools.debugger.log";
 const CACHES_ON_HTTP_PREF = "dom.caches.testing.enabled";
 const PATH = "browser/devtools/client/storage/test/";
 const MAIN_DOMAIN = "http://test1.example.org/" + PATH;
+const MAIN_DOMAIN_SECURED = "https://test1.example.org/" + PATH;
 const MAIN_DOMAIN_WITH_PORT = "http://test1.example.org:8000/" + PATH;
 const ALT_DOMAIN = "http://sectest1.example.org/" + PATH;
 const ALT_DOMAIN_SECURED = "https://sectest1.example.org:443/" + PATH;
@@ -176,8 +177,8 @@ var openStoragePanel = async function({ tab, descriptor, hostType } = {}) {
       info("Toolbox and storage already open");
 
       return {
-        toolbox: toolbox,
-        storage: storage,
+        toolbox,
+        storage,
       };
     }
   }
@@ -199,8 +200,8 @@ var openStoragePanel = async function({ tab, descriptor, hostType } = {}) {
   await waitForToolboxFrameFocus(toolbox);
 
   return {
-    toolbox: toolbox,
-    storage: storage,
+    toolbox,
+    storage,
   };
 };
 
@@ -968,10 +969,11 @@ var focusSearchBoxUsingShortcut = async function(panelWin, callback) {
   const focused = once(searchBox, "focus");
 
   panelWin.focus();
-  const strings = Services.strings.createBundle(
-    "chrome://devtools/locale/storage.properties"
+
+  const shortcut = await panelWin.document.l10n.formatValue(
+    "storage-filter-key"
   );
-  synthesizeKeyShortcut(strings.GetStringFromName("storage.filter.key"));
+  synthesizeKeyShortcut(shortcut);
 
   await focused;
 
@@ -1058,19 +1060,23 @@ async function performAdd(store) {
   is(rowId, value, `Row '${rowId}' was successfully added.`);
 }
 
-function checkCellLength(len) {
-  const cells = gPanelWindow.document.querySelectorAll(
-    "#name .table-widget-cell"
-  );
-  const msg = `Table should initially display ${len} items`;
+// Cell css selector that can be used to count or select cells.
+// The selector is restricted to a single column to avoid counting duplicates.
+const CELL_SELECTOR =
+  "#storage-table .table-widget-wrapper:first-child .table-widget-cell";
 
-  is(cells.length, len, msg);
+function getCellLength() {
+  return gPanelWindow.document.querySelectorAll(CELL_SELECTOR).length;
+}
+
+function checkCellLength(len) {
+  is(getCellLength(), len, `Table should contain ${len} items`);
 }
 
 async function scroll() {
   const $ = id => gPanelWindow.document.querySelector(id);
   const table = $("#storage-table .table-widget-body");
-  const cell = $("#name .table-widget-cell");
+  const cell = $(CELL_SELECTOR);
   const cellHeight = cell.getBoundingClientRect().height;
 
   const onStoresUpdate = gUI.once("store-objects-updated");
@@ -1145,9 +1151,10 @@ function hasStorageData(name, value) {
  * Returns an URL of a page that uses the document-builder to generate its content
  * @param {String} domain
  * @param {String} html
+ * @param {String} protocol
  */
-function buildURLWithContent(domain, html) {
-  return `http://${domain}/document-builder.sjs?html=${encodeURI(html)}`;
+function buildURLWithContent(domain, html, protocol = "https") {
+  return `${protocol}://${domain}/document-builder.sjs?html=${encodeURI(html)}`;
 }
 
 /**

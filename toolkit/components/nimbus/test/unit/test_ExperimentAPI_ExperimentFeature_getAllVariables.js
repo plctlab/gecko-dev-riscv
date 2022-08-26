@@ -7,9 +7,6 @@ const {
 const { ExperimentFakes } = ChromeUtils.import(
   "resource://testing-common/NimbusTestUtils.jsm"
 );
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm"
-);
 
 const { cleanupStorePrefCache } = ExperimentFakes;
 
@@ -30,6 +27,9 @@ const FAKE_FEATURE_MANIFEST = {
     screens: {
       type: "json",
       fallbackPref: TEST_FALLBACK_PREF,
+    },
+    source: {
+      type: "string",
     },
   },
 };
@@ -65,7 +65,7 @@ add_task(
 );
 
 add_task(
-  async function test_ExperimentFeature_getAllVariables_prefsOverExperiment() {
+  async function test_ExperimentFeature_getAllVariables_experimentOverPref() {
     const { sandbox, manager } = await setupForExperimentFeature();
     const { doExperimentCleanup } = ExperimentFakes.enrollmentHelper(
       undefined,
@@ -79,14 +79,13 @@ add_task(
         features: [
           {
             featureId: "aboutwelcome",
-            enabled: true,
             value: { screens: ["test-value"] },
           },
         ],
       },
     });
 
-    await manager.store.addExperiment(recipe);
+    await manager.store.addEnrollment(recipe);
 
     const featureInstance = new ExperimentFeature(
       FEATURE_ID,
@@ -107,7 +106,13 @@ add_task(
     );
 
     Services.prefs.setStringPref(TEST_FALLBACK_PREF, "[]");
+    Assert.equal(
+      featureInstance.getAllVariables().screens[0],
+      "test-value",
+      "should return the AW experiment value"
+    );
 
+    await doExperimentCleanup();
     Assert.deepEqual(
       featureInstance.getAllVariables().screens.length,
       0,
@@ -115,18 +120,88 @@ add_task(
     );
 
     Services.prefs.clearUserPref(TEST_FALLBACK_PREF);
-    await doExperimentCleanup();
     sandbox.restore();
   }
 );
 
 add_task(
-  async function test_ExperimentFeature_getAllVariables_remoteOverPrefDefaults() {
+  async function test_ExperimentFeature_getAllVariables_experimentOverRemote() {
+    Services.prefs.clearUserPref(TEST_FALLBACK_PREF);
+    const { manager } = await setupForExperimentFeature();
+    const { doExperimentCleanup } = ExperimentFakes.enrollmentHelper(
+      undefined,
+      {
+        manager,
+      }
+    );
+    const featureInstance = new ExperimentFeature(
+      FEATURE_ID,
+      FAKE_FEATURE_MANIFEST
+    );
+    const recipe = ExperimentFakes.experiment("aw-experiment", {
+      branch: {
+        slug: "treatment",
+        features: [
+          {
+            featureId: FEATURE_ID,
+            value: { screens: ["test-value"] },
+          },
+        ],
+      },
+    });
+    const rollout = ExperimentFakes.rollout("aw-rollout", {
+      branch: {
+        slug: "treatment",
+        features: [
+          { featureId: FEATURE_ID, value: { screens: [], source: "rollout" } },
+        ],
+      },
+    });
+    // We're using the store in this test we need to wait for it to load
+    await manager.store.ready();
+
+    const rolloutPromise = new Promise(resolve =>
+      featureInstance.onUpdate((feature, reason) => {
+        if (reason === "rollout-updated") {
+          resolve();
+        }
+      })
+    );
+    const experimentPromise = new Promise(resolve =>
+      featureInstance.onUpdate((feature, reason) => {
+        if (reason === "experiment-updated") {
+          resolve();
+        }
+      })
+    );
+    manager.store.addEnrollment(recipe);
+    manager.store.addEnrollment(rollout);
+    await rolloutPromise;
+    await experimentPromise;
+
+    let allVariables = featureInstance.getAllVariables();
+
+    Assert.equal(allVariables.screens.length, 1, "Returns experiment value");
+    Assert.ok(!allVariables.source, "Does not include rollout value");
+
+    await doExperimentCleanup();
+    cleanupStorePrefCache();
+  }
+);
+
+add_task(
+  async function test_ExperimentFeature_getAllVariables_rolloutOverPrefDefaults() {
     const { manager } = await setupForExperimentFeature();
     const featureInstance = new ExperimentFeature(
       FEATURE_ID,
       FAKE_FEATURE_MANIFEST
     );
+    const rollout = ExperimentFakes.rollout("foo-aw", {
+      branch: {
+        slug: "getAllVariables",
+        features: [{ featureId: FEATURE_ID, value: { screens: [] } }],
+      },
+    });
     // We're using the store in this test we need to wait for it to load
     await manager.store.ready();
 
@@ -138,26 +213,27 @@ add_task(
       "Pref is not set"
     );
 
+    const updatePromise = new Promise(resolve =>
+      featureInstance.onUpdate(resolve)
+    );
     // Load remote defaults
-    manager.store.updateRemoteConfigs(FEATURE_ID, {
-      variables: { screens: [] },
-    });
+    manager.store.addEnrollment(rollout);
 
-    // Wait for feature to load remote defaults
-    await featureInstance.ready();
+    // Wait for feature to load the rollout
+    await updatePromise;
 
     Assert.deepEqual(
       featureInstance.getAllVariables().screens?.length,
       0,
-      "Should return the remote value over the defaults"
+      "Should return the rollout value over the defaults"
     );
 
     Services.prefs.setStringPref(TEST_FALLBACK_PREF, "[1,2,3]");
 
     Assert.deepEqual(
       featureInstance.getAllVariables().screens.length,
-      3,
-      "should return the user pref value over the remote"
+      0,
+      "should return the rollout value over the user pref"
     );
 
     Services.prefs.clearUserPref(TEST_FALLBACK_PREF);

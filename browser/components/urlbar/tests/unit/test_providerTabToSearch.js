@@ -39,10 +39,11 @@ add_task(async function basic() {
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -65,10 +66,11 @@ add_task(async function basic() {
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -116,10 +118,11 @@ add_task(async function autofillDoesNotMatchEngine() {
     context,
     autofilled: "example.test.ca/",
     completed: "https://example.test.ca/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.test.ca/",
-        title: "https://example.test.ca",
+        title: "test visit for https://example.test.ca/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -139,10 +142,11 @@ add_task(async function ignoreWww() {
     context,
     autofilled: "www.example.com/",
     completed: "https://www.example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://www.example.com/",
-        title: "https://www.example.com",
+        title: "test visit for https://www.example.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -175,10 +179,11 @@ add_task(async function ignoreWww() {
     context,
     autofilled: "foo.bar/",
     completed: "https://foo.bar/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://foo.bar/",
-        title: "https://foo.bar",
+        title: "test visit for https://foo.bar/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -203,10 +208,11 @@ add_task(async function ignoreWww() {
     context,
     autofilled: "foo.bar/",
     completed: "https://www.foo.bar/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://www.foo.bar/",
-        title: "https://www.foo.bar",
+        title: "test visit for https://www.foo.bar/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -262,10 +268,11 @@ add_task(async function conflictingEngines() {
     context,
     autofilled: "foo.com/",
     completed: "https://foo.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://foo.com/",
-        title: "https://foo.com",
+        title: "test visit for https://foo.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -294,10 +301,11 @@ add_task(async function conflictingEngines() {
     context,
     autofilled: "foobar.com/",
     completed: "https://foobar.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://foobar.com/",
-        title: "https://foobar.com",
+        title: "test visit for https://foobar.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -330,16 +338,38 @@ add_task(async function multipleEnginesForHostname() {
     },
     true
   );
-  await PlacesTestUtils.addVisits(["https://example.com/"]);
+
   let context = createContext("examp", { isPrivate: false });
+  let maxResultCount = UrlbarPrefs.get("maxRichResults");
+
+  // Add enough visits to autofill example.com.
+  for (let i = 0; i < maxResultCount; i++) {
+    await PlacesTestUtils.addVisits("https://example.com/");
+  }
+
+  // Add enough visits to other URLs matching our query to fill up the list of
+  // results.
+  let otherVisitResults = [];
+  for (let i = 0; i < maxResultCount; i++) {
+    let url = "https://mochi.test:8888/example/" + i;
+    await PlacesTestUtils.addVisits(url);
+    otherVisitResults.unshift(
+      makeVisitResult(context, {
+        uri: url,
+        title: "test visit for " + url,
+      })
+    );
+  }
+
   await check_results({
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -353,6 +383,12 @@ add_task(async function multipleEnginesForHostname() {
         query: "",
         providerName: "TabToSearch",
       }),
+      // There should be `maxResultCount` - 2 other visit results. If this fails
+      // because there are actually `maxResultCount` - 3 other results, then the
+      // muxer is improperly including both TabToSearch results in its
+      // calculation of the total available result span instead of only one, so
+      // one fewer visit result appears than expected.
+      ...otherVisitResults.slice(0, maxResultCount - 2),
     ],
   });
   await cleanupPlaces();
@@ -367,10 +403,11 @@ add_task(async function test_casing() {
     context,
     autofilled: "eXAmple.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -447,10 +484,11 @@ add_task(async function test_publicSuffixIsHost() {
     context,
     autofilled: "com.mx/",
     completed: "https://com.mx/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://com.mx/",
-        title: "https://com.mx",
+        title: "test visit for https://com.mx/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -478,10 +516,11 @@ add_task(async function test_disabledEngine() {
     context,
     autofilled: "disabled.com/",
     completed: "https://disabled.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://disabled.com/",
-        title: "https://disabled.com",
+        title: "test visit for https://disabled.com/",
         heuristic: true,
         providerName: "Autofill",
       }),
@@ -502,10 +541,11 @@ add_task(async function test_disabledEngine() {
     context,
     autofilled: "disabled.com/",
     completed: "https://disabled.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://disabled.com/",
-        title: "https://disabled.com",
+        title: "test visit for https://disabled.com/",
         heuristic: true,
         providerName: "Autofill",
       }),

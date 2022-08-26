@@ -28,8 +28,6 @@ class DynamicImage : public Image {
   }
 
   // Inherited methods from Image.
-  nsresult GetNativeSizes(nsTArray<gfx::IntSize>& aNativeSizes) const override;
-  size_t GetNativeSizesLength() const override;
   virtual already_AddRefed<ProgressTracker> GetProgressTracker() override;
   virtual size_t SizeOfSourceWithComputedFallback(
       SizeOfState& aState) const override;
@@ -43,12 +41,10 @@ class DynamicImage : public Image {
 #endif
 
   virtual nsresult OnImageDataAvailable(nsIRequest* aRequest,
-                                        nsISupports* aContext,
                                         nsIInputStream* aInStr,
                                         uint64_t aSourceOffset,
                                         uint32_t aCount) override;
-  virtual nsresult OnImageDataComplete(nsIRequest* aRequest,
-                                       nsISupports* aContext, nsresult aStatus,
+  virtual nsresult OnImageDataComplete(nsIRequest* aRequest, nsresult aStatus,
                                        bool aLastPart) override;
 
   virtual void OnSurfaceDiscarded(const SurfaceKey& aSurfaceKey) override;

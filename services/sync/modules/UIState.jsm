@@ -16,9 +16,9 @@
 
 var EXPORTED_SYMBOLS = ["UIState"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Weave",
   "resource://services-sync/main.js"
 );
@@ -225,7 +225,7 @@ const UIStateInternal = {
     // LOGIN_FAILED_LOGIN_REJECTED explicitly means "you must log back in".
     // All other login failures are assumed to be transient and should go
     // away by themselves, so aren't reflected here.
-    return Weave.Status.login == Weave.LOGIN_FAILED_LOGIN_REJECTED;
+    return lazy.Weave.Status.login == lazy.Weave.LOGIN_FAILED_LOGIN_REJECTED;
   },
 
   set fxAccounts(mockFxAccounts) {
@@ -234,11 +234,14 @@ const UIStateInternal = {
   },
 };
 
-ChromeUtils.defineModuleGetter(
-  UIStateInternal,
-  "fxAccounts",
-  "resource://gre/modules/FxAccounts.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+XPCOMUtils.defineLazyGetter(UIStateInternal, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
+});
 
 for (let topic of TOPICS) {
   Services.obs.addObserver(UIStateInternal, topic);

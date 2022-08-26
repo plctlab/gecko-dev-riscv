@@ -11,6 +11,7 @@ import org.mozilla.geckoview.GeckoSession.PromptDelegate.AuthPrompt
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.PromptResponse
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
+import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
 
 import androidx.test.filters.MediumTest
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -20,6 +21,7 @@ import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.Autocomplete
+import org.junit.Assume.assumeThat
 
 @RunWith(AndroidJUnit4::class)
 @MediumTest
@@ -55,7 +57,7 @@ class PromptDelegateTest : BaseSessionTest() {
             }
         })
 
-        sessionRule.session.loadTestPath(POPUP_HTML_PATH)
+        mainSession.loadTestPath(POPUP_HTML_PATH)
         sessionRule.waitUntilCalled(NavigationDelegate::class, "onNewSession")
     }
 
@@ -88,14 +90,14 @@ class PromptDelegateTest : BaseSessionTest() {
             }
         })
 
-        sessionRule.session.loadTestPath(POPUP_HTML_PATH)
+        mainSession.loadTestPath(POPUP_HTML_PATH)
         sessionRule.waitForPageStop()
-        sessionRule.session.waitForRoundTrip()
+        mainSession.waitForRoundTrip()
     }
 
     @Ignore // TODO: Reenable when 1501574 is fixed.
     @Test fun alertTest() {
-        sessionRule.session.evaluateJS("alert('Alert!');")
+        mainSession.evaluateJS("alert('Alert!');")
 
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
@@ -205,7 +207,7 @@ class PromptDelegateTest : BaseSessionTest() {
     }
 
     @Test fun buttonTest() {
-        sessionRule.session.loadTestPath(HELLO_HTML_PATH)
+        mainSession.loadTestPath(HELLO_HTML_PATH)
         sessionRule.waitForPageStop()
 
         sessionRule.delegateDuringNextWait(object : PromptDelegate {
@@ -217,7 +219,7 @@ class PromptDelegateTest : BaseSessionTest() {
         })
 
         assertThat("Result should match",
-                sessionRule.session.waitForJS("confirm('Confirm?')") as Boolean,
+                mainSession.waitForJS("confirm('Confirm?')") as Boolean,
                 equalTo(true))
 
         sessionRule.delegateDuringNextWait(object : PromptDelegate {
@@ -229,16 +231,16 @@ class PromptDelegateTest : BaseSessionTest() {
         })
 
         assertThat("Result should match",
-                sessionRule.session.waitForJS("confirm('Confirm?')") as Boolean,
+                mainSession.waitForJS("confirm('Confirm?')") as Boolean,
                 equalTo(false))
     }
 
     @Test
     fun onFormResubmissionPrompt() {
-        sessionRule.session.loadTestPath(RESUBMIT_CONFIRM)
+        mainSession.loadTestPath(RESUBMIT_CONFIRM)
         sessionRule.waitForPageStop()
 
-        sessionRule.session.evaluateJS(
+        mainSession.evaluateJS(
             "document.querySelector('#text').value = 'Some text';" +
             "document.querySelector('#submit').click();"
         )
@@ -267,7 +269,7 @@ class PromptDelegateTest : BaseSessionTest() {
         })
 
         // This should trigger a confirm resubmit prompt
-        sessionRule.session.reload();
+        mainSession.reload();
 
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
@@ -280,7 +282,7 @@ class PromptDelegateTest : BaseSessionTest() {
         sessionRule.waitForResult(promptResult)
 
         // Trigger it again, this time the load should go through
-        sessionRule.session.reload();
+        mainSession.reload();
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
             override fun onRepostConfirmPrompt(session: GeckoSession, prompt: PromptDelegate.RepostConfirmPrompt): GeckoResult<PromptDelegate.PromptResponse>? {
@@ -294,11 +296,175 @@ class PromptDelegateTest : BaseSessionTest() {
     }
 
     @Test
+    @WithDisplay(width = 100, height = 100)
+    fun selectTestSimple() {
+        mainSession.loadTestPath(SELECT_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        sessionRule.delegateUntilTestEnd(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("Should not be multiple", prompt.type, equalTo(PromptDelegate.ChoicePrompt.Type.SINGLE));
+                assertThat("There should be two choices", prompt.choices.size, equalTo(2));
+                assertThat("First choice is correct", prompt.choices[0].label, equalTo("ABC"));
+                assertThat("Second choice is correct", prompt.choices[1].label, equalTo("DEF"));
+                result.complete(prompt.confirm(prompt.choices[1]));
+                return result
+            }
+        })
+
+        val promise = mainSession.evaluatePromiseJS("""new Promise(function(resolve) {
+            let events = [];
+            // Record the events for testing purposes.
+            for (const t of ["change", "input"]) {
+                document.querySelector("select").addEventListener(t, function(e) {
+                    events.push(e.type + "(composed=" + e.composed + ")");
+                    if (events.length == 2) {
+                        resolve(events.join(" "));
+                    }
+                });
+            }
+        })""");
+
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+        assertThat("Events should be as expected",
+                promise.value as String,
+                equalTo("input(composed=true) change(composed=false)"))
+    }
+
+    @Test
+    @WithDisplay(width = 100, height = 100)
+    fun selectTestSize() {
+        mainSession.loadTestPath(SELECT_LISTBOX_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        val result = GeckoResult<Void>()
+        sessionRule.delegateUntilTestEnd(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("Should not be multiple", prompt.type, equalTo(PromptDelegate.ChoicePrompt.Type.SINGLE));
+                assertThat("There should be three choices", prompt.choices.size, equalTo(3));
+                assertThat("First choice is correct", prompt.choices[0].label, equalTo("ABC"));
+                assertThat("Second choice is correct", prompt.choices[1].label, equalTo("DEF"));
+                assertThat("Third choice is correct", prompt.choices[2].label, equalTo("GHI"));
+                result.complete(null);
+                return null
+            }
+        })
+
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+    }
+
+    @Test
+    @WithDisplay(width = 100, height = 100)
+    fun selectTestMultiple() {
+        mainSession.loadTestPath(SELECT_MULTIPLE_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        val result = GeckoResult<Void>()
+        sessionRule.delegateUntilTestEnd(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("Should be multiple", prompt.type, equalTo(PromptDelegate.ChoicePrompt.Type.MULTIPLE));
+                assertThat("There should be three choices", prompt.choices.size, equalTo(3));
+                assertThat("First choice is correct", prompt.choices[0].label, equalTo("ABC"));
+                assertThat("Second choice is correct", prompt.choices[1].label, equalTo("DEF"));
+                assertThat("Third choice is correct", prompt.choices[2].label, equalTo("GHI"));
+                result.complete(null);
+                return null
+            }
+        })
+
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+    }
+
+    @Test
+    @WithDisplay(width = 100, height = 100)
+    fun selectTestUpdate() {
+        mainSession.loadTestPath(SELECT_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptUpdate(prompt: PromptDelegate.BasePrompt) {
+                val newPrompt: PromptDelegate.ChoicePrompt = prompt as PromptDelegate.ChoicePrompt
+                assertThat("First choice is correct", newPrompt.choices[0].label, equalTo("foo"))
+                assertThat("Second choice is correct", newPrompt.choices[1].label, equalTo("bar"))
+                assertThat("Third choice is correct", newPrompt.choices[2].label, equalTo("baz"))
+                result.complete(prompt.confirm(newPrompt.choices[2]))
+            }
+        }
+
+        sessionRule.delegateUntilTestEnd(object: PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("There should be two choices", prompt.choices.size, equalTo(2))
+                prompt.setDelegate(promptInstanceDelegate)
+                return result
+            }
+        })
+
+        mainSession.evaluateJS("""
+            document.querySelector("select").addEventListener("focus", () => {
+                window.setTimeout(() => {
+                    document.querySelector("select").innerHTML =
+                        "<option>foo</option><option>bar</option><option>baz</option>";
+                }, 100);
+            }, { once: true })
+        """.trimIndent())
+
+        val promise = mainSession.evaluatePromiseJS("""
+            new Promise(resolve => {
+                document.querySelector("select").addEventListener("change", e => {
+                    resolve(e.target.value);
+                });
+            })
+        """.trimIndent())
+
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+        assertThat("Selected item should be as expected",
+                   promise.value as String,
+                   equalTo("baz"))
+    }
+
+    @Test
+    @WithDisplay(width = 100, height = 100)
+    fun selectTestDismiss() {
+        mainSession.loadTestPath(SELECT_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: PromptDelegate.BasePrompt) {
+                result.complete(prompt.dismiss())
+            }
+        }
+
+        sessionRule.delegateUntilTestEnd(object: PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("There should be two choices", prompt.choices.size, equalTo(2))
+                prompt.setDelegate(promptInstanceDelegate)
+                mainSession.evaluateJS("document.querySelector('select').blur()")
+                return result
+            }
+        })
+
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+    }
+
+    @Test
     fun onBeforeUnloadTest() {
-        sessionRule.setPrefsUntilTestEnd(mapOf(
+    	sessionRule.setPrefsUntilTestEnd(mapOf(
                 "dom.require_user_interaction_for_beforeunload" to false
         ))
-        sessionRule.session.loadTestPath(BEFORE_UNLOAD)
+        mainSession.loadTestPath(BEFORE_UNLOAD)
         sessionRule.waitForPageStop()
 
         val result = GeckoResult<Void>()
@@ -323,7 +489,7 @@ class PromptDelegateTest : BaseSessionTest() {
 
         // This will try to load "hello.html" but will be denied, if the request
         // goes through anyway the onLoadRequest delegate above will throw an exception
-        sessionRule.session.evaluateJS("document.querySelector('#navigateAway').click()")
+        mainSession.evaluateJS("document.querySelector('#navigateAway').click()")
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
             override fun onBeforeUnloadPrompt(session: GeckoSession, prompt: PromptDelegate.BeforeUnloadPrompt): GeckoResult<PromptDelegate.PromptResponse>? {
@@ -334,9 +500,14 @@ class PromptDelegateTest : BaseSessionTest() {
 
         sessionRule.waitForResult(promptResult)
 
+        // Although onBeforeUnloadPrompt is done, nsDocumentViewer might not clear
+        // mInPermitUnloadPrompt flag at this time yet. We need a wait to finish
+        // "nsDocumentViewer::PermitUnload" loop.
+        mainSession.waitForJS("new Promise(resolve => window.setTimeout(resolve, 100))")
+
         // This request will go through and end the test. Doing the negative case first will
         // ensure that if either of this tests fail the test will fail.
-        sessionRule.session.evaluateJS("document.querySelector('#navigateAway2').click()")
+        mainSession.evaluateJS("document.querySelector('#navigateAway2').click()")
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
             override fun onBeforeUnloadPrompt(session: GeckoSession, prompt: PromptDelegate.BeforeUnloadPrompt): GeckoResult<PromptDelegate.PromptResponse>? {
@@ -350,8 +521,8 @@ class PromptDelegateTest : BaseSessionTest() {
     }
 
     @Test fun textTest() {
-        sessionRule.session.loadTestPath(HELLO_HTML_PATH)
-        sessionRule.session.waitForPageStop()
+        mainSession.loadTestPath(HELLO_HTML_PATH)
+        mainSession.waitForPageStop()
 
         sessionRule.delegateUntilTestEnd(object : PromptDelegate {
             @AssertCalled(count = 1)
@@ -363,32 +534,15 @@ class PromptDelegateTest : BaseSessionTest() {
         })
 
         assertThat("Result should match",
-                sessionRule.session.waitForJS("prompt('Prompt:', 'default')") as String,
+                mainSession.waitForJS("prompt('Prompt:', 'default')") as String,
                 equalTo("foo"))
-    }
-
-    @Ignore // TODO: Figure out weird test env behavior here.
-    @Test fun choiceTest() {
-        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
-
-        sessionRule.session.loadTestPath(PROMPT_HTML_PATH)
-        sessionRule.session.waitForPageStop()
-
-        sessionRule.session.evaluateJS("document.getElementById('selectexample').click();")
-
-        sessionRule.waitUntilCalled(object : PromptDelegate {
-            @AssertCalled(count = 1)
-            override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse> {
-                return GeckoResult.fromValue(prompt.dismiss())
-            }
-        })
     }
 
     @Test fun colorTest() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
 
-        sessionRule.session.loadTestPath(PROMPT_HTML_PATH)
-        sessionRule.session.waitForPageStop()
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
 
         sessionRule.delegateDuringNextWait(object : PromptDelegate {
             @AssertCalled(count = 1)
@@ -398,11 +552,11 @@ class PromptDelegateTest : BaseSessionTest() {
             }
         })
 
-        sessionRule.session.evaluateJS("""
+        mainSession.evaluateJS("""
             this.c = document.getElementById('colorexample');
         """.trimIndent())
 
-        val promise = sessionRule.session.evaluatePromiseJS("""
+        val promise = mainSession.evaluatePromiseJS("""
             new Promise((resolve, reject) => {
                 this.c.addEventListener(
                     'change',
@@ -411,22 +565,25 @@ class PromptDelegateTest : BaseSessionTest() {
                 );
             })""".trimIndent())
 
-        sessionRule.session.evaluateJS("this.c.click();")
+        mainSession.evaluateJS("this.c.click();")
 
         assertThat("Value should match",
                 promise.value as String,
                 equalTo("#123456"))
     }
 
-    @Ignore // TODO: Figure out weird test env behavior here.
+    @WithDisplay(width = 100, height = 100)
     @Test fun dateTest() {
-        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
 
-        sessionRule.session.loadTestPath(PROMPT_HTML_PATH)
-        sessionRule.session.waitForPageStop()
+        mainSession.evaluateJS("""
+            document.body.addEventListener("click", () => {
+                document.getElementById('dateexample').showPicker();
+            });
+        """.trimIndent())
 
-        sessionRule.session.evaluateJS("document.getElementById('dateexample').click();")
-
+        mainSession.synthesizeTap(1, 1) // Provides user activation.
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)
             override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt): GeckoResult<PromptDelegate.PromptResponse> {
@@ -435,13 +592,154 @@ class PromptDelegateTest : BaseSessionTest() {
         })
     }
 
+    @WithDisplay(width = 100, height = 100)
+    @Test fun dateTestByTap() {
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        // By removing first element in PROMPT_HTML_PATH, dateexample becomes first element.
+        //
+        // TODO: What better calculation of element bounds for synthesizeTap?
+        mainSession.evaluateJS("""
+            document.getElementById('selectexample').remove();
+            document.getElementById('dateexample').getBoundingClientRect();
+        """.trimIndent())
+        mainSession.synthesizeTap(10, 10)
+
+        sessionRule.waitUntilCalled(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt): GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("<input type=date> is tapped", PromptDelegate.DateTimePrompt.Type.DATE, equalTo(prompt.type))
+                return GeckoResult.fromValue(prompt.dismiss())
+            }
+        })
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test fun monthTestByTap() {
+        // Gecko doesn't have the widget for <input type=month>. But GeckoView can show the picker.
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        // TODO: What better calculation of element bounds for synthesizeTap?
+        mainSession.evaluateJS("""
+            document.getElementById('selectexample').remove();
+            document.getElementById('dateexample').remove();
+            document.getElementById('weekexample').getBoundingClientRect();
+        """.trimIndent())
+        mainSession.synthesizeTap(10, 10)
+
+        sessionRule.waitUntilCalled(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt): GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("<input type=month> is tapped", PromptDelegate.DateTimePrompt.Type.MONTH, equalTo(prompt.type))
+                return GeckoResult.fromValue(prompt.dismiss())
+            }
+        })
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test fun dateTestParameters() {
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        mainSession.evaluateJS("""
+            document.getElementById('selectexample').remove();
+            document.getElementById('dateexample').min = "2022-01-01";
+            document.getElementById('dateexample').max = "2022-12-31";
+            document.getElementById('dateexample').step = "10";
+            document.getElementById('dateexample').getBoundingClientRect();
+        """.trimIndent())
+        mainSession.synthesizeTap(10, 10)
+
+        sessionRule.waitUntilCalled(object : PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt): GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("<input type=date> is tapped", prompt.type, equalTo(PromptDelegate.DateTimePrompt.Type.DATE))
+                assertThat("min value is exported", prompt.minValue, equalTo("2022-01-01"))
+                assertThat("max value is exported", prompt.maxValue, equalTo("2022-12-31"))
+                assertThat("step value is exported", prompt.stepValue, equalTo("10"))
+                return GeckoResult.fromValue(prompt.dismiss())
+            }
+        })
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test fun dateTestDismiss() {
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: PromptDelegate.BasePrompt) {
+                result.complete(prompt.dismiss())
+            }
+        }
+
+        sessionRule.delegateUntilTestEnd(object: PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt)
+                    : GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("<input type=date> is tapped", prompt.type, equalTo(PromptDelegate.DateTimePrompt.Type.DATE))
+                prompt.setDelegate(promptInstanceDelegate)
+                mainSession.evaluateJS("document.getElementById('dateexample').blur()")
+                return result
+            }
+        })
+
+        mainSession.evaluateJS("document.getElementById('selectexample').remove()")
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test fun monthTestDismiss() {
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: PromptDelegate.BasePrompt) {
+                result.complete(prompt.dismiss())
+            }
+        }
+
+        sessionRule.delegateUntilTestEnd(object: PromptDelegate {
+            @AssertCalled(count = 1)
+            override fun onDateTimePrompt(session: GeckoSession, prompt: PromptDelegate.DateTimePrompt)
+                    : GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("<input type=month> is tapped", prompt.type, equalTo(PromptDelegate.DateTimePrompt.Type.MONTH))
+                prompt.setDelegate(promptInstanceDelegate)
+                mainSession.evaluateJS("document.getElementById('monthexample').blur()")
+                return result
+            }
+        })
+
+        mainSession.evaluateJS("""
+            document.getElementById('selectexample').remove();
+            document.getElementById('dateexample').remove();
+        """.trimIndent())
+        mainSession.synthesizeTap(10, 10)
+        sessionRule.waitForResult(result)
+    }
+
     @Test fun fileTest() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
 
-        sessionRule.session.loadTestPath(PROMPT_HTML_PATH)
-        sessionRule.session.waitForPageStop()
+        mainSession.loadTestPath(PROMPT_HTML_PATH)
+        mainSession.waitForPageStop()
 
-        sessionRule.session.evaluateJS("document.getElementById('fileexample').click();")
+        mainSession.evaluateJS("document.getElementById('fileexample').click();")
 
         sessionRule.waitUntilCalled(object : PromptDelegate {
             @AssertCalled(count = 1)

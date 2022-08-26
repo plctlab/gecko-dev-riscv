@@ -33,6 +33,7 @@
 
 #include "BaseProfiler.h"
 
+#include "mozilla/Atomics.h"
 #include "mozilla/Logging.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Vector.h"
@@ -102,6 +103,15 @@ class JSONWriter;
 
 namespace baseprofiler {
 
+// If positive, skip stack-sampling in the sampler thread loop.
+// Users should increment it atomically when samplings should be avoided, and
+// later decrement it back. Multiple uses can overlap.
+// There could be a sampling in progress when this is first incremented, so if
+// it is critical to prevent any sampling, lock the profiler mutex instead.
+// Relaxed ordering, because it's used to request that the profiler pause
+// future sampling; this is not time critical, nor dependent on anything else.
+extern mozilla::Atomic<int, mozilla::MemoryOrdering::Relaxed> gSkipSampling;
+
 typedef uint8_t* Address;
 
 class PlatformData;
@@ -120,15 +130,10 @@ uint32_t ParseFeaturesFromStringArray(const char** aFeatures,
                                       uint32_t aFeatureCount,
                                       bool aIsStartup = false);
 
-void profiler_get_profile_json_into_lazily_allocated_buffer(
-    const std::function<char*(size_t)>& aAllocator, double aSinceTime,
-    bool aIsShuttingDown);
-
 // Flags to conveniently track various JS instrumentations.
 enum class JSInstrumentationFlags {
   StackSampling = 0x1,
-  TraceLogging = 0x2,
-  Allocations = 0x4,
+  Allocations = 0x2,
 };
 
 // Record an exit profile from a child process.

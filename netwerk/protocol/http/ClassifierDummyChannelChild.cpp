@@ -5,11 +5,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ClassifierDummyChannelChild.h"
-#include "mozilla/ContentBlocking.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "nsIURI.h"
 #include "mozilla/AntiTrackingUtils.h"
+#include "mozilla/StorageAccess.h"
+#include "nsIHttpChannelInternal.h"
+#include "nsIHttpChannel.h"
+#include "mozilla/net/NeckoChannelParams.h"
+#include "mozilla/net/NeckoChild.h"
+#include "mozilla/net/HttpBaseChannel.h"
+#include "nsQueryObject.h"
 
 namespace mozilla {
 namespace net {
@@ -76,8 +82,7 @@ mozilla::ipc::IPCResult ClassifierDummyChannelChild::Recv__delete__(
   RefPtr<HttpBaseChannel> httpChannel = do_QueryObject(channel);
   httpChannel->AddClassificationFlags(aClassificationFlags, mIsThirdParty);
 
-  bool storageGranted =
-      ContentBlocking::ShouldAllowAccessFor(httpChannel, mURI, nullptr);
+  bool storageGranted = ShouldAllowAccessFor(httpChannel, mURI, nullptr);
   mCallback(storageGranted);
   return IPC_OK();
 }

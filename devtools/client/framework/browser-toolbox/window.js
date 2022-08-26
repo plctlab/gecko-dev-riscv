@@ -5,7 +5,7 @@
 "use strict";
 
 var { loader, require, DevToolsLoader } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
 
 // Require this module to setup core modules
@@ -20,6 +20,9 @@ const KeyShortcuts = require("devtools/client/shared/key-shortcuts");
 const { LocalizationHelper } = require("devtools/shared/l10n");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
+);
+const env = Cc["@mozilla.org/process/environment;1"].getService(
+  Ci.nsIEnvironment
 );
 loader.lazyImporter(
   this,
@@ -64,9 +67,6 @@ function hideStatusMessage() {
 
 var connect = async function() {
   // Initiate the connection
-  const env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
 
   // MOZ_BROWSER_TOOLBOX_FISSION_PREF is set by the target Firefox instance
   // before opening the Browser Toolbox.
@@ -81,6 +81,10 @@ var connect = async function() {
     "devtools.webconsole.input.context",
     env.get("MOZ_BROWSER_TOOLBOX_INPUT_CONTEXT") === "1"
   );
+  // Similar, but for the Browser Toolbox mode
+  if (env.get("MOZ_BROWSER_TOOLBOX_FORCE_MULTIPROCESS") === "1") {
+    Services.prefs.setCharPref("devtools.browsertoolbox.scope", "everything");
+  }
 
   const port = env.get("MOZ_BROWSER_TOOLBOX_PORT");
 
@@ -114,10 +118,6 @@ var connect = async function() {
 function setPrefDefaults() {
   Services.prefs.setBoolPref("devtools.inspector.showUserAgentStyles", true);
   Services.prefs.setBoolPref(
-    "devtools.performance.ui.show-platform-data",
-    true
-  );
-  Services.prefs.setBoolPref(
     "devtools.inspector.showAllAnonymousContent",
     true
   );
@@ -127,10 +127,17 @@ function setPrefDefaults() {
     "devtools.command-button-noautohide.enabled",
     true
   );
-  Services.prefs.setBoolPref("devtools.performance.new-panel-enabled", false);
-  Services.prefs.setBoolPref("layout.css.emulate-moz-box-with-flex", false);
 
-  Services.prefs.setBoolPref("devtools.performance.enabled", false);
+  // We force enabling the performance panel in the browser toolbox.
+  Services.prefs.setBoolPref("devtools.performance.enabled", true);
+
+  // Bug 1773226: Try to avoid session restore to reopen a transient browser window
+  // if we ever opened a URL from the browser toolbox. (but it doesn't seem to be enough)
+  Services.prefs.setBoolPref("browser.sessionstore.resume_from_crash", false);
+
+  // Disable Safe mode as the browser toolbox is often closed brutaly by subprocess
+  // and the safe mode kicks in when reopening it
+  Services.prefs.setIntPref("toolkit.startup.max_resumed_crashes", -1);
 }
 
 window.addEventListener(
@@ -139,6 +146,7 @@ window.addEventListener(
     gShortcuts = new KeyShortcuts({ window });
     gShortcuts.on("CmdOrCtrl+W", onCloseCommand);
     gShortcuts.on("CmdOrCtrl+Alt+Shift+I", onDebugBrowserToolbox);
+    gShortcuts.on("CmdOrCtrl+Alt+R", onReloadBrowser);
 
     const statusMessageContainer = document.getElementById(
       "status-message-title"
@@ -182,6 +190,13 @@ function onDebugBrowserToolbox() {
   BrowserToolboxLauncher.init();
 }
 
+/**
+ * Replicate the local-build-only key shortcut to reload the browser
+ */
+function onReloadBrowser() {
+  gToolbox.commands.targetCommand.reloadTopLevelTarget();
+}
+
 async function openToolbox(descriptorFront) {
   const form = descriptorFront._form;
   appendStatusMessage(
@@ -217,6 +232,19 @@ async function openToolbox(descriptorFront) {
     // setup a server so that the test can evaluate messages in this process.
     installTestingServer();
   }
+
+  // Warn the user if we started recording this browser toolbox via MOZ_BROWSER_TOOLBOX_PROFILER_STARTUP=1
+  if (env.get("MOZ_PROFILER_STARTUP") === "1") {
+    const notificationBox = gToolbox.getNotificationBox();
+    const text =
+      "The profiler started recording this toolbox, open another browser toolbox to open the profile via the performance panel";
+    notificationBox.appendNotification(
+      text,
+      null,
+      null,
+      notificationBox.PRIORITY_INFO_HIGH
+    );
+  }
 }
 
 function installTestingServer() {
@@ -239,6 +267,11 @@ function installTestingServer() {
   DevToolsServer.registerAllActors();
   DevToolsServer.allowChromeProcess = true;
 
+  // Force this server to be kept alive until the browser toolbox process is closed.
+  // For some reason intermittents appears on Windows when destroying the server
+  // once the last connection drops.
+  DevToolsServer.keepAlive = true;
+
   // Use a fixed port which initBrowserToolboxTask can look for.
   const socketOptions = { portOrPath: 6001 };
   const listener = new SocketListener(DevToolsServer, socketOptions);
@@ -248,6 +281,10 @@ function installTestingServer() {
 async function bindToolboxHandlers() {
   gToolbox.once("destroyed", quitApp);
   window.addEventListener("unload", onUnload);
+
+  // If the remote connection drops, firefox was closed
+  // In such case, force closing the browser toolbox
+  gClient.once("closed", quitApp);
 
   if (Services.appinfo.OS == "Darwin") {
     // Badge the dock icon to differentiate this process from the main application

@@ -39,20 +39,19 @@
  * The schema for this object is defined in policies-schema.json.
  */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 
 const PREF_LOGLEVEL = "browser.policies.loglevel";
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     prefix: "BookmarksPolicies.jsm",
@@ -63,9 +62,9 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   });
 });
 
-this.EXPORTED_SYMBOLS = ["BookmarksPolicies"];
+const EXPORTED_SYMBOLS = ["BookmarksPolicies"];
 
-this.BookmarksPolicies = {
+const BookmarksPolicies = {
   // These prefixes must only contain characters
   // allowed by PlacesUtils.isValidGuid
   BOOKMARK_GUID_PREFIX: "PolB-",
@@ -81,16 +80,16 @@ this.BookmarksPolicies = {
   processBookmarks(param) {
     calculateLists(param).then(async function addRemoveBookmarks(results) {
       for (let bookmark of results.add.values()) {
-        await insertBookmark(bookmark).catch(log.error);
+        await insertBookmark(bookmark).catch(lazy.log.error);
       }
       for (let bookmark of results.remove.values()) {
-        await PlacesUtils.bookmarks.remove(bookmark).catch(log.error);
+        await lazy.PlacesUtils.bookmarks.remove(bookmark).catch(lazy.log.error);
       }
       for (let bookmark of results.emptyFolders.values()) {
-        await PlacesUtils.bookmarks.remove(bookmark).catch(log.error);
+        await lazy.PlacesUtils.bookmarks.remove(bookmark).catch(lazy.log.error);
       }
 
-      gFoldersMapPromise.then(map => map.clear());
+      lazy.gFoldersMapPromise.then(map => map.clear());
     });
   },
 };
@@ -120,7 +119,7 @@ async function calculateLists(specifiedBookmarks) {
   // LIST B
   // MAP of url (string) -> bookmarks objects from Places
   let existingBookmarksMap = new Map();
-  await PlacesUtils.bookmarks.fetch(
+  await lazy.PlacesUtils.bookmarks.fetch(
     { guidPrefix: BookmarksPolicies.BOOKMARK_GUID_PREFIX },
     bookmark => existingBookmarksMap.set(bookmark.url.href, bookmark)
   );
@@ -153,7 +152,7 @@ async function calculateLists(specifiedBookmarks) {
     foldersSeen.add(item.Folder);
 
     if (existingBookmarksMap.has(url)) {
-      log.debug(`Bookmark intersection: ${url}`);
+      lazy.log.debug(`Bookmark intersection: ${url}`);
       // If this specified bookmark exists in the existing bookmarks list,
       // we can remove it from both lists as it's in the intersection.
       specifiedBookmarksMap.delete(url);
@@ -162,11 +161,11 @@ async function calculateLists(specifiedBookmarks) {
   }
 
   for (let url of specifiedBookmarksMap.keys()) {
-    log.debug(`Bookmark to add: ${url}`);
+    lazy.log.debug(`Bookmark to add: ${url}`);
   }
 
   for (let url of existingBookmarksMap.keys()) {
-    log.debug(`Bookmark to remove: ${url}`);
+    lazy.log.debug(`Bookmark to remove: ${url}`);
   }
 
   // SET of folders to be deleted (bookmarks object from Places)
@@ -175,11 +174,11 @@ async function calculateLists(specifiedBookmarks) {
   // If no bookmarks will be deleted, then no folder will
   // need to be deleted either, so this next section can be skipped.
   if (existingBookmarksMap.size > 0) {
-    await PlacesUtils.bookmarks.fetch(
+    await lazy.PlacesUtils.bookmarks.fetch(
       { guidPrefix: BookmarksPolicies.FOLDER_GUID_PREFIX },
       folder => {
         if (!foldersSeen.has(folder.title)) {
-          log.debug(`Folder to remove: ${folder.title}`);
+          lazy.log.debug(`Folder to remove: ${folder.title}`);
           foldersToRemove.add(folder);
         }
       }
@@ -196,10 +195,10 @@ async function calculateLists(specifiedBookmarks) {
 async function insertBookmark(bookmark) {
   let parentGuid = await getParentGuid(bookmark.Placement, bookmark.Folder);
 
-  await PlacesUtils.bookmarks.insert({
+  await lazy.PlacesUtils.bookmarks.insert({
     url: Services.io.newURI(bookmark.URL.href),
     title: bookmark.Title,
-    guid: PlacesUtils.generateGuidWithPrefix(
+    guid: lazy.PlacesUtils.generateGuidWithPrefix(
       BookmarksPolicies.BOOKMARK_GUID_PREFIX
     ),
     parentGuid,
@@ -221,7 +220,7 @@ function setFaviconForBookmark(bookmark) {
       // with the same URL.
       faviconURI = Services.io.newURI("fake-favicon-uri:" + bookmark.URL.href);
 
-      PlacesUtils.favicons.replaceFaviconDataFromDataURL(
+      lazy.PlacesUtils.favicons.replaceFaviconDataFromDataURL(
         faviconURI,
         bookmark.Favicon.href,
         0 /* max expiration length */,
@@ -235,15 +234,17 @@ function setFaviconForBookmark(bookmark) {
       break;
 
     default:
-      log.error(`Bad URL given for favicon on bookmark "${bookmark.Title}"`);
+      lazy.log.error(
+        `Bad URL given for favicon on bookmark "${bookmark.Title}"`
+      );
       return;
   }
 
-  PlacesUtils.favicons.setAndFetchFaviconForPage(
+  lazy.PlacesUtils.favicons.setAndFetchFaviconForPage(
     Services.io.newURI(bookmark.URL.href),
     faviconURI,
     false /* forceReload */,
-    PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
+    lazy.PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
     null,
     nullPrincipal
   );
@@ -253,10 +254,10 @@ function setFaviconForBookmark(bookmark) {
 // function. The name consists in the parentGuid (which should always
 // be the menuGuid or the toolbarGuid) + the folder title. This is to
 // support having the same folder name in both the toolbar and menu.
-XPCOMUtils.defineLazyGetter(this, "gFoldersMapPromise", () => {
+XPCOMUtils.defineLazyGetter(lazy, "gFoldersMapPromise", () => {
   return new Promise(resolve => {
     let foldersMap = new Map();
-    return PlacesUtils.bookmarks
+    return lazy.PlacesUtils.bookmarks
       .fetch(
         {
           guidPrefix: BookmarksPolicies.FOLDER_GUID_PREFIX,
@@ -273,8 +274,8 @@ async function getParentGuid(placement, folderTitle) {
   // Defaults to toolbar if no placement was given.
   let parentGuid =
     placement == "menu"
-      ? PlacesUtils.bookmarks.menuGuid
-      : PlacesUtils.bookmarks.toolbarGuid;
+      ? lazy.PlacesUtils.bookmarks.menuGuid
+      : lazy.PlacesUtils.bookmarks.toolbarGuid;
 
   if (!folderTitle) {
     // If no folderTitle is given, this bookmark is to be placed directly
@@ -282,18 +283,18 @@ async function getParentGuid(placement, folderTitle) {
     return parentGuid;
   }
 
-  let foldersMap = await gFoldersMapPromise;
+  let foldersMap = await lazy.gFoldersMapPromise;
   let folderName = `${parentGuid}|${folderTitle}`;
 
   if (foldersMap.has(folderName)) {
     return foldersMap.get(folderName);
   }
 
-  let guid = PlacesUtils.generateGuidWithPrefix(
+  let guid = lazy.PlacesUtils.generateGuidWithPrefix(
     BookmarksPolicies.FOLDER_GUID_PREFIX
   );
-  await PlacesUtils.bookmarks.insert({
-    type: PlacesUtils.bookmarks.TYPE_FOLDER,
+  await lazy.PlacesUtils.bookmarks.insert({
+    type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
     title: folderTitle,
     guid,
     parentGuid,

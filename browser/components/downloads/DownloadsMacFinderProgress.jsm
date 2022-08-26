@@ -12,11 +12,13 @@
 
 var EXPORTED_SYMBOLS = ["DownloadsMacFinderProgress"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Downloads: "resource://gre/modules/Downloads.jsm",
 });
 
@@ -34,7 +36,9 @@ var DownloadsMacFinderProgress = {
     // Ensure to register only once per process and not for every window.
     if (!this._finderProgresses) {
       this._finderProgresses = new Map();
-      Downloads.getList(Downloads.ALL).then(list => list.addView(this));
+      lazy.Downloads.getList(lazy.Downloads.ALL).then(list =>
+        list.addView(this)
+      );
     }
   },
 

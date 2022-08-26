@@ -1,4 +1,5 @@
-/* -*- Mode: c++; tab-width: 2; indent-tabs-mode: nil; -*- */
+/* -*- tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,9 +31,10 @@
 #include "nsToolkit.h"
 #include "TextInputHandler.h"
 #include "mozilla/BackgroundHangMonitor.h"
-#include "GeckoProfiler.h"
 #include "ScreenHelperCocoa.h"
 #include "mozilla/Hal.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/ProfilerThreadSleep.h"
 #include "mozilla/widget/ScreenManager.h"
 #include "HeadlessScreenHelper.h"
 #include "MOZMenuOpeningCoordinator.h"
@@ -313,11 +315,13 @@ void nsAppShell::OnRunLoopActivityChanged(CFRunLoopActivity aActivity) {
       uint8_t variableOnStack = 0;
       profilingStack.pushLabelFrame("Native event loop idle", nullptr, &variableOnStack,
                                     JS::ProfilingCategoryPair::IDLE, 0);
+      profiler_thread_sleep();
     });
   } else {
     if (mProfilingStackWhileWaiting) {
       mProfilingStackWhileWaiting->pop();
       mProfilingStackWhileWaiting = nullptr;
+      profiler_thread_wake();
     }
   }
 }
@@ -334,6 +338,11 @@ nsresult nsAppShell::Init() {
   // No event loop is running yet (unless an embedding app that uses
   // NSApplicationMain() is running).
   NSAutoreleasePool* localPool = [[NSAutoreleasePool alloc] init];
+
+  char* mozAppNoDock = PR_GetEnv("MOZ_APP_NO_DOCK");
+  if (mozAppNoDock && strcmp(mozAppNoDock, "") != 0) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
 
   // mAutoreleasePools is used as a stack of NSAutoreleasePool objects created
   // by |this|.  CFArray is used instead of NSArray because NSArray wants to
@@ -493,7 +502,6 @@ void nsAppShell::ProcessGeckoEvents(void* aInfo) {
                                            data1:0
                                            data2:0]
              atStart:NO];
-
   }
 
   if (self->mSuspendNativeCount <= 0) {
@@ -654,7 +662,6 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
   NSRunLoop* currentRunLoop = [NSRunLoop currentRunLoop];
 
   EventQueueRef currentEventQueue = GetCurrentEventQueue();
-  EventTargetRef eventDispatcherTarget = GetEventDispatcherTarget();
 
   if (aMayWait) {
     mozilla::BackgroundHangMonitor().NotifyWait();
@@ -687,6 +694,23 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
         eventProcessed = true;
       }
     } else {
+      // In at least 10.15, AcquireFirstMatchingEventInQueue will move 1
+      // CGEvent from the CGEvent queue into the Carbon event queue. Unfortunately,
+      // once an event has been moved to the Carbon event queue it's no longer a
+      // candidate for coalescing. This means that even if we don't remove the
+      // event from the queue, just calling AcquireFirstMatchingEventInQueue can
+      // cause behaviour change. Prior to bug 1690687 landing, the event that we got
+      // from AcquireFirstMatchingEventInQueue was often our own ApplicationDefined
+      // event. However, once we stopped posting that event on every Gecko
+      // event we're much more likely to get a CGEvent. When we have a high
+      // amount of load on the main thread, we end up alternating between Gecko
+      // events and native events.  Without CGEvent coalescing, the native
+      // event events can accumulate in the Carbon event queue which will
+      // manifest as laggy scrolling.
+#if 1
+      eventProcessed = false;
+      break;
+#else
       // AcquireFirstMatchingEventInQueue() doesn't spin the (native) event
       // loop, though it does queue up any newly available events from the
       // window server.
@@ -721,11 +745,13 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
       // RemoveEventFromQueue() below.
       RetainEvent(currentEvent);
       RemoveEventFromQueue(currentEventQueue, currentEvent);
+      EventTargetRef eventDispatcherTarget = GetEventDispatcherTarget();
       SendEventToEventTarget(currentEvent, eventDispatcherTarget);
       // This call to ReleaseEvent() matches a call to RetainEvent() in
       // AcquireFirstMatchingEventInQueue() above.
       ReleaseEvent(currentEvent);
       eventProcessed = true;
+#endif
     }
   } while (mRunningEventLoop);
 
@@ -955,6 +981,10 @@ void nsAppShell::OnMemoryPressureChanged(dispatch_source_memorypressure_flags_t 
                                              selector:@selector(applicationDidBecomeActive:)
                                                  name:NSApplicationDidBecomeActiveNotification
                                                object:NSApp];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(timezoneChanged:)
+                                                 name:NSSystemTimeZoneDidChangeNotification
+                                               object:nil];
   }
 
   return self;
@@ -1003,6 +1033,14 @@ void nsAppShell::OnMemoryPressureChanged(dispatch_source_memorypressure_flags_t 
   if (observerService) {
     observerService->NotifyObservers(nullptr, NS_WIDGET_MAC_APP_ACTIVATE_OBSERVER_TOPIC, nullptr);
   }
+
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
+}
+
+- (void)timezoneChanged:(NSNotification*)aNotification {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
+
+  nsBaseAppShell::OnSystemTimezoneChange();
 
   NS_OBJC_END_TRY_IGNORE_BLOCK;
 }

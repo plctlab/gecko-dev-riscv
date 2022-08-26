@@ -72,6 +72,10 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
         return Err(rv);
       }
 
+      if (!uri->SchemeIs(NS_NULLPRINCIPAL_SCHEME)) {
+        return Err(NS_ERROR_ILLEGAL_VALUE);
+      }
+
       principal = NullPrincipal::Create(info.attrs(), uri);
       return principal;
     }
@@ -486,6 +490,13 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
   nsCOMPtr<nsIURI> unstrippedURI;
   Unused << aLoadInfo->GetUnstrippedURI(getter_AddRefs(unstrippedURI));
 
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (static_cast<LoadInfo*>(aLoadInfo)
+          ->HasIsThirdPartyContextToTopWindowSet()) {
+    isThirdPartyContextToTopWindow.emplace(
+        aLoadInfo->GetIsThirdPartyContextToTopWindow());
+  }
+
   *aOptionalLoadInfoArgs = Some(LoadInfoArgs(
       loadingPrincipalInfo, triggeringPrincipalInfo, principalToInheritInfo,
       topLevelPrincipalInfo, optionalResultPrincipalURI,
@@ -506,8 +517,7 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
       aLoadInfo->GetInnerWindowID(), aLoadInfo->GetBrowsingContextID(),
       aLoadInfo->GetFrameBrowsingContextID(),
       aLoadInfo->GetInitialSecurityCheckDone(),
-      aLoadInfo->GetIsInThirdPartyContext(),
-      aLoadInfo->GetIsThirdPartyContextToTopWindow(),
+      aLoadInfo->GetIsInThirdPartyContext(), isThirdPartyContextToTopWindow,
       aLoadInfo->GetIsFormSubmission(), aLoadInfo->GetSendCSPViolationEvents(),
       aLoadInfo->GetOriginAttributes(), redirectChainIncludingInternalRedirects,
       redirectChain, ipcClientInfo, ipcReservedClientInfo, ipcInitialClientInfo,
@@ -527,7 +537,9 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
       aLoadInfo->GetIsFromObjectOrEmbed(), cookieJarSettingsArgs,
       aLoadInfo->GetRequestBlockingReason(), maybeCspToInheritInfo,
       aLoadInfo->GetStoragePermission(), aLoadInfo->GetIsMetaRefresh(),
-      aLoadInfo->GetLoadingEmbedderPolicy(), unstrippedURI));
+      aLoadInfo->GetLoadingEmbedderPolicy(),
+      aLoadInfo->GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(),
+      unstrippedURI));
 
   return NS_OK;
 }
@@ -724,6 +736,12 @@ nsresult LoadInfoArgsToLoadInfo(
     loadingContext = frameBrowsingContext->GetEmbedderElement();
   }
 
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (loadInfoArgs.isThirdPartyContextToTopWindow().isSome()) {
+    isThirdPartyContextToTopWindow.emplace(
+        loadInfoArgs.isThirdPartyContextToTopWindow().ref());
+  }
+
   RefPtr<mozilla::net::LoadInfo> loadInfo = new mozilla::net::LoadInfo(
       loadingPrincipal, triggeringPrincipal, principalToInherit,
       topLevelPrincipal, resultPrincipalURI, cookieJarSettings, cspToInherit,
@@ -744,8 +762,7 @@ nsresult LoadInfoArgsToLoadInfo(
       loadInfoArgs.forceInheritPrincipalDropped(), loadInfoArgs.innerWindowID(),
       loadInfoArgs.browsingContextID(), loadInfoArgs.frameBrowsingContextID(),
       loadInfoArgs.initialSecurityCheckDone(),
-      loadInfoArgs.isInThirdPartyContext(),
-      loadInfoArgs.isThirdPartyContextToTopWindow(),
+      loadInfoArgs.isInThirdPartyContext(), isThirdPartyContextToTopWindow,
       loadInfoArgs.isFormSubmission(), loadInfoArgs.sendCSPViolationEvents(),
       loadInfoArgs.originAttributes(),
       std::move(redirectChainIncludingInternalRedirects),
@@ -764,7 +781,9 @@ nsresult LoadInfoArgsToLoadInfo(
       loadInfoArgs.isInDevToolsContext(), loadInfoArgs.parserCreatedScript(),
       loadInfoArgs.storagePermission(), loadInfoArgs.isMetaRefresh(),
       loadInfoArgs.requestBlockingReason(), loadingContext,
-      loadInfoArgs.loadingEmbedderPolicy(), loadInfoArgs.unstrippedURI());
+      loadInfoArgs.loadingEmbedderPolicy(),
+      loadInfoArgs.originTrialCoepCredentiallessEnabledForTopLevel(),
+      loadInfoArgs.unstrippedURI());
 
   if (loadInfoArgs.isFromProcessingFrameAttributes()) {
     loadInfo->SetIsFromProcessingFrameAttributes();
@@ -813,6 +832,13 @@ void LoadInfoToParentLoadInfoForwarder(
   nsCOMPtr<nsIURI> unstrippedURI;
   Unused << aLoadInfo->GetUnstrippedURI(getter_AddRefs(unstrippedURI));
 
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (static_cast<LoadInfo*>(aLoadInfo)
+          ->HasIsThirdPartyContextToTopWindowSet()) {
+    isThirdPartyContextToTopWindow.emplace(
+        aLoadInfo->GetIsThirdPartyContextToTopWindow());
+  }
+
   *aForwarderArgsOut = ParentLoadInfoForwarderArgs(
       aLoadInfo->GetAllowInsecureRedirectToDataURI(), ipcController, tainting,
       aLoadInfo->GetSkipContentSniffing(), aLoadInfo->GetHttpsOnlyStatus(),
@@ -825,8 +851,8 @@ void LoadInfoToParentLoadInfoForwarder(
       aLoadInfo->GetAllowListFutureDocumentsCreatedFromThisRedirectChain(),
       cookieJarSettingsArgs, aLoadInfo->GetRequestBlockingReason(),
       aLoadInfo->GetStoragePermission(), aLoadInfo->GetIsMetaRefresh(),
-      aLoadInfo->GetIsThirdPartyContextToTopWindow(),
-      aLoadInfo->GetIsInThirdPartyContext(), unstrippedURI);
+      isThirdPartyContextToTopWindow, aLoadInfo->GetIsInThirdPartyContext(),
+      unstrippedURI);
 }
 
 nsresult MergeParentLoadInfoForwarder(
@@ -901,8 +927,11 @@ nsresult MergeParentLoadInfoForwarder(
   rv = aLoadInfo->SetIsMetaRefresh(aForwarderArgs.isMetaRefresh());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = aLoadInfo->SetIsThirdPartyContextToTopWindow(
-      aForwarderArgs.isThirdPartyContextToTopWindow());
+  static_cast<LoadInfo*>(aLoadInfo)->ClearIsThirdPartyContextToTopWindow();
+  if (aForwarderArgs.isThirdPartyContextToTopWindow().isSome()) {
+    rv = aLoadInfo->SetIsThirdPartyContextToTopWindow(
+        aForwarderArgs.isThirdPartyContextToTopWindow().ref());
+  }
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = aLoadInfo->SetIsInThirdPartyContext(

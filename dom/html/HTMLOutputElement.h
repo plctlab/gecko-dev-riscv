@@ -8,20 +8,19 @@
 #define mozilla_dom_HTMLOutputElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "nsGenericHTMLElement.h"
 #include "nsStubMutationObserver.h"
-#include "nsIConstraintValidation.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class FormData;
 
 class HTMLOutputElement final : public nsGenericHTMLFormControlElement,
                                 public nsStubMutationObserver,
-                                public nsIConstraintValidation {
+                                public ConstraintValidation {
  public:
-  using nsIConstraintValidation::GetValidationMessage;
+  using ConstraintValidation::GetValidationMessage;
 
   explicit HTMLOutputElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -43,8 +42,6 @@ class HTMLOutputElement final : public nsGenericHTMLFormControlElement,
                               nsAttrValue& aResult) override;
 
   virtual void DoneAddingChildren(bool aHaveNotified) override;
-
-  EventStates IntrinsicState() const override;
 
   virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
 
@@ -101,7 +98,6 @@ class HTMLOutputElement final : public nsGenericHTMLFormControlElement,
   RefPtr<nsDOMTokenList> mTokenList;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_HTMLOutputElement_h

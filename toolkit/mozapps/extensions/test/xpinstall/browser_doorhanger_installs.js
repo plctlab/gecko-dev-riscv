@@ -61,7 +61,9 @@ function getObserverTopic(aNotificationId) {
 async function waitForProgressNotification(
   aPanelOpen = false,
   aExpectedCount = 1,
-  wantDisabled = true
+  wantDisabled = true,
+  expectedAnchorID = "addons-notification-icon",
+  win = window
 ) {
   let notificationId = PROGRESS_NOTIFICATION;
   info("Waiting for " + notificationId + " notification");
@@ -87,7 +89,7 @@ async function waitForProgressNotification(
     panelEventPromise = Promise.resolve();
   } else {
     panelEventPromise = new Promise(resolve => {
-      PopupNotifications.panel.addEventListener(
+      win.PopupNotifications.panel.addEventListener(
         "popupshowing",
         function() {
           resolve();
@@ -102,14 +104,14 @@ async function waitForProgressNotification(
   await waitForTick();
 
   info("Saw a notification");
-  ok(PopupNotifications.isPanelOpen, "Panel should be open");
+  ok(win.PopupNotifications.isPanelOpen, "Panel should be open");
   is(
-    PopupNotifications.panel.childNodes.length,
+    win.PopupNotifications.panel.childNodes.length,
     aExpectedCount,
     "Should be the right number of notifications"
   );
-  if (PopupNotifications.panel.childNodes.length) {
-    let nodes = Array.from(PopupNotifications.panel.childNodes);
+  if (win.PopupNotifications.panel.childNodes.length) {
+    let nodes = Array.from(win.PopupNotifications.panel.childNodes);
     let notification = nodes.find(
       n => n.id == notificationId + "-notification"
     );
@@ -119,9 +121,16 @@ async function waitForProgressNotification(
       wantDisabled,
       "The install button should be disabled?"
     );
+
+    let n = win.PopupNotifications.getNotification(PROGRESS_NOTIFICATION);
+    is(
+      n?.anchorElement?.id || n?.anchorElement?.parentElement?.id,
+      expectedAnchorID,
+      "expected the right anchor ID"
+    );
   }
 
-  return PopupNotifications.panel;
+  return win.PopupNotifications.panel;
 }
 
 function acceptAppMenuNotificationWhenShown(
@@ -131,7 +140,7 @@ function acceptAppMenuNotificationWhenShown(
     dismiss = false,
     checkIncognito = false,
     incognitoChecked = false,
-    privileged = false,
+    incognitoHidden = false,
     global = window,
   } = {}
 ) {
@@ -162,7 +171,7 @@ function acceptAppMenuNotificationWhenShown(
       PanelUI.notificationPanel.removeEventListener("popupshown", popupshown);
 
       let checkbox = document.getElementById("addon-incognito-checkbox");
-      is(checkbox.hidden, privileged, "checkbox visibility is correct");
+      is(checkbox.hidden, incognitoHidden, "checkbox visibility is correct");
       is(checkbox.checked, incognitoChecked, "checkbox is marked as expected");
 
       // If we're unchecking or checking the incognito property, this will
@@ -205,7 +214,12 @@ function acceptAppMenuNotificationWhenShown(
   });
 }
 
-async function waitForNotification(aId, aExpectedCount = 1) {
+async function waitForNotification(
+  aId,
+  aExpectedCount = 1,
+  expectedAnchorID = "addons-notification-icon",
+  win = window
+) {
   info("Waiting for " + aId + " notification");
 
   let topic = getObserverTopic(aId);
@@ -228,14 +242,14 @@ async function waitForNotification(aId, aExpectedCount = 1) {
   }
 
   let panelEventPromise = new Promise(resolve => {
-    PopupNotifications.panel.addEventListener(
+    win.PopupNotifications.panel.addEventListener(
       "PanelUpdated",
       function eventListener(e) {
         // Skip notifications that are not the one that we are supposed to be looking for
         if (!e.detail.includes(aId)) {
           return;
         }
-        PopupNotifications.panel.removeEventListener(
+        win.PopupNotifications.panel.removeEventListener(
           "PanelUpdated",
           eventListener
         );
@@ -249,19 +263,27 @@ async function waitForNotification(aId, aExpectedCount = 1) {
   await waitForTick();
 
   info("Saw a " + aId + " notification");
-  ok(PopupNotifications.isPanelOpen, "Panel should be open");
+  ok(win.PopupNotifications.isPanelOpen, "Panel should be open");
   is(
-    PopupNotifications.panel.childNodes.length,
+    win.PopupNotifications.panel.childNodes.length,
     aExpectedCount,
     "Should be the right number of notifications"
   );
-  if (PopupNotifications.panel.childNodes.length) {
-    let nodes = Array.from(PopupNotifications.panel.childNodes);
+  if (win.PopupNotifications.panel.childNodes.length) {
+    let nodes = Array.from(win.PopupNotifications.panel.childNodes);
     let notification = nodes.find(n => n.id == aId + "-notification");
     ok(notification, "Should have seen the " + aId + " notification");
-  }
 
-  return PopupNotifications.panel;
+    let n = win.PopupNotifications.getNotification(aId);
+    is(
+      n?.anchorElement?.id || n?.anchorElement?.parentElement?.id,
+      expectedAnchorID,
+      "expected the right anchor ID"
+    );
+  }
+  await SimpleTest.promiseFocus(win.PopupNotifications.window);
+
+  return win.PopupNotifications.panel;
 }
 
 function waitForNotificationClose() {
@@ -342,7 +364,8 @@ var TESTS = [
     );
     is(
       notification.getAttribute("label"),
-      "Software installation is currently disabled. Click Enable and try again."
+      "Software installation is currently disabled. Click Enable and try again.",
+      "notification label is correct"
     );
 
     let closePromise = waitForNotificationClose();
@@ -429,6 +452,166 @@ var TESTS = [
     await addon.uninstall();
 
     await BrowserTestUtils.removeTab(gBrowser.selectedTab);
+    await SpecialPowers.popPrefEnv();
+  },
+
+  async function test_blockedInstallDomain() {
+    SpecialPowers.pushPrefEnv({
+      set: [
+        ["extensions.postDownloadThirdPartyPrompt", true],
+        ["extensions.install_origins.enabled", true],
+      ],
+    });
+
+    let progressPromise = waitForProgressNotification();
+    let notificationPromise = waitForNotification("addon-install-failed");
+    let triggers = encodeURIComponent(
+      JSON.stringify({
+        XPI: TESTROOT2 + "webmidi_permission.xpi",
+      })
+    );
+    BrowserTestUtils.openNewForegroundTab(
+      gBrowser,
+      TESTROOT + "installtrigger.html?" + triggers
+    );
+    await progressPromise;
+    let panel = await notificationPromise;
+
+    let notification = panel.childNodes[0];
+    is(
+      notification.getAttribute("label"),
+      "The add-on WebMIDI test addon can not be installed from this location.",
+      "Should have seen the right message"
+    );
+
+    await removeTabAndWaitForNotificationClose();
+    await SpecialPowers.popPrefEnv();
+  },
+
+  async function test_allowedInstallDomain() {
+    SpecialPowers.pushPrefEnv({
+      set: [
+        ["extensions.postDownloadThirdPartyPrompt", true],
+        ["extensions.install_origins.enabled", true],
+      ],
+    });
+
+    let notificationPromise = waitForNotification("addon-install-blocked");
+    let triggers = encodeURIComponent(
+      JSON.stringify({
+        XPI: TESTROOT + "webmidi_permission.xpi",
+      })
+    );
+    BrowserTestUtils.openNewForegroundTab(
+      gBrowser,
+      TESTROOT + "installtrigger.html?" + triggers
+    );
+    let panel = await notificationPromise;
+
+    let notification = panel.childNodes[0];
+    is(
+      notification.button.label,
+      "Continue to Installation",
+      "Should have seen the right button"
+    );
+    let message = panel.ownerDocument.getElementById(
+      "addon-install-blocked-message"
+    );
+    is(
+      message.textContent,
+      "You are attempting to install an add-on from example.com. Make sure you trust this site before continuing.",
+      "Should have seen the right message"
+    );
+
+    // Next we get the permissions prompt, which also warns of the unsigned state of the addon
+    notificationPromise = waitForNotification("addon-webext-permissions");
+    // Click on Allow on the 3rd party panel
+    notification.button.click();
+    panel = await notificationPromise;
+    notification = panel.childNodes[0];
+
+    is(notification.button.label, "Add", "Should have seen the right button");
+
+    is(
+      notification.id,
+      "addon-webext-permissions-notification",
+      "Should have seen the permissions panel"
+    );
+    let singlePerm = panel.ownerDocument.getElementById(
+      "addon-webext-perm-single-entry"
+    );
+    is(
+      singlePerm.textContent,
+      "Access MIDI devices",
+      "Should have seen the right permission text"
+    );
+
+    notificationPromise = acceptAppMenuNotificationWhenShown(
+      "addon-installed",
+      "webmidi@test.mozilla.org",
+      { incognitoHidden: false, checkIncognito: true }
+    );
+
+    // Click on Allow on the permissions panel
+    notification.button.click();
+
+    await notificationPromise;
+
+    let installs = await AddonManager.getAllInstalls();
+    is(installs.length, 0, "Should be no pending installs");
+
+    let addon = await AddonManager.getAddonByID("webmidi@test.mozilla.org");
+    await TestUtils.topicObserved("webextension-sitepermissions-startup");
+
+    // This addon should have a site permission with private browsing.
+    let uri = Services.io.newURI(addon.siteOrigin);
+    let pbPrincipal = Services.scriptSecurityManager.createContentPrincipal(
+      uri,
+      {
+        privateBrowsingId: 1,
+      }
+    );
+    let permission = Services.perms.testExactPermissionFromPrincipal(
+      pbPrincipal,
+      "midi"
+    );
+    is(
+      permission,
+      Services.perms.ALLOW_ACTION,
+      "api access in private browsing granted"
+    );
+
+    assertActionAMTelemetryEvent(
+      [
+        {
+          method: "action",
+          object: "doorhanger",
+          value: "on",
+          extra: {
+            action: "privateBrowsingAllowed",
+            view: "postInstall",
+            addonId: addon.id,
+            type: "sitepermission",
+          },
+        },
+      ],
+      "Expect telemetry events for privateBrowsingAllowed action",
+      { actionType: "privateBrowsingAllowed" }
+    );
+
+    await addon.uninstall();
+
+    // Verify the permission has not been retained.
+    let { permissions } = await ExtensionPermissions.get(
+      "webmidi@test.mozilla.org"
+    );
+    ok(
+      !permissions.includes("internal:privateBrowsingAllowed"),
+      "permission is not set after uninstall"
+    );
+
+    await BrowserTestUtils.removeTab(gBrowser.selectedTab);
+    await SpecialPowers.popPrefEnv();
   },
 
   async function test_blockedPostDownload() {
@@ -551,7 +734,7 @@ var TESTS = [
     let notificationPromise = acceptAppMenuNotificationWhenShown(
       "addon-installed",
       "test@tests.mozilla.org",
-      { privileged: true }
+      { incognitoHidden: true }
     );
 
     (await installDialogPromise).button.click();
@@ -1037,7 +1220,10 @@ var TESTS = [
 
   async function test_failedSecurity() {
     SpecialPowers.pushPrefEnv({
-      set: [[PREF_INSTALL_REQUIREBUILTINCERTS, false]],
+      set: [
+        [PREF_INSTALL_REQUIREBUILTINCERTS, false],
+        ["extensions.postDownloadThirdPartyPrompt", false],
+      ],
     });
 
     setupRedirect({
@@ -1173,7 +1359,6 @@ var TESTS = [
     await addon.uninstall();
 
     await removeTabAndWaitForNotificationClose();
-    await SpecialPowers.popPrefEnv();
   },
 
   async function test_incognito_checkbox_new_window() {
@@ -1267,8 +1452,51 @@ var TESTS = [
 
     await addon.uninstall();
 
-    await SpecialPowers.popPrefEnv();
     await BrowserTestUtils.closeWindow(win);
+  },
+
+  async function test_blockedInstallDomain_with_unified_extensions() {
+    SpecialPowers.pushPrefEnv({
+      set: [["extensions.unifiedExtensions.enabled", true]],
+    });
+
+    let win = await BrowserTestUtils.openNewBrowserWindow();
+    await SimpleTest.promiseFocus(win);
+    await new Promise(resolve => {
+      win.requestIdleCallback(resolve);
+    });
+    await TestUtils.waitForCondition(
+      () => win.gUnifiedExtensions._initialized,
+      "Wait gUnifiedExtensions to have been initialized"
+    );
+
+    let progressPromise = waitForProgressNotification(
+      false,
+      1,
+      true,
+      "unified-extensions-button",
+      win
+    );
+    let notificationPromise = waitForNotification(
+      "addon-install-failed",
+      1,
+      "unified-extensions-button",
+      win
+    );
+    let triggers = encodeURIComponent(
+      JSON.stringify({
+        XPI: TESTROOT2 + "webmidi_permission.xpi",
+      })
+    );
+    BrowserTestUtils.openNewForegroundTab(
+      win.gBrowser,
+      TESTROOT + "installtrigger.html?" + triggers
+    );
+    await progressPromise;
+    await notificationPromise;
+
+    await BrowserTestUtils.closeWindow(win);
+    await SpecialPowers.popPrefEnv();
   },
 ];
 
@@ -1300,6 +1528,11 @@ add_task(async function() {
       ["extensions.strictCompatibility", true],
       ["extensions.install.requireSecureOrigin", false],
       ["security.dialog_enable_delay", 0],
+      // These tests currently depends on InstallTrigger.install.
+      ["extensions.InstallTrigger.enabled", true],
+      ["extensions.InstallTriggerImpl.enabled", true],
+      // Relax the user input requirements while running this test.
+      ["xpinstall.userActivation.required", false],
     ],
   });
 

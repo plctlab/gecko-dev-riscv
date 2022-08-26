@@ -28,6 +28,9 @@
 #include "proxy/DOMProxy.h"
 #include "vm/Iteration.h"
 #include "vm/JSContext.h"
+#ifdef ENABLE_RECORD_TUPLE
+#  include "vm/RecordTupleShared.h"
+#endif
 #include "vm/WrapperObject.h"
 
 #include "gc/GC-inl.h"
@@ -58,7 +61,7 @@ void Compartment::checkObjectWrappersAfterMovingGC() {
     // wrapper map that points into the nursery, and that the hash table entries
     // are discoverable.
     auto key = e.front().key();
-    CheckGCThingAfterMovingGC(key);
+    CheckGCThingAfterMovingGC(key.get());
 
     auto ptr = crossCompartmentObjectWrappers.lookup(key);
     MOZ_RELEASE_ASSERT(ptr.found() && &*ptr == &e.front());
@@ -100,7 +103,7 @@ void Compartment::removeWrapper(js::ObjectWrapperMap::Ptr p) {
   crossCompartmentObjectWrappers.remove(p);
 }
 
-static JSString* CopyStringPure(JSContext* cx, JSString* str) {
+JSString* js::CopyStringPure(JSContext* cx, JSString* str) {
   /*
    * Directly allocate the copy in the destination compartment, rather than
    * first flattening it (and possibly allocating in source compartment),
@@ -328,12 +331,36 @@ bool Compartment::getOrCreateWrapper(JSContext* cx, HandleObject existing,
   return true;
 }
 
+#ifdef ENABLE_RECORD_TUPLE
+bool Compartment::wrapExtendedPrimitive(JSContext* cx,
+                                        MutableHandleObject obj) {
+  MOZ_ASSERT(IsExtendedPrimitive(*obj));
+  MOZ_ASSERT(cx->compartment() == this);
+
+  if (obj->compartment() == this) {
+    return true;
+  }
+
+  JSObject* copy = CopyExtendedPrimitive(cx, obj);
+  if (!copy) {
+    return false;
+  }
+
+  obj.set(copy);
+  return true;
+}
+#endif
+
 bool Compartment::wrap(JSContext* cx, MutableHandleObject obj) {
   MOZ_ASSERT(cx->compartment() == this);
 
   if (!obj) {
     return true;
   }
+
+#ifdef ENABLE_RECORD_TUPLE
+  MOZ_ASSERT(!IsExtendedPrimitive(*obj));
+#endif
 
   AutoDisableProxyCheck adpc;
 
@@ -504,13 +531,13 @@ void Compartment::sweepAfterMinorGC(JSTracer* trc) {
   crossCompartmentObjectWrappers.sweepAfterMinorGC(trc);
 
   for (RealmsInCompartmentIter r(this); !r.done(); r.next()) {
-    r->sweepAfterMinorGC();
+    r->sweepAfterMinorGC(trc);
   }
 }
 
 // Remove dead wrappers from the table or update pointers to moved objects.
-void Compartment::sweepCrossCompartmentObjectWrappers() {
-  crossCompartmentObjectWrappers.sweep();
+void Compartment::traceCrossCompartmentObjectWrapperEdges(JSTracer* trc) {
+  crossCompartmentObjectWrappers.traceWeak(trc);
 }
 
 void Compartment::fixupCrossCompartmentObjectWrappersAfterMovingGC(
@@ -519,7 +546,7 @@ void Compartment::fixupCrossCompartmentObjectWrappersAfterMovingGC(
 
   // Sweep the wrapper map to update keys (wrapped values) in other
   // compartments that may have been moved.
-  sweepCrossCompartmentObjectWrappers();
+  traceCrossCompartmentObjectWrapperEdges(trc);
 
   // Trace the wrappers in the map to update their cross-compartment edges
   // to wrapped values in other compartments that may have been moved.
@@ -535,7 +562,7 @@ void Compartment::fixupAfterMovingGC(JSTracer* trc) {
 
   // Sweep the wrapper map to update values (wrapper objects) in this
   // compartment that may have been moved.
-  sweepCrossCompartmentObjectWrappers();
+  traceCrossCompartmentObjectWrapperEdges(trc);
 }
 
 void Compartment::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,

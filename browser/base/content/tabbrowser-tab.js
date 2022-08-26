@@ -18,7 +18,7 @@
           <stack class="tab-icon-stack">
             <hbox class="tab-throbber" layer="true"/>
             <hbox class="tab-icon-pending"/>
-            <image class="tab-icon-image" validate="never" role="presentation"/>
+            <html:img class="tab-icon-image" role="presentation" decoding="sync" />
             <image class="tab-sharing-icon-overlay" role="presentation"/>
             <image class="tab-icon-overlay" role="presentation"/>
           </stack>
@@ -26,6 +26,7 @@
                 onoverflow="this.setAttribute('textoverflow', 'true');"
                 onunderflow="this.removeAttribute('textoverflow');"
                 align="start"
+                pack="center"
                 flex="1">
             <label class="tab-text tab-label" role="presentation"/>
             <hbox class="tab-secondary-label">
@@ -84,7 +85,7 @@
         ".tab-content":
           "pinned,selected=visuallyselected,titlechanged,attention",
         ".tab-icon-stack":
-          "sharing,pictureinpicture,crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked",
+          "sharing,pictureinpicture,crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked,indicator-replaces-favicon",
         ".tab-throbber":
           "fadein,pinned,busy,progress,selected=visuallyselected",
         ".tab-icon-pending":
@@ -93,7 +94,7 @@
           "src=image,triggeringprincipal=iconloadingprincipal,requestcontextid,fadein,pinned,selected=visuallyselected,busy,crashed,sharing,pictureinpicture",
         ".tab-sharing-icon-overlay": "sharing,selected=visuallyselected,pinned",
         ".tab-icon-overlay":
-          "sharing,pictureinpicture,crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked",
+          "sharing,pictureinpicture,crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked,indicator-replaces-favicon",
         ".tab-label-container":
           "pinned,selected=visuallyselected,labeldirection",
         ".tab-label":
@@ -126,6 +127,15 @@
 
     get container() {
       return gBrowser.tabContainer;
+    }
+
+    set attention(val) {
+      if (val == this.hasAttribute("attention")) {
+        return;
+      }
+
+      this.toggleAttribute("attention", val);
+      gBrowser._tabAttrModified(this, ["attention"]);
     }
 
     set _visuallySelected(val) {
@@ -417,14 +427,19 @@
         gBrowser.clearMultiSelectedTabs();
       }
 
-      if (
-        event.target.classList.contains("tab-icon-overlay") &&
-        (this.soundPlaying || this.muted || this.activeMediaBlocked)
-      ) {
-        if (this.multiselected) {
-          gBrowser.toggleMuteAudioOnMultiSelectedTabs(this);
-        } else {
-          this.toggleMuteAudio();
+      if (event.target.classList.contains("tab-icon-overlay")) {
+        if (this.activeMediaBlocked) {
+          if (this.multiselected) {
+            gBrowser.resumeDelayedMediaOnMultiSelectedTabs(this);
+          } else {
+            this.resumeDelayedMedia();
+          }
+        } else if (this.soundPlaying || this.muted) {
+          if (this.multiselected) {
+            gBrowser.toggleMuteAudioOnMultiSelectedTabs(this);
+          } else {
+            this.toggleMuteAudio();
+          }
         }
         return;
       }
@@ -610,39 +625,41 @@
       }
     }
 
+    resumeDelayedMedia() {
+      if (this.activeMediaBlocked) {
+        Services.telemetry
+          .getHistogramById("TAB_AUDIO_INDICATOR_USED")
+          .add(3 /* unblockByClickingIcon */);
+        this.removeAttribute("activemedia-blocked");
+        this.linkedBrowser.resumeMedia();
+        gBrowser._tabAttrModified(this, ["activemedia-blocked"]);
+      }
+    }
+
     toggleMuteAudio(aMuteReason) {
       let browser = this.linkedBrowser;
-      let modifiedAttrs = [];
       let hist = Services.telemetry.getHistogramById(
         "TAB_AUDIO_INDICATOR_USED"
       );
 
-      if (this.activeMediaBlocked) {
-        this.removeAttribute("activemedia-blocked");
-        modifiedAttrs.push("activemedia-blocked");
-
-        browser.resumeMedia();
-        hist.add(3 /* unblockByClickingIcon */);
-      } else {
-        if (browser.audioMuted) {
-          if (this.linkedPanel) {
-            // "Lazy Browser" should not invoke its unmute method
-            browser.unmute();
-          }
-          this.removeAttribute("muted");
-          hist.add(1 /* unmute */);
-        } else {
-          if (this.linkedPanel) {
-            // "Lazy Browser" should not invoke its mute method
-            browser.mute();
-          }
-          this.setAttribute("muted", "true");
-          hist.add(0 /* mute */);
+      if (browser.audioMuted) {
+        if (this.linkedPanel) {
+          // "Lazy Browser" should not invoke its unmute method
+          browser.unmute();
         }
-        this.muteReason = aMuteReason || null;
-        modifiedAttrs.push("muted");
+        this.removeAttribute("muted");
+        hist.add(1 /* unmute */);
+      } else {
+        if (this.linkedPanel) {
+          // "Lazy Browser" should not invoke its mute method
+          browser.mute();
+        }
+        this.setAttribute("muted", "true");
+        hist.add(0 /* mute */);
       }
-      gBrowser._tabAttrModified(this, modifiedAttrs);
+      this.muteReason = aMuteReason || null;
+
+      gBrowser._tabAttrModified(this, ["muted"]);
     }
 
     setUserContextId(aUserContextId) {

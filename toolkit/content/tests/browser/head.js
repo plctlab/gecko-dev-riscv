@@ -1,7 +1,7 @@
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 /**
@@ -186,8 +186,9 @@ class DateTimeTestHelper {
    *
    * @param  {String} pageUrl
    * @param  {bool} inFrame true if input is in the first child frame
+   * @param  {String} openMethod "click" or "showPicker"
    */
-  async openPicker(pageUrl, inFrame) {
+  async openPicker(pageUrl, inFrame, openMethod = "click") {
     this.tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, pageUrl);
     let bc = gBrowser.selectedBrowser;
     if (inFrame) {
@@ -199,7 +200,19 @@ class DateTimeTestHelper {
       });
       bc = bc.browsingContext.children[0];
     }
-    await BrowserTestUtils.synthesizeMouseAtCenter("input", {}, bc);
+    await SpecialPowers.spawn(bc, [], async function() {
+      // Ensure that screen coordinates are ok.
+      await SpecialPowers.contentTransformsReceived(content);
+    });
+
+    if (openMethod === "click") {
+      await BrowserTestUtils.synthesizeMouseAtCenter("input", {}, bc);
+    } else if (openMethod === "showPicker") {
+      await SpecialPowers.spawn(bc, [], function() {
+        content.document.notifyUserGestureActivation();
+        content.document.querySelector("input").showPicker();
+      });
+    }
     this.frame = this.panel.querySelector("#dateTimePopupFrame");
     await this.waitForPickerReady();
   }
@@ -377,4 +390,12 @@ function wakeLockObserved(powerManager, observeTopic, checkFn) {
     };
     powerManager.addWakeLockListener(wakeLockListener.prototype);
   });
+}
+
+function getTestWebBasedURL(fileName, { crossOrigin = false } = {}) {
+  const origin = crossOrigin ? "http://example.org" : "http://example.com";
+  return (
+    getRootDirectory(gTestPath).replace("chrome://mochitests/content", origin) +
+    fileName
+  );
 }

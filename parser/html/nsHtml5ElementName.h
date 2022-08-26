@@ -49,7 +49,6 @@ class nsHtml5StreamParser;
 class nsHtml5AttributeName;
 class nsHtml5Tokenizer;
 class nsHtml5TreeBuilder;
-class nsHtml5MetaScanner;
 class nsHtml5UTF16Buffer;
 class nsHtml5StateSnapshot;
 class nsHtml5Portability;
@@ -312,7 +311,6 @@ class nsHtml5ElementName {
   static nsHtml5ElementName* ELT_ACRONYM;
   static nsHtml5ElementName* ELT_EM;
   static nsHtml5ElementName* ELT_FORM;
-  static nsHtml5ElementName* ELT_MENUITEM;
   static nsHtml5ElementName* ELT_PARAM;
   static nsHtml5ElementName* ELT_ANIMATEMOTION;
   static nsHtml5ElementName* ELT_BUTTON;

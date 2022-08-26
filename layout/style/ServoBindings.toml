@@ -17,7 +17,6 @@ headers = [
     "mozilla/ipc/ByteBuf.h",
     "mozilla/AnimationPropertySegment.h",
     "mozilla/ComputedTiming.h",
-    "mozilla/ComputedTimingFunction.h",
     "mozilla/CORSMode.h",
     "mozilla/Keyframe.h",
     "mozilla/ServoElementSnapshot.h",
@@ -33,7 +32,6 @@ headers = [
     "mozilla/ServoTraversalStatistics.h",
     "mozilla/SizeOfState.h",
     "nsCSSProps.h",
-    "nsContentUtils.h",
     "nsMappedAttributes.h",
     "nsNameSpaceManager.h",
 ]
@@ -48,10 +46,12 @@ raw-lines = [
 hide-types = [
     ".*char_traits",
     ".*incompatible_char_type",
+    ".*string_view",
     # https://github.com/rust-lang/rust-bindgen/issues/1503
     "mozilla::StyleTimingFunction.*",
     # https://github.com/rust-lang/rust-bindgen/issues/1559
     "mozilla::StyleGenericTransformOperation_.*",
+    "mozilla::StyleGenericColor_.*",
 ]
 bitfield-enums = [
     "nsChangeHint",
@@ -65,6 +65,7 @@ rusty-enums = [
     "mozilla::dom::CallerType",
     "mozilla::dom::IterationCompositeOperation",
     "mozilla::dom::CompositeOperation",
+    "mozilla::dom::CompositeOperationOrAuto",
     "mozilla::InheritTarget",
     "mozilla::css::DocumentMatchingFunction",
     "mozilla::css::SheetParsingMode",
@@ -72,6 +73,7 @@ rusty-enums = [
     "mozilla::dom::Document_DocumentTheme",
     "mozilla::dom::Document_Type",
     "mozilla::LookAndFeel_IntID",
+    "mozilla::LookAndFeel_FloatID",
     "nsCSSUnit",
     "nsCSSFontDesc",
     "nsCSSPropertyID",
@@ -131,11 +133,11 @@ rusty-enums = [
     "mozilla::StyleScrollbarWidth",
     "mozilla::StyleWhiteSpace",
     "mozilla::StyleTextRendering",
-    "mozilla::StyleColorAdjust",
     "mozilla::StyleFlexDirection",
     "mozilla::StyleStrokeLinecap",
     "mozilla::StyleStrokeLinejoin",
     "mozilla::StyleFlexWrap",
+    "mozilla::StyleMathVariant",
     "mozilla::StyleTextDecorationSkipInk",
     "mozilla::StyleTextDecorationLength",
     "mozilla::StyleMaskType",
@@ -145,6 +147,7 @@ rusty-enums = [
     "mozilla::StyleTopLayer",
     "mozilla::StyleIsolation",
     "mozilla::StyleTextOrientation",
+    "mozilla::StyleMozBoxLayout",
     "mozilla::StyleTableLayout",
     "mozilla::StyleEmptyCells",
     "nsStyleImageType",
@@ -164,7 +167,7 @@ rusty-enums = [
     "mozilla::StyleMaskComposite",
     "mozilla::StyleWritingModeProperty",
 ]
-whitelist-vars = [
+allowlist-vars = [
     "NS_ATTRVALUE_.*",
     "NODE_.*",
     "ELEMENT_.*",
@@ -179,7 +182,7 @@ whitelist-vars = [
     "kNameSpaceID_.*",
     "kGenericFont_.*",
     "kPresContext_.*",
-    "nsContentUtils_.*",
+    "nsNameSpaceManager_.*",
     "GECKO_IS_NIGHTLY",
     "NS_SAME_AS_FOREGROUND_COLOR",
     "mozilla::detail::gGkAtoms",
@@ -188,7 +191,7 @@ whitelist-vars = [
 ]
 # TODO(emilio): A bunch of types here can go away once we generate bindings and
 # structs together.
-whitelist-types = [
+allowlist-types = [
     "RawGecko.*",
     "RawServo.*",
     "ServoCssRules",
@@ -202,8 +205,6 @@ whitelist-types = [
     "mozilla::AnonymousCounterStyle",
     "mozilla::AtomArray",
     "mozilla::ComputedTiming",
-    "mozilla::ComputedTimingFunction",
-    "mozilla::ComputedTimingFunction::BeforeFlag",
     "mozilla::Matrix4x4Components",
     "mozilla::PreferenceSheet",
     "mozilla::SeenPtrs",
@@ -417,10 +418,13 @@ cbindgen-types = [
     { gecko = "StyleCursorKind", servo = "crate::values::computed::ui::CursorKind" },
     { gecko = "StyleDisplay", servo = "crate::values::specified::Display" },
     { gecko = "StyleDisplayMode", servo = "crate::gecko::media_features::DisplayMode" },
+    { gecko = "StylePlatform", servo = "crate::gecko::media_features::Platform" },
     { gecko = "StylePrefersColorScheme", servo = "crate::gecko::media_features::PrefersColorScheme" },
+    { gecko = "StyleDynamicRange", servo = "crate::gecko::media_features::DynamicRange" },
     { gecko = "StyleFillRule", servo = "crate::values::generics::basic_shape::FillRule" },
     { gecko = "StyleFontDisplay", servo = "crate::font_face::FontDisplay" },
     { gecko = "StyleFontFaceSourceListComponent", servo = "crate::font_face::FontFaceSourceListComponent" },
+    { gecko = "StyleFontFaceSourceTechFlags", servo = "crate::font_face::FontFaceSourceTechFlags" },
     { gecko = "StyleFontLanguageOverride", servo = "crate::values::computed::font::FontLanguageOverride" },
     { gecko = "StyleOffsetPath", servo = "crate::values::computed::motion::OffsetPath" },
     { gecko = "StyleGenericOffsetPath", servo = "crate::values::generics::motion::OffsetPath" },
@@ -438,9 +442,13 @@ cbindgen-types = [
     { gecko = "StyleBreakWithin", servo = "crate::values::computed::BreakWithin" },
     { gecko = "StyleBorderStyle", servo = "crate::values::computed::BorderStyle" },
     { gecko = "StyleOutlineStyle", servo = "crate::values::computed::OutlineStyle" },
+    { gecko = "StyleScrollDirection", servo = "crate::stylesheets::scroll_timeline_rule::ScrollDirection" },
     { gecko = "StyleScrollSnapAlign", servo = "crate::values::computed::ScrollSnapAlign" },
+    { gecko = "StyleScrollSnapStop", servo = "crate::values::computed::ScrollSnapStop" },
     { gecko = "StyleScrollSnapStrictness", servo = "crate::values::computed::ScrollSnapStrictness" },
     { gecko = "StyleScrollSnapType", servo = "crate::values::computed::ScrollSnapType" },
+    { gecko = "StyleScrollTimelineName", servo = "crate::values::computed::ScrollTimelineName" },
+    { gecko = "StyleScrollAxis", servo = "crate::values::computed::ScrollAxis" },
     { gecko = "StyleResize", servo = "crate::values::computed::Resize" },
     { gecko = "StyleOverflowClipBox", servo = "crate::values::computed::OverflowClipBox" },
     { gecko = "StyleFloat", servo = "crate::values::computed::Float" },
@@ -491,6 +499,8 @@ cbindgen-types = [
     { gecko = "StyleGenericLineHeight", servo = "crate::values::generics::text::LineHeight" },
     { gecko = "StyleCaretColor", servo = "crate::values::computed::color::CaretColor" },
     { gecko = "StyleContain", servo = "crate::values::computed::Contain" },
+    { gecko = "StyleContainerType", servo = "crate::values::computed::ContainerType" },
+    { gecko = "StyleContainerName", servo = "crate::values::computed::ContainerName" },
     { gecko = "StyleRestyleHint", servo = "crate::invalidation::element::restyle_hints::RestyleHint" },
     { gecko = "StyleTouchAction", servo = "crate::values::computed::TouchAction" },
     { gecko = "StyleWillChange", servo = "crate::values::specified::box_::WillChange" },
@@ -498,7 +508,6 @@ cbindgen-types = [
     { gecko = "StyleTextDecorationLine", servo = "crate::values::computed::TextDecorationLine" },
     { gecko = "StyleTextTransform", servo = "crate::values::computed::TextTransform" },
     { gecko = "StyleTextUnderlinePosition", servo = "crate::values::computed::TextUnderlinePosition" },
-    { gecko = "StyleMozListReversed", servo = "crate::values::computed::MozListReversed" },
     { gecko = "StyleOwned", servo = "crate::gecko_bindings::sugar::ownership::Owned" },
     { gecko = "StyleOwnedOrNull", servo = "crate::gecko_bindings::sugar::ownership::OwnedOrNull" },
     { gecko = "StyleStrong", servo = "crate::gecko_bindings::sugar::ownership::Strong" },
@@ -508,7 +517,6 @@ cbindgen-types = [
     { gecko = "StyleFontFamilyNameSyntax", servo = "crate::values::computed::font::FontFamilyNameSyntax" },
     { gecko = "StyleGenericColor", servo = "crate::values::generics::color::Color" },
     { gecko = "StyleSystemColor", servo = "crate::values::specified::color::SystemColor" },
-    { gecko = "StyleSystemColorScheme", servo = "crate::values::specified::color::SystemColorScheme" },
     { gecko = "StyleSystemFont", servo = "crate::values::specified::font::SystemFont" },
     { gecko = "StyleGenericColorOrAuto", servo = "crate::values::generics::color::ColorOrAuto" },
     { gecko = "StyleGenericScrollbarColor", servo = "crate::values::generics::ui::ScrollbarColor" },
@@ -558,7 +566,8 @@ cbindgen-types = [
     { gecko = "StyleVariantAlternatesList", servo = "crate::values::specified::font::VariantAlternatesList" },
     { gecko = "StyleSVGPaintOrder", servo = "crate::values::specified::svg::SVGPaintOrder" },
     { gecko = "StyleClipRectOrAuto", servo = "crate::values::computed::ClipRectOrAuto" },
-    { gecko = "StyleCounterSetOrReset", servo = "crate::values::computed::CounterSetOrReset" },
+    { gecko = "StyleCounterReset", servo = "crate::values::computed::CounterReset" },
+    { gecko = "StyleCounterSet", servo = "crate::values::computed::CounterSet" },
     { gecko = "StyleCounterIncrement", servo = "crate::values::computed::CounterIncrement" },
     { gecko = "StyleContent", servo = "crate::values::computed::counters::Content" },
     { gecko = "StyleSymbolsType", servo = "crate::values::generics::SymbolsType" },
@@ -584,9 +593,18 @@ cbindgen-types = [
     { gecko = "StyleFontSizeKeyword", servo = "crate::values::specified::font::FontSizeKeyword" },
     { gecko = "StyleDefaultFontSizes", servo = "crate::gecko::wrapper::DefaultFontSizes" },
     { gecko = "StyleCaptionSide", servo = "crate::values::computed::table::CaptionSide" },
+    { gecko = "StylePageName", servo = "crate::values::specified::page::PageName" },
     { gecko = "StylePageSize", servo = "crate::values::computed::page::PageSize" },
     { gecko = "StyleDProperty", servo = "crate::values::specified::svg::DProperty" },
     { gecko = "StyleImageRendering", servo = "crate::values::computed::ImageRendering" },
+    { gecko = "StylePrintColorAdjust", servo = "crate::values::computed::PrintColorAdjust" },
+    { gecko = "StyleScrollbarGutter", servo = "crate::values::computed::ScrollbarGutter" },
+    { gecko = "StyleHyphenateCharacter", servo = "crate::values::computed::HyphenateCharacter" },
+    { gecko = "StyleContentVisibility", servo = "crate::values::computed::ContentVisibility" },
+    { gecko = "StyleContainIntrinsicSize", servo = "crate::values::computed::ContainIntrinsicSize" },
+    { gecko = "StyleFontStyle", servo = "crate::values::computed::font::FontStyle" },
+    { gecko = "StyleFontWeight", servo = "crate::values::computed::font::FontWeight" },
+    { gecko = "StyleFontStretch", servo = "crate::values::computed::font::FontStretch" },
 ]
 
 mapped-generic-types = [
@@ -604,4 +622,4 @@ mapped-generic-types = [
     { generic = false, gecko = "nsString", servo = "nsstring::nsString" },
 ]
 
-whitelist-functions = ["Servo_.*", "Gecko_.*"]
+allowlist-functions = ["Servo_.*", "Gecko_.*"]

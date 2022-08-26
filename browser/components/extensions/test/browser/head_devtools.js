@@ -14,7 +14,7 @@
 ChromeUtils.defineModuleGetter(
   this,
   "loader",
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
 XPCOMUtils.defineLazyGetter(this, "gDevTools", () => {
   const { gDevTools } = loader.require("devtools/client/framework/devtools");
@@ -37,7 +37,7 @@ async function registerBlankToolboxPanel() {
     id: TOOLBOX_BLANK_PANEL_ID,
     url: "about:blank",
     label: "Blank Tool",
-    isTargetSupported() {
+    isToolSupported() {
       return true;
     },
     build(iframeWindow, toolbox) {

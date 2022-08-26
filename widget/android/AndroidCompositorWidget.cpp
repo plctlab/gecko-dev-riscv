@@ -5,16 +5,22 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AndroidCompositorWidget.h"
+
+#include "mozilla/gfx/Logging.h"
+#include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsWindow.h"
 
 namespace mozilla {
 namespace widget {
 
 AndroidCompositorWidget::AndroidCompositorWidget(
-    const layers::CompositorOptions& aOptions, nsBaseWidget* aWidget)
-    : InProcessCompositorWidget(aOptions, aWidget),
+    const AndroidCompositorWidgetInitData& aInitData,
+    const layers::CompositorOptions& aOptions)
+    : CompositorWidget(aOptions),
+      mWidgetId(aInitData.widgetId()),
       mNativeWindow(nullptr),
-      mFormat(WINDOW_FORMAT_RGBA_8888) {}
+      mFormat(WINDOW_FORMAT_RGBA_8888),
+      mClientSize(aInitData.clientSize()) {}
 
 AndroidCompositorWidget::~AndroidCompositorWidget() {
   if (mNativeWindow) {
@@ -69,20 +75,30 @@ void AndroidCompositorWidget::EndRemoteDrawingInRegion(
   ANativeWindow_unlockAndPost(mNativeWindow);
 }
 
+bool AndroidCompositorWidget::OnResumeComposition() {
+  OnCompositorSurfaceChanged();
+
+  if (!mSurface) {
+    gfxCriticalError() << "OnResumeComposition called with null Surface";
+    return false;
+  }
+
+  return true;
+}
+
 EGLNativeWindowType AndroidCompositorWidget::GetEGLNativeWindow() {
-  return (EGLNativeWindowType)mWidget->GetNativeData(NS_JAVA_SURFACE);
+  return (EGLNativeWindowType)mSurface.Get();
 }
 
-EGLNativeWindowType AndroidCompositorWidget::GetPresentationEGLSurface() {
-  return (EGLNativeWindowType)mWidget->GetNativeData(NS_PRESENTATION_SURFACE);
+LayoutDeviceIntSize AndroidCompositorWidget::GetClientSize() {
+  return mClientSize;
 }
 
-void AndroidCompositorWidget::SetPresentationEGLSurface(EGLSurface aVal) {
-  mWidget->SetNativeData(NS_PRESENTATION_SURFACE, (uintptr_t)aVal);
-}
-
-ANativeWindow* AndroidCompositorWidget::GetPresentationANativeWindow() {
-  return (ANativeWindow*)mWidget->GetNativeData(NS_PRESENTATION_WINDOW);
+void AndroidCompositorWidget::NotifyClientSizeChanged(
+    const LayoutDeviceIntSize& aClientSize) {
+  mClientSize =
+      LayoutDeviceIntSize(std::min(aClientSize.width, MOZ_WIDGET_MAX_SIZE),
+                          std::min(aClientSize.height, MOZ_WIDGET_MAX_SIZE));
 }
 
 }  // namespace widget

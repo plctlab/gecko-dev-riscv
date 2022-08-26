@@ -50,7 +50,6 @@ EXPORTS.mozilla += [
 
 EXPORTS.mozilla.gfx += [
     "CompositorHitTestInfo.h",
-    "TiledRegion.h",
 ]
 
 if CONFIG["MOZ_X11"]:
@@ -72,7 +71,6 @@ UNIFIED_SOURCES += [
     "nsRegion.cpp",
     "nsThebesFontEnumerator.cpp",
     "nsTransform2D.cpp",
-    "TiledRegion.cpp",
 ]
 
 # nsDeviceContext.cpp cannot be built in unified mode because it pulls in OS X system headers.
@@ -93,7 +91,6 @@ LOCAL_INCLUDES += [
 
 FINAL_LIBRARY = "xul"
 
-CXXFLAGS += CONFIG["TK_CFLAGS"]
-
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
     CXXFLAGS += CONFIG["MOZ_PANGO_CFLAGS"]

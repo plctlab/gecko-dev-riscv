@@ -8,15 +8,19 @@
 #include "InternalResponse.h"
 #include "js/Stream.h"
 #include "mozilla/ConsoleReportCollector.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/AutoEntryScript.h"
-#include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseBinding.h"
+#include "mozilla/dom/ReadableStream.h"
+#include "mozilla/dom/ReadableStreamDefaultController.h"
+#include "mozilla/dom/ReadableStreamDefaultReader.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/TaskCategory.h"
 #include "nsContentUtils.h"
+#include "nsDebug.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIPipe.h"
 #include "nsIScriptError.h"
@@ -32,14 +36,15 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(FetchStreamReader)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(FetchStreamReader)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mReader)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(FetchStreamReader)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mReader)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(FetchStreamReader)
-  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mReader)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FetchStreamReader)
@@ -71,16 +76,14 @@ nsresult FetchStreamReader::Create(JSContext* aCx, nsIGlobalObject* aGlobal,
     WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(aCx);
     MOZ_ASSERT(workerPrivate);
 
-    RefPtr<WeakWorkerRef> workerRef =
-        WeakWorkerRef::Create(workerPrivate, [streamReader]() {
+    RefPtr<StrongWorkerRef> workerRef = StrongWorkerRef::Create(
+        workerPrivate, "FetchStreamReader", [streamReader]() {
           MOZ_ASSERT(streamReader);
           MOZ_ASSERT(streamReader->mWorkerRef);
 
-          WorkerPrivate* workerPrivate = streamReader->mWorkerRef->GetPrivate();
-          MOZ_ASSERT(workerPrivate);
-
-          streamReader->CloseAndRelease(workerPrivate->GetJSContext(),
-                                        NS_ERROR_DOM_INVALID_STATE_ERR);
+          streamReader->CloseAndRelease(
+              streamReader->mWorkerRef->Private()->GetJSContext(),
+              NS_ERROR_DOM_INVALID_STATE_ERR);
         });
 
     if (NS_WARN_IF(!workerRef)) {
@@ -130,18 +133,24 @@ void FetchStreamReader::CloseAndRelease(JSContext* aCx, nsresult aStatus) {
   }
 
   RefPtr<FetchStreamReader> kungFuDeathGrip = this;
-
   if (aCx && mReader) {
-    RefPtr<DOMException> error = DOMException::Create(aStatus);
-
+    ErrorResult rv;
+    if (aStatus == NS_ERROR_DOM_WRONG_TYPE_ERR) {
+      rv.ThrowTypeError<MSG_FETCH_BODY_WRONG_TYPE>();
+    } else {
+      rv = aStatus;
+    }
     JS::Rooted<JS::Value> errorValue(aCx);
-    if (ToJSValue(aCx, error, &errorValue)) {
-      JS::Rooted<JSObject*> reader(aCx, mReader);
+    if (ToJSValue(aCx, std::move(rv), &errorValue)) {
+      IgnoredErrorResult ignoredError;
       // It's currently safe to cancel an already closed reader because, per the
       // comments in ReadableStream::cancel() conveying the spec, step 2 of
       // 3.4.3 that specified ReadableStreamCancel is: If stream.[[state]] is
       // "closed", return a new promise resolved with undefined.
-      JS::ReadableStreamReaderCancel(aCx, reader, errorValue);
+      RefPtr<Promise> ignoredResultPromise =
+          MOZ_KnownLive(mReader)->Cancel(aCx, errorValue, ignoredError);
+      NS_WARNING_ASSERTION(!ignoredError.Failed(),
+                           "Failed to cancel stream during close and release");
     }
 
     // We don't want to propagate exceptions during the cleanup.
@@ -152,7 +161,9 @@ void FetchStreamReader::CloseAndRelease(JSContext* aCx, nsresult aStatus) {
 
   mGlobal = nullptr;
 
-  mPipeOut->CloseWithStatus(aStatus);
+  if (mPipeOut) {
+    mPipeOut->CloseWithStatus(aStatus);
+  }
   mPipeOut = nullptr;
 
   mWorkerRef = nullptr;
@@ -161,49 +172,77 @@ void FetchStreamReader::CloseAndRelease(JSContext* aCx, nsresult aStatus) {
   mBuffer.Clear();
 }
 
-void FetchStreamReader::StartConsuming(JSContext* aCx, JS::HandleObject aStream,
-                                       JS::MutableHandle<JSObject*> aReader,
+void FetchStreamReader::StartConsuming(JSContext* aCx, ReadableStream* aStream,
+                                       ReadableStreamDefaultReader** aReader,
                                        ErrorResult& aRv) {
   MOZ_DIAGNOSTIC_ASSERT(!mReader);
   MOZ_DIAGNOSTIC_ASSERT(aStream);
 
-  aRv.MightThrowJSException();
-
-  // Here, by spec, we can pick any global we want. Just to avoid extra
-  // cross-compartment steps, we want to create the reader in the same
-  // compartment of the owning Fetch Body object.
-  // The same global will be used to retrieve data from this reader.
-  JSAutoRealm ar(aCx, mGlobal->GetGlobalJSObject());
-
-  JS::Rooted<JSObject*> reader(
-      aCx, JS::ReadableStreamGetReader(aCx, aStream,
-                                       JS::ReadableStreamReaderMode::Default));
-  if (!reader) {
-    aRv.StealExceptionFromJSContext(aCx);
+  RefPtr<ReadableStreamDefaultReader> reader =
+      AcquireReadableStreamDefaultReader(aStream, aRv);
+  if (aRv.Failed()) {
     CloseAndRelease(aCx, NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
 
   mReader = reader;
-  aReader.set(reader);
+  reader.forget(aReader);
 
   aRv = mPipeOut->AsyncWait(this, 0, 0, mOwningEventTarget);
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
+  mAsyncWaitWorkerRef = mWorkerRef;
 }
 
-// nsIOutputStreamCallback interface
+struct FetchReadRequest : public ReadRequest {
+ public:
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(FetchReadRequest, ReadRequest)
 
+  explicit FetchReadRequest(FetchStreamReader* aReader)
+      : mFetchStreamReader(aReader) {}
+
+  void ChunkSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
+                  ErrorResult& aRv) override {
+    mFetchStreamReader->ChunkSteps(aCx, aChunk, aRv);
+  }
+
+  void CloseSteps(JSContext* aCx, ErrorResult& aRv) override {
+    mFetchStreamReader->CloseAndRelease(aCx, NS_BASE_STREAM_CLOSED);
+  }
+
+  void ErrorSteps(JSContext* aCx, JS::Handle<JS::Value> aError,
+                  ErrorResult& aRv) override {
+    mFetchStreamReader->ErrorSteps(aCx, aError, aRv);
+  }
+
+ protected:
+  virtual ~FetchReadRequest() = default;
+
+  RefPtr<FetchStreamReader> mFetchStreamReader;
+};
+
+NS_IMPL_CYCLE_COLLECTION_INHERITED(FetchReadRequest, ReadRequest,
+                                   mFetchStreamReader)
+NS_IMPL_ADDREF_INHERITED(FetchReadRequest, ReadRequest)
+NS_IMPL_RELEASE_INHERITED(FetchReadRequest, ReadRequest)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FetchReadRequest)
+NS_INTERFACE_MAP_END_INHERITING(ReadRequest)
+
+// nsIOutputStreamCallback interface
+MOZ_CAN_RUN_SCRIPT_BOUNDARY
 NS_IMETHODIMP
 FetchStreamReader::OnOutputStreamReady(nsIAsyncOutputStream* aStream) {
   NS_ASSERT_OWNINGTHREAD(FetchStreamReader);
-  MOZ_ASSERT(aStream == mPipeOut);
-  MOZ_ASSERT(mReader);
-
+  mAsyncWaitWorkerRef = nullptr;
   if (mStreamClosed) {
     return NS_OK;
   }
+
+  // Only assert if we know the stream is not closed yet.
+  MOZ_ASSERT(aStream == mPipeOut);
+  MOZ_ASSERT(mReader);
 
   if (!mBuffer.IsEmpty()) {
     return WriteBuffer();
@@ -214,64 +253,39 @@ FetchStreamReader::OnOutputStreamReady(nsIAsyncOutputStream* aStream) {
   // Response's one.
   AutoEntryScript aes(mGlobal, "ReadableStreamReader.read", !mWorkerRef);
 
-  JS::Rooted<JSObject*> reader(aes.cx(), mReader);
-  JS::Rooted<JSObject*> promise(
-      aes.cx(), JS::ReadableStreamDefaultReaderRead(aes.cx(), reader));
-  if (NS_WARN_IF(!promise)) {
+  IgnoredErrorResult rv;
+
+  // https://fetch.spec.whatwg.org/#incrementally-read-loop
+  // The below very loosely tries to implement the incrementally-read-loop from
+  // the fetch spec.
+  RefPtr<ReadRequest> readRequest = new FetchReadRequest(this);
+  ReadableStreamDefaultReaderRead(aes.cx(), MOZ_KnownLive(mReader), readRequest,
+                                  rv);
+
+  if (NS_WARN_IF(rv.Failed())) {
     // Let's close the stream.
     CloseAndRelease(aes.cx(), NS_ERROR_DOM_INVALID_STATE_ERR);
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<Promise> domPromise = Promise::CreateFromExisting(mGlobal, promise);
-  if (NS_WARN_IF(!domPromise)) {
-    // Let's close the stream.
-    CloseAndRelease(aes.cx(), NS_ERROR_DOM_INVALID_STATE_ERR);
-    return NS_ERROR_FAILURE;
-  }
-
-  // Let's wait.
-  domPromise->AppendNativeHandler(this);
   return NS_OK;
 }
 
-void FetchStreamReader::ResolvedCallback(JSContext* aCx,
-                                         JS::Handle<JS::Value> aValue) {
-  if (mStreamClosed) {
+void FetchStreamReader::ChunkSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
+                                   ErrorResult& aRv) {
+  // This roughly implements the chunk steps from
+  // https://fetch.spec.whatwg.org/#incrementally-read-loop.
+
+  // Step 2. If chunk is not a Uint8Array object, then set continueAlgorithm to
+  // this step: run processBodyError given a TypeError.
+  RootedSpiderMonkeyInterface<Uint8Array> chunk(aCx);
+  if (!aChunk.isObject() || !chunk.Init(&aChunk.toObject())) {
+    CloseAndRelease(aCx, NS_ERROR_DOM_WRONG_TYPE_ERR);
     return;
   }
+  chunk.ComputeState();
 
-  // This promise should be resolved with { done: boolean, value: something },
-  // "value" is interesting only if done is false.
-
-  // We don't want to play with JS api, let's WebIDL bindings doing it for us.
-  // FetchReadableStreamReadDataDone is a dictionary with just a boolean, if the
-  // parsing succeeded, we can proceed with the parsing of the "value", which it
-  // must be a Uint8Array.
-  FetchReadableStreamReadDataDone valueDone;
-  if (!valueDone.Init(aCx, aValue)) {
-    JS_ClearPendingException(aCx);
-    CloseAndRelease(aCx, NS_ERROR_DOM_INVALID_STATE_ERR);
-    return;
-  }
-
-  if (valueDone.mDone) {
-    // Stream is completed.
-    CloseAndRelease(aCx, NS_BASE_STREAM_CLOSED);
-    return;
-  }
-
-  RootedDictionary<FetchReadableStreamReadDataArray> value(aCx);
-  if (!value.Init(aCx, aValue) || !value.mValue.WasPassed()) {
-    JS_ClearPendingException(aCx);
-    CloseAndRelease(aCx, NS_ERROR_DOM_INVALID_STATE_ERR);
-    return;
-  }
-
-  Uint8Array& array = value.mValue.Value();
-  array.ComputeState();
-  uint32_t len = array.Length();
-
+  uint32_t len = chunk.Length();
   if (len == 0) {
     // If there is nothing to read, let's do another reading.
     OnOutputStreamReady(mPipeOut);
@@ -281,7 +295,7 @@ void FetchStreamReader::ResolvedCallback(JSContext* aCx,
   MOZ_DIAGNOSTIC_ASSERT(mBuffer.IsEmpty());
 
   // Let's take a copy of the data.
-  if (!mBuffer.AppendElements(array.Data(), len, fallible)) {
+  if (!mBuffer.AppendElements(chunk.Data(), len, fallible)) {
     CloseAndRelease(aCx, NS_ERROR_OUT_OF_MEMORY);
     return;
   }
@@ -291,10 +305,15 @@ void FetchStreamReader::ResolvedCallback(JSContext* aCx,
 
   nsresult rv = WriteBuffer();
   if (NS_FAILED(rv)) {
-    // DOMException only understands errors from domerr.msg, so we normalize to
-    // identifying an abort if the write fails.
+    // Normalize to a generic DOM exception.
     CloseAndRelease(aCx, NS_ERROR_DOM_ABORT_ERR);
   }
+}
+
+void FetchStreamReader::ErrorSteps(JSContext* aCx, JS::Handle<JS::Value> aError,
+                                   ErrorResult& aRv) {
+  ReportErrorToConsole(aCx, aError);
+  CloseAndRelease(aCx, NS_ERROR_FAILURE);
 }
 
 nsresult FetchStreamReader::WriteBuffer() {
@@ -331,12 +350,6 @@ nsresult FetchStreamReader::WriteBuffer() {
   }
 
   return NS_OK;
-}
-
-void FetchStreamReader::RejectedCallback(JSContext* aCx,
-                                         JS::Handle<JS::Value> aValue) {
-  ReportErrorToConsole(aCx, aValue);
-  CloseAndRelease(aCx, NS_ERROR_FAILURE);
 }
 
 void FetchStreamReader::ReportErrorToConsole(JSContext* aCx,

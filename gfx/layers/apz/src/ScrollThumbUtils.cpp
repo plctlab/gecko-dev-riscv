@@ -86,8 +86,7 @@ void AsyncScrollThumbTransformer::ApplyTransformForAxis(const Axis& aAxis) {
   const float scale = 1.f / asyncZoom;
 
   // Note: |metrics.GetZoom()| doesn't yet include the async zoom.
-  mEffectiveZoom = CSSToParentLayerScale(
-      aAxis.GetAxisScale(mMetrics.GetZoom()).scale * asyncZoom);
+  mEffectiveZoom = CSSToParentLayerScale(mMetrics.GetZoom().scale * asyncZoom);
 
   if (gfxPlatform::UseDesktopZoomingScrollbars()) {
     // As computed by GetCurrentAsyncTransform, asyncScrollY is
@@ -118,6 +117,15 @@ void AsyncScrollThumbTransformer::ApplyTransformForAxis(const Axis& aAxis) {
   // async scroll. This is because scrolling down, which translates the layer
   // content up, should result in moving the scroll thumb down.
   ParentLayerCoord translation = -asyncScroll * mUnitlessThumbRatio;
+
+  // The translation we computed is in the scroll frame's ParentLayer space.
+  // This includes the full cumulative resolution, even if we are a subframe.
+  // However, the resulting transform is used in a context where the scrollbar
+  // is already subject to the resolutions of enclosing scroll frames. To avoid
+  // double application of these enclosing resolutions, divide them out, leaving
+  // only the local resolution if any.
+  translation /= (mMetrics.GetCumulativeResolution().scale /
+                  mMetrics.GetPresShellResolution());
 
   // When scaling the thumb to account for the async zoom, keep the position
   // of the start of the thumb (which corresponds to the scroll offset)

@@ -4,12 +4,12 @@
 
 var EXPORTED_SYMBOLS = ["CommonUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
+const lazy = {};
+ChromeUtils.defineModuleGetter(lazy, "OS", "resource://gre/modules/osfile.jsm");
 
 var CommonUtils = {
   /*
@@ -430,7 +430,7 @@ var CommonUtils = {
    * @return a promise that resolves to the JSON contents of the named file.
    */
   readJSON(path) {
-    return OS.File.read(path, { encoding: "utf-8" }).then(data => {
+    return lazy.OS.File.read(path, { encoding: "utf-8" }).then(data => {
       return JSON.parse(data);
     });
   },
@@ -444,7 +444,7 @@ var CommonUtils = {
    */
   writeJSON(contents, path) {
     let data = JSON.stringify(contents);
-    return OS.File.writeAtomic(path, data, {
+    return lazy.OS.File.writeAtomic(path, data, {
       encoding: "utf-8",
       tmpPath: path + ".tmp",
     });

@@ -78,7 +78,7 @@
 
 #if defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxSettings.h"
-#  include "nsIUUIDGenerator.h"
+#  include "nsID.h"
 #  include "mozilla/Unused.h"
 #  if defined(XP_WIN)
 #    include "sandboxBroker.h"
@@ -113,7 +113,7 @@ nsCOMPtr<nsIFile> gDataDirProfile = nullptr;
 
 // These are required to allow nsXREDirProvider to be usable in xpcshell tests.
 // where gAppData is null.
-#if defined(XP_MACOSX) || defined(XP_WIN) || defined(XP_UNIX)
+#if defined(XP_MACOSX) || defined(XP_UNIX)
 static const char* GetAppName() {
   if (gAppData) {
     return gAppData->name;
@@ -122,12 +122,14 @@ static const char* GetAppName() {
 }
 #endif
 
+#ifdef XP_MACOSX
 static const char* GetAppVendor() {
   if (gAppData) {
     return gAppData->vendor;
   }
   return nullptr;
 }
+#endif
 
 nsXREDirProvider::nsXREDirProvider() : mProfileNotified(false) {
   gDirServiceProvider = this;
@@ -155,21 +157,6 @@ nsresult nsXREDirProvider::Initialize(
   mAppProvider = aAppProvider;
   mXULAppDir = aXULAppDir;
   mGREDir = aGREDir;
-#if defined(XP_WIN) && defined(MOZ_SANDBOX)
-  // The GRE directory can be used in sandbox rules, so we need to make sure
-  // it doesn't contain any junction points or symlinks or the sandbox will
-  // reject those rules.
-  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(mGREDir)) {
-    NS_WARNING("Failed to resolve GRE Dir.");
-  }
-  // If the mXULAppDir is different it lives below the mGREDir. To avoid
-  // confusion resolve that as well even though we don't need it for sandbox
-  // rules. Some tests rely on this for example.
-  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(
-          mXULAppDir)) {
-    NS_WARNING("Failed to resolve XUL App Dir.");
-  }
-#endif
   nsCOMPtr<nsIFile> binaryPath;
   nsresult rv = XRE_GetBinaryPath(getter_AddRefs(binaryPath));
   if (NS_FAILED(rv)) return rv;
@@ -229,15 +216,6 @@ nsresult nsXREDirProvider::SetProfile(nsIFile* aDir, nsIFile* aLocalDir) {
 
   mProfileDir = aDir;
   mProfileLocalDir = aLocalDir;
-#if defined(XP_WIN) && defined(MOZ_SANDBOX)
-  // The profile directory can be used in sandbox rules, so we need to make sure
-  // it doesn't contain any junction points or symlinks or the sandbox will
-  // reject those rules.
-  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(
-          mProfileDir)) {
-    NS_WARNING("Failed to resolve Profile Dir.");
-  }
-#endif
   return NS_OK;
 }
 
@@ -286,6 +264,28 @@ nsresult nsXREDirProvider::GetUserProfilesLocalDir(nsIFile** aResult) {
   file.swap(*aResult);
   return NS_OK;
 }
+
+#ifdef MOZ_BACKGROUNDTASKS
+nsresult nsXREDirProvider::GetBackgroundTasksProfilesRootDir(
+    nsIFile** aResult) {
+  nsCOMPtr<nsIFile> file;
+  nsresult rv = GetUserDataDirectory(getter_AddRefs(file), false);
+
+  if (NS_SUCCEEDED(rv)) {
+#  if !defined(XP_UNIX) || defined(XP_MACOSX)
+    // Sibling to regular user "Profiles" directory.
+    rv = file->AppendNative("Background Tasks Profiles"_ns);
+#  endif
+    // We must create the directory here if it does not exist.
+    nsresult tmp = EnsureDirectoryExists(file);
+    if (NS_FAILED(tmp)) {
+      rv = tmp;
+    }
+  }
+  file.swap(*aResult);
+  return rv;
+}
+#endif
 
 #if defined(XP_UNIX) || defined(XP_MACOSX)
 /**
@@ -650,16 +650,6 @@ nsresult nsXREDirProvider::LoadContentProcessTempDir() {
     }
   }
 
-#  if defined(XP_WIN)
-  // The content temp dir can be used in sandbox rules, so we need to make sure
-  // it doesn't contain any junction points or symlinks or the sandbox will
-  // reject those rules.
-  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(
-          mContentTempDir)) {
-    NS_WARNING("Failed to resolve Content Temp Dir.");
-  }
-#  endif
-
   return NS_OK;
 }
 
@@ -719,15 +709,10 @@ static already_AddRefed<nsIFile> CreateProcessSandboxTempDir(
   nsresult rv;
   nsAutoString tempDirSuffix;
   mozilla::Preferences::GetString(pref, tempDirSuffix);
-  if (tempDirSuffix.IsEmpty()) {
-    nsCOMPtr<nsIUUIDGenerator> uuidgen =
-        do_GetService("@mozilla.org/uuid-generator;1", &rv);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return nullptr;
-    }
 
+  if (tempDirSuffix.IsEmpty()) {
     nsID uuid;
-    rv = uuidgen->GenerateUUIDInPlace(&uuid);
+    rv = nsID::GenerateUUIDInPlace(uuid);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return nullptr;
     }
@@ -786,11 +771,8 @@ static already_AddRefed<nsIFile> CreateProcessSandboxTempDir(
 static nsresult DeleteDirIfExists(nsIFile* dir) {
   if (dir) {
     // Don't return an error if the directory doesn't exist.
-    // Windows Remove() returns NS_ERROR_FILE_NOT_FOUND while
-    // OS X returns NS_ERROR_FILE_TARGET_DOES_NOT_EXIST.
     nsresult rv = dir->Remove(/* aRecursive */ true);
-    if (NS_FAILED(rv) && rv != NS_ERROR_FILE_NOT_FOUND &&
-        rv != NS_ERROR_FILE_TARGET_DOES_NOT_EXIST) {
+    if (NS_FAILED(rv) && rv != NS_ERROR_FILE_NOT_FOUND) {
       return rv;
     }
   }
@@ -1110,14 +1092,8 @@ static nsresult GetRegWindowsAppDataFolder(bool aLocal, nsAString& _retval) {
 #endif
 
 static nsresult HashInstallPath(nsAString& aInstallPath, nsAString& aPathHash) {
-  const char* vendor = GetAppVendor();
-  if (vendor && vendor[0] == '\0') {
-    vendor = nullptr;
-  }
-
   mozilla::UniquePtr<NS_tchar[]> hash;
-  bool success =
-      ::GetInstallHash(PromiseFlatString(aInstallPath).get(), vendor, hash);
+  bool success = ::GetInstallHash(PromiseFlatString(aInstallPath).get(), hash);
   if (!success) {
     return NS_ERROR_FAILURE;
   }
@@ -1264,7 +1240,7 @@ nsresult nsXREDirProvider::GetUpdateRootDir(nsIFile** aResult,
     return NS_ERROR_FAILURE;
   }
 
-  int32_t dotIndex = appDirPath.RFind(".app");
+  int32_t dotIndex = appDirPath.RFind(u".app");
   if (dotIndex == kNotFound) {
     dotIndex = appDirPath.Length();
   }
@@ -1296,19 +1272,10 @@ nsresult nsXREDirProvider::GetUpdateRootDir(nsIFile** aResult,
   mozilla::UniquePtr<wchar_t[]> updatePath;
   HRESULT hrv;
   if (aGetOldLocation) {
-    const char* vendor = GetAppVendor();
-    if (vendor && vendor[0] == '\0') {
-      vendor = nullptr;
-    }
-    const char* appName = GetAppName();
-    if (appName && appName[0] == '\0') {
-      appName = nullptr;
-    }
-    hrv = GetUserUpdateDirectory(PromiseFlatString(installPath).get(), vendor,
-                                 appName, updatePath);
+    hrv =
+        GetOldUpdateDirectory(PromiseFlatString(installPath).get(), updatePath);
   } else {
     hrv = GetCommonUpdateDirectory(PromiseFlatString(installPath).get(),
-                                   SetPermissionsOf::BaseDirIfNotExists,
                                    updatePath);
   }
   if (FAILED(hrv)) {
@@ -1481,14 +1448,6 @@ nsresult nsXREDirProvider::GetSysUserExtensionsDirectory(nsIFile** aFile) {
 
   rv = EnsureDirectoryExists(localDir);
   NS_ENSURE_SUCCESS(rv, rv);
-
-#if defined(XP_WIN) && defined(MOZ_SANDBOX)
-  // This is used in sandbox rules, so we need to make sure it doesn't contain
-  // any junction points or symlinks or the sandbox will reject those rules.
-  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(localDir)) {
-    NS_WARNING("Failed to resolve sys user extensions directory.");
-  }
-#endif
 
   localDir.forget(aFile);
   return NS_OK;

@@ -13,14 +13,6 @@ const SUPPORT_URL = Services.urlFormatter.formatURL(
 );
 const REMOVE_SUMO_URL = SUPPORT_URL + "cant-remove-addon";
 
-const SECTION_INDEXES = {
-  enabled: 0,
-  disabled: 1,
-};
-function getSection(doc, type) {
-  return doc.querySelector(`section[section="${SECTION_INDEXES[type]}"]`);
-}
-
 function getTestCards(root) {
   return root.querySelectorAll('addon-card[addon-id$="@mochi.test"]');
 }
@@ -41,7 +33,7 @@ function waitForThemeChange(list) {
 
 let mockProvider;
 
-add_task(async function setup() {
+add_setup(async function() {
   mockProvider = new MockProvider();
   promptService = mockPromptService();
   Services.telemetry.clearEvents();
@@ -69,6 +61,7 @@ function createExtensions(manifestExtras) {
 
 add_task(async function testExtensionList() {
   let id = "test@mochi.test";
+  let headingId = "test_mochi_test-heading";
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       name: "Test extension",
@@ -91,17 +84,30 @@ add_task(async function testExtensionList() {
   let list = doc.querySelector("addon-list");
 
   // There shouldn't be any disabled extensions.
-  let disabledSection = getSection(doc, "disabled");
+  let disabledSection = getSection(doc, "extension-disabled-section");
   ok(isEmpty(disabledSection), "The disabled section is empty");
 
   // The loaded extension should be in the enabled list.
-  let enabledSection = getSection(doc, "enabled");
-  ok(!isEmpty(enabledSection), "The enabled section isn't empty");
+  let enabledSection = getSection(doc, "extension-enabled-section");
+  ok(
+    enabledSection && !isEmpty(enabledSection),
+    "The enabled section isn't empty"
+  );
   let card = getCardByAddonId(enabledSection, id);
   ok(card, "The card is in the enabled section");
 
   // Check the properties of the card.
   is(card.addonNameEl.textContent, "Test extension", "The name is set");
+  is(
+    card.querySelector("h3").id,
+    headingId,
+    "The add-on name has the correct id"
+  );
+  is(
+    card.querySelector(".card").getAttribute("aria-labelledby"),
+    headingId,
+    "The card is labelled by the heading"
+  );
   let icon = card.querySelector(".addon-icon");
   ok(icon.src.endsWith("/test-icon.png"), "The icon is set");
 
@@ -386,8 +392,8 @@ add_task(async function testKeyboardSupport() {
 
   // Find the addon-list to listen for events.
   let list = doc.querySelector("addon-list");
-  let enabledSection = getSection(doc, "enabled");
-  let disabledSection = getSection(doc, "disabled");
+  let enabledSection = getSection(doc, "extension-enabled-section");
+  let disabledSection = getSection(doc, "extension-disabled-section");
 
   // Find the card.
   let [card] = getTestCards(list);
@@ -514,7 +520,7 @@ add_task(async function testExtensionReordering() {
   let list = doc.querySelector("addon-list");
 
   // Find the related cards, they should all have @mochi.test ids.
-  let enabledSection = getSection(doc, "enabled");
+  let enabledSection = getSection(doc, "extension-enabled-section");
   let cards = getTestCards(enabledSection);
 
   is(cards.length, 3, "Each extension has an addon-card");
@@ -527,7 +533,7 @@ add_task(async function testExtensionReordering() {
   );
 
   // Disable the second extension.
-  let disabledSection = getSection(doc, "disabled");
+  let disabledSection = getSection(doc, "extension-disabled-section");
   ok(isEmpty(disabledSection), "The disabled section is initially empty");
 
   // Disable the add-ons in a different order.
@@ -617,8 +623,8 @@ add_task(async function testThemeList() {
   let [card] = cards;
   is(card.addon.name, "My theme", "The card is for the test theme");
 
-  let enabledSection = getSection(doc, "enabled");
-  let disabledSection = getSection(doc, "disabled");
+  let enabledSection = getSection(doc, "theme-enabled-section");
+  let disabledSection = getSection(doc, "theme-disabled-section");
 
   await TestUtils.waitForCondition(
     () => enabledSection.querySelectorAll("addon-card").length == 1
@@ -693,8 +699,8 @@ add_task(async function testBuiltInThemeButtons() {
 
   // Find the addon-list to listen for events.
   let list = doc.querySelector("addon-list");
-  let enabledSection = getSection(doc, "enabled");
-  let disabledSection = getSection(doc, "disabled");
+  let enabledSection = getSection(doc, "theme-enabled-section");
+  let disabledSection = getSection(doc, "theme-disabled-section");
 
   let defaultTheme = getCardByAddonId(doc, "default-theme@mozilla.org");
   let darkTheme = getCardByAddonId(doc, "firefox-compact-dark@mozilla.org");
@@ -916,19 +922,38 @@ add_task(async function testSectionHeadingKeys() {
       type: "dictionary",
       userDisabled: true,
     },
+    {
+      id: "test-sitepermission",
+      name: "Test Enabled Site Permission",
+      type: "sitepermission",
+    },
+    {
+      id: "test-sitepermission-disabled",
+      name: "Test Disabled Site Permission",
+      type: "sitepermission",
+      userDisabled: true,
+    },
   ]);
 
-  for (let type of ["extension", "theme", "plugin", "locale", "dictionary"]) {
+  for (let type of [
+    "extension",
+    "theme",
+    "plugin",
+    "locale",
+    "dictionary",
+    "sitepermission",
+  ]) {
+    info(`loading view for addon type ${type}`);
     let win = await loadInitialView(type);
     let doc = win.document;
 
     for (let status of ["enabled", "disabled"]) {
-      let section = getSection(doc, status);
-      let el = section.querySelector(".list-section-heading");
-      isnot(el, null, "Should have heading present");
+      let section = getSection(doc, `${type}-${status}-section`);
+      let el = section?.querySelector(".list-section-heading");
+      isnot(el, null, `Should have ${status} heading for ${type} section`);
       is(
-        doc.l10n.getAttributes(el).id,
-        `${type}-${status}-heading`,
+        el && doc.l10n.getAttributes(el).id,
+        win.getL10nIdMapping(`${type}-${status}-heading`),
         `Should have correct ${status} heading for ${type} section`
       );
     }
@@ -978,7 +1003,7 @@ add_task(async function testDisabledDimming() {
   await addon.disable();
   await moved;
 
-  let disabledSection = getSection(doc, "disabled");
+  let disabledSection = getSection(doc, "extension-disabled-section");
   is(card.parentNode, disabledSection, "The card is in the disabled section");
   checkOpacity(card, "0.6", "The opacity is dimmed when disabled");
 
@@ -1000,27 +1025,66 @@ add_task(async function testDisabledDimming() {
 });
 
 add_task(async function testEmptyMessage() {
-  let win = await loadInitialView("extension");
-  let doc = win.document;
-  let enabledSection = getSection(doc, "enabled");
-  let disabledSection = getSection(doc, "disabled");
-  const message = doc.querySelector("#empty-addons-message");
+  let tests = [
+    {
+      type: "extension",
+      message: "Get extensions and themes on ",
+    },
+    {
+      type: "theme",
+      message: "Get extensions and themes on ",
+    },
+    {
+      type: "plugin",
+      message: "Get extensions and themes on ",
+    },
+    {
+      type: "locale",
+      message: "Get language packs on ",
+    },
+    {
+      type: "dictionary",
+      message: "Get dictionaries on ",
+    },
+  ];
 
-  // With 3 enabled addons and 1 disabled, the message is hidden
-  is_element_hidden(message, "Empty addons message hidden");
+  for (let test of tests) {
+    let win = await loadInitialView(test.type);
+    let doc = win.document;
+    let enabledSection = getSection(doc, `${test.type}-enabled-section`);
+    let disabledSection = getSection(doc, `${test.type}-disabled-section`);
+    const message = doc.querySelector("#empty-addons-message");
 
-  // The test runner (Mochitest) relies on add-ons that should not be removed.
-  // Simulate the scenario of zero add-ons by clearing all rendered sections.
-  while (enabledSection.firstChild) {
-    enabledSection.firstChild.remove();
+    // Test if the correct locale has been applied.
+    ok(
+      message.textContent.startsWith(test.message),
+      `View ${test.type} has correct empty list message`
+    );
+
+    // With at least one enabled/disabled add-on (see testSectionHeadingKeys),
+    // the message is hidden.
+    is_element_hidden(message, "Empty addons message hidden");
+
+    // The test runner (Mochitest) relies on add-ons that should not be removed.
+    // Simulate the scenario of zero add-ons by clearing all rendered sections.
+    while (enabledSection.firstChild) {
+      enabledSection.firstChild.remove();
+    }
+
+    while (disabledSection.firstChild) {
+      disabledSection.firstChild.remove();
+    }
+
+    if (test.type == "theme") {
+      // The colorways section won't exist if there's no active collection.
+      // Bug 1774432 is going to make it easier to use a mock collection
+      // which would allow for a more predictable setup here.
+      getSection(doc, "colorways-section")?.remove();
+    }
+
+    // Message should now be displayed
+    is_element_visible(message, "Empty addons message visible");
+
+    await closeView(win);
   }
-
-  while (disabledSection.firstChild) {
-    disabledSection.firstChild.remove();
-  }
-
-  // Message should now be displayed
-  is_element_visible(message, "Empty addons message visible");
-
-  await closeView(win);
 });

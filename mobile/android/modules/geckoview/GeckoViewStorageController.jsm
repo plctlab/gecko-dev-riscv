@@ -9,7 +9,6 @@ var EXPORTED_SYMBOLS = ["GeckoViewStorageController"];
 const { GeckoViewUtils } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { PrincipalsCollector } = ChromeUtils.import(
   "resource://gre/modules/PrincipalsCollector.jsm"
 );
@@ -48,8 +47,7 @@ const ClearFlags = [
   [
     // DOM_STORAGES
     1 << 4,
-    Ci.nsIClearDataService.CLEAR_APPCACHE |
-      Ci.nsIClearDataService.CLEAR_DOM_QUOTA |
+    Ci.nsIClearDataService.CLEAR_DOM_QUOTA |
       Ci.nsIClearDataService.CLEAR_DOM_PUSH_NOTIFICATIONS |
       Ci.nsIClearDataService.CLEAR_REPORTS,
   ],
@@ -69,12 +67,15 @@ const ClearFlags = [
     1 << 7,
     Ci.nsIClearDataService.CLEAR_CONTENT_PREFERENCES |
       Ci.nsIClearDataService.CLEAR_DOM_PUSH_NOTIFICATIONS |
-      Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS,
+      // former a part of SECURITY_SETTINGS_CLEANER
+      Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE,
   ],
   [
     // SITE_DATA
     1 << 8,
     Ci.nsIClearDataService.CLEAR_EME,
+    // former a part of SECURITY_SETTINGS_CLEANER
+    Ci.nsIClearDataService.CLEAR_HSTS,
   ],
   [
     // ALL
@@ -154,12 +155,20 @@ const GeckoViewStorageController = {
         if (key == "storage-access") {
           key = "3rdPartyStorage^" + aData.thirdPartyOrigin;
         }
-        Services.perms.addFromPrincipal(
-          principal,
-          key,
-          aData.newValue,
-          Ci.nsIPermissionManager.EXPIRE_NEVER
-        );
+        if (aData.allowPermanentPrivateBrowsing) {
+          Services.perms.addFromPrincipalAndPersistInPrivateBrowsing(
+            principal,
+            key,
+            aData.newValue
+          );
+        } else {
+          Services.perms.addFromPrincipal(
+            principal,
+            key,
+            aData.newValue,
+            Ci.nsIPermissionManager.EXPIRE_NEVER
+          );
+        }
         break;
       }
       case "GeckoView:SetPermissionByURI": {

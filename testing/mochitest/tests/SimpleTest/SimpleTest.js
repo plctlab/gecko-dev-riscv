@@ -19,9 +19,6 @@
 // Generally gTestPath should be set by the harness.
 /* global gTestPath */
 
-// This can be loaded into a child process.
-/* eslint-env mozilla/frame-script */
-
 var SimpleTest = {};
 var parentRunner = null;
 
@@ -1433,11 +1430,22 @@ SimpleTest.finish = function() {
         );
       }
     } else if (workers.length > 0) {
-      SimpleTest.ok(
-        false,
-        "This test left a service worker registered without cleaning it up"
-      );
+      let FULL_PROFILE_WORKERS_TO_IGNORE = [];
+      if (parentRunner.conditionedProfile) {
+        // Full profile has service workers in the profile, without clearing the profile
+        // service workers will be leftover, in all my testing youtube is the only one.
+        FULL_PROFILE_WORKERS_TO_IGNORE = ["https://www.youtube.com/sw.js"];
+      } else {
+        SimpleTest.ok(
+          false,
+          "This test left a service worker registered without cleaning it up"
+        );
+      }
+
       for (let worker of workers) {
+        if (FULL_PROFILE_WORKERS_TO_IGNORE.includes(worker.scriptSpec)) {
+          continue;
+        }
         SimpleTest.ok(
           false,
           `Left over worker: ${worker.scriptSpec} (scope: ${worker.scope})`
@@ -2034,7 +2042,7 @@ var add_task = (function() {
   }
 
   // The "add_task" function
-  return function(generatorFunction) {
+  return function(generatorFunction, options = { isSetup: false }) {
     if (task_list.length === 0) {
       // This is the first time add_task has been called.
       // First, confirm that SimpleTest is available.
@@ -2091,18 +2099,31 @@ var add_task = (function() {
                 skipTask(name);
                 continue;
               }
-              info("add_task | Entering test " + name);
+              const taskInfo = action =>
+                info(
+                  `${
+                    task.isSetup ? "add_setup" : "add_task"
+                  } | ${action} ${name}`
+                );
+              taskInfo("Entering");
               let result = await task();
               if (isGenerator(result)) {
                 ok(false, "Task returned a generator");
               }
-              info("add_task | Leaving test " + name);
+              taskInfo("Leaving");
             }
           } catch (ex) {
             try {
+              let serializedEx;
+              if (ex instanceof Error) {
+                serializedEx = `${ex}`;
+              } else {
+                serializedEx = JSON.stringify(ex);
+              }
+
               SimpleTest.record(
                 false,
-                "" + ex,
+                serializedEx,
                 "Should not throw any errors",
                 ex.stack
               );
@@ -2124,10 +2145,21 @@ var add_task = (function() {
     generatorFunction.only = () => (run_only_this_task = generatorFunction);
     // Add the task to the list of tasks to run after
     // the main thread is finished.
-    task_list.push(generatorFunction);
+    if (options.isSetup) {
+      generatorFunction.isSetup = true;
+      let lastSetupIndex = task_list.findLastIndex(t => t.isSetup) + 1;
+      task_list.splice(lastSetupIndex, 0, generatorFunction);
+    } else {
+      task_list.push(generatorFunction);
+    }
     return generatorFunction;
   };
 })();
+
+// Like add_task, but setup tasks are executed first.
+function add_setup(generatorFunction) {
+  return add_task(generatorFunction, { isSetup: true });
+}
 
 // Request complete log when using failure patterns so that failure info
 // from infra can be useful.

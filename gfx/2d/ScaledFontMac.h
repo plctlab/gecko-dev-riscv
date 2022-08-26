@@ -30,11 +30,13 @@ class ScaledFontMac : public ScaledFontBase {
       CGFontRef aFont, const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
       bool aOwnsFont = false,
       const DeviceColor& aFontSmoothingBackgroundColor = DeviceColor(),
-      bool aUseFontSmoothing = true, bool aApplySyntheticBold = false);
+      bool aUseFontSmoothing = true, bool aApplySyntheticBold = false,
+      bool aHasColorGlyphs = false);
   ScaledFontMac(
       CTFontRef aFont, const RefPtr<UnscaledFont>& aUnscaledFont,
       const DeviceColor& aFontSmoothingBackgroundColor = DeviceColor(),
-      bool aUseFontSmoothing = true, bool aApplySyntheticBold = false);
+      bool aUseFontSmoothing = true, bool aApplySyntheticBold = false,
+      bool aHasColorGlyphs = false);
   ~ScaledFontMac();
 
   FontType GetType() const override { return FontType::MAC; }
@@ -51,6 +53,10 @@ class ScaledFontMac : public ScaledFontBase {
       std::vector<FontVariation>* aOutVariations) override;
 
   bool CanSerialize() override { return true; }
+
+  bool MayUseBitmaps() override { return mHasColorGlyphs; }
+
+  bool UseSubpixelPosition() const override { return true; }
 
   DeviceColor FontSmoothingBackgroundColor() {
     return mFontSmoothingBackgroundColor;
@@ -70,13 +76,15 @@ class ScaledFontMac : public ScaledFontBase {
   DeviceColor mFontSmoothingBackgroundColor;
   bool mUseFontSmoothing;
   bool mApplySyntheticBold;
+  bool mHasColorGlyphs;
 
   struct InstanceData {
     explicit InstanceData(ScaledFontMac* aScaledFont)
         : mFontSmoothingBackgroundColor(
               aScaledFont->mFontSmoothingBackgroundColor),
           mUseFontSmoothing(aScaledFont->mUseFontSmoothing),
-          mApplySyntheticBold(aScaledFont->mApplySyntheticBold) {}
+          mApplySyntheticBold(aScaledFont->mApplySyntheticBold),
+          mHasColorGlyphs(aScaledFont->mHasColorGlyphs) {}
 
     InstanceData(const wr::FontInstanceOptions* aOptions,
                  const wr::FontInstancePlatformOptions* aPlatformOptions);
@@ -84,6 +92,7 @@ class ScaledFontMac : public ScaledFontBase {
     DeviceColor mFontSmoothingBackgroundColor;
     bool mUseFontSmoothing;
     bool mApplySyntheticBold;
+    bool mHasColorGlyphs;
   };
 };
 

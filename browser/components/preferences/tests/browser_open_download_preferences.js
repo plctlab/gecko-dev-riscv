@@ -66,7 +66,7 @@ function downloadHadFinished(publicList) {
 
 async function removeTheFile(download) {
   Assert.ok(
-    await OS.File.exists(download.target.path),
+    await IOUtils.exists(download.target.path),
     "The file should have been downloaded."
   );
 
@@ -86,6 +86,7 @@ add_task(async function alwaysAskPreferenceWorks() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.download.improvements_to_download_panel", true],
+      ["browser.download.always_ask_before_handling_new_types", false],
       ["browser.download.useDownloadDir", true],
     ],
   });
@@ -112,10 +113,12 @@ add_task(async function alwaysAskPreferenceWorks() {
   );
 
   let domWindowPromise = BrowserTestUtils.domWindowOpenedAndLoaded();
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
+  let loadingTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
-    TEST_PATH + "empty_pdf_file.pdf"
-  );
+    opening: TEST_PATH + "empty_pdf_file.pdf",
+    waitForLoad: false,
+    waitForStateStop: true,
+  });
 
   let domWindow = await domWindowPromise;
   let dialog = domWindow.document.querySelector("#unknownContentType");
@@ -136,6 +139,7 @@ add_task(async function handleInternallyPreferenceWorks() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.download.improvements_to_download_panel", true],
+      ["browser.download.always_ask_before_handling_new_types", false],
       ["browser.download.useDownloadDir", true],
     ],
   });
@@ -154,10 +158,12 @@ add_task(async function handleInternallyPreferenceWorks() {
     "Should have selected 'handle internally' for pdf"
   );
 
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
+  let loadingTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
-    TEST_PATH + "empty_pdf_file.pdf"
-  );
+    opening: TEST_PATH + "empty_pdf_file.pdf",
+    waitForLoad: false,
+    waitForStateStop: true,
+  });
 
   await ContentTask.spawn(loadingTab.linkedBrowser, null, async () => {
     await ContentTaskUtils.waitForCondition(
@@ -178,6 +184,7 @@ add_task(async function saveToDiskPreferenceWorks() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.download.improvements_to_download_panel", true],
+      ["browser.download.always_ask_before_handling_new_types", false],
       ["browser.download.useDownloadDir", true],
     ],
   });
@@ -203,10 +210,12 @@ add_task(async function saveToDiskPreferenceWorks() {
 
   let downloadFinishedPromise = downloadHadFinished(publicList);
 
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
+  let loadingTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
-    TEST_PATH + "empty_pdf_file.pdf"
-  );
+    opening: TEST_PATH + "empty_pdf_file.pdf",
+    waitForLoad: false,
+    waitForStateStop: true,
+  });
 
   let download = await downloadFinishedPromise;
   BrowserTestUtils.removeTab(loadingTab);
@@ -220,6 +229,7 @@ add_task(async function useSystemDefaultPreferenceWorks() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.download.improvements_to_download_panel", true],
+      ["browser.download.always_ask_before_handling_new_types", false],
       ["browser.download.useDownloadDir", true],
     ],
   });
@@ -263,10 +273,12 @@ add_task(async function useSystemDefaultPreferenceWorks() {
 
   let downloadFinishedPromise = downloadHadFinished(publicList);
 
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
+  let loadingTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
-    TEST_PATH + "empty_pdf_file.pdf"
-  );
+    opening: TEST_PATH + "empty_pdf_file.pdf",
+    waitForLoad: false,
+    waitForStateStop: true,
+  });
 
   info("Downloading had finished");
   let download = await downloadFinishedPromise;
@@ -277,65 +289,6 @@ add_task(async function useSystemDefaultPreferenceWorks() {
   DownloadIntegration.launchFile = oldLaunchFile;
 
   await removeTheFile(download);
-
-  BrowserTestUtils.removeTab(loadingTab);
-
-  gBrowser.removeCurrentTab();
-});
-
-add_task(async function useSystemDefaultAndAskForDestinationWorks() {
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.download.improvements_to_download_panel", true],
-      ["browser.download.useDownloadDir", false],
-    ],
-  });
-
-  let pdfCategory = await selectPdfCategoryItem();
-  let list = pdfCategory.querySelector(".actionsMenu");
-
-  let useSystemDefaultItem = list.querySelector(
-    `menuitem[action='${Ci.nsIHandlerInfo.useSystemDefault}']`
-  );
-
-  // Whether there's a "use default" item depends on the OS, there might not be a system default viewer.
-  if (!useSystemDefaultItem) {
-    info(
-      "No 'Use default' item, so no testing for setting 'use system default' preference"
-    );
-    gBrowser.removeCurrentTab();
-    return;
-  }
-
-  await selectItemInPopup(useSystemDefaultItem, list);
-  Assert.equal(
-    list.selectedItem,
-    useSystemDefaultItem,
-    "Should have selected 'use system default' for pdf"
-  );
-
-  let MockFilePicker = SpecialPowers.MockFilePicker;
-  MockFilePicker.init(window);
-  let filePickerShown = new Promise(resolve => {
-    MockFilePicker.showCallback = function(fp) {
-      ok(true, "filepicker should have been shown");
-      setTimeout(resolve, 0);
-      return Ci.nsIFilePicker.returnCancel;
-    };
-  });
-
-  let publicList = await Downloads.getList(Downloads.PUBLIC);
-  registerCleanupFunction(async () => {
-    await publicList.removeFinished();
-    MockFilePicker.cleanup();
-  });
-
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
-    gBrowser,
-    TEST_PATH + "empty_pdf_file.pdf"
-  );
-
-  await filePickerShown;
 
   BrowserTestUtils.removeTab(loadingTab);
 

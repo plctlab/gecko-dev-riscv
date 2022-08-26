@@ -21,7 +21,7 @@ xpcom = { path = "../../../xpcom/rust/xpcom" }
 file hierarchy.)
 
 Next hook it into the build system according to the [build
-documentation](../build/buildsystem/rust.html).
+documentation](/build/buildsystem/rust.rst).
 
 The Rust code will need to import some basic types. `xpcom::interfaces`
 contains all the usual `nsI` interfaces.
@@ -33,21 +33,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use xpcom::{interfaces::nsISupports, RefPtr};
 ```
 
-The next part declares the implementation. 
+The next part declares the implementation.
 
 ```rust
-#[derive(xpcom)]
-#[xpimplements(nsIObserver)]
-#[refcnt = "atomic"]
-struct InitMyObserver {
+#[xpcom(implement(nsIObserver), atomic)]
+struct MyObserver {
     ran: AtomicBool,
 }
 ```
 
-It defines an initializer struct, prefixed with `Init`, with three attributes.
-- Some `derive` magic.
-- An `xpimplements` declaration naming the interface(s) being implemented.
-- The reference count type.
+This defines the implementation type, which will be refcounted in the specified
+way and implement the listed xpidl interfaces. It will also declare a second
+initializer struct `InitMyObserver` which can be used to allocate a new
+`MyObserver` using the `MyObserver::allocate` method.
 
 Next, all interface methods are declared in the `impl` block as `unsafe` methods.
 
@@ -58,7 +56,7 @@ impl MyObserver {
         &self,
         _subject: *const nsISupports,
         _topic: *const c_char,
-        _data: *const i16,
+        _data: *const u16,
     ) -> nsresult {
         self.ran.store(true, Ordering::SeqCst);
         nserror::NS_OK
@@ -67,7 +65,8 @@ impl MyObserver {
 ```
 
 These methods always take `&self`, not `&mut self`, so we need to use interior
-mutability: `AtomicBool`, `RefCell`, `Cell`, etc.
+mutability: `AtomicBool`, `RefCell`, `Cell`, etc. This is because all XPCOM
+objects are reference counted (like `Arc<T>`), so cannot provide exclusive access.
 
 XPCOM methods are unsafe by default, but the
 [xpcom_method!](https://searchfox.org/mozilla-central/source/xpcom/rust/xpcom/src/method.rs)
@@ -100,6 +99,7 @@ conversion must be explicit.
 ## Bigger examples
 
 The following XPCOM components are written in Rust.
+
 - [kvstore](https://searchfox.org/mozilla-central/source/toolkit/components/kvstore),
   which exposes the LMDB key-value store (via the [Rkv
   library](https://docs.rs/rkv)) The API is asynchronous, using `moz_task` to
@@ -110,10 +110,11 @@ The following XPCOM components are written in Rust.
 - [bookmark_sync](https://searchfox.org/mozilla-central/source/toolkit/components/places/bookmark_sync),
   which [merges](https://mozilla.github.io/dogear) bookmarks from Firefox Sync
   with bookmarks in the Places database.
+  [There's also some docs on how Rust interacts with Sync](/services/sync/rust-engines.rst)
 - [webext_storage_bridge](https://searchfox.org/mozilla-central/source/toolkit/components/extensions/storage/webext_storage_bridge),
   which powers the WebExtension storage.sync API. It's a self-contained example
   that pulls in a crate from application-services for the heavy lifting, wraps
   that up in a Rust XPCOM component, and then wraps the component in a JS
   interface. There's also some boilerplate there around adding a
   `components.conf` file, and a dummy C++ header that declares the component
-  constructor.
+  constructor. [It has some in-depth documentation on how it hangs together](../toolkit/components/extensions/webextensions/webext-storage.rst).

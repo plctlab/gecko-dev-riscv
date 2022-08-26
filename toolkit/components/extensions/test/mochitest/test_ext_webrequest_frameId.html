@@ -185,7 +185,8 @@ add_task(async function test_webRequest_main_frame() {
   let cache = imgTools.getImgCacheForDocument(document);
   cache.clearCache(false);
   function clearCache() {
-    ChromeUtils.import("resource://gre/modules/Services.jsm", {}).Services.cache2.clear();
+    /* eslint-env mozilla/chrome-script */
+    Services.cache2.clear();
   }
   SpecialPowers.loadChromeScript(clearCache);
 

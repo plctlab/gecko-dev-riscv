@@ -130,15 +130,42 @@ cfr-doorhanger-video-support-header = Update { -brand-short-name } to play video
 cfr-doorhanger-video-support-primary-button = Update Now
   .accesskey = U
 
+## Spotlight modal shared strings
+
+spotlight-learn-more-collapsed = Learn more
+  .title = Expand to learn more about the feature
+spotlight-learn-more-expanded = Learn more
+  .title = Close
+
 ## VPN promotion dialog for public Wi-Fi users
 ##
 ## If a user is detected to be on a public Wi-Fi network, they are given a
 ## bit of info about how to improve their privacy and then offered a button
 ## to the Mozilla VPN page and a link to dismiss the dialog.
 
+# This header text can be explicitly wrapped.
 spotlight-public-wifi-vpn-header = Looks like you’re using public Wi-Fi
 spotlight-public-wifi-vpn-body = To hide your location and browsing activity, consider a Virtual Private Network. It will help keep you protected when browsing in public places like airports and coffee shops.
 spotlight-public-wifi-vpn-primary-button = Stay private with { -mozilla-vpn-brand-name }
   .accesskey = S
 spotlight-public-wifi-vpn-link = Not Now
   .accesskey = N
+
+## Total Cookie Protection Rollout
+
+cfr-total-cookie-protection-header = Thanks to you, { -brand-short-name } is more private and secure than ever
+# "Early access" for this feature rollout means it's a "feature preview" or
+# "soft launch". Only those who received it and accepted are shown this message.
+cfr-total-cookie-protection-body = Total Cookie Protection is our strongest privacy protection yet – and it’s now a default setting for { -brand-short-name } users everywhere. We couldn’t have done it without early access participants like you. So thanks for helping us create a better, more private internet.
+
+## Emotive Continuous Onboarding
+
+spotlight-better-internet-header = A better internet starts with you
+spotlight-better-internet-body = When you use { -brand-short-name}, you’re voting for an open and accessible internet that’s better for everyone.
+spotlight-peace-mind-header = We’ve got you covered
+spotlight-peace-mind-body = Every month, { -brand-short-name } blocks an average of over 3,000 trackers per user. Because nothing, especially privacy nuisances like trackers, should stand between you and the good internet.
+spotlight-pin-primary-button = { PLATFORM() ->
+    [macos] Keep in Dock
+   *[other] Pin to taskbar
+}
+spotlight-pin-secondary-button = Not now

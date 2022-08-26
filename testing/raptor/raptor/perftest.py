@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -93,20 +94,24 @@ class Perftest(object):
         post_startup_delay=POST_DELAY_DEFAULT,
         interrupt_handler=None,
         e10s=True,
-        enable_webrender=False,
         results_handler_class=RaptorResultsHandler,
         device_name=None,
         disable_perf_tuning=False,
         conditioned_profile=None,
+        test_bytecode_cache=False,
         chimera=False,
         extra_prefs={},
         environment={},
         project="mozilla-central",
         verbose=False,
+        python=None,
+        fission=True,
         **kwargs
     ):
+        self._remote_test_root = None
         self._dirs_to_remove = []
         self.verbose = verbose
+        self.page_count = []
 
         # Override the magic --host HOST_IP with the value of the environment variable.
         if host == "HOST_IP":
@@ -135,11 +140,11 @@ class Perftest(object):
             "is_release_build": is_release_build,
             "enable_control_server_wait": memory_test or cpu_test,
             "e10s": e10s,
-            "enable_webrender": enable_webrender,
             "device_name": device_name,
-            "enable_fission": extra_prefs.get("fission.autostart", False),
+            "fission": fission,
             "disable_perf_tuning": disable_perf_tuning,
             "conditioned_profile": conditioned_profile,
+            "test_bytecode_cache": test_bytecode_cache,
             "chimera": chimera,
             "extra_prefs": extra_prefs,
             "environment": environment,
@@ -203,13 +208,11 @@ class Perftest(object):
             else:
                 self.post_startup_delay = post_startup_delay
 
-        if self.config["enable_webrender"]:
-            self.config["environment"]["MOZ_WEBRENDER"] = "1"
-        else:
-            self.config["environment"]["MOZ_WEBRENDER"] = "0"
-
         LOG.info("Post startup delay set to %d ms" % self.post_startup_delay)
         LOG.info("main raptor init, config is: %s" % str(self.config))
+
+        # TODO: Move this outside of the perftest initialization, it contains
+        # platform-specific code
         self.build_browser_profile()
 
         # Crashes counter
@@ -223,6 +226,10 @@ class Perftest(object):
     @property
     def is_localhost(self):
         return self.config.get("host") in ("localhost", "127.0.0.1")
+
+    @property
+    def android_external_storage(self):
+        return "/sdcard/test_root/"
 
     @property
     def conditioned_profile_copy(self):
@@ -268,6 +275,7 @@ class Perftest(object):
             visible=True,
             force_new=True,
             skip_logs=True,
+            remote_test_root=self.android_external_storage,
         )
 
         if self.config.get("is_release_build", False):
@@ -392,9 +400,7 @@ class Perftest(object):
             LOG.info("Merging profile: {}".format(path))
             self.profile.merge(path)
 
-        if self.config["extra_prefs"].get("fission.autostart", False):
-            LOG.info("Enabling fission via browser preferences")
-            LOG.info("Browser preferences: {}".format(self.config["extra_prefs"]))
+        LOG.info("Browser preferences: {}".format(self.config["extra_prefs"]))
         self.profile.set_preferences(self.config["extra_prefs"])
 
         # share the profile dir with the config and the control server
@@ -450,8 +456,11 @@ class Perftest(object):
         pass
 
     def run_tests(self, tests, test_names):
+        tests_to_run = tests
+        if self.results_handler.existing_results:
+            tests_to_run = []
         try:
-            for test in tests:
+            for test in tests_to_run:
                 try:
                     self.run_test(test, timeout=int(test.get("page_timeout")))
                 except RuntimeError as e:
@@ -504,12 +513,29 @@ class Perftest(object):
         pass
 
     def clean_up(self):
+        # Cleanup all of our temporary directories
         for dir_to_rm in self._dirs_to_remove:
             if not os.path.exists(dir_to_rm):
                 continue
             LOG.info("Removing temporary directory: {}".format(dir_to_rm))
             shutil.rmtree(dir_to_rm, ignore_errors=True)
         self._dirs_to_remove = []
+
+        # Go through the artifact directory and ensure we
+        # don't have too many JPG/PNG files from a task failure
+        if (
+            not self.run_local
+            and self.results_handler
+            and self.results_handler.result_dir()
+        ):
+            artifact_dir = pathlib.Path(self.artifact_dir)
+            for filetype in ("*.png", "*.jpg"):
+                # Limit the number of images uploaded to the last (newest) 5
+                for file in sorted(artifact_dir.rglob(filetype))[:-5]:
+                    try:
+                        file.unlink()
+                    except FileNotFoundError:
+                        pass
 
     def get_page_timeout_list(self):
         return self.results_handler.page_timeout_list
@@ -532,7 +558,7 @@ class Perftest(object):
         self.config.update(
             {
                 "playback_tool": test.get("playback"),
-                "playback_version": test.get("playback_version", "5.1.1"),
+                "playback_version": test.get("playback_version", "7.0.4"),
                 "playback_files": [
                     os.path.join(playback_dir, test.get("playback_pageset_manifest"))
                 ],
@@ -719,8 +745,6 @@ class PerftestDesktop(Perftest):
 
     def __init__(self, *args, **kwargs):
         super(PerftestDesktop, self).__init__(*args, **kwargs)
-        if self.config["enable_webrender"]:
-            self.config["environment"]["MOZ_ACCELERATED"] = "1"
 
     def setup_chrome_args(self, test):
         """Sets up chrome/chromium cmd-line arguments.

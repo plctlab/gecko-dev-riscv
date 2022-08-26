@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Async } = ChromeUtils.import("resource://services-common/async.js");
 const {
   FXA_PUSH_SCOPE_ACCOUNT_UPDATE,
@@ -84,10 +83,10 @@ FxAccountsPushService.prototype = {
     if (options.fxai) {
       this.fxai = options.fxai;
     } else {
-      let { fxAccounts } = ChromeUtils.import(
-        "resource://gre/modules/FxAccounts.jsm",
-        {}
+      const { getFxAccountsSingleton } = ChromeUtils.import(
+        "resource://gre/modules/FxAccounts.jsm"
       );
+      const fxAccounts = getFxAccountsSingleton();
       this.fxai = fxAccounts._internal;
     }
 

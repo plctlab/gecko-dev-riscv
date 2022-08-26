@@ -10,13 +10,11 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Casting.h"
-#include "mozilla/intl/NumberFormat.h"
 #include "mozilla/intl/PluralRules.h"
 
 #include "builtin/Array.h"
 #include "builtin/intl/CommonFunctions.h"
-#include "gc/FreeOp.h"
-#include "js/CharacterEncoding.h"
+#include "gc/GCContext.h"
 #include "js/PropertySpec.h"
 #include "vm/GlobalObject.h"
 #include "vm/JSContext.h"
@@ -40,7 +38,6 @@ const JSClassOps PluralRulesObject::classOps_ = {
     nullptr,                      // mayResolve
     PluralRulesObject::finalize,  // finalize
     nullptr,                      // call
-    nullptr,                      // hasInstance
     nullptr,                      // construct
     nullptr,                      // trace
 };
@@ -70,9 +67,7 @@ static const JSFunctionSpec pluralRules_methods[] = {
                       0),
     JS_SELF_HOSTED_FN("select", "Intl_PluralRules_select", 1, 0),
 #ifdef NIGHTLY_BUILD
-#  ifdef MOZ_INTL_PLURAL_RULES_HAS_SELECT_RANGE
     JS_SELF_HOSTED_FN("selectRange", "Intl_PluralRules_selectRange", 2, 0),
-#  endif
 #endif
     JS_FN(js_toSource_str, pluralRules_toSource, 0, 0), JS_FS_END};
 
@@ -131,13 +126,13 @@ static bool PluralRules(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-void js::PluralRulesObject::finalize(JSFreeOp* fop, JSObject* obj) {
-  MOZ_ASSERT(fop->onMainThread());
+void js::PluralRulesObject::finalize(JS::GCContext* gcx, JSObject* obj) {
+  MOZ_ASSERT(gcx->onMainThread());
 
   auto* pluralRules = &obj->as<PluralRulesObject>();
   if (mozilla::intl::PluralRules* pr = pluralRules->getPluralRules()) {
     intl::RemoveICUCellMemory(
-        fop, obj, PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+        gcx, obj, PluralRulesObject::UPluralRulesEstimatedMemoryUse);
     delete pr;
   }
 }
@@ -284,11 +279,30 @@ static mozilla::intl::PluralRules* NewPluralRules(
 
   auto result = PluralRules::TryCreate(locale.get(), options);
   if (result.isErr()) {
-    intl::ReportInternalError(cx);
+    intl::ReportInternalError(cx, result.unwrapErr());
     return nullptr;
   }
 
   return result.unwrap().release();
+}
+
+static mozilla::intl::PluralRules* GetOrCreatePluralRules(
+    JSContext* cx, Handle<PluralRulesObject*> pluralRules) {
+  // Obtain a cached PluralRules object.
+  mozilla::intl::PluralRules* pr = pluralRules->getPluralRules();
+  if (pr) {
+    return pr;
+  }
+
+  pr = NewPluralRules(cx, pluralRules);
+  if (!pr) {
+    return nullptr;
+  }
+  pluralRules->setPluralRules(pr);
+
+  intl::AddICUCellMemory(pluralRules,
+                         PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+  return pr;
 }
 
 bool js::intl_SelectPluralRule(JSContext* cx, unsigned argc, Value* vp) {
@@ -300,23 +314,15 @@ bool js::intl_SelectPluralRule(JSContext* cx, unsigned argc, Value* vp) {
 
   double x = args[1].toNumber();
 
-  // Obtain a cached PluralRules object.
   using PluralRules = mozilla::intl::PluralRules;
-  PluralRules* pr = pluralRules->getPluralRules();
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
   if (!pr) {
-    pr = NewPluralRules(cx, pluralRules);
-    if (!pr) {
-      return false;
-    }
-    pluralRules->setPluralRules(pr);
-
-    intl::AddICUCellMemory(pluralRules,
-                           PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+    return false;
   }
 
   auto keywordResult = pr->Select(x);
   if (keywordResult.isErr()) {
-    intl::ReportInternalError(cx);
+    intl::ReportInternalError(cx, keywordResult.unwrapErr());
     return false;
   }
 
@@ -327,41 +333,46 @@ bool js::intl_SelectPluralRule(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
+/**
+ * ResolvePluralRange ( pluralRules, x, y )
+ * PluralRuleSelectRange ( locale, type, xp, yp )
+ */
 bool js::intl_SelectPluralRuleRange(JSContext* cx, unsigned argc, Value* vp) {
-#ifdef MOZ_INTL_PLURAL_RULES_HAS_SELECT_RANGE
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 3);
 
+  // Steps 1-2.
   Rooted<PluralRulesObject*> pluralRules(
       cx, &args[0].toObject().as<PluralRulesObject>());
 
+  // Steps 3-4.
   double x = args[1].toNumber();
   double y = args[2].toNumber();
 
-  if (x > y) {
+  // Step 5.
+  if (mozilla::IsNaN(x)) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_START_AFTER_END_NUMBER, "PluralRules",
+                              JSMSG_NAN_NUMBER_RANGE, "start", "PluralRules",
+                              "selectRange");
+    return false;
+  }
+  if (mozilla::IsNaN(y)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_NAN_NUMBER_RANGE, "end", "PluralRules",
                               "selectRange");
     return false;
   }
 
-  // Obtain a cached PluralRules object.
   using PluralRules = mozilla::intl::PluralRules;
-  PluralRules* pr = pluralRules->getPluralRules();
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
   if (!pr) {
-    pr = NewPluralRules(cx, pluralRules);
-    if (!pr) {
-      return false;
-    }
-    pluralRules->setPluralRules(pr);
-
-    intl::AddICUCellMemory(pluralRules,
-                           PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+    return false;
   }
 
+  // Steps 6-10.
   auto keywordResult = pr->SelectRange(x, y);
   if (keywordResult.isErr()) {
-    intl::ReportInternalError(cx);
+    intl::ReportInternalError(cx, keywordResult.unwrapErr());
     return false;
   }
 
@@ -370,9 +381,6 @@ bool js::intl_SelectPluralRuleRange(JSContext* cx, unsigned argc, Value* vp) {
 
   args.rval().setString(str);
   return true;
-#else
-  MOZ_CRASH("ICU draft API not enabled");
-#endif
 }
 
 bool js::intl_GetPluralCategories(JSContext* cx, unsigned argc, Value* vp) {
@@ -382,23 +390,15 @@ bool js::intl_GetPluralCategories(JSContext* cx, unsigned argc, Value* vp) {
   Rooted<PluralRulesObject*> pluralRules(
       cx, &args[0].toObject().as<PluralRulesObject>());
 
-  // Obtain a cached PluralRules object.
   using PluralRules = mozilla::intl::PluralRules;
-  PluralRules* pr = pluralRules->getPluralRules();
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
   if (!pr) {
-    pr = NewPluralRules(cx, pluralRules);
-    if (!pr) {
-      return false;
-    }
-    pluralRules->setPluralRules(pr);
-
-    intl::AddICUCellMemory(pluralRules,
-                           PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+    return false;
   }
 
   auto categoriesResult = pr->Categories();
   if (categoriesResult.isErr()) {
-    intl::ReportInternalError(cx);
+    intl::ReportInternalError(cx, categoriesResult.unwrapErr());
     return false;
   }
   auto categories = categoriesResult.unwrap();

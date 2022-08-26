@@ -4,19 +4,22 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = [];
+var EXPORTED_SYMBOLS = ["GMPTestUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   AddonManagerPrivate: "resource://gre/modules/AddonManager.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   Log: "resource://gre/modules/Log.jsm",
   GMPInstallManager: "resource://gre/modules/GMPInstallManager.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
 
@@ -25,9 +28,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 var { GMPPrefs, GMPUtils, OPEN_H264_ID, WIDEVINE_ID } = ChromeUtils.import(
   "resource://gre/modules/GMPUtils.jsm"
 );
-
-const URI_EXTENSION_STRINGS =
-  "chrome://mozapps/locale/extensions/extensions.properties";
 
 const SEC_IN_A_DAY = 24 * 60 * 60;
 // How long to wait after a user enabled EME before attempting to download CDMs.
@@ -41,15 +41,15 @@ const CLEARKEY_VERSION = "0.1";
 
 const FIRST_CONTENT_PROCESS_TOPIC = "ipc:first-content-process-created";
 
-const GMP_LICENSE_INFO = "gmp_license_info";
-const GMP_PRIVACY_INFO = "gmp_privacy_info";
+const GMP_LICENSE_INFO = "plugins-gmp-license-info";
+const GMP_PRIVACY_INFO = "plugins-gmp-privacy-info";
 const GMP_LEARN_MORE = "learn_more_label";
 
 const GMP_PLUGINS = [
   {
     id: OPEN_H264_ID,
-    name: "openH264_name",
-    description: "openH264_description2",
+    name: "plugins-openh264-name",
+    description: "plugins-openh264-description",
     // The following licenseURL is part of an awful hack to include the OpenH264
     // license without having bug 624602 fixed yet, and intentionally ignores
     // localisation.
@@ -58,20 +58,20 @@ const GMP_PLUGINS = [
   },
   {
     id: WIDEVINE_ID,
-    name: "widevine_description",
-    // Describe the purpose of both CDMs in the same way.
-    description: "cdm_description2",
+    name: "plugins-widevine-name",
+    description: "plugins-widevine-description",
     licenseURL: "https://www.google.com/policies/privacy/",
     homepageURL: "https://www.widevine.com/",
     isEME: true,
   },
 ];
-XPCOMUtils.defineConstant(this, "GMP_PLUGINS", GMP_PLUGINS);
 
-XPCOMUtils.defineLazyGetter(this, "pluginsBundle", () =>
-  Services.strings.createBundle("chrome://global/locale/plugins.properties")
+XPCOMUtils.defineLazyGetter(
+  lazy,
+  "pluginsBundle",
+  () => new Localization(["toolkit/about/aboutPlugins.ftl"], true)
 );
-XPCOMUtils.defineLazyGetter(this, "gmpService", () =>
+XPCOMUtils.defineLazyGetter(lazy, "gmpService", () =>
   Cc["@mozilla.org/gecko-media-plugin-service;1"].getService(
     Ci.mozIGeckoMediaPluginChromeService
   )
@@ -82,15 +82,22 @@ var gLogAppenderDump = null;
 
 function configureLogging() {
   if (!gLogger) {
-    gLogger = Log.repository.getLogger("Toolkit.GMP");
-    gLogger.addAppender(new Log.ConsoleAppender(new Log.BasicFormatter()));
+    gLogger = lazy.Log.repository.getLogger("Toolkit.GMP");
+    gLogger.addAppender(
+      new lazy.Log.ConsoleAppender(new lazy.Log.BasicFormatter())
+    );
   }
-  gLogger.level = GMPPrefs.getInt(GMPPrefs.KEY_LOGGING_LEVEL, Log.Level.Warn);
+  gLogger.level = GMPPrefs.getInt(
+    GMPPrefs.KEY_LOGGING_LEVEL,
+    lazy.Log.Level.Warn
+  );
 
   let logDumping = GMPPrefs.getBool(GMPPrefs.KEY_LOGGING_DUMP, false);
   if (logDumping != !!gLogAppenderDump) {
     if (logDumping) {
-      gLogAppenderDump = new Log.DumpAppender(new Log.BasicFormatter());
+      gLogAppenderDump = new lazy.Log.DumpAppender(
+        new lazy.Log.BasicFormatter()
+      );
       gLogger.addAppender(gLogAppenderDump);
     } else {
       gLogger.removeAppender(gLogAppenderDump);
@@ -106,7 +113,7 @@ function configureLogging() {
 function GMPWrapper(aPluginInfo, aRawPluginInfo) {
   this._plugin = aPluginInfo;
   this._rawPlugin = aRawPluginInfo;
-  this._log = Log.repository.getLoggerWithMessagePrefix(
+  this._log = lazy.Log.repository.getLoggerWithMessagePrefix(
     "Toolkit.GMP",
     "GMPWrapper(" + this._plugin.id + ") "
   );
@@ -192,7 +199,7 @@ GMPWrapper.prototype = {
         let a = doc.createElementNS(XHTML, "a");
         a.href = plugin[urlProp];
         a.target = "_blank";
-        a.textContent = pluginsBundle.GetStringFromName(labelId);
+        a.textContent = lazy.pluginsBundle.formatValueSync(labelId);
 
         if (frag.childElementCount) {
           frag.append(
@@ -262,23 +269,23 @@ GMPWrapper.prototype = {
     return 0;
   },
   get scope() {
-    return AddonManager.SCOPE_APPLICATION;
+    return lazy.AddonManager.SCOPE_APPLICATION;
   },
   get pendingOperations() {
-    return AddonManager.PENDING_NONE;
+    return lazy.AddonManager.PENDING_NONE;
   },
 
   get operationsRequiringRestart() {
-    return AddonManager.OP_NEEDS_RESTART_NONE;
+    return lazy.AddonManager.OP_NEEDS_RESTART_NONE;
   },
 
   get permissions() {
     let permissions = 0;
     if (!this.appDisabled) {
-      permissions |= AddonManager.PERM_CAN_UPGRADE;
+      permissions |= lazy.AddonManager.PERM_CAN_UPGRADE;
       permissions |= this.userDisabled
-        ? AddonManager.PERM_CAN_ENABLE
-        : AddonManager.PERM_CAN_DISABLE;
+        ? lazy.AddonManager.PERM_CAN_ENABLE
+        : lazy.AddonManager.PERM_CAN_DISABLE;
     }
     return permissions;
   },
@@ -319,7 +326,7 @@ GMPWrapper.prototype = {
 
   get applyBackgroundUpdates() {
     if (!GMPPrefs.isSet(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, this._plugin.id)) {
-      return AddonManager.AUTOUPDATE_DEFAULT;
+      return lazy.AddonManager.AUTOUPDATE_DEFAULT;
     }
 
     return GMPPrefs.getBool(
@@ -327,16 +334,16 @@ GMPWrapper.prototype = {
       true,
       this._plugin.id
     )
-      ? AddonManager.AUTOUPDATE_ENABLE
-      : AddonManager.AUTOUPDATE_DISABLE;
+      ? lazy.AddonManager.AUTOUPDATE_ENABLE
+      : lazy.AddonManager.AUTOUPDATE_DISABLE;
   },
 
   set applyBackgroundUpdates(aVal) {
-    if (aVal == AddonManager.AUTOUPDATE_DEFAULT) {
+    if (aVal == lazy.AddonManager.AUTOUPDATE_DEFAULT) {
       GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, this._plugin.id);
-    } else if (aVal == AddonManager.AUTOUPDATE_ENABLE) {
+    } else if (aVal == lazy.AddonManager.AUTOUPDATE_ENABLE) {
       GMPPrefs.setBool(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, true, this._plugin.id);
-    } else if (aVal == AddonManager.AUTOUPDATE_DISABLE) {
+    } else if (aVal == lazy.AddonManager.AUTOUPDATE_DISABLE) {
       GMPPrefs.setBool(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, false, this._plugin.id);
     }
   },
@@ -359,10 +366,10 @@ GMPWrapper.prototype = {
     // we don't want to display information as in a normal addon install such
     // as a download progress bar. As such, we short circuit our
     // listeners by indicating that no updates exist (though some may).
-    AddonManagerPrivate.callNoUpdateListeners(this, aListener);
+    lazy.AddonManagerPrivate.callNoUpdateListeners(this, aListener);
 
-    if (aReason === AddonManager.UPDATE_WHEN_PERIODIC_UPDATE) {
-      if (!AddonManager.shouldAutoUpdate(this)) {
+    if (aReason === lazy.AddonManager.UPDATE_WHEN_PERIODIC_UPDATE) {
+      if (!lazy.AddonManager.shouldAutoUpdate(this)) {
         this._log.trace(
           "findUpdates() - " + this._plugin.id + " - no autoupdate"
         );
@@ -380,7 +387,7 @@ GMPWrapper.prototype = {
         );
         return Promise.resolve(false);
       }
-    } else if (aReason !== AddonManager.UPDATE_WHEN_USER_REQUESTED) {
+    } else if (aReason !== lazy.AddonManager.UPDATE_WHEN_USER_REQUESTED) {
       this._log.trace(
         "findUpdates() - " +
           this._plugin.id +
@@ -399,7 +406,7 @@ GMPWrapper.prototype = {
     this._updateTask = (async () => {
       this._log.trace("findUpdates() - updateTask");
       try {
-        let installManager = new GMPInstallManager();
+        let installManager = new lazy.GMPInstallManager();
         let res = await installManager.checkForAddons();
         let update = res.addons.find(addon => addon.id === this._plugin.id);
         if (update && update.isValid && !update.isInstalled) {
@@ -461,7 +468,7 @@ GMPWrapper.prototype = {
         this.isActive
     );
 
-    AddonManagerPrivate.callAddonListeners(
+    lazy.AddonManagerPrivate.callAddonListeners(
       this.isActive ? "onEnabling" : "onDisabling",
       this,
       false
@@ -471,15 +478,15 @@ GMPWrapper.prototype = {
         this._log.info(
           "onPrefEnabledChanged() - adding gmp directory " + this._gmpPath
         );
-        gmpService.addPluginDirectory(this._gmpPath);
+        lazy.gmpService.addPluginDirectory(this._gmpPath);
       } else {
         this._log.info(
           "onPrefEnabledChanged() - removing gmp directory " + this._gmpPath
         );
-        gmpService.removePluginDirectory(this._gmpPath);
+        lazy.gmpService.removePluginDirectory(this._gmpPath);
       }
     }
-    AddonManagerPrivate.callAddonListeners(
+    lazy.AddonManagerPrivate.callAddonListeners(
       this.isActive ? "onEnabled" : "onDisabled",
       this
     );
@@ -497,7 +504,7 @@ GMPWrapper.prototype = {
         GMPUtils.isPluginHidden(this._plugin)
     );
 
-    AddonManagerPrivate.callAddonListeners("onPropertyChanged", this, [
+    lazy.AddonManagerPrivate.callAddonListeners("onPropertyChanged", this, [
       "appDisabled",
     ]);
     // If EME or the GMP itself are disabled, uninstall the GMP.
@@ -505,15 +512,15 @@ GMPWrapper.prototype = {
     if (this.appDisabled) {
       this.uninstallPlugin();
     } else if (!GMPUtils.isPluginHidden(this._plugin)) {
-      AddonManagerPrivate.callInstallListeners(
+      lazy.AddonManagerPrivate.callInstallListeners(
         "onExternalInstall",
         null,
         this,
         null,
         false
       );
-      AddonManagerPrivate.callAddonListeners("onInstalling", this, false);
-      AddonManagerPrivate.callAddonListeners("onInstalled", this);
+      lazy.AddonManagerPrivate.callAddonListeners("onInstalling", this, false);
+      lazy.AddonManagerPrivate.callAddonListeners("onInstalled", this);
       this.checkForUpdates(GMP_CHECK_DELAY);
     }
     if (!this.userDisabled) {
@@ -535,9 +542,9 @@ GMPWrapper.prototype = {
     GMPPrefs.reset(GMPPrefs.KEY_UPDATE_LAST_CHECK, null);
     // Delay this in case the user changes his mind and doesn't want to
     // enable EME after all.
-    setTimeout(() => {
+    lazy.setTimeout(() => {
       if (!this.appDisabled) {
-        let gmpInstallManager = new GMPInstallManager();
+        let gmpInstallManager = new lazy.GMPInstallManager();
         // We don't really care about the results, if someone is interested
         // they can check the log.
         gmpInstallManager.simpleCheckAndInstall().catch(() => {});
@@ -553,26 +560,26 @@ GMPWrapper.prototype = {
   },
 
   onPrefVersionChanged() {
-    AddonManagerPrivate.callAddonListeners("onUninstalling", this, false);
+    lazy.AddonManagerPrivate.callAddonListeners("onUninstalling", this, false);
     if (this._gmpPath) {
       this._log.info(
         "onPrefVersionChanged() - unregistering gmp directory " + this._gmpPath
       );
-      gmpService.removeAndDeletePluginDirectory(
+      lazy.gmpService.removeAndDeletePluginDirectory(
         this._gmpPath,
         true /* can defer */
       );
     }
-    AddonManagerPrivate.callAddonListeners("onUninstalled", this);
+    lazy.AddonManagerPrivate.callAddonListeners("onUninstalled", this);
 
-    AddonManagerPrivate.callInstallListeners(
+    lazy.AddonManagerPrivate.callInstallListeners(
       "onExternalInstall",
       null,
       this,
       null,
       false
     );
-    AddonManagerPrivate.callAddonListeners("onInstalling", this, false);
+    lazy.AddonManagerPrivate.callAddonListeners("onInstalling", this, false);
     this._gmpPath = null;
     if (this.isInstalled) {
       this._gmpPath = PathUtils.join(
@@ -585,9 +592,9 @@ GMPWrapper.prototype = {
       this._log.info(
         "onPrefVersionChanged() - registering gmp directory " + this._gmpPath
       );
-      gmpService.addPluginDirectory(this._gmpPath);
+      lazy.gmpService.addPluginDirectory(this._gmpPath);
     }
-    AddonManagerPrivate.callAddonListeners("onInstalled", this);
+    lazy.AddonManagerPrivate.callAddonListeners("onInstalled", this);
   },
 
   observe(subject, topic, data) {
@@ -612,17 +619,17 @@ GMPWrapper.prototype = {
   },
 
   uninstallPlugin() {
-    AddonManagerPrivate.callAddonListeners("onUninstalling", this, false);
+    lazy.AddonManagerPrivate.callAddonListeners("onUninstalling", this, false);
     if (this.gmpPath) {
       this._log.info(
         "uninstallPlugin() - unregistering gmp directory " + this.gmpPath
       );
-      gmpService.removeAndDeletePluginDirectory(this.gmpPath);
+      lazy.gmpService.removeAndDeletePluginDirectory(this.gmpPath);
     }
     GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_VERSION, this.id);
     GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_ABI, this.id);
     GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, this.id);
-    AddonManagerPrivate.callAddonListeners("onUninstalled", this);
+    lazy.AddonManagerPrivate.callAddonListeners("onUninstalled", this);
   },
 
   shutdown() {
@@ -706,7 +713,7 @@ var GMPProvider = {
 
   startup() {
     configureLogging();
-    this._log = Log.repository.getLoggerWithMessagePrefix(
+    this._log = lazy.Log.repository.getLoggerWithMessagePrefix(
       "Toolkit.GMP",
       "GMPProvider."
     );
@@ -741,7 +748,7 @@ var GMPProvider = {
         }
         this._log.info("startup - adding gmp directory " + gmpPath);
         try {
-          gmpService.addPluginDirectory(gmpPath);
+          lazy.gmpService.addPluginDirectory(gmpPath);
         } catch (e) {
           if (e.name != "NS_ERROR_NOT_AVAILABLE") {
             throw e;
@@ -768,7 +775,7 @@ var GMPProvider = {
         CLEARKEY_VERSION
       );
       this._log.info("startup - adding clearkey CDM directory " + clearkeyPath);
-      gmpService.addPluginDirectory(clearkeyPath);
+      lazy.gmpService.addPluginDirectory(clearkeyPath);
     } catch (e) {
       this._log.warn("startup - adding clearkey CDM failed", e);
     }
@@ -833,8 +840,8 @@ var GMPProvider = {
     for (let aPlugin of GMP_PLUGINS) {
       let plugin = {
         id: aPlugin.id,
-        name: pluginsBundle.GetStringFromName(aPlugin.name),
-        description: pluginsBundle.GetStringFromName(aPlugin.description),
+        name: lazy.pluginsBundle.formatValueSync(aPlugin.name),
+        description: lazy.pluginsBundle.formatValueSync(aPlugin.description),
         homepageURL: aPlugin.homepageURL,
         optionsURL: aPlugin.optionsURL,
         wrapper: null,
@@ -849,7 +856,7 @@ var GMPProvider = {
     if (!GMPPrefs.getBool(GMPPrefs.KEY_EME_ENABLED, true)) {
       for (let plugin of this._plugins.values()) {
         if (plugin.isEME && plugin.wrapper.isInstalled) {
-          gmpService.addPluginDirectory(plugin.wrapper.gmpPath);
+          lazy.gmpService.addPluginDirectory(plugin.wrapper.gmpPath);
           plugin.wrapper.uninstallPlugin();
         }
       }
@@ -858,15 +865,9 @@ var GMPProvider = {
 
   observe(subject, topic, data) {
     if (topic == FIRST_CONTENT_PROCESS_TOPIC) {
-      AddonManagerPrivate.registerProvider(GMPProvider, [
-        new AddonManagerPrivate.AddonType(
-          "plugin",
-          URI_EXTENSION_STRINGS,
-          "type.plugin.name",
-          AddonManager.VIEW_TYPE_LIST,
-          6000
-        ),
-      ]);
+      lazy.AddonManagerPrivate.registerProvider(GMPProvider, ["plugin"]);
+      Services.obs.notifyObservers(null, "gmp-provider-registered");
+
       Services.obs.removeObserver(this, FIRST_CONTENT_PROCESS_TOPIC);
     }
   },
@@ -877,3 +878,25 @@ var GMPProvider = {
 };
 
 GMPProvider.addObserver();
+
+// For test use only.
+const GMPTestUtils = {
+  /**
+   * Used to override the GMP service with a mock.
+   *
+   * @param {object} mockService
+   *        The mocked gmpService object.
+   * @param {function} callback
+   *        Method called with the overridden gmpService. The override
+   *        is undone after the callback returns.
+   */
+  async overrideGmpService(mockService, callback) {
+    let originalGmpService = lazy.gmpService;
+    lazy.gmpService = mockService;
+    try {
+      return await callback();
+    } finally {
+      lazy.gmpService = originalGmpService;
+    }
+  },
+};

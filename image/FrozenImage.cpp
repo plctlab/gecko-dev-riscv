@@ -60,15 +60,15 @@ FrozenImage::IsImageContainerAvailable(WindowRenderer* aRenderer,
 }
 
 NS_IMETHODIMP_(ImgDrawResult)
-FrozenImage::GetImageContainerAtSize(WindowRenderer* aRenderer,
-                                     const gfx::IntSize& aSize,
-                                     const Maybe<SVGImageContext>& aSVGContext,
-                                     const Maybe<ImageIntRegion>& aRegion,
-                                     uint32_t aFlags,
-                                     layers::ImageContainer** aOutContainer) {
+FrozenImage::GetImageProvider(WindowRenderer* aRenderer,
+                              const gfx::IntSize& aSize,
+                              const SVGImageContext& aSVGContext,
+                              const Maybe<ImageIntRegion>& aRegion,
+                              uint32_t aFlags,
+                              WebRenderImageProvider** aProvider) {
   if (IsNonAnimated()) {
-    return InnerImage()->GetImageContainerAtSize(
-        aRenderer, aSize, aSVGContext, aRegion, aFlags, aOutContainer);
+    return InnerImage()->GetImageProvider(aRenderer, aSize, aSVGContext,
+                                          aRegion, aFlags, aProvider);
   }
 
   // XXX(seth): GetImageContainer does not currently support anything but the
@@ -84,7 +84,7 @@ FrozenImage::Draw(gfxContext* aContext, const nsIntSize& aSize,
                   const ImageRegion& aRegion,
                   uint32_t /* aWhichFrame - ignored */,
                   SamplingFilter aSamplingFilter,
-                  const Maybe<SVGImageContext>& aSVGContext, uint32_t aFlags,
+                  const SVGImageContext& aSVGContext, uint32_t aFlags,
                   float aOpacity) {
   return InnerImage()->Draw(aContext, aSize, aRegion, FRAME_FIRST,
                             aSamplingFilter, aSVGContext, aFlags, aOpacity);
@@ -98,6 +98,10 @@ FrozenImage::StartDecoding(uint32_t aFlags, uint32_t aWhichFrame) {
 bool FrozenImage::StartDecodingWithResult(uint32_t aFlags,
                                           uint32_t aWhichFrame) {
   return InnerImage()->StartDecodingWithResult(aFlags, FRAME_FIRST);
+}
+
+bool FrozenImage::HasDecodedPixels() {
+  return InnerImage()->HasDecodedPixels();
 }
 
 imgIContainer::DecodeResult FrozenImage::RequestDecodeWithResult(

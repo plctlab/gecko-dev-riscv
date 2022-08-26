@@ -28,9 +28,6 @@ const {
 const {
   WatchpointMap,
 } = require("devtools/server/actors/utils/watchpoint-map");
-const {
-  getDebuggerSourceURL,
-} = require("devtools/server/actors/utils/source-url");
 
 const { logEvent } = require("devtools/server/actors/utils/logEvent");
 
@@ -460,16 +457,22 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
   },
 
   _canShowOverlay() {
+    const { window } = this._parent;
+
     // The CanvasFrameAnonymousContentHelper class we're using to create the paused overlay
     // need to have access to a documentElement.
-    // Accept only browsing context target which exposes such element, but ignore
-    // privileged document (top level window, special about:* pages, …).
-    return (
-      // We might have access to a non-chrome window getter that is a Sandox (e.g. in the
-      // case of ContentProcessTargetActor).
-      this._parent.window?.document?.documentElement &&
-      !this._parent.window.isChromeWindow
-    );
+    // We might have access to a non-chrome window getter that is a Sandox (e.g. in the
+    // case of ContentProcessTargetActor).
+    if (!window?.document?.documentElement) {
+      return false;
+    }
+
+    // Ignore privileged document (top level window, special about:* pages, …).
+    if (window.isChromeWindow) {
+      return false;
+    }
+
+    return true;
   },
 
   async showOverlay() {
@@ -592,6 +595,34 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
   getActiveEventBreakpoints() {
     return Array.from(this._activeEventBreakpoints);
   },
+
+  /**
+   * Add event breakpoints to the list of active event breakpoints
+   *
+   * @param {Array<String>} ids: events to add (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   */
+  addEventBreakpoints(ids) {
+    this.setActiveEventBreakpoints(
+      this.getActiveEventBreakpoints().concat(ids)
+    );
+  },
+
+  /**
+   * Remove event breakpoints from the list of active event breakpoints
+   *
+   * @param {Array<String>} ids: events to remove (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   */
+  removeEventBreakpoints(ids) {
+    this.setActiveEventBreakpoints(
+      this.getActiveEventBreakpoints().filter(eventBp => !ids.includes(eventBp))
+    );
+  },
+
+  /**
+   * Set the the list of active event breakpoints
+   *
+   * @param {Array<String>} ids: events to add breakpoint for (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   */
   setActiveEventBreakpoints(ids) {
     this._activeEventBreakpoints = new Set(ids);
 
@@ -771,6 +802,9 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
     if ("observeAsmJS" in options) {
       this.dbg.allowUnobservedAsmJS = !options.observeAsmJS;
     }
+    if ("observeWasm" in options) {
+      this.dbg.allowUnobservedWasm = !options.observeWasm;
+    }
 
     if (
       "pauseWorkersUntilAttach" in options &&
@@ -904,15 +938,15 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
       packet.why = reason;
 
       if (!sourceActor) {
-        // If the frame location is in a source that not pass the 'allowSource'
+        // If the frame location is in a source that not pass the 'isHiddenSource'
         // check and thus has no actor, we do not bother pausing.
         return undefined;
       }
 
       packet.frame.where = {
         actor: sourceActor.actorID,
-        line: line,
-        column: column,
+        line,
+        column,
       };
       const pkt = onPacket(packet);
 
@@ -1398,12 +1432,7 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
       // there is an active Debugger.Source that represents the SaveFrame's
       // source, it will have already been created in the server.
       if (frame instanceof Debugger.Frame) {
-        const sourceActor = this.sourcesManager.createSourceActor(
-          frame.script.source
-        );
-        if (!sourceActor) {
-          continue;
-        }
+        this.sourcesManager.createSourceActor(frame.script.source);
       }
 
       if (RESTARTED_FRAMES.has(frame)) {
@@ -1434,9 +1463,16 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
     for (const source of sources) {
       this._addSource(source);
 
-      const url = getDebuggerSourceURL(source);
-      if (url) {
-        urlMap[url]--;
+      // The following check should match the filtering done by `findSourceURLs`:
+      // https://searchfox.org/mozilla-central/rev/ac7a567f036e1954542763f4722fbfce041fb752/js/src/debugger/Debugger.cpp#2406-2409
+      // Otherwise we may populate `urlMap` incorrectly and resurrect sources that weren't GCed,
+      // and spawn duplicated SourceActors/Debugger.Source for the same actual source.
+      // `findSourceURLs` uses !introductionScript check as that allows to identify <script>'s
+      // loaded from the HTML page. This boolean will be defined only when the <script> tag
+      // is added by Javascript code at runtime.
+      // https://searchfox.org/mozilla-central/rev/3d03a3ca09f03f06ef46a511446537563f62a0c6/devtools/docs/user/debugger-api/debugger.source/index.rst#113
+      if (!source.introductionScript) {
+        urlMap[source.url]--;
       }
     }
 
@@ -2021,15 +2057,39 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
   },
 
   /**
+   * Filtering function to filter out sources for which we don't want to notify/create
+   * source actors
+   *
+   * @param {Debugger.Source} source
+   *        The source to accept or ignore
+   * @param Boolean
+   *        True, if we want to create a source actor.
+   */
+  _acceptSource(source) {
+    // We have some spurious source created by ExtensionContent.jsm when debugging tabs.
+    // These sources are internal stuff injected by WebExt codebase to implement content
+    // scripts. We can't easily ignore them from Debugger API, so ignore them
+    // when debugging a tab (i.e. browser-element). As we still want to debug them
+    // from the browser toolbox.
+    if (
+      this._parent.sessionContext.type == "browser-element" &&
+      source.url.endsWith("ExtensionContent.jsm")
+    ) {
+      return false;
+    }
+
+    return true;
+  },
+
+  /**
    * Add the provided source to the server cache.
    *
    * @param aSource Debugger.Source
    *        The source that will be stored.
-   * @returns true, if the source was added; false otherwise.
    */
   _addSource(source) {
-    if (!this.sourcesManager.allowSource(source)) {
-      return false;
+    if (!this._acceptSource(source)) {
+      return;
     }
 
     // Preloaded WebExtension content scripts may be cached internally by
@@ -2074,7 +2134,6 @@ const ThreadActor = ActorClassWithSpec(threadSpec, {
     }
 
     this._debuggerSourcesSeen.add(source);
-    return true;
   },
 
   /**

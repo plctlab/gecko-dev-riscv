@@ -12,13 +12,12 @@ var gSSService = Cc["@mozilla.org/ssservice;1"].getService(
   Ci.nsISiteSecurityService
 );
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { FileUtils } = ChromeUtils.import(
   "resource://gre/modules/FileUtils.jsm"
 );
 
 const SOURCE =
-  "https://chromium.googlesource.com/chromium/src/net/+/master/http/transport_security_state_static.json?format=TEXT";
+  "https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/transport_security_state_static.json?format=TEXT";
 const TOOL_SOURCE =
   "https://hg.mozilla.org/mozilla-central/file/default/taskcluster/docker/periodic-updates/scripts/getHSTSPreloadList.js";
 const OUTPUT = "nsSTSPreloadList.inc";
@@ -123,8 +122,6 @@ function processStsHeader(host, header, status, securityInfo) {
         uri,
         header,
         secInfo,
-        0,
-        Ci.nsISiteSecurityService.SOURCE_PRELOAD_LIST,
         {},
         maxAge,
         includeSubdomains
@@ -443,7 +440,9 @@ function output(statuses) {
       "resource://gre/modules/FileUtils.jsm"
     );
 
-    let file = FileUtils.getFile("CurWorkD", [OUTPUT]);
+    let file = new FileUtils.File(
+      PathUtils.join(Services.dirsvc.get("CurWorkD", Ci.nsIFile).path, OUTPUT)
+    );
     let fos = FileUtils.openSafeFileOutputStream(file);
     writeTo(HEADER, fos);
     writeTo(getExpirationTimeString(), fos);
@@ -460,6 +459,7 @@ function output(statuses) {
     dump("finished writing output file\n");
   } catch (e) {
     dump("ERROR: problem writing output to '" + OUTPUT + "': " + e + "\n");
+    throw e;
   }
 }
 

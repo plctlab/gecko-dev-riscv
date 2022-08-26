@@ -1,8 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const fs = [
   {
     path: "resource://mock_source/toolkit/intl/languageNames.ftl",
@@ -44,6 +42,16 @@ const gLocDN = Services.intl.getLocaleDisplayNames.bind(
   Services.intl,
   undefined
 );
+
+add_test(function test_native_tag() {
+  const options = { preferNative: true };
+  deepEqual(gLocDN([], options), []);
+  deepEqual(gLocDN(["ca-valencia"], options), ["Català (Valencià)"]);
+  deepEqual(gLocDN(["en-US"], options), ["English (US)"]);
+  deepEqual(gLocDN(["en-RU"], options), ["English (Russia)"]);
+  deepEqual(gLocDN(["ja-JP-mac"], options), ["日本語"]);
+  run_next_test();
+});
 
 add_test(function test_valid_language_tag() {
   deepEqual(gLocDN([]), []);

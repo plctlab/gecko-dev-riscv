@@ -363,11 +363,7 @@ JS_PUBLIC_API bool JS::ReadableStreamUpdateDataAvailableFromSource(
     size_t bytesWritten;
     {
       AutoRealm ar(cx, unwrappedStream);
-      JS::AutoSuppressGCAnalysis suppressGC(cx);
-      JS::AutoCheckCannotGC noGC;
-      bool dummy;
-      void* buffer = JS_GetArrayBufferViewData(transferredView, &dummy, noGC);
-      source->writeIntoReadRequestBuffer(cx, unwrappedStream, buffer,
+      source->writeIntoReadRequestBuffer(cx, unwrappedStream, transferredView,
                                          availableData, &bytesWritten);
     }
 
@@ -604,9 +600,4 @@ JS_PUBLIC_API JSObject* JS::ReadableStreamDefaultReaderRead(
              "C++ code should not touch readers created by scripts");
 
   return js::ReadableStreamDefaultReaderRead(cx, unwrappedReader);
-}
-
-void JS::InitPipeToHandling(const JSClass* abortSignalClass,
-                            AbortSignalIsAborted isAborted, JSContext* cx) {
-  cx->runtime()->initPipeToHandling(abortSignalClass, isAborted);
 }

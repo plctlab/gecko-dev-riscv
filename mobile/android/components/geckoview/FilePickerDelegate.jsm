@@ -9,14 +9,15 @@ const { GeckoViewUtils } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewUtils.jsm"
 );
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 const { debug, warn } = GeckoViewUtils.initLogging("FilePickerDelegate");
@@ -30,7 +31,7 @@ class FilePickerDelegate {
     ) {
       throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     }
-    this._prompt = new GeckoViewPrompter(aParent);
+    this._prompt = new lazy.GeckoViewPrompter(aParent);
     this._msg = {
       type: "file",
       title: aTitle,
@@ -96,7 +97,7 @@ class FilePickerDelegate {
     if (!fileData) {
       return null;
     }
-    return new FileUtils.File(fileData.file);
+    return new lazy.FileUtils.File(fileData.file);
   }
 
   get fileURL() {
@@ -112,7 +113,7 @@ class FilePickerDelegate {
       if (aDOMFile) {
         yield fileData.domFile;
       }
-      yield new FileUtils.File(fileData.file);
+      yield new lazy.FileUtils.File(fileData.file);
     }
   }
 

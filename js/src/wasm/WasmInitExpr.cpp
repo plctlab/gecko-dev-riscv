@@ -20,9 +20,13 @@
 
 #include "mozilla/Maybe.h"
 
+#include "js/Value.h"
+
+#include "wasm/TypedObject.h"
 #include "wasm/WasmInstance.h"
 #include "wasm/WasmOpIter.h"
 #include "wasm/WasmSerialize.h"
+#include "wasm/WasmUtility.h"
 #include "wasm/WasmValidate.h"
 
 using namespace js;
@@ -72,7 +76,7 @@ static bool ValidateInitExpr(Decoder& d, ModuleEnvironment* env,
         }
         break;
       }
-      case uint16_t(Op::GetGlobal): {
+      case uint16_t(Op::GlobalGet): {
         uint32_t index;
         if (!iter.readGetGlobal(&index)) {
           return false;
@@ -114,7 +118,7 @@ static bool ValidateInitExpr(Decoder& d, ModuleEnvironment* env,
       }
 #ifdef ENABLE_WASM_SIMD
       case uint16_t(Op::SimdPrefix): {
-        if (!env->v128Enabled()) {
+        if (!env->simdAvailable()) {
           return d.fail("v128 not enabled");
         }
         if (op.b1 != uint32_t(SimdOp::V128Const)) {
@@ -172,35 +176,6 @@ static bool ValidateInitExpr(Decoder& d, ModuleEnvironment* env,
         break;
       }
 #endif
-#ifdef ENABLE_WASM_GC
-      case uint16_t(Op::GcPrefix): {
-        if (!env->gcEnabled()) {
-          return iter.unrecognizedOpcode(&op);
-        }
-        switch (op.b1) {
-          case uint16_t(GcOp::RttCanon): {
-            ValType unusedTy;
-            if (!iter.readRttCanon(&unusedTy)) {
-              return false;
-            }
-            *literal = Nothing();
-            break;
-          }
-          case uint16_t(GcOp::RttSub): {
-            uint32_t unusedRttTypeIndex;
-            if (!iter.readRttSub(&nothing, &unusedRttTypeIndex)) {
-              return false;
-            }
-            *literal = Nothing();
-            break;
-          }
-          default: {
-            return iter.unrecognizedOpcode(&op);
-          }
-        }
-        break;
-      }
-#endif
       default: {
         return iter.unrecognizedOpcode(&op);
       }
@@ -212,7 +187,7 @@ class MOZ_STACK_CLASS InitExprInterpreter {
  public:
   explicit InitExprInterpreter(JSContext* cx,
                                const ValVector& globalImportValues,
-                               HandleWasmInstanceObject instanceObj)
+                               Handle<WasmInstanceObject*> instanceObj)
       : features(FeatureArgs::build(cx, FeatureOptions())),
         stack(cx),
         globalImportValues(globalImportValues),
@@ -229,7 +204,7 @@ class MOZ_STACK_CLASS InitExprInterpreter {
   FeatureArgs features;
   RootedValVector stack;
   const ValVector& globalImportValues;
-  RootedWasmInstanceObject instanceObj;
+  Rooted<WasmInstanceObject*> instanceObj;
 
   Instance& instance() { return instanceObj->instance(); }
 
@@ -244,10 +219,6 @@ class MOZ_STACK_CLASS InitExprInterpreter {
   bool pushFuncRef(HandleFuncRef ref) {
     return stack.append(Val(RefType::func(), ref));
   }
-  bool pushRtt(HandleRttValue rtt) {
-    // The exact rtt type is not important, evaluation won't use it
-    return stack.append(Val(ValType::fromRtt(0, 0), AnyRef::fromJSObject(rtt)));
-  }
 
 #ifdef ENABLE_WASM_EXTENDED_CONST
   int32_t popI32() {
@@ -259,13 +230,6 @@ class MOZ_STACK_CLASS InitExprInterpreter {
     uint64_t result = stack.back().i64();
     stack.popBack();
     return int64_t(result);
-  }
-#endif
-#ifdef ENABLE_WASM_GC
-  RttValue* popRtt(JSContext* cx) {
-    RootedAnyRef result(cx, stack.back().ref());
-    stack.popBack();
-    return &result.get().asJSObject()->as<RttValue>();
   }
 #endif
 
@@ -323,23 +287,6 @@ class MOZ_STACK_CLASS InitExprInterpreter {
     return true;
   }
 #endif
-#ifdef ENABLE_WASM_GC
-  bool evalRttCanon(JSContext* cx, uint32_t typeIndex) {
-    RootedRttValue result(cx, nullptr);
-    if (!instance().constantRttCanon(cx, typeIndex, &result)) {
-      return false;
-    }
-    return pushRtt(result);
-  }
-  bool evalRttSub(JSContext* cx, uint32_t typeIndex) {
-    RootedRttValue parentRtt(cx, popRtt(cx));
-    RootedRttValue result(cx, nullptr);
-    if (!instance().constantRttSub(cx, parentRtt, typeIndex, &result)) {
-      return false;
-    }
-    return pushRtt(result);
-  }
-#endif
 };
 
 bool InitExprInterpreter::evaluate(JSContext* cx, Decoder& d) {
@@ -357,7 +304,7 @@ bool InitExprInterpreter::evaluate(JSContext* cx, Decoder& d) {
       case uint16_t(Op::End): {
         return true;
       }
-      case uint16_t(Op::GetGlobal): {
+      case uint16_t(Op::GlobalGet): {
         uint32_t index;
         if (!d.readGlobalIndex(&index)) {
           return false;
@@ -454,32 +401,6 @@ bool InitExprInterpreter::evaluate(JSContext* cx, Decoder& d) {
         CHECK(evalI64Mul());
       }
 #endif
-#ifdef ENABLE_WASM_GC
-      case uint16_t(Op::GcPrefix): {
-        switch (op.b1) {
-          case uint16_t(GcOp::RttCanon): {
-            uint32_t typeIndex;
-            if (!d.readTypeIndex(&typeIndex)) {
-              return false;
-            }
-            CHECK(evalRttCanon(cx, typeIndex));
-            break;
-          }
-          case uint16_t(GcOp::RttSub): {
-            uint32_t typeIndex;
-            if (!d.readTypeIndex(&typeIndex)) {
-              return false;
-            }
-            CHECK(evalRttSub(cx, typeIndex));
-            break;
-          }
-          default: {
-            MOZ_CRASH();
-          }
-        }
-        break;
-      }
-#endif
       default: {
         MOZ_CRASH();
       }
@@ -514,7 +435,7 @@ bool InitExpr::decodeAndValidate(Decoder& d, ModuleEnvironment* env,
 }
 
 bool InitExpr::evaluate(JSContext* cx, const ValVector& globalImportValues,
-                        HandleWasmInstanceObject instanceObj,
+                        Handle<WasmInstanceObject*> instanceObj,
                         MutableHandleVal result) const {
   MOZ_ASSERT(kind_ != InitExprKind::None);
 
@@ -546,55 +467,6 @@ bool InitExpr::clone(const InitExpr& src) {
   literal_ = src.literal_;
   type_ = src.type_;
   return true;
-}
-
-size_t InitExpr::serializedSize() const {
-  size_t size = sizeof(kind_) + sizeof(type_);
-  switch (kind_) {
-    case InitExprKind::Literal:
-      size += sizeof(literal_);
-      break;
-    case InitExprKind::Variable:
-      size += SerializedPodVectorSize(bytecode_);
-      break;
-    default:
-      MOZ_CRASH();
-  }
-  return size;
-}
-
-uint8_t* InitExpr::serialize(uint8_t* cursor) const {
-  cursor = WriteBytes(cursor, &kind_, sizeof(kind_));
-  cursor = WriteBytes(cursor, &type_, sizeof(type_));
-  switch (kind_) {
-    case InitExprKind::Literal:
-      cursor = WriteBytes(cursor, &literal_, sizeof(literal_));
-      break;
-    case InitExprKind::Variable:
-      cursor = SerializePodVector(cursor, bytecode_);
-      break;
-    default:
-      MOZ_CRASH();
-  }
-  return cursor;
-}
-
-const uint8_t* InitExpr::deserialize(const uint8_t* cursor) {
-  if (!(cursor = ReadBytes(cursor, &kind_, sizeof(kind_))) ||
-      !(cursor = ReadBytes(cursor, &type_, sizeof(type_)))) {
-    return nullptr;
-  }
-  switch (kind_) {
-    case InitExprKind::Literal:
-      cursor = ReadBytes(cursor, &literal_, sizeof(literal_));
-      break;
-    case InitExprKind::Variable:
-      cursor = DeserializePodVector(cursor, &bytecode_);
-      break;
-    default:
-      MOZ_CRASH();
-  }
-  return cursor;
 }
 
 size_t InitExpr::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {

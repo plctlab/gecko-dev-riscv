@@ -96,11 +96,9 @@ RenderedFrameId RenderCompositorNative::EndFrame(
   return frameId;
 }
 
-void RenderCompositorNative::Pause() { mNativeLayerRoot->PauseCompositor(); }
+void RenderCompositorNative::Pause() {}
 
-bool RenderCompositorNative::Resume() {
-  return mNativeLayerRoot->ResumeCompositor();
-}
+bool RenderCompositorNative::Resume() { return true; }
 
 inline layers::WebRenderCompositor RenderCompositorNative::CompositorType()
     const {
@@ -120,6 +118,14 @@ LayoutDeviceIntSize RenderCompositorNative::GetBufferSize() {
 
 bool RenderCompositorNative::ShouldUseNativeCompositor() {
   return gfx::gfxVars::UseWebRenderCompositor();
+}
+
+void RenderCompositorNative::GetCompositorCapabilities(
+    CompositorCapabilities* aCaps) {
+  RenderCompositor::GetCompositorCapabilities(aCaps);
+#if defined(XP_MACOSX)
+  aCaps->supports_surface_for_backdrop = !gfx::gfxVars::UseSoftwareWebRender();
+#endif
 }
 
 bool RenderCompositorNative::MaybeReadback(
@@ -232,7 +238,7 @@ void RenderCompositorNative::CompositorBeginFrame() {
 }
 
 void RenderCompositorNative::CompositorEndFrame() {
-  if (profiler_thread_is_being_profiled()) {
+  if (profiler_thread_is_being_profiled_for_markers()) {
     auto bufferSize = GetBufferSize();
     [[maybe_unused]] uint64_t windowPixelCount =
         uint64_t(bufferSize.width) * bufferSize.height;
@@ -303,6 +309,20 @@ void RenderCompositorNative::CreateExternalSurface(wr::NativeSurfaceId aId,
 
   Surface surface{DeviceIntSize{}, aIsOpaque};
   surface.mIsExternal = true;
+  surface.mNativeLayers.insert({TileKey(0, 0), layer});
+
+  mSurfaces.insert({aId, std::move(surface)});
+}
+
+void RenderCompositorNative::CreateBackdropSurface(wr::NativeSurfaceId aId,
+                                                   wr::ColorF aColor) {
+  MOZ_RELEASE_ASSERT(mSurfaces.find(aId) == mSurfaces.end());
+
+  gfx::DeviceColor color(aColor.r, aColor.g, aColor.b, aColor.a);
+  RefPtr<layers::NativeLayer> layer =
+      mNativeLayerRoot->CreateLayerForColor(color);
+
+  Surface surface{DeviceIntSize{}, (aColor.a >= 1.0f)};
   surface.mNativeLayers.insert({TileKey(0, 0), layer});
 
   mSurfaces.insert({aId, std::move(surface)});

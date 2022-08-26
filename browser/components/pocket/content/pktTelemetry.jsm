@@ -6,21 +6,21 @@
 
 var EXPORTED_SYMBOLS = ["pktTelemetry"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PingCentre",
   "resource:///modules/PingCentre.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "pktApi",
   "chrome://pocket/content/pktApi.jsm"
 );
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.jsm",
 });
 
@@ -33,8 +33,8 @@ const STRUCTURED_INGESTION_ENDPOINT_PREF =
 const POCKET_TELEMETRY_TOPIC = "pocket";
 const PREF_IMPRESSION_ID = "browser.newtabpage.activity-stream.impressionId";
 
-XPCOMUtils.defineLazyGetter(this, "pingCentre", () => {
-  return new PingCentre({ topic: POCKET_TELEMETRY_TOPIC });
+XPCOMUtils.defineLazyGetter(lazy, "pingCentre", () => {
+  return new lazy.PingCentre({ topic: POCKET_TELEMETRY_TOPIC });
 });
 
 var pktTelemetry = {
@@ -80,15 +80,15 @@ var pktTelemetry = {
     return {
       ...data,
       impression_id: this.impressionId,
-      pocket_logged_in_status: pktApi.isUserLoggedIn(),
+      pocket_logged_in_status: lazy.pktApi.isUserLoggedIn(),
       profile_creation_date: this._profileCreationDate(),
     };
   },
 
   _profileCreationDate() {
     return (
-      TelemetryEnvironment.currentEnvironment.profile.resetDate ||
-      TelemetryEnvironment.currentEnvironment.profile.creationDate
+      lazy.TelemetryEnvironment.currentEnvironment.profile.resetDate ||
+      lazy.TelemetryEnvironment.currentEnvironment.profile.creationDate
     );
   },
 
@@ -117,7 +117,7 @@ var pktTelemetry = {
    * @param {ob} eventObject The data object to be included in the ping.
    */
   sendStructuredIngestionEvent(eventObject) {
-    pingCentre.sendStructuredIngestionPing(
+    lazy.pingCentre.sendStructuredIngestionPing(
       eventObject,
       this._generateStructuredIngestionEndpoint()
     );

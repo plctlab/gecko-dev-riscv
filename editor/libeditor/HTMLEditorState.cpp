@@ -9,12 +9,13 @@
 #include <algorithm>
 #include <utility>
 
+#include "AutoRangeArray.h"
+#include "CSSEditUtils.h"
+#include "EditAction.h"
 #include "HTMLEditUtils.h"
 #include "WSRunObject.h"
 
 #include "mozilla/Assertions.h"
-#include "mozilla/CSSEditUtils.h"
-#include "mozilla/EditAction.h"
 #include "mozilla/EditorUtils.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/dom/Element.h"
@@ -64,16 +65,31 @@ ListElementSelectionState::ListElementSelectionState(HTMLEditor& aHTMLEditor,
     return;
   }
 
+  Element* editingHostOrRoot = aHTMLEditor.ComputeEditingHost();
+  if (!editingHostOrRoot) {
+    // This is not a handler of editing command so that if there is no active
+    // editing host, let's use the <body> or document element instead.
+    editingHostOrRoot = aHTMLEditor.GetRoot();
+    if (!editingHostOrRoot) {
+      return;
+    }
+  }
+
   AutoTArray<OwningNonNull<nsIContent>, 64> arrayOfContents;
-  nsresult rv = aHTMLEditor.CollectEditTargetNodesInExtendedSelectionRanges(
-      arrayOfContents, EditSubAction::eCreateOrChangeList,
-      HTMLEditor::CollectNonEditableNodes::No);
-  if (NS_FAILED(rv)) {
-    NS_WARNING(
-        "HTMLEditor::CollectEditTargetNodesInExtendedSelectionRanges("
-        "eCreateOrChangeList, CollectNonEditableNodes::No) failed");
-    aRv = EditorBase::ToGenericNSResult(rv);
-    return;
+  {
+    AutoRangeArray extendedSelectionRanges(aHTMLEditor.SelectionRef());
+    extendedSelectionRanges.ExtendRangesToWrapLinesToHandleBlockLevelEditAction(
+        EditSubAction::eCreateOrChangeList, *editingHostOrRoot);
+    nsresult rv = extendedSelectionRanges.CollectEditTargetNodes(
+        aHTMLEditor, arrayOfContents, EditSubAction::eCreateOrChangeList,
+        AutoRangeArray::CollectNonEditableNodes::No);
+    if (NS_FAILED(rv)) {
+      NS_WARNING(
+          "AutoRangeArray::CollectEditTargetNodes(EditSubAction::"
+          "eCreateOrChangeList, CollectNonEditableNodes::No) failed");
+      aRv = EditorBase::ToGenericNSResult(rv);
+      return;
+    }
   }
 
   // Examine list type for nodes in selection.
@@ -129,16 +145,32 @@ ListItemElementSelectionState::ListItemElementSelectionState(
     return;
   }
 
+  Element* editingHostOrRoot = aHTMLEditor.ComputeEditingHost();
+  if (!editingHostOrRoot) {
+    // This is not a handler of editing command so that if there is no active
+    // editing host, let's use the <body> or document element instead.
+    editingHostOrRoot = aHTMLEditor.GetRoot();
+    if (!editingHostOrRoot) {
+      return;
+    }
+  }
+
   AutoTArray<OwningNonNull<nsIContent>, 64> arrayOfContents;
-  nsresult rv = aHTMLEditor.CollectEditTargetNodesInExtendedSelectionRanges(
-      arrayOfContents, EditSubAction::eCreateOrChangeList,
-      HTMLEditor::CollectNonEditableNodes::No);
-  if (NS_FAILED(rv)) {
-    NS_WARNING(
-        "HTMLEditor::CollectEditTargetNodesInExtendedSelectionRanges("
-        "eCreateOrChangeList, CollectNonEditableNodes::No) failed");
-    aRv = EditorBase::ToGenericNSResult(rv);
-    return;
+  {
+    AutoRangeArray extendedSelectionRanges(aHTMLEditor.SelectionRef());
+    extendedSelectionRanges.ExtendRangesToWrapLinesToHandleBlockLevelEditAction(
+        EditSubAction::eCreateOrChangeList, *editingHostOrRoot);
+    nsresult rv = extendedSelectionRanges.CollectEditTargetNodes(
+        aHTMLEditor, arrayOfContents, EditSubAction::eCreateOrChangeList,
+        AutoRangeArray::CollectNonEditableNodes::No);
+    if (NS_FAILED(rv)) {
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rv),
+          "AutoRangeArray::CollectEditTargetNodes(EditSubAction::"
+          "eCreateOrChangeList, CollectNonEditableNodes::No) failed");
+      aRv = EditorBase::ToGenericNSResult(rv);
+      return;
+    }
   }
 
   // examine list type for nodes in selection
@@ -234,7 +266,7 @@ AlignStateAtSelection::AlignStateAtSelection(HTMLEditor& aHTMLEditor,
   // If selection is collapsed or in a text node, take the container.
   if (aHTMLEditor.SelectionRef().IsCollapsed() ||
       atStartOfSelection.IsInTextNode()) {
-    editTargetContent = atStartOfSelection.GetContainerAsContent();
+    editTargetContent = atStartOfSelection.GetContainerAs<nsIContent>();
     if (NS_WARN_IF(!editTargetContent)) {
       aRv.Throw(NS_ERROR_FAILURE);
       return;
@@ -250,7 +282,7 @@ AlignStateAtSelection::AlignStateAtSelection(HTMLEditor& aHTMLEditor,
            atStartOfSelection.Offset() == atBodyOrDocumentElement.Offset()) {
     editTargetContent = HTMLEditUtils::GetNextContent(
         atStartOfSelection, {WalkTreeOption::IgnoreNonEditableNode},
-        aHTMLEditor.GetActiveEditingHost());
+        aHTMLEditor.ComputeEditingHost());
     if (NS_WARN_IF(!editTargetContent)) {
       aRv.Throw(NS_ERROR_FAILURE);
       return;
@@ -261,24 +293,33 @@ AlignStateAtSelection::AlignStateAtSelection(HTMLEditor& aHTMLEditor,
   //     ranges.  `HTMLEditor` should have
   //     `GetFirstSelectionRangeExtendedToHardLineStartAndEnd()`.
   else {
-    AutoTArray<RefPtr<nsRange>, 4> arrayOfRanges;
-    aHTMLEditor.GetSelectionRangesExtendedToHardLineStartAndEnd(
-        arrayOfRanges, EditSubAction::eSetOrClearAlignment);
+    Element* editingHostOrRoot = aHTMLEditor.ComputeEditingHost();
+    if (!editingHostOrRoot) {
+      // This is not a handler of editing command so that if there is no active
+      // editing host, let's use the <body> or document element instead.
+      editingHostOrRoot = aHTMLEditor.GetRoot();
+      if (!editingHostOrRoot) {
+        return;
+      }
+    }
+    AutoRangeArray extendedSelectionRanges(aHTMLEditor.SelectionRef());
+    extendedSelectionRanges.ExtendRangesToWrapLinesToHandleBlockLevelEditAction(
+        EditSubAction::eSetOrClearAlignment, *editingHostOrRoot);
 
     AutoTArray<OwningNonNull<nsIContent>, 64> arrayOfContents;
-    nsresult rv = aHTMLEditor.CollectEditTargetNodes(
-        arrayOfRanges, arrayOfContents, EditSubAction::eSetOrClearAlignment,
-        HTMLEditor::CollectNonEditableNodes::Yes);
+    nsresult rv = extendedSelectionRanges.CollectEditTargetNodes(
+        aHTMLEditor, arrayOfContents, EditSubAction::eSetOrClearAlignment,
+        AutoRangeArray::CollectNonEditableNodes::Yes);
     if (NS_FAILED(rv)) {
       NS_WARNING(
-          "HTMLEditor::CollectEditTargetNodes(eSetOrClearAlignment, "
+          "AutoRangeArray::CollectEditTargetNodes(eSetOrClearAlignment, "
           "CollectNonEditableNodes::Yes) failed");
       aRv.Throw(NS_ERROR_FAILURE);
       return;
     }
     if (arrayOfContents.IsEmpty()) {
       NS_WARNING(
-          "HTMLEditor::CollectEditTargetNodes(eSetOrClearAlignment, "
+          "AutoRangeArray::CollectEditTargetNodes(eSetOrClearAlignment, "
           "CollectNonEditableNodes::Yes) returned no contents");
       aRv.Throw(NS_ERROR_FAILURE);
       return;
@@ -427,9 +468,19 @@ ParagraphStateAtSelection::ParagraphStateAtSelection(HTMLEditor& aHTMLEditor,
     return;
   }
 
+  Element* editingHostOrRoot = aHTMLEditor.ComputeEditingHost();
+  if (!editingHostOrRoot) {
+    // This is not a handler of editing command so that if there is no active
+    // editing host, let's use the <body> or document element instead.
+    editingHostOrRoot = aHTMLEditor.GetRoot();
+    if (!editingHostOrRoot) {
+      return;
+    }
+  }
+
   AutoTArray<OwningNonNull<nsIContent>, 64> arrayOfContents;
-  nsresult rv =
-      CollectEditableFormatNodesInSelection(aHTMLEditor, arrayOfContents);
+  nsresult rv = CollectEditableFormatNodesInSelection(
+      aHTMLEditor, *editingHostOrRoot, arrayOfContents);
   if (NS_FAILED(rv)) {
     NS_WARNING(
         "ParagraphStateAtSelection::CollectEditableFormatNodesInSelection() "
@@ -460,18 +511,13 @@ ParagraphStateAtSelection::ParagraphStateAtSelection(HTMLEditor& aHTMLEditor,
   // We might have an empty node list.  if so, find selection parent
   // and put that on the list
   if (arrayOfContents.IsEmpty()) {
-    EditorRawDOMPoint atCaret(
-        EditorBase::GetStartPoint(aHTMLEditor.SelectionRef()));
-    if (NS_WARN_IF(!atCaret.IsSet())) {
+    const auto atCaret =
+        aHTMLEditor.GetFirstSelectionStartPoint<EditorRawDOMPoint>();
+    if (NS_WARN_IF(!atCaret.IsInContentNode())) {
       aRv.Throw(NS_ERROR_FAILURE);
       return;
     }
-    nsIContent* content = atCaret.GetContainerAsContent();
-    if (NS_WARN_IF(!content)) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return;
-    }
-    arrayOfContents.AppendElement(*content);
+    arrayOfContents.AppendElement(*atCaret.ContainerAs<nsIContent>());
   }
 
   dom::Element* bodyOrDocumentElement = aHTMLEditor.GetRoot();
@@ -568,16 +614,21 @@ void ParagraphStateAtSelection::AppendDescendantFormatNodesAndFirstInlineNode(
 
 // static
 nsresult ParagraphStateAtSelection::CollectEditableFormatNodesInSelection(
-    HTMLEditor& aHTMLEditor,
+    HTMLEditor& aHTMLEditor, const Element& aEditingHost,
     nsTArray<OwningNonNull<nsIContent>>& aArrayOfContents) {
-  nsresult rv = aHTMLEditor.CollectEditTargetNodesInExtendedSelectionRanges(
-      aArrayOfContents, EditSubAction::eCreateOrRemoveBlock,
-      HTMLEditor::CollectNonEditableNodes::Yes);
-  if (NS_FAILED(rv)) {
-    NS_WARNING(
-        "HTMLEditor::CollectEditTargetNodesInExtendedSelectionRanges("
-        "eCreateOrRemoveBlock, CollectNonEditableNodes::Yes) failed");
-    return rv;
+  {
+    AutoRangeArray extendedSelectionRanges(aHTMLEditor.SelectionRef());
+    extendedSelectionRanges.ExtendRangesToWrapLinesToHandleBlockLevelEditAction(
+        EditSubAction::eCreateOrRemoveBlock, aEditingHost);
+    nsresult rv = extendedSelectionRanges.CollectEditTargetNodes(
+        aHTMLEditor, aArrayOfContents, EditSubAction::eCreateOrRemoveBlock,
+        AutoRangeArray::CollectNonEditableNodes::Yes);
+    if (NS_FAILED(rv)) {
+      NS_WARNING(
+          "AutoRangeArray::CollectEditTargetNodes(EditSubAction::"
+          "eCreateOrRemoveBlock, CollectNonEditableNodes::Yes) failed");
+      return rv;
+    }
   }
 
   // Pre-process our list of nodes
@@ -597,10 +648,10 @@ nsresult ParagraphStateAtSelection::CollectEditableFormatNodesInSelection(
         HTMLEditUtils::IsAnyListElement(content) ||
         HTMLEditUtils::IsListItem(content)) {
       aArrayOfContents.RemoveElementAt(i);
-      aHTMLEditor.CollectChildren(content, aArrayOfContents, i,
-                                  HTMLEditor::CollectListChildren::Yes,
-                                  HTMLEditor::CollectTableChildren::Yes,
-                                  HTMLEditor::CollectNonEditableNodes::Yes);
+      HTMLEditUtils::CollectChildren(
+          content, aArrayOfContents, i,
+          {CollectChildrenOption::CollectListChildren,
+           CollectChildrenOption::CollectTableChildren});
     }
   }
   return NS_OK;

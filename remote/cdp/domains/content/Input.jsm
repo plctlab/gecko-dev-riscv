@@ -6,14 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["Input"];
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { ContentProcessDomain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/ContentProcessDomain.jsm"
 );
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  ContentProcessDomain:
-    "chrome://remote/content/cdp/domains/ContentProcessDomain.jsm",
-});
 
 class Input extends ContentProcessDomain {
   constructor(session) {
@@ -38,13 +33,13 @@ class Input extends ContentProcessDomain {
    *
    * Example usage from a parent process domain:
    *
-   *   const id = await this.executeInChild("addContentEventListener", "click");
+   *   const id = await this.executeInChild("_addContentEventListener", "click");
    *   // do something that triggers a click in content
-   *   await this.executeInChild("waitForContentEvent", id);
+   *   await this.executeInChild("_waitForContentEvent", id);
    */
   _addContentEventListener(eventName) {
-    const eventPromise = new Promise(r => {
-      this.chromeEventHandler.addEventListener(eventName, r, {
+    const eventPromise = new Promise(resolve => {
+      this.chromeEventHandler.addEventListener(eventName, resolve, {
         mozSystemGroup: true,
         once: true,
       });

@@ -14,12 +14,6 @@ const L10N = new LocalizationHelper(
 
 loader.lazyRequireGetter(
   this,
-  "AppConstants",
-  "resource://gre/modules/AppConstants.jsm",
-  true
-);
-loader.lazyRequireGetter(
-  this,
   "openDocLink",
   "devtools/client/shared/link",
   true
@@ -104,7 +98,7 @@ OptionsPanel.prototype = {
     return this;
   },
 
-  _addListeners: function() {
+  _addListeners() {
     Services.prefs.addObserver("devtools.cache.disabled", this._prefChanged);
     Services.prefs.addObserver("devtools.theme", this._prefChanged);
     Services.prefs.addObserver(
@@ -124,7 +118,7 @@ OptionsPanel.prototype = {
     this.toolbox.on("webextension-unregistered", this.setupToolsList);
   },
 
-  _removeListeners: function() {
+  _removeListeners() {
     Services.prefs.removeObserver("devtools.cache.disabled", this._prefChanged);
     Services.prefs.removeObserver("devtools.theme", this._prefChanged);
     Services.prefs.removeObserver(
@@ -141,7 +135,7 @@ OptionsPanel.prototype = {
     gDevTools.off("theme-unregistered", this._themeUnregistered);
   },
 
-  _prefChanged: function(subject, topic, prefName) {
+  _prefChanged(subject, topic, prefName) {
     if (prefName === "devtools.cache.disabled") {
       const cacheDisabled = GetPref(prefName);
       const cbx = this.panelDoc.getElementById("devtools-disable-cache");
@@ -153,11 +147,11 @@ OptionsPanel.prototype = {
     }
   },
 
-  _themeRegistered: function(themeId) {
+  _themeRegistered(themeId) {
     this.setupThemeList();
   },
 
-  _themeUnregistered: function(theme) {
+  _themeUnregistered(theme) {
     const themeBox = this.panelDoc.getElementById("devtools-theme-box");
     const themeInput = themeBox.querySelector(`[value=${theme.id}]`);
 
@@ -216,7 +210,7 @@ OptionsPanel.prototype = {
     };
 
     for (const button of toolbarButtons) {
-      if (!button.isTargetSupported(this.toolbox.target)) {
+      if (!button.isToolSupported(this.toolbox)) {
         continue;
       }
 
@@ -224,7 +218,7 @@ OptionsPanel.prototype = {
     }
   },
 
-  setupToolsList: function() {
+  setupToolsList() {
     const defaultToolsBox = this.panelDoc.getElementById("default-tools-box");
     const additionalToolsBox = this.panelDoc.getElementById(
       "additional-tools-box"
@@ -263,7 +257,7 @@ OptionsPanel.prototype = {
       checkboxInput.setAttribute("title", tool.tooltip || "");
 
       const checkboxSpanLabel = this.panelDoc.createElement("span");
-      if (tool.isTargetSupported(this.target)) {
+      if (tool.isToolSupported(this.toolbox)) {
         checkboxSpanLabel.textContent = tool.label;
       } else {
         atleastOneToolNotSupported = true;
@@ -363,7 +357,7 @@ OptionsPanel.prototype = {
           visibilityswitch: pref,
 
           // Only local tabs are currently supported as targets.
-          isTargetSupported: target => target.isLocalTab,
+          isToolSupported: toolbox => toolbox.target.isLocalTab,
         })
       );
     }
@@ -383,7 +377,7 @@ OptionsPanel.prototype = {
     this.panelWin.focus();
   },
 
-  setupThemeList: function() {
+  setupThemeList() {
     const themeBox = this.panelDoc.getElementById("devtools-theme-box");
     const themeLabels = themeBox.querySelectorAll("label");
     for (const label of themeLabels) {
@@ -409,6 +403,13 @@ OptionsPanel.prototype = {
     };
 
     // Populating the default theme list
+    themeBox.appendChild(
+      createThemeOption({
+        id: "auto",
+        label: L10N.getStr("options.autoTheme.label"),
+      })
+    );
+
     const themes = gDevTools.getThemeDefinitionArray();
     for (const theme of themes) {
       themeBox.appendChild(createThemeOption(theme));
@@ -420,18 +421,15 @@ OptionsPanel.prototype = {
   /**
    * Add extra checkbox options bound to a boolean preference.
    */
-  setupAdditionalOptions: function() {
+  setupAdditionalOptions() {
     const prefDefinitions = [];
 
-    // New performance panel can be used in NIGHTLY or DEV_EDITION. We keep the
-    // setting hidden in RELEASE or BETA. Should be removed in Bug 1693316.
-    const isNewPerfAllowed =
-      AppConstants.NIGHTLY_BUILD || AppConstants.MOZ_DEV_EDITION;
-    if (isNewPerfAllowed) {
+    if (GetPref("devtools.custom-formatters")) {
       prefDefinitions.push({
-        pref: "devtools.performance.new-panel-enabled",
-        label: L10N.getStr("options.enableNewPerformancePanel"),
-        id: "devtools-new-performance",
+        pref: "devtools.custom-formatters.enabled",
+        l10nLabelId: "options-enable-custom-formatters-label",
+        l10nTooltipId: "options-enable-custom-formatters-tooltip",
+        id: "devtools-custom-formatters",
         parentId: "context-options",
       });
     }
@@ -474,8 +472,18 @@ OptionsPanel.prototype = {
       });
     }
 
-    const createPreferenceOption = ({ pref, label, id, onChange }) => {
+    const createPreferenceOption = ({
+      pref,
+      label,
+      l10nLabelId,
+      l10nTooltipId,
+      id,
+      onChange,
+    }) => {
       const inputLabel = this.panelDoc.createElement("label");
+      if (l10nTooltipId) {
+        this.panelDoc.l10n.setAttributes(inputLabel, l10nTooltipId);
+      }
       const checkbox = this.panelDoc.createElement("input");
       checkbox.setAttribute("type", "checkbox");
       if (GetPref(pref)) {
@@ -490,7 +498,11 @@ OptionsPanel.prototype = {
       });
 
       const inputSpanLabel = this.panelDoc.createElement("span");
-      inputSpanLabel.textContent = label;
+      if (l10nLabelId) {
+        this.panelDoc.l10n.setAttributes(inputSpanLabel, l10nLabelId);
+      } else if (label) {
+        inputSpanLabel.textContent = label;
+      }
       inputLabel.appendChild(checkbox);
       inputLabel.appendChild(inputSpanLabel);
 
@@ -584,7 +596,7 @@ OptionsPanel.prototype = {
     }
   },
 
-  updateCurrentTheme: function() {
+  updateCurrentTheme() {
     const currentTheme = GetPref("devtools.theme");
     const themeBox = this.panelDoc.getElementById("devtools-theme-box");
     const themeRadioInput = themeBox.querySelector(`[value=${currentTheme}]`);
@@ -592,13 +604,13 @@ OptionsPanel.prototype = {
     if (themeRadioInput) {
       themeRadioInput.checked = true;
     } else {
-      // If the current theme does not exist anymore, switch to light theme
-      const lightThemeInputRadio = themeBox.querySelector("[value=light]");
-      lightThemeInputRadio.checked = true;
+      // If the current theme does not exist anymore, switch to auto theme
+      const autoThemeInputRadio = themeBox.querySelector("[value=auto]");
+      autoThemeInputRadio.checked = true;
     }
   },
 
-  updateSourceMapPref: function() {
+  updateSourceMapPref() {
     const prefName = "devtools.source-map.client-service.enabled";
     const enabled = GetPref(prefName);
     const box = this.panelDoc.querySelector(`[data-pref="${prefName}"]`);
@@ -615,7 +627,7 @@ OptionsPanel.prototype = {
    * @param {Event} event
    *        The event sent by checking / unchecking the disable JS checkbox.
    */
-  _disableJSClicked: function(event) {
+  _disableJSClicked(event) {
     const checked = event.target.checked;
 
     this.commands.targetConfigurationCommand.updateConfiguration({
@@ -623,7 +635,7 @@ OptionsPanel.prototype = {
     });
   },
 
-  destroy: function() {
+  destroy() {
     if (this.destroyed) {
       return;
     }

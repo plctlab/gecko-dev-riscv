@@ -4,13 +4,9 @@
 
 "use strict";
 
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FeatureGate",
   "resource://featuregates/FeatureGate.jsm"
 );
@@ -133,7 +129,7 @@ class FeatureGateImplementation {
    *   check what the value of this feature would be on Windows.
    */
   defaultValueWith(extraFacts) {
-    return FeatureGate.evaluateTargetedValue(
+    return lazy.FeatureGate.evaluateTargetedValue(
       this.defaultValueOriginalValue,
       extraFacts,
       { mergeFactsWithDefault: true }
@@ -169,7 +165,7 @@ class FeatureGateImplementation {
    *   check if this feature would be available on Windows.
    */
   isPublicWith(extraFacts) {
-    return FeatureGate.evaluateTargetedValue(
+    return lazy.FeatureGate.evaluateTargetedValue(
       this.isPublicOriginalValue,
       extraFacts,
       { mergeFactsWithDefault: true }

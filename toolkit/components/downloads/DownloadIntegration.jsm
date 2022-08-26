@@ -11,100 +11,78 @@
 
 var EXPORTED_SYMBOLS = ["DownloadIntegration"];
 
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+const { Downloads } = ChromeUtils.import(
+  "resource://gre/modules/Downloads.jsm"
+);
 const { Integration } = ChromeUtils.import(
   "resource://gre/modules/Integration.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AsyncShutdown",
   "resource://gre/modules/AsyncShutdown.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
-  "resource://gre/modules/AppConstants.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
-  "Downloads",
-  "resource://gre/modules/Downloads.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DownloadStore",
   "resource://gre/modules/DownloadStore.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DownloadUIHelper",
   "resource://gre/modules/DownloadUIHelper.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "NetUtil",
-  "resource://gre/modules/NetUtil.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "CloudStorage",
-  "resource://gre/modules/CloudStorage.jsm"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gDownloadPlatform",
   "@mozilla.org/toolkit/download-platform;1",
   "mozIDownloadPlatform"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gEnvironment",
   "@mozilla.org/process/environment;1",
   "nsIEnvironment"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gMIMEService",
   "@mozilla.org/mime;1",
   "nsIMIMEService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gExternalProtocolService",
   "@mozilla.org/uriloader/external-protocol-service;1",
   "nsIExternalProtocolService"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "RuntimePermissions",
-  "resource://gre/modules/RuntimePermissions.jsm"
-);
 
-XPCOMUtils.defineLazyGetter(this, "gParentalControlsService", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gParentalControlsService", function() {
   if ("@mozilla.org/parental-controls-service;1" in Cc) {
     return Cc["@mozilla.org/parental-controls-service;1"].createInstance(
       Ci.nsIParentalControlsService
@@ -113,22 +91,27 @@ XPCOMUtils.defineLazyGetter(this, "gParentalControlsService", function() {
   return null;
 });
 
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "DownloadSpamProtection",
+  "resource:///modules/DownloadSpamProtection.jsm"
+);
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gApplicationReputationService",
   "@mozilla.org/reputationservice/application-reputation-service;1",
   Ci.nsIApplicationReputationService
 );
 
-// We have to use the gCombinedDownloadIntegration identifier because, in this
-// module only, the DownloadIntegration identifier refers to the base version.
-/* global gCombinedDownloadIntegration:false */
 Integration.downloads.defineModuleGetter(
-  this,
-  "gCombinedDownloadIntegration",
-  "resource://gre/modules/DownloadIntegration.jsm",
-  "DownloadIntegration"
+  lazy,
+  "DownloadIntegration",
+  "resource://gre/modules/DownloadIntegration.jsm"
 );
+XPCOMUtils.defineLazyGetter(lazy, "gCombinedDownloadIntegration", () => {
+  return lazy.DownloadIntegration;
+});
 
 const Timer = Components.Constructor(
   "@mozilla.org/timer;1",
@@ -161,6 +144,7 @@ const kObserverTopics = [
   "network:offline-about-to-go-offline",
   "network:offline-status-changed",
   "xpcom-will-shutdown",
+  "blocked-automatic-download",
 ];
 
 /**
@@ -256,9 +240,9 @@ var DownloadIntegration = {
       throw new Error("Initialization may be performed only once.");
     }
 
-    this._store = new DownloadStore(
+    this._store = new lazy.DownloadStore(
       list,
-      PathUtils.join(await PathUtils.getProfileDir(), "downloads.json")
+      PathUtils.join(PathUtils.profileDir, "downloads.json")
     );
     this._store.onsaveitem = this.shouldPersistDownload.bind(this);
 
@@ -322,7 +306,7 @@ var DownloadIntegration = {
     if (AppConstants.platform == "android") {
       // Android doesn't have a $HOME directory, and by default we only have
       // write access to /data/data/org.mozilla.{$APP} and /sdcard
-      this._downloadsDirectory = gEnvironment.get("DOWNLOADS_DIRECTORY");
+      this._downloadsDirectory = lazy.gEnvironment.get("DOWNLOADS_DIRECTORY");
       if (!this._downloadsDirectory) {
         throw new Components.Exception(
           "DOWNLOADS_DIRECTORY is not set.",
@@ -374,14 +358,6 @@ var DownloadIntegration = {
           directoryPath = await this.getSystemDownloadsDirectory();
         }
         break;
-      case 3: // Cloud Storage
-        try {
-          directoryPath = await CloudStorage.getDownloadFolder();
-        } catch (ex) {}
-        if (!directoryPath) {
-          directoryPath = await this.getSystemDownloadsDirectory();
-        }
-        break;
       default:
         directoryPath = await this.getSystemDownloadsDirectory();
     }
@@ -417,37 +393,22 @@ var DownloadIntegration = {
    */
   shouldBlockForParentalControls(aDownload) {
     let isEnabled =
-      gParentalControlsService &&
-      gParentalControlsService.parentalControlsEnabled;
+      lazy.gParentalControlsService &&
+      lazy.gParentalControlsService.parentalControlsEnabled;
     let shouldBlock =
-      isEnabled && gParentalControlsService.blockFileDownloadsEnabled;
+      isEnabled && lazy.gParentalControlsService.blockFileDownloadsEnabled;
 
     // Log the event if required by parental controls settings.
-    if (isEnabled && gParentalControlsService.loggingEnabled) {
-      gParentalControlsService.log(
-        gParentalControlsService.ePCLog_FileDownload,
+    if (isEnabled && lazy.gParentalControlsService.loggingEnabled) {
+      lazy.gParentalControlsService.log(
+        lazy.gParentalControlsService.ePCLog_FileDownload,
         shouldBlock,
-        NetUtil.newURI(aDownload.source.url),
+        lazy.NetUtil.newURI(aDownload.source.url),
         null
       );
     }
 
     return Promise.resolve(shouldBlock);
-  },
-
-  /**
-   * Checks to determine whether to block downloads for not granted runtime permissions.
-   *
-   * @return {Promise}
-   * @resolves The boolean indicates to block downloads or not.
-   */
-  async shouldBlockForRuntimePermissions() {
-    return (
-      AppConstants.platform == "android" &&
-      !(await RuntimePermissions.waitForPermissions(
-        RuntimePermissions.WRITE_EXTERNAL_STORAGE
-      ))
-    );
   },
 
   /**
@@ -488,9 +449,9 @@ var DownloadIntegration = {
       });
     }
     return new Promise(resolve => {
-      gApplicationReputationService.queryReputation(
+      lazy.gApplicationReputationService.queryReputation(
         {
-          sourceURI: NetUtil.newURI(aDownload.source.url),
+          sourceURI: lazy.NetUtil.newURI(aDownload.source.url),
           referrerInfo: aDownload.source.referrerInfo,
           fileSize: aDownload.currentBytes,
           sha256Hash: hash,
@@ -556,7 +517,7 @@ var DownloadIntegration = {
   _zoneIdKey(aKey, aUrl, aFallback) {
     try {
       let url;
-      const uri = NetUtil.newURI(aUrl);
+      const uri = lazy.NetUtil.newURI(aUrl);
       if (["http", "https", "ftp"].includes(uri.scheme)) {
         url = uri
           .mutate()
@@ -595,7 +556,7 @@ var DownloadIntegration = {
     if (AppConstants.platform == "win" && this._shouldSaveZoneInformation()) {
       let zone;
       try {
-        zone = gDownloadPlatform.mapUrlToZone(aDownload.source.url);
+        zone = lazy.gDownloadPlatform.mapUrlToZone(aDownload.source.url);
       } catch (e) {
         // Default to Internet Zone if mapUrlToZone failed for
         // whatever reason.
@@ -622,7 +583,7 @@ var DownloadIntegration = {
           );
         } catch (ex) {
           // If writing to the file fails, we ignore the error and continue.
-          if (!(ex instanceof DOMException)) {
+          if (!DOMException.isInstance(ex)) {
             Cu.reportError(ex);
           }
         }
@@ -642,9 +603,12 @@ var DownloadIntegration = {
       let isTemporaryDownload =
         aDownload.launchWhenSucceeded &&
         (aDownload.source.isPrivate ||
-          Services.prefs.getBoolPref(
+          (Services.prefs.getBoolPref(
             "browser.helperApps.deleteTempFileOnExit"
-          ));
+          ) &&
+            !Services.prefs.getBoolPref(
+              "browser.download.improvements_to_download_panel"
+            )));
       // Permanently downloaded files are made accessible by other users on
       // this system, while temporary downloads are marked as read-only.
       let unixMode;
@@ -659,7 +623,7 @@ var DownloadIntegration = {
       // We should report errors with making the permissions less restrictive
       // or marking the file as read-only on Unix and Mac, but this should not
       // prevent the download from completing.
-      if (!(ex instanceof DOMException)) {
+      if (!DOMException.isInstance(ex)) {
         Cu.reportError(ex);
       }
     }
@@ -669,10 +633,10 @@ var DownloadIntegration = {
       aReferrer = aDownload.source.referrerInfo.originalReferrer;
     }
 
-    await gDownloadPlatform.downloadDone(
-      NetUtil.newURI(aDownload.source.url),
+    await lazy.gDownloadPlatform.downloadDone(
+      lazy.NetUtil.newURI(aDownload.source.url),
       aReferrer,
-      new FileUtils.File(aDownload.target.path),
+      new lazy.FileUtils.File(aDownload.target.path),
       aDownload.contentType,
       aDownload.source.isPrivate
     );
@@ -720,7 +684,7 @@ var DownloadIntegration = {
    *           the file.
    */
   async launchDownload(aDownload, { openWhere, useSystemDefault = null }) {
-    let file = new FileUtils.File(aDownload.target.path);
+    let file = new lazy.FileUtils.File(aDownload.target.path);
 
     // In case of a double extension, like ".tar.gz", we only
     // consider the last one, because the MIME service cannot
@@ -737,6 +701,11 @@ var DownloadIntegration = {
       fileExtension &&
       fileExtension.toLowerCase() == "exe";
 
+    let isExemptExecutableExtension = Services.policies.isExemptExecutableExtension(
+      aDownload.source.url,
+      fileExtension
+    );
+
     // Ask for confirmation if the file is executable, except for .exe on
     // Windows where the operating system will show the prompt based on the
     // security zone.  We do this here, instead of letting the caller handle
@@ -744,9 +713,11 @@ var DownloadIntegration = {
     // first is because of its security nature, so that add-ons cannot forget
     // to do this check.  The second is that the system-level security prompt
     // would be displayed at launch time in any case.
+    // We allow policy to override this behavior for file extensions on specific domains.
     if (
       file.isExecutable() &&
       !isWindowsExe &&
+      !isExemptExecutableExtension &&
       !(await this.confirmLaunchExecutable(file.path))
     ) {
       return;
@@ -756,7 +727,7 @@ var DownloadIntegration = {
       // The MIME service might throw if contentType == "" and it can't find
       // a MIME type for the given extension, so we'll treat this case as
       // an unknown mimetype.
-      mimeInfo = gMIMEService.getFromTypeAndExtension(
+      mimeInfo = lazy.gMIMEService.getFromTypeAndExtension(
         aDownload.contentType,
         fileExtension
       );
@@ -776,7 +747,9 @@ var DownloadIntegration = {
       let localHandlerApp = Cc[
         "@mozilla.org/uriloader/local-handler-app;1"
       ].createInstance(Ci.nsILocalHandlerApp);
-      localHandlerApp.executable = new FileUtils.File(aDownload.launcherPath);
+      localHandlerApp.executable = new lazy.FileUtils.File(
+        aDownload.launcherPath
+      );
 
       mimeInfo.preferredApplicationHandler = localHandlerApp;
       mimeInfo.preferredAction = Ci.nsIMIMEInfo.useHelperApp;
@@ -799,10 +772,14 @@ var DownloadIntegration = {
         (mimeInfo &&
           this.shouldViewDownloadInternally(mimeInfo.type, fileExtension) &&
           !mimeInfo.alwaysAskBeforeHandling &&
-          mimeInfo.preferredAction === Ci.nsIHandlerInfo.handleInternally &&
+          (mimeInfo.preferredAction === Ci.nsIHandlerInfo.handleInternally ||
+            (["image/svg+xml", "text/xml", "application/xml"].includes(
+              mimeInfo.type
+            ) &&
+              mimeInfo.preferredAction === Ci.nsIHandlerInfo.saveToDisk)) &&
           !aDownload.launchWhenSucceeded)
       ) {
-        DownloadUIHelper.loadFileIn(file, {
+        lazy.DownloadUIHelper.loadFileIn(file, {
           browsingContextId: aDownload.source.browsingContextId,
           isPrivate: aDownload.source.isPrivate,
           openWhere,
@@ -850,8 +827,8 @@ var DownloadIntegration = {
 
     // If our previous attempts failed, try sending it through
     // the system's external "file:" URL handler.
-    gExternalProtocolService.loadURI(
-      NetUtil.newURI(file),
+    lazy.gExternalProtocolService.loadURI(
+      lazy.NetUtil.newURI(file),
       Services.scriptSecurityManager.getSystemPrincipal()
     );
   },
@@ -865,7 +842,7 @@ var DownloadIntegration = {
     // only because this is the same behavior as the system-level prompt,
     // but also because the most recently active window is the right choice
     // in basically all cases.
-    return DownloadUIHelper.getPrompter().confirmLaunchExecutable(path);
+    return lazy.DownloadUIHelper.getPrompter().confirmLaunchExecutable(path);
   },
 
   /**
@@ -896,7 +873,7 @@ var DownloadIntegration = {
    *           the containing folder.
    */
   async showContainingDirectory(aFilePath) {
-    let file = new FileUtils.File(aFilePath);
+    let file = new lazy.FileUtils.File(aFilePath);
 
     try {
       // Show the directory containing the file and select the file.
@@ -921,8 +898,8 @@ var DownloadIntegration = {
 
     // If launch also fails (probably because it's not implemented), let
     // the OS handler try to open the parent.
-    gExternalProtocolService.loadURI(
-      NetUtil.newURI(parent),
+    lazy.gExternalProtocolService.loadURI(
+      lazy.NetUtil.newURI(parent),
       Services.scriptSecurityManager.getSystemPrincipal()
     );
   },
@@ -940,7 +917,7 @@ var DownloadIntegration = {
     // displayed in the user interface.
     let directoryPath = PathUtils.join(
       this._getDirectory(aName),
-      DownloadUIHelper.strings.downloadsFolder
+      lazy.DownloadUIHelper.strings.downloadsFolder
     );
 
     // Create the Downloads folder and ignore if it already exists.
@@ -956,6 +933,13 @@ var DownloadIntegration = {
    */
   _getDirectory(name) {
     return Services.dirsvc.get(name, Ci.nsIFile).path;
+  },
+  /**
+   * Initializes the DownloadSpamProtection instance.
+   * This is used to observe and group multiple automatic downloads.
+   */
+  _initializeDownloadSpamProtection() {
+    this.downloadSpamProtection = new lazy.DownloadSpamProtection();
   },
 
   /**
@@ -1087,8 +1071,8 @@ var DownloadObserver = {
     aPromptType
   ) {
     // Handle test mode
-    if (gCombinedDownloadIntegration._testPromptDownloads) {
-      gCombinedDownloadIntegration._testPromptDownloads = aDownloadsCount;
+    if (lazy.gCombinedDownloadIntegration._testPromptDownloads) {
+      lazy.gCombinedDownloadIntegration._testPromptDownloads = aDownloadsCount;
       return;
     }
 
@@ -1101,7 +1085,7 @@ var DownloadObserver = {
       return;
     }
 
-    let prompter = DownloadUIHelper.getPrompter();
+    let prompter = lazy.DownloadUIHelper.getPrompter();
     aCancel.data = prompter.confirmCancelDownloads(
       aDownloadsCount,
       prompter[aPromptType]
@@ -1157,8 +1141,10 @@ var DownloadObserver = {
           }
         })();
         // Handle test mode
-        if (gCombinedDownloadIntegration._testResolveClearPrivateList) {
-          gCombinedDownloadIntegration._testResolveClearPrivateList(promise);
+        if (lazy.gCombinedDownloadIntegration._testResolveClearPrivateList) {
+          lazy.gCombinedDownloadIntegration._testResolveClearPrivateList(
+            promise
+          );
         } else {
           promise.catch(ex => Cu.reportError(ex));
         }
@@ -1205,6 +1191,15 @@ var DownloadObserver = {
         for (let topic of kObserverTopics) {
           Services.obs.removeObserver(this, topic);
         }
+        break;
+      case "blocked-automatic-download":
+        if (
+          AppConstants.MOZ_BUILD_APP == "browser" &&
+          !DownloadIntegration.downloadSpamProtection
+        ) {
+          DownloadIntegration._initializeDownloadSpamProtection();
+        }
+        DownloadIntegration.downloadSpamProtection.update(aData);
         break;
     }
   },
@@ -1278,8 +1273,8 @@ var DownloadAutoSaveView = function(aList, aStore) {
   this._list = aList;
   this._store = aStore;
   this._downloadsMap = new Map();
-  this._writer = new DeferredTask(() => this._store.save(), kSaveDelayMs);
-  AsyncShutdown.profileBeforeChange.addBlocker(
+  this._writer = new lazy.DeferredTask(() => this._store.save(), kSaveDelayMs);
+  lazy.AsyncShutdown.profileBeforeChange.addBlocker(
     "DownloadAutoSaveView: writing data",
     () => this._writer.finalize()
   );
@@ -1336,7 +1331,7 @@ DownloadAutoSaveView.prototype = {
 
   // DownloadList callback
   onDownloadAdded(aDownload) {
-    if (gCombinedDownloadIntegration.shouldPersistDownload(aDownload)) {
+    if (lazy.gCombinedDownloadIntegration.shouldPersistDownload(aDownload)) {
       this._downloadsMap.set(aDownload, aDownload.getSerializationHash());
       if (this._initialized) {
         this.saveSoon();
@@ -1346,7 +1341,7 @@ DownloadAutoSaveView.prototype = {
 
   // DownloadList callback
   onDownloadChanged(aDownload) {
-    if (!gCombinedDownloadIntegration.shouldPersistDownload(aDownload)) {
+    if (!lazy.gCombinedDownloadIntegration.shouldPersistDownload(aDownload)) {
       if (this._downloadsMap.has(aDownload)) {
         this._downloadsMap.delete(aDownload);
         this.saveSoon();

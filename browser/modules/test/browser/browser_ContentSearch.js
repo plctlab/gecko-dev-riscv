@@ -2,11 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "SearchTestUtils",
-  "resource://testing-common/SearchTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+});
 
 SearchTestUtils.init(this);
 
@@ -30,7 +28,7 @@ function sendEventToContent(browser, data) {
   );
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   const originalEngine = await Services.search.getDefault();
   const originalPrivateEngine = await Services.search.getDefaultPrivate();
 

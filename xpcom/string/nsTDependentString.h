@@ -43,6 +43,8 @@ class nsTDependentString : public nsTString<T> {
 
   typedef typename base_string_type::const_char_iterator const_char_iterator;
 
+  typedef typename base_string_type::string_view string_view;
+
   typedef typename base_string_type::index_type index_type;
   typedef typename base_string_type::size_type size_type;
 
@@ -57,7 +59,7 @@ class nsTDependentString : public nsTString<T> {
 
   nsTDependentString(const char_type* aStart, const char_type* aEnd);
 
-  nsTDependentString(const char_type* aData, uint32_t aLength)
+  nsTDependentString(const char_type* aData, size_type aLength)
       : string_type(const_cast<char_type*>(aData), aLength,
                     DataFlags::TERMINATED, ClassFlags(0)) {
     this->AssertValidDependentString();
@@ -65,14 +67,13 @@ class nsTDependentString : public nsTString<T> {
 
 #if defined(MOZ_USE_CHAR16_WRAPPER)
   template <typename Q = T, typename EnableIfChar16 = mozilla::Char16OnlyT<Q>>
-  nsTDependentString(char16ptr_t aData, uint32_t aLength)
+  nsTDependentString(char16ptr_t aData, size_type aLength)
       : nsTDependentString(static_cast<const char16_t*>(aData), aLength) {}
 #endif
 
   explicit nsTDependentString(const char_type* aData)
-      : string_type(const_cast<char_type*>(aData),
-                    uint32_t(char_traits::length(aData)), DataFlags::TERMINATED,
-                    ClassFlags(0)) {
+      : string_type(const_cast<char_type*>(aData), char_traits::length(aData),
+                    DataFlags::TERMINATED, ClassFlags(0)) {
     string_type::AssertValidDependentString();
   }
 
@@ -82,7 +83,7 @@ class nsTDependentString : public nsTString<T> {
       : nsTDependentString(static_cast<const char16_t*>(aData)) {}
 #endif
 
-  nsTDependentString(const string_type& aStr, uint32_t aStartPos)
+  nsTDependentString(const string_type& aStr, index_type aStartPos)
       : string_type() {
     Rebind(aStr, aStartPos);
   }
@@ -107,11 +108,11 @@ class nsTDependentString : public nsTString<T> {
 
   using nsTString<T>::Rebind;
   void Rebind(const char_type* aData) {
-    Rebind(aData, uint32_t(char_traits::length(aData)));
+    Rebind(aData, char_traits::length(aData));
   }
 
   void Rebind(const char_type* aStart, const char_type* aEnd);
-  void Rebind(const string_type&, uint32_t aStartPos);
+  void Rebind(const string_type&, index_type aStartPos);
 
  private:
   // NOT USED

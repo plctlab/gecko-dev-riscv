@@ -15,24 +15,25 @@ var EXPORTED_SYMBOLS = ["PerformanceCounters"];
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { DeferredTask } = ChromeUtils.import(
   "resource://gre/modules/DeferredTask.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const { DefaultMap } = ExtensionUtils;
 
+const lazy = {};
+
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gTimingEnabled",
   "extensions.webextensions.enablePerformanceCounters",
   false
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gTimingMaxAge",
   "extensions.webextensions.performanceCountersMaxAge",
   1000
@@ -73,12 +74,10 @@ function _sendPerformanceCounters(childApiManagerId) {
   let counters = PerformanceCounters.flush();
   // No need to send empty counters.
   if (counters.size == 0) {
-    _performanceCountersSender.arm();
     return;
   }
   let options = { childId: childApiManagerId, counters: counters };
   Services.cpmm.sendAsyncMessage("Extension:SendPerformanceCounter", options);
-  _performanceCountersSender.arm();
 }
 
 class Counters {
@@ -96,7 +95,7 @@ class Counters {
    * @returns {boolean}
    */
   get enabled() {
-    return gTimingEnabled;
+    return lazy.gTimingEnabled;
   }
 
   /**
@@ -109,7 +108,7 @@ class Counters {
    * @returns {number}
    */
   get maxAge() {
-    return gTimingMaxAge;
+    return lazy.gTimingMaxAge;
   }
 
   /**
@@ -132,8 +131,8 @@ class Counters {
         _performanceCountersSender = new DeferredTask(() => {
           _sendPerformanceCounters(childApiManagerId);
         }, this.maxAge);
-        _performanceCountersSender.arm();
       }
+      _performanceCountersSender.arm();
     }
   }
 

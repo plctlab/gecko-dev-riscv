@@ -64,18 +64,20 @@ static void PopulateRegsFromContext(Registers& aRegs, CONTEXT* aContext) {
   aRegs.mPC = reinterpret_cast<Address>(aContext->Rip);
   aRegs.mSP = reinterpret_cast<Address>(aContext->Rsp);
   aRegs.mFP = reinterpret_cast<Address>(aContext->Rbp);
+  aRegs.mLR = 0;
 #elif defined(GP_ARCH_x86)
   aRegs.mPC = reinterpret_cast<Address>(aContext->Eip);
   aRegs.mSP = reinterpret_cast<Address>(aContext->Esp);
   aRegs.mFP = reinterpret_cast<Address>(aContext->Ebp);
+  aRegs.mLR = 0;
 #elif defined(GP_ARCH_arm64)
   aRegs.mPC = reinterpret_cast<Address>(aContext->Pc);
   aRegs.mSP = reinterpret_cast<Address>(aContext->Sp);
   aRegs.mFP = reinterpret_cast<Address>(aContext->Fp);
+  aRegs.mLR = reinterpret_cast<Address>(aContext->Lr);
 #else
 #  error "bad arch"
 #endif
-  aRegs.mLR = 0;
 }
 
 // Gets a real (i.e. not pseudo) handle for the current thread, with the
@@ -205,15 +207,14 @@ static unsigned int __stdcall ThreadEntry(void* aArg) {
 }
 
 SamplerThread::SamplerThread(PSLockRef aLock, uint32_t aActivityGeneration,
-                             double aIntervalMilliseconds,
-                             bool aStackWalkEnabled,
-                             bool aNoTimerResolutionChange)
+                             double aIntervalMilliseconds, uint32_t aFeatures)
     : mSampler(aLock),
       mActivityGeneration(aActivityGeneration),
       mIntervalMicroseconds(
           std::max(1, int(floor(aIntervalMilliseconds * 1000 + 0.5)))),
-      mNoTimerResolutionChange(aNoTimerResolutionChange) {
-  if ((!aNoTimerResolutionChange) && (mIntervalMicroseconds < 10 * 1000)) {
+      mNoTimerResolutionChange(
+          ProfilerFeature::HasNoTimerResolutionChange(aFeatures)) {
+  if ((!mNoTimerResolutionChange) && (mIntervalMicroseconds < 10 * 1000)) {
     // By default the timer resolution (which tends to be 1/64Hz, around 16ms)
     // is not changed. However, if the requested interval is sufficiently low,
     // the resolution will be adjusted to match. Note that this affects all

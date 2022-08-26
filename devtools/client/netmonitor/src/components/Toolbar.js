@@ -43,7 +43,7 @@ loader.lazyRequireGetter(
 // MDN
 const {
   getFilterBoxURL,
-} = require("devtools/client/netmonitor/src/utils/mdn-utils");
+} = require("devtools/client/netmonitor/src/utils/doc-utils");
 const LEARN_MORE_URL = getFilterBoxURL();
 
 // Components
@@ -68,6 +68,9 @@ const COPY_KEY_SHORTCUT = L10N.getStr("netmonitor.toolbar.copy.key");
 const TOOLBAR_CLEAR = L10N.getStr("netmonitor.toolbar.clear");
 const TOOLBAR_TOGGLE_RECORDING = L10N.getStr(
   "netmonitor.toolbar.toggleRecording"
+);
+const TOOLBAR_HTTP_CUSTOM_REQUEST = L10N.getStr(
+  "netmonitor.toolbar.HTTPCustomRequest"
 );
 const TOOLBAR_SEARCH = L10N.getStr("netmonitor.toolbar.search");
 const TOOLBAR_BLOCKING = L10N.getStr("netmonitor.toolbar.requestBlocking");
@@ -163,6 +166,7 @@ class Toolbar extends Component {
       // Executed when throttling changes (through toolbar button).
       onChangeNetworkThrottling: PropTypes.func.isRequired,
       toggleSearchPanel: PropTypes.func.isRequired,
+      toggleHTTPCustomRequestPanel: PropTypes.func.isRequired,
       networkActionBarOpen: PropTypes.bool,
       toggleRequestBlockingPanel: PropTypes.func.isRequired,
       networkActionBarSelectedPanel: PropTypes.string.isRequired,
@@ -176,6 +180,9 @@ class Toolbar extends Component {
     super(props);
 
     this.autocompleteProvider = this.autocompleteProvider.bind(this);
+    this.onSearchBoxFocusKeyboardShortcut = this.onSearchBoxFocusKeyboardShortcut.bind(
+      this
+    );
     this.onSearchBoxFocus = this.onSearchBoxFocus.bind(this);
     this.toggleRequestFilterType = this.toggleRequestFilterType.bind(this);
     this.updatePersistentLogsEnabled = this.updatePersistentLogsEnabled.bind(
@@ -270,6 +277,12 @@ class Toolbar extends Component {
 
   autocompleteProvider(filter) {
     return autocompleteProvider(filter, this.props.filteredRequests);
+  }
+
+  onSearchBoxFocusKeyboardShortcut(event) {
+    // Don't take focus when the keyboard shortcut is triggered in a CodeMirror instance,
+    // so the CodeMirror search UI is displayed.
+    return !!event.target.closest(".CodeMirror");
   }
 
   onSearchBoxFocus() {
@@ -395,6 +408,46 @@ class Toolbar extends Component {
   }
 
   /**
+   * Render a new HTTP Custom Request button.
+   */
+  renderHTTPCustomRequestButton() {
+    const {
+      networkActionBarOpen,
+      networkActionBarSelectedPanel,
+      toggleHTTPCustomRequestPanel,
+    } = this.props;
+
+    // The new HTTP Custom Request feature is available behind a pref.
+    if (
+      !Services.prefs.getBoolPref(
+        "devtools.netmonitor.features.newEditAndResend"
+      )
+    ) {
+      return null;
+    }
+
+    const className = [
+      "devtools-button",
+      "devtools-http-custom-request-icon",
+      "requests-list-http-custom-request-button",
+    ];
+
+    if (
+      networkActionBarOpen &&
+      networkActionBarSelectedPanel === PANELS.HTTP_CUSTOM_REQUEST
+    ) {
+      className.push("checked");
+    }
+
+    return button({
+      className: className.join(" "),
+      title: TOOLBAR_HTTP_CUSTOM_REQUEST,
+      "aria-pressed": networkActionBarOpen,
+      onClick: toggleHTTPCustomRequestPanel,
+    });
+  }
+
+  /**
    * Render filter buttons.
    */
   renderFilterButtons(requestFilterTypes) {
@@ -458,6 +511,7 @@ class Toolbar extends Component {
       type: "filter",
       ref: "searchbox",
       onChange: setRequestFilterText,
+      onFocusKeyboardShortcut: this.onSearchBoxFocusKeyboardShortcut,
       onFocus: this.onSearchBoxFocus,
       autocompleteProvider: this.autocompleteProvider,
       learnMoreUrl: LEARN_MORE_URL,
@@ -557,6 +611,7 @@ class Toolbar extends Component {
             this.renderFilterBox(setRequestFilterText),
             this.renderSeparator(),
             this.renderToggleRecordingButton(recording, toggleRecording),
+            this.renderHTTPCustomRequestButton(),
             this.renderSearchButton(toggleSearchPanel),
             this.renderBlockingButton(toggleSearchPanel),
             this.renderSeparator(),
@@ -578,6 +633,7 @@ class Toolbar extends Component {
             this.renderFilterBox(setRequestFilterText),
             this.renderSeparator(),
             this.renderToggleRecordingButton(recording, toggleRecording),
+            this.renderHTTPCustomRequestButton(),
             this.renderSearchButton(toggleSearchPanel),
             this.renderBlockingButton(toggleSearchPanel),
             this.renderSeparator(),
@@ -625,6 +681,8 @@ module.exports = connect(
       dispatch(Actions.toggleRequestFilterType(type)),
     onChangeNetworkThrottling: (enabled, profile) =>
       dispatch(changeNetworkThrottling(enabled, profile)),
+    toggleHTTPCustomRequestPanel: () =>
+      dispatch(Actions.toggleHTTPCustomRequestPanel()),
     toggleSearchPanel: () => dispatch(Actions.toggleSearchPanel()),
     toggleRequestBlockingPanel: () =>
       dispatch(Actions.toggleRequestBlockingPanel()),

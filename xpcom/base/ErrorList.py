@@ -150,8 +150,6 @@ errors["NS_ERROR_ILLEGAL_VALUE"] = 0x80070057
 errors["NS_ERROR_INVALID_ARG"] = errors["NS_ERROR_ILLEGAL_VALUE"]
 errors["NS_ERROR_INVALID_POINTER"] = errors["NS_ERROR_INVALID_ARG"]
 errors["NS_ERROR_NULL_POINTER"] = errors["NS_ERROR_INVALID_ARG"]
-# Returned when a class doesn't allow aggregation
-errors["NS_ERROR_NO_AGGREGATION"] = 0x80040110
 # Returned when an operation can't complete due to an unavailable resource
 errors["NS_ERROR_NOT_AVAILABLE"] = 0x80040111
 # Returned when a class is not registered
@@ -340,6 +338,13 @@ with modules["NETWORK"]:
     errors["NS_ERROR_NET_TIMEOUT_EXTERNAL"] = FAILURE(85)
     # An error related to HTTPS-only mode
     errors["NS_ERROR_HTTPS_ONLY"] = FAILURE(86)
+    # A WebSocket connection is failed.
+    errors["NS_ERROR_WEBSOCKET_CONNECTION_REFUSED"] = FAILURE(87)
+    # A connection to a non local address is refused because
+    # xpc::AreNonLocalConnectionsDisabled() returns true.
+    errors["NS_ERROR_NON_LOCAL_CONNECTION_REFUSED"] = FAILURE(88)
+    # Connection to a sts host without a hsts header.
+    errors["NS_ERROR_BAD_HSTS_CERT"] = FAILURE(89)
 
     # XXX really need to better rationalize these error codes.  are consumers of
     # necko really expected to know how to discern the meaning of these??
@@ -355,9 +360,6 @@ with modules["NETWORK"]:
     # a type expected by the channel (for nested channels such as the JAR
     # channel).
     errors["NS_ERROR_UNSAFE_CONTENT_TYPE"] = FAILURE(74)
-    # The request failed because the user tried to access to a remote XUL
-    # document from a website that is not in its white-list.
-    errors["NS_ERROR_REMOTE_XUL"] = FAILURE(75)
     # The request resulted in an error page being displayed.
     errors["NS_ERROR_LOAD_SHOWED_ERRORPAGE"] = FAILURE(77)
     # The request occurred in docshell that lacks a treeowner, so it is
@@ -634,7 +636,6 @@ with modules["FILES"]:
     errors["NS_ERROR_FILE_EXECUTION_FAILED"] = FAILURE(3)
     errors["NS_ERROR_FILE_UNKNOWN_TYPE"] = FAILURE(4)
     errors["NS_ERROR_FILE_DESTINATION_NOT_DIR"] = FAILURE(5)
-    errors["NS_ERROR_FILE_TARGET_DOES_NOT_EXIST"] = FAILURE(6)
     errors["NS_ERROR_FILE_COPY_OR_MOVE_FAILED"] = FAILURE(7)
     errors["NS_ERROR_FILE_ALREADY_EXISTS"] = FAILURE(8)
     errors["NS_ERROR_FILE_INVALID_PATH"] = FAILURE(9)
@@ -651,6 +652,8 @@ with modules["FILES"]:
     errors["NS_ERROR_FILE_ACCESS_DENIED"] = FAILURE(21)
     errors["NS_ERROR_FILE_FS_CORRUPTED"] = FAILURE(22)
     errors["NS_ERROR_FILE_DEVICE_FAILURE"] = FAILURE(23)
+    errors["NS_ERROR_FILE_DEVICE_TEMPORARY_FAILURE"] = FAILURE(24)
+    errors["NS_ERROR_FILE_INVALID_HANDLE"] = FAILURE(25)
 
     errors["NS_SUCCESS_FILE_DIRECTORY_EMPTY"] = SUCCESS(1)
     # Result codes used by nsIDirectoryServiceProvider2
@@ -805,6 +808,19 @@ with modules["EDITOR"]:
     errors["NS_SUCCESS_EDITOR_ELEMENT_NOT_FOUND"] = SUCCESS(1)
     errors["NS_SUCCESS_EDITOR_FOUND_TARGET"] = SUCCESS(2)
 
+    # If most callers ignore error except serious error (like
+    # NS_ERROR_EDITOR_DESTROYED), this success code is useful.  E.g. such
+    # callers can do:
+    # nsresult rv = Foo();
+    # if (MOZ_UNLIKELY(NS_FAILED(rv))) {
+    #   NS_WARNING("Foo() failed");
+    #   return rv;
+    # }
+    # NS_WARNING_ASSERTION(
+    #   rv != NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR,
+    #   "Foo() failed, but ignored");
+    errors["NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR"] = SUCCESS(3)
+
 
 # =======================================================================
 # 18: NS_ERROR_MODULE_XPCONNECT
@@ -872,7 +888,6 @@ with modules["PROFILE"]:
     errors["NS_ERROR_LAUNCHED_CHILD_PROCESS"] = FAILURE(200)
     errors["NS_ERROR_SHOW_PROFILE_MANAGER"] = FAILURE(201)
     errors["NS_ERROR_DATABASE_CHANGED"] = FAILURE(202)
-    errors["NS_MIGRATE_INTO_PACKAGE"] = SUCCESS(203)
 
 
 # =======================================================================
@@ -930,6 +945,7 @@ with modules["URILOADER"]:
     errors["NS_ERROR_FINGERPRINTING_URI"] = FAILURE(41)
     errors["NS_ERROR_CRYPTOMINING_URI"] = FAILURE(42)
     errors["NS_ERROR_SOCIALTRACKING_URI"] = FAILURE(43)
+    errors["NS_ERROR_EMAILTRACKING_URI"] = FAILURE(44)
     # Used when "Save Link As..." doesn't see the headers quickly enough to
     # choose a filename.  See nsContextMenu.js.
     errors["NS_ERROR_SAVE_LINK_AS_TIMEOUT"] = FAILURE(32)
@@ -937,9 +953,10 @@ with modules["URILOADER"]:
     # doesn't need to be reparsed from the original source.
     errors["NS_ERROR_PARSED_DATA_CACHED"] = FAILURE(33)
 
-    # This success code indicates that a refresh header was found and
-    # successfully setup.
-    errors["NS_REFRESHURI_HEADER_FOUND"] = SUCCESS(2)
+    # When browser.tabs.documentchannel.parent-controlled pref and SHIP
+    # are enabled and a load gets cancelled due to another one
+    # starting, the error is NS_BINDING_CANCELLED_OLD_LOAD.
+    errors["NS_BINDING_CANCELLED_OLD_LOAD"] = FAILURE(39)
 
 
 # =======================================================================
@@ -1149,10 +1166,12 @@ with modules["DOM_MEDIA"]:
     errors["NS_ERROR_DOM_MEDIA_CDM_ERR"] = FAILURE(13)
     errors["NS_ERROR_DOM_MEDIA_NEED_NEW_DECODER"] = FAILURE(14)
     errors["NS_ERROR_DOM_MEDIA_INITIALIZING_DECODER"] = FAILURE(15)
+    errors["NS_ERROR_DOM_MEDIA_REMOTE_DECODER_CRASHED_RDD_OR_GPU_ERR"] = FAILURE(16)
+    errors["NS_ERROR_DOM_MEDIA_REMOTE_DECODER_CRASHED_UTILITY_ERR"] = FAILURE(17)
 
     # Internal platform-related errors
     errors["NS_ERROR_DOM_MEDIA_CUBEB_INITIALIZATION_ERR"] = FAILURE(101)
-
+    errors["NS_ERROR_DOM_MEDIA_EXTERNAL_ENGINE_NOT_SUPPORTED_ERR"] = FAILURE(102)
 
 # =======================================================================
 # 42: NS_ERROR_MODULE_URL_CLASSIFIER
@@ -1357,3 +1376,27 @@ use super::nsresult;
 
     for error, val in errors.items():
         output.write("pub const {}: nsresult = nsresult(0x{:X});\n".format(error, val))
+
+
+def gen_jinja(output, input_filename):
+    # This is used to generate Java code for error lists, and can be expanded to
+    # other required contexts in the future if desired.
+    from jinja2 import Environment, FileSystemLoader, StrictUndefined
+    import os
+
+    # FileSystemLoader requires the path to the directory containing templates,
+    # not the file name of the template itself.
+    (path, leaf) = os.path.split(input_filename)
+    env = Environment(
+        loader=FileSystemLoader(path, encoding="utf-8"),
+        undefined=StrictUndefined,
+    )
+    tpl = env.get_template(leaf)
+
+    context = {
+        "MODULE_BASE_OFFSET": MODULE_BASE_OFFSET,
+        "modules": ((mod, val.num) for mod, val in modules.items()),
+        "errors": errors.items(),
+    }
+
+    tpl.stream(context).dump(output, encoding="utf-8")

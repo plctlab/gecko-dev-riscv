@@ -11,40 +11,41 @@
  */
 var EXPORTED_SYMBOLS = ["Heuristics", "parentalControls"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gDNSService",
   "@mozilla.org/network/dns-service;1",
   "nsIDNSService"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gNetworkLinkService",
   "@mozilla.org/network/network-link-service;1",
   "nsINetworkLinkService"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gParentalControlsService",
   "@mozilla.org/parental-controls-service;1",
   "nsIParentalControlsService"
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DoHConfigController",
   "resource:///modules/DoHConfig.jsm"
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Preferences",
   "resource://gre/modules/Preferences.jsm"
 );
@@ -140,7 +141,7 @@ async function dnsLookup(hostname, resolveCanonicalName = false) {
       Ci.nsIDNSService.RESOLVE_BYPASS_CACHE |
       Ci.nsIDNSService.RESOLVE_CANONICAL_NAME;
     try {
-      request = gDNSService.asyncResolve(
+      request = lazy.gDNSService.asyncResolve(
         hostname,
         Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT,
         dnsFlags,
@@ -186,7 +187,13 @@ async function dnsListLookup(domainList) {
 async function globalCanary() {
   let { addresses, err } = await dnsLookup(GLOBAL_CANARY);
 
-  if (err === NXDOMAIN_ERR || !addresses.length) {
+  if (
+    err === NXDOMAIN_ERR ||
+    !addresses.length ||
+    addresses.every(addr =>
+      Services.io.hostnameIsLocalIPAddress(Services.io.newURI(`http://${addr}`))
+    )
+  ) {
     return "disable_doh";
   }
 
@@ -195,7 +202,7 @@ async function globalCanary() {
 
 async function modifiedRoots() {
   // Check for presence of enterprise_roots cert pref. If enabled, disable DoH
-  let rootsEnabled = Preferences.get(
+  let rootsEnabled = lazy.Preferences.get(
     "security.enterprise_roots.enabled",
     false
   );
@@ -208,7 +215,7 @@ async function modifiedRoots() {
 }
 
 async function parentalControls() {
-  if (gParentalControlsService.parentalControlsEnabled) {
+  if (lazy.gParentalControlsService.parentalControlsEnabled) {
     return "disable_doh";
   }
 
@@ -332,7 +339,7 @@ async function platform() {
 
   let indications = Ci.nsINetworkLinkService.NONE_DETECTED;
   try {
-    let linkService = gNetworkLinkService;
+    let linkService = lazy.gNetworkLinkService;
     if (Heuristics.mockLinkService) {
       linkService = Heuristics.mockLinkService;
     }
@@ -363,7 +370,7 @@ async function platform() {
 // provider if the check is successful, else null. Currently we only support
 // this for Comcast networks.
 async function providerSteering() {
-  if (!DoHConfigController.currentConfig.providerSteering.enabled) {
+  if (!lazy.DoHConfigController.currentConfig.providerSteering.enabled) {
     return null;
   }
   const TEST_DOMAIN = "doh.test.";
@@ -372,7 +379,7 @@ async function providerSteering() {
   // telemetry, canonicalName is the expected CNAME when looking up doh.test,
   // and uri is the provider's DoH endpoint.
   let steeredProviders =
-    DoHConfigController.currentConfig.providerSteering.providerList;
+    lazy.DoHConfigController.currentConfig.providerSteering.providerList;
 
   if (!steeredProviders || !steeredProviders.length) {
     return null;
@@ -386,7 +393,7 @@ async function providerSteering() {
   let provider = steeredProviders.find(p => {
     return p.canonicalName == canonicalName;
   });
-  if (!provider || !provider.uri || !provider.name) {
+  if (!provider || !provider.uri || !provider.id) {
     return null;
   }
 

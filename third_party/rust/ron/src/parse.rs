@@ -1,17 +1,18 @@
+#![allow(clippy::identity_op)]
+
 use std::{
     char::from_u32 as char_from_u32,
-    fmt::{Display, Formatter, Result as FmtResult},
     str::{from_utf8, from_utf8_unchecked, FromStr},
 };
 
 use crate::{
-    error::{Error, ErrorCode, Result},
+    error::{Error, ErrorCode, Position, Result},
     extensions::Extensions,
 };
 
 // We have the following char categories.
 const INT_CHAR: u8 = 1 << 0; // [0-9A-Fa-f_]
-const FLOAT_CHAR: u8 = 1 << 1; // [0-9\.Ee+-]
+const FLOAT_CHAR: u8 = 1 << 1; // [0-9\.Ee+-_]
 const IDENT_FIRST_CHAR: u8 = 1 << 2; // [A-Za-z_]
 const IDENT_OTHER_CHAR: u8 = 1 << 3; // [A-Za-z_0-9]
 const IDENT_RAW_CHAR: u8 = 1 << 4; // [A-Za-z_0-9\.+-]
@@ -20,7 +21,7 @@ const WHITESPACE_CHAR: u8 = 1 << 5; // [\n\t\r ]
 // We encode each char as belonging to some number of these categories.
 const DIGIT: u8 = INT_CHAR | FLOAT_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [0-9]
 const ABCDF: u8 = INT_CHAR | IDENT_FIRST_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [ABCDFabcdf]
-const UNDER: u8 = INT_CHAR | IDENT_FIRST_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [_]
+const UNDER: u8 = INT_CHAR | FLOAT_CHAR | IDENT_FIRST_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [_]
 const E____: u8 = INT_CHAR | FLOAT_CHAR | IDENT_FIRST_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [Ee]
 const G2Z__: u8 = IDENT_FIRST_CHAR | IDENT_OTHER_CHAR | IDENT_RAW_CHAR; // [G-Zg-z]
 const PUNCT: u8 = FLOAT_CHAR | IDENT_RAW_CHAR; // [\.+-]
@@ -232,7 +233,7 @@ impl<'a> Bytes<'a> {
         // Instead, this code checks if a f64 fits inside an f32.
         #[allow(clippy::float_cmp)]
         fn any_float(f: f64) -> Result<AnyNum> {
-            if f == f as f32 as f64 {
+            if f == f64::from(f as f32) {
                 Ok(AnyNum::F32(f as f32))
             } else {
                 Ok(AnyNum::F64(f))
@@ -250,19 +251,19 @@ impl<'a> Bytes<'a> {
 
             any_float(f)
         } else {
-            let max_u8 = std::u8::MAX as u128;
-            let max_u16 = std::u16::MAX as u128;
-            let max_u32 = std::u32::MAX as u128;
-            let max_u64 = std::u64::MAX as u128;
+            let max_u8 = u128::from(std::u8::MAX);
+            let max_u16 = u128::from(std::u16::MAX);
+            let max_u32 = u128::from(std::u32::MAX);
+            let max_u64 = u128::from(std::u64::MAX);
 
-            let min_i8 = std::i8::MIN as i128;
-            let max_i8 = std::i8::MAX as i128;
-            let min_i16 = std::i16::MIN as i128;
-            let max_i16 = std::i16::MAX as i128;
-            let min_i32 = std::i32::MIN as i128;
-            let max_i32 = std::i32::MAX as i128;
-            let min_i64 = std::i64::MIN as i128;
-            let max_i64 = std::i64::MAX as i128;
+            let min_i8 = i128::from(std::i8::MIN);
+            let max_i8 = i128::from(std::i8::MAX);
+            let min_i16 = i128::from(std::i16::MIN);
+            let max_i16 = i128::from(std::i16::MAX);
+            let min_i32 = i128::from(std::i32::MIN);
+            let max_i32 = i128::from(std::i32::MAX);
+            let min_i64 = i128::from(std::i64::MIN);
+            let max_i64 = i128::from(std::i64::MAX);
 
             if is_signed {
                 match self.signed_integer::<i128>() {
@@ -321,7 +322,7 @@ impl<'a> Bytes<'a> {
     }
 
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes
     }
 
     pub fn char(&mut self) -> Result<char> {
@@ -412,6 +413,35 @@ impl<'a> Bytes<'a> {
             true
         } else {
             false
+        }
+    }
+
+    pub fn consume_struct_name(&mut self, ident: &'static str) -> Result<bool> {
+        if self.check_ident("") {
+            Ok(false)
+        } else if self.check_ident(ident) {
+            let _ = self.advance(ident.len());
+
+            Ok(true)
+        } else if ident.is_empty() {
+            Err(self.error(ErrorCode::ExpectedStruct))
+        } else {
+            // Create a working copy
+            let mut bytes = *self;
+
+            // If the following is not even an identifier, then a missing
+            //  opening `(` seems more likely
+            let maybe_ident = bytes.identifier().map_err(|e| Error {
+                code: ErrorCode::ExpectedNamedStruct(ident),
+                position: e.position,
+            })?;
+
+            let found = std::str::from_utf8(maybe_ident).map_err(|e| bytes.error(e.into()))?;
+
+            Err(self.error(ErrorCode::ExpectedStructName {
+                expected: ident,
+                found: String::from(found),
+            }))
         }
     }
 
@@ -516,13 +546,20 @@ impl<'a> Bytes<'a> {
     where
         T: FromStr,
     {
-        for literal in &["inf", "-inf", "NaN"] {
+        for literal in &["inf", "+inf", "-inf", "NaN", "+NaN", "-NaN"] {
             if self.consume_ident(literal) {
                 return FromStr::from_str(literal).map_err(|_| unreachable!()); // must not fail
             }
         }
 
         let num_bytes = self.next_bytes_contained_in(is_float_char);
+
+        // Since `rustc` allows `1_0.0_1`, lint against underscores in floats
+        if let Some(err_bytes) = self.bytes[0..num_bytes].iter().position(|b| *b == b'_') {
+            let _ = self.advance(err_bytes);
+
+            return self.err(ErrorCode::FloatUnderscore);
+        }
 
         let s = unsafe { from_utf8_unchecked(&self.bytes[0..num_bytes]) };
         let res = FromStr::from_str(s).map_err(|_| self.error(ErrorCode::ExpectedFloat));
@@ -599,7 +636,7 @@ impl<'a> Bytes<'a> {
     }
 
     pub fn skip_ws(&mut self) -> Result<()> {
-        while self.peek().map_or(false, |c| is_whitespace_char(c)) {
+        while self.peek().map_or(false, is_whitespace_char) {
             let _ = self.advance_single();
         }
 
@@ -770,6 +807,7 @@ impl<'a> Bytes<'a> {
             b'n' => '\n',
             b'r' => '\r',
             b't' => '\t',
+            b'0' => '\0',
             b'x' => self.decode_ascii_escape()? as char,
             b'u' => {
                 self.expect_byte(b'{', ErrorCode::InvalidEscape("Missing {"))?;
@@ -788,7 +826,7 @@ impl<'a> Bytes<'a> {
 
                     let byte = self.decode_hex(byte)?;
                     bytes <<= 4;
-                    bytes |= byte as u32;
+                    bytes |= u32::from(byte);
 
                     num_digits += 1;
                 }
@@ -918,18 +956,6 @@ impl_num!(u8 u16 u32 u64 u128 i8 i16 i32 i64 i128);
 pub enum ParsedStr<'a> {
     Allocated(String),
     Slice(&'a str),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Position {
-    pub line: usize,
-    pub col: usize,
-}
-
-impl Display for Position {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}:{}", self.line, self.col)
-    }
 }
 
 #[cfg(test)]

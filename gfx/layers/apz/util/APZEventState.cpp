@@ -338,7 +338,8 @@ void APZEventState::ProcessTouchEvent(
     nsEventStatus aContentResponse,
     nsTArray<TouchBehaviorFlags>&& aAllowedTouchBehaviors) {
   if (aEvent.mMessage == eTouchStart && aEvent.mTouches.Length() > 0) {
-    mActiveElementManager->SetTargetElement(aEvent.mTouches[0]->GetTarget());
+    mActiveElementManager->SetTargetElement(
+        aEvent.mTouches[0]->GetOriginalTarget());
     mLastTouchIdentifier = aEvent.mTouches[0]->Identifier();
   }
   if (aEvent.mMessage == eTouchStart) {
@@ -503,10 +504,7 @@ void APZEventState::ProcessAPZStateChange(ViewID aViewId,
       nsIScrollableFrame* sf = nsLayoutUtils::FindScrollableFrameFor(aViewId);
       if (sf) {
         sf->SetTransformingByAPZ(true);
-      }
-      nsIScrollbarMediator* scrollbarMediator = do_QueryFrame(sf);
-      if (scrollbarMediator) {
-        scrollbarMediator->ScrollbarActivityStarted();
+        sf->ScrollbarActivityStarted();
       }
 
       nsIContent* content = nsLayoutUtils::FindContentFor(aViewId);
@@ -522,10 +520,7 @@ void APZEventState::ProcessAPZStateChange(ViewID aViewId,
       nsIScrollableFrame* sf = nsLayoutUtils::FindScrollableFrameFor(aViewId);
       if (sf) {
         sf->SetTransformingByAPZ(false);
-      }
-      nsIScrollbarMediator* scrollbarMediator = do_QueryFrame(sf);
-      if (scrollbarMediator) {
-        scrollbarMediator->ScrollbarActivityStopped();
+        sf->ScrollbarActivityStopped();
       }
 
       nsIContent* content = nsLayoutUtils::FindContentFor(aViewId);

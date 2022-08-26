@@ -20,7 +20,7 @@ using mozilla::ipc::PBackgroundParent;
 using mozilla::ipc::PrincipalInfo;
 
 // declared in ActorUtils.h
-PCacheStorageParent* AllocPCacheStorageParent(
+already_AddRefed<PCacheStorageParent> AllocPCacheStorageParent(
     PBackgroundParent* aManagingActor, Namespace aNamespace,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
   if (NS_WARN_IF(!QuotaManager::IsPrincipalInfoValid(aPrincipalInfo))) {
@@ -28,7 +28,8 @@ PCacheStorageParent* AllocPCacheStorageParent(
     return nullptr;
   }
 
-  return new CacheStorageParent(aManagingActor, aNamespace, aPrincipalInfo);
+  return MakeAndAddRef<CacheStorageParent>(aManagingActor, aNamespace,
+                                           aPrincipalInfo);
 }
 
 // declared in ActorUtils.h
@@ -89,7 +90,9 @@ mozilla::ipc::IPCResult CacheStorageParent::RecvPCacheOpConstructor(
 
   if (NS_WARN_IF(NS_FAILED(mVerifiedStatus))) {
     ErrorResult result(mVerifiedStatus);
-    Unused << CacheOpParent::Send__delete__(actor, std::move(result), void_t());
+
+    QM_WARNONLY_TRY(OkIf(
+        CacheOpParent::Send__delete__(actor, std::move(result), void_t())));
     return IPC_OK();
   }
 

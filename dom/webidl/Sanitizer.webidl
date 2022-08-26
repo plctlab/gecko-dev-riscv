@@ -4,7 +4,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://wicg.github.io/purification/
+ * https://wicg.github.io/sanitizer-api/#sanitizer
+ * https://wicg.github.io/sanitizer-api/#config
  *
  * * Copyright © 2020 the Contributors to the HTML Sanitizer API Specification,
  * published by the Web Platform Incubator Community Group under the W3C Community Contributor License Agreement (CLA).
@@ -16,12 +17,10 @@ typedef record<DOMString, sequence<DOMString>> AttributeMatchList;
 
 [Exposed=Window, SecureContext, Pref="dom.security.sanitizer.enabled"]
 interface Sanitizer {
-  [Throws]
+  [Throws, UseCounter]
   constructor(optional SanitizerConfig sanitizerConfig = {});
-  [Throws]
+  [UseCounter, Throws]
   DocumentFragment sanitize(SanitizerInput input);
-  [Throws]
-  Element? sanitizeFor(DOMString element, DOMString input);
 };
 
 dictionary SanitizerConfig {
@@ -31,5 +30,6 @@ dictionary SanitizerConfig {
   AttributeMatchList allowAttributes;
   AttributeMatchList dropAttributes;
   boolean allowCustomElements;
+  boolean allowUnknownMarkup;
   boolean allowComments;
 };

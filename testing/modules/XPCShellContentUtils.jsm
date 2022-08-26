@@ -10,27 +10,27 @@ var EXPORTED_SYMBOLS = ["XPCShellContentUtils"];
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 // Windowless browsers can create documents that rely on XUL Custom Elements:
-// eslint-disable-next-line mozilla/reject-chromeutils-import-params
-ChromeUtils.import("resource://gre/modules/CustomElementsListener.jsm", null);
+ChromeUtils.import("resource://gre/modules/CustomElementsListener.jsm");
 
 // Need to import ActorManagerParent.jsm so that the actors are initialized before
 // running extension XPCShell tests.
 ChromeUtils.import("resource://gre/modules/ActorManagerParent.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ContentTask: "resource://testing-common/ContentTask.jsm",
   HttpServer: "resource://testing-common/httpd.js",
   MessageChannel: "resource://testing-common/MessageChannel.jsm",
   TestUtils: "resource://testing-common/TestUtils.jsm",
 });
 
-XPCOMUtils.defineLazyServiceGetters(this, {
+XPCOMUtils.defineLazyServiceGetters(lazy, {
   proxyService: [
     "@mozilla.org/network/protocol-proxy-service;1",
     "nsIProtocolProxyService",
@@ -46,15 +46,10 @@ function frameScript() {
   const { MessageChannel } = ChromeUtils.import(
     "resource://testing-common/MessageChannel.jsm"
   );
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
 
   // We need to make sure that the ExtensionPolicy service has been initialized
   // as it sets up the observers that inject extension content scripts.
   Cc["@mozilla.org/addons/policy-service;1"].getService();
-
-  Services.obs.notifyObservers(this, "tab-content-frameloader-created");
 
   const messageListener = {
     async receiveMessage({ target, messageName, recipient, data, name }) {
@@ -236,7 +231,11 @@ class ContentPage {
   }
 
   sendMessage(msg, data) {
-    return MessageChannel.sendMessage(this.browser.messageManager, msg, data);
+    return lazy.MessageChannel.sendMessage(
+      this.browser.messageManager,
+      msg,
+      data
+    );
   }
 
   loadFrameScript(func) {
@@ -269,7 +268,7 @@ class ContentPage {
   }
 
   spawn(params, task) {
-    return ContentTask.spawn(this.browser, params, task);
+    return lazy.ContentTask.spawn(this.browser, params, task);
   }
 
   async close() {
@@ -286,7 +285,7 @@ class ContentPage {
     this.windowlessBrowser.close();
     this.windowlessBrowser = null;
 
-    await TestUtils.topicObserved(
+    await lazy.TestUtils.topicObserved(
       "message-manager-disconnect",
       subject => subject === messageManager
     );
@@ -358,7 +357,7 @@ var XPCShellContentUtils = {
    *        The HTTP server instance.
    */
   createHttpServer({ port = -1, hosts } = {}) {
-    let server = new HttpServer();
+    let server = new lazy.HttpServer();
     server.start(port);
 
     if (hosts) {
@@ -371,7 +370,7 @@ var XPCShellContentUtils = {
       }
 
       const proxyFilter = {
-        proxyInfo: proxyService.newProxyInfo(
+        proxyInfo: lazy.proxyService.newProxyInfo(
           "http",
           serverHost,
           serverPort,
@@ -391,9 +390,9 @@ var XPCShellContentUtils = {
         },
       };
 
-      proxyService.registerChannelFilter(proxyFilter, 0);
+      lazy.proxyService.registerChannelFilter(proxyFilter, 0);
       this.currentScope.registerCleanupFunction(() => {
-        proxyService.unregisterChannelFilter(proxyFilter);
+        lazy.proxyService.unregisterChannelFilter(proxyFilter);
       });
     }
 
@@ -464,7 +463,7 @@ var XPCShellContentUtils = {
       userContextId = undefined,
     } = {}
   ) {
-    ContentTask.setTestScope(this.currentScope);
+    lazy.ContentTask.setTestScope(this.currentScope);
 
     let contentPage = new ContentPage(
       remote,

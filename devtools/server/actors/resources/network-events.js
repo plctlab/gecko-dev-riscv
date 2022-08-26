@@ -6,12 +6,25 @@
 
 const Services = require("Services");
 const { Pool } = require("devtools/shared/protocol/Pool");
+const {
+  isWindowGlobalPartOfContext,
+} = require("devtools/server/actors/watcher/browsing-context-helpers.jsm");
+const {
+  WatcherRegistry,
+} = require("devtools/server/actors/watcher/WatcherRegistry.jsm");
+const Targets = require("devtools/server/actors/targets/index");
 
 loader.lazyRequireGetter(
   this,
   "NetworkObserver",
   "devtools/server/actors/network-monitor/network-observer",
   true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "NetworkUtils",
+  "devtools/server/actors/network-monitor/utils/network-utils"
 );
 
 loader.lazyRequireGetter(
@@ -48,22 +61,29 @@ class NetworkEventWatcher {
     this.onNetworkEventUpdated = onUpdated;
     // Boolean to know if we keep previous document network events or not.
     this.persist = false;
-
     this.listener = new NetworkObserver(
-      { browserId: watcherActor.browserId },
-      { onNetworkEvent: this.onNetworkEvent.bind(this) }
+      { sessionContext: watcherActor.sessionContext },
+      {
+        onNetworkEvent: this.onNetworkEvent.bind(this),
+        shouldIgnoreChannel: this.shouldIgnoreChannel.bind(this),
+      }
     );
 
     this.listener.init();
     Services.obs.addObserver(this, "window-global-destroyed");
   }
 
-  get conn() {
-    return this.watcherActor.conn;
+  /**
+   * Clear all the network events and the related actors.
+   */
+  clear() {
+    this.networkEvents.clear();
+    this.listener.clear();
+    this.pool.destroy();
   }
 
-  get browserId() {
-    return this.watcherActor.browserId;
+  get conn() {
+    return this.watcherActor.conn;
   }
 
   /**
@@ -155,21 +175,17 @@ class NetworkEventWatcher {
       return;
     }
     // If we persist, we will keep all requests allocated.
-    if (this.persist) {
+    // For now, consider that the Browser console and toolbox persist all the requests.
+    if (this.persist || this.watcherActor.sessionContext.type == "all") {
       return;
     }
-    // If the watcher is bound to one browser element (i.e. a tab), ignore
-    // windowGlobals related to other browser elements
+    // Only process WindowGlobals which are related to the debugged scope.
     if (
-      this.watcherActor.browserId &&
-      windowGlobal.browsingContext.browserId != this.watcherActor.browserId
+      !isWindowGlobalPartOfContext(
+        windowGlobal,
+        this.watcherActor.sessionContext
+      )
     ) {
-      return;
-    }
-    // Also ignore the initial document as:
-    // - it shouldn't spawn/store any request?
-    // - it would clear the navigation request too early
-    if (windowGlobal.isInitialDocument) {
       return;
     }
     const { innerWindowId } = windowGlobal;
@@ -187,14 +203,55 @@ class NetworkEventWatcher {
         // So do this when navigating a second time, we will navigate from a distinct WindowGlobal
         // and check that this is the top level window global and not an iframe one.
         // So that we avoid clearing the top navigation when an iframe navigates
+        //
+        // Avoid destroying the request if innerWindowId isn't set. This happens when we reload many times in a row.
+        // The previous navigation request will be cancelled and because of that its innerWindowId will be null.
+        // But the frontend will receive it after the navigation begins (after will-navigate) and will display it
+        // and try to fetch extra data about it. So, avoid destroying its NetworkEventActor.
       } else if (
+        child.innerWindowId &&
         child.innerWindowId != innerWindowId &&
         windowGlobal.browsingContext ==
-          this.watcherActor.browserElement.browsingContext
+          this.watcherActor.browserElement?.browsingContext
       ) {
         child.destroy();
       }
     }
+  }
+
+  /**
+   * Called by NetworkObserver in order to know if the channel should be ignored
+   */
+  shouldIgnoreChannel(channel) {
+    // When we are in the browser toolbox in parent process scope,
+    // the session context is still "all", but we are no longer watching frame and process targets.
+    // In this case, we should ignore all requests belonging to a BrowsingContext that isn't in the parent process
+    // (i.e. the process where this Watcher runs)
+    const isParentProcessOnlyBrowserToolbox =
+      this.watcherActor.sessionContext.type == "all" &&
+      !WatcherRegistry.isWatchingTargets(
+        this.watcherActor,
+        Targets.TYPES.FRAME
+      );
+    if (isParentProcessOnlyBrowserToolbox) {
+      // We should ignore all requests coming from BrowsingContext running in another process
+      const browsingContextID = NetworkUtils.getChannelBrowsingContextID(
+        channel
+      );
+      const browsingContext = BrowsingContext.get(browsingContextID);
+      // We accept any request that isn't bound to any BrowsingContext.
+      // This is most likely a privileged request done from a JSM/C++.
+      // `isInProcess` will be true, when the document executes in the parent process.
+      //
+      // Note that we will still accept all requests that aren't bound to any BrowsingContext
+      // See browser_resources_network_events_parent_process.js test with privileged request
+      // made from the content processes.
+      // We miss some attribute on channel/loadInfo to know that it comes from the content process.
+      if (browsingContext?.currentWindowGlobal.isInProcess === false) {
+        return true;
+      }
+    }
+    return false;
   }
 
   onNetworkEvent(event) {
@@ -205,8 +262,10 @@ class NetworkEventWatcher {
         `Got notified about channel ${channelId} more than once.`
       );
     }
+
     const actor = new NetworkEventActor(
-      this,
+      this.watcherActor.conn,
+      this.watcherActor.sessionContext,
       {
         onNetworkEventUpdate: this.onNetworkEventUpdate.bind(this),
         onNetworkEventDestroy: this.onNetworkEventDestroy.bind(this),
@@ -218,6 +277,8 @@ class NetworkEventWatcher {
     const resource = actor.asResource();
 
     this.networkEvents.set(resource.resourceId, {
+      browsingContextID: resource.browsingContextID,
+      innerWindowId: resource.innerWindowId,
       resourceId: resource.resourceId,
       resourceType: resource.resourceType,
       isBlocked: !!resource.blockedReason,
@@ -237,6 +298,8 @@ class NetworkEventWatcher {
     }
 
     const {
+      browsingContextID,
+      innerWindowId,
       resourceId,
       resourceType,
       resourceUpdates,
@@ -300,6 +363,8 @@ class NetworkEventWatcher {
         resourceType,
         resourceId,
         resourceUpdates,
+        browsingContextID,
+        innerWindowId,
       },
     ]);
   }
@@ -312,15 +377,12 @@ class NetworkEventWatcher {
 
   /**
    * Stop watching for network event related to a given Watcher Actor.
-   *
-   * @param WatcherActor watcherActor
-   *        The watcher actor from which we should stop observing network events
    */
-  destroy(watcherActor) {
+  destroy() {
     if (this.listener) {
+      this.clear();
       this.listener.destroy();
       Services.obs.removeObserver(this, "window-global-destroyed");
-      this.pool.destroy();
     }
   }
 }

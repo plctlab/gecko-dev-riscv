@@ -9,45 +9,53 @@ interface mixin NavigatorML {
 Navigator includes NavigatorML;
 WorkerNavigator includes NavigatorML;
 
-enum MLDevicePreference {
-  "default",
-  "gpu",
-  "cpu"
+enum MLDeviceType {
+  "cpu",
+  "gpu"
 };
 
 enum MLPowerPreference {
-  // Let the user agent select the most suitable behavior.
   "default",
-
-  // Prioritizes execution speed over power consumption.
   "high-performance",
-
-  // Prioritizes power consumption over other considerations such as execution speed.
   "low-power"
 };
 
 dictionary MLContextOptions {
-  // Preferred kind of device used
-  MLDevicePreference devicePreference = "default";
-
-  // Preference as related to power consumption
+  MLDeviceType deviceType = "cpu";
   MLPowerPreference powerPreference = "default";
 };
 
 [SecureContext, Exposed=(Window, DedicatedWorker)]
 interface ML {
-  // Create a context with options
   MLContext createContext(optional MLContextOptions options = {});
-
-  // Create a context from WebGL rendering context
-  MLContext createContext(WebGLRenderingContext glContext);
-
-  // Create a context from WebGPU device
   MLContext createContext(GPUDevice gpuDevice);
 };
 
+dictionary MLArrayInput {
+  required ArrayBufferView resource;
+  required sequence<long> dimensions;
+};
+
+typedef record<DOMString, (ArrayBufferView or MLArrayInput)> MLNamedArrayInputs;
+typedef record<DOMString, ArrayBufferView> MLNamedArrayOutputs;
+
 [SecureContext, Exposed=(Window, DedicatedWorker)]
 interface MLContext {};
+
+partial interface MLContext {
+  [Exposed=(DedicatedWorker)]
+  undefined compute(MLGraph graph, MLNamedArrayInputs inputs, MLNamedArrayOutputs outputs);
+};
+
+partial interface MLContext {
+  Promise<undefined> computeAsync(MLGraph graph, MLNamedArrayInputs inputs,
+
+                    MLNamedArrayOutputs outputs);
+};
+
+partial interface MLContext {
+  MLCommandEncoder createCommandEncoder();
+};
 
 enum MLInputOperandLayout {
   "nchw",
@@ -81,7 +89,7 @@ interface MLOperator {};
 typedef record<DOMString, MLOperand> MLNamedOperands;
 
 dictionary MLBufferResourceView {
-  required (WebGLBuffer or GPUBuffer) resource;
+  required GPUBuffer resource;
   unsigned long long offset = 0;
   unsigned long long size;
 };
@@ -102,8 +110,12 @@ interface MLGraphBuilder {
   // Create a single-value operand from the specified number of the specified type.
   MLOperand constant(double value, optional MLOperandType type = "float32");
 
-  // Compile the graph up to the specified output operands
+  // Compile the graph up to the specified output operands synchronously.
+  [Exposed=(DedicatedWorker)]
   MLGraph build(MLNamedOperands outputs);
+
+  // Compile the graph up to the specified output operands asynchronously.
+  Promise<MLGraph> buildAsync(MLNamedOperands outputs);
 };
 
 dictionary MLBatchNormalizationOptions {
@@ -133,7 +145,7 @@ partial interface MLGraphBuilder {
   MLOperand concat(sequence<MLOperand> inputs, long axis);
 };
 
-enum MLFilterOperandLayout {
+enum MLConv2dFilterOperandLayout {
   "oihw",
   "hwio",
   "ohwi",
@@ -150,19 +162,41 @@ dictionary MLConv2dOptions {
   sequence<long> padding;
   sequence<long> strides;
   sequence<long> dilations;
-  sequence<long> outputPadding;
-  sequence<long> outputSizes;
   MLAutoPad autoPad = "explicit";
-  boolean transpose = false;
   long groups = 1;
   MLInputOperandLayout inputLayout = "nchw";
-  MLFilterOperandLayout filterLayout = "oihw";
+  MLConv2dFilterOperandLayout filterLayout = "oihw";
   MLOperand bias;
   MLOperator activation;
 };
 
 partial interface MLGraphBuilder {
   MLOperand conv2d(MLOperand input, MLOperand filter, optional MLConv2dOptions options = {});
+};
+
+enum MLConvTranspose2dFilterOperandLayout {
+  "iohw",
+  "hwoi",
+  "ohwi"
+};
+
+dictionary MLConvTranspose2dOptions {
+  sequence<long> padding;
+  sequence<long> strides;
+  sequence<long> dilations;
+  sequence<long> outputPadding;
+  sequence<long> outputSizes;
+  MLAutoPad autoPad = "explicit";
+  long groups = 1;
+  MLInputOperandLayout inputLayout = "nchw";
+  MLConvTranspose2dFilterOperandLayout filterLayout = "iohw";
+  MLOperand bias;
+  MLOperator activation;
+};
+
+partial interface MLGraphBuilder {
+  MLOperand convTranspose2d(MLOperand input, MLOperand filter,
+                            optional MLConvTranspose2dOptions options = {});
 };
 
 partial interface MLGraphBuilder {
@@ -317,6 +351,11 @@ partial interface MLGraphBuilder {
   MLOperand pad(MLOperand input, MLOperand padding, optional MLPadOptions options = {});
 };
 
+enum MLRoundingType {
+  "floor",
+  "ceil"
+};
+
 dictionary MLPool2dOptions {
   sequence<long> windowDimensions;
   sequence<long> padding;
@@ -324,6 +363,8 @@ dictionary MLPool2dOptions {
   sequence<long> dilations;
   MLAutoPad autoPad = "explicit";
   MLInputOperandLayout layout = "nchw";
+  MLRoundingType roundingType = "floor";
+  sequence<long> outputSizes;
 };
 
 partial interface MLGraphBuilder {
@@ -360,14 +401,15 @@ enum MLInterpolationMode {
   "linear"
 };
 
-dictionary MLResampleOptions {
+dictionary MLResample2dOptions {
   MLInterpolationMode mode = "nearest-neighbor";
   sequence<float> scales;
   sequence<long> sizes;
+  sequence<long> axes;
 };
 
 partial interface MLGraphBuilder {
-  MLOperand resample(MLOperand input, optional MLResampleOptions options = {});
+  MLOperand resample2d(MLOperand input, optional MLResample2dOptions options = {});
 };
 
 partial interface MLGraphBuilder {
@@ -437,17 +479,30 @@ partial interface MLGraphBuilder {
   MLOperand transpose(MLOperand input, optional MLTransposeOptions options = {});
 };
 
-typedef (MLBufferView or WebGLTexture or GPUTexture) MLResource;
+[SecureContext, Exposed=(Window, DedicatedWorker)]
+interface MLGraph {};
 
-dictionary MLInput {
-  required MLResource resource;
+typedef (GPUBuffer or GPUTexture) MLGPUResource;
+
+dictionary MLGPUInput {
+  required MLGPUResource resource;
   required sequence<long> dimensions;
 };
 
-typedef record<DOMString, (MLResource or MLInput)> MLNamedInputs;
-typedef record<DOMString, MLResource> MLNamedOutputs;
+typedef record<DOMString, (MLGPUResource or MLGPUInput)> MLNamedGPUInputs;
+typedef record<DOMString, MLGPUResource> MLNamedGPUOutputs;
 
 [SecureContext, Exposed=(Window, DedicatedWorker)]
-interface MLGraph {
-  undefined compute(MLNamedInputs inputs, MLNamedOutputs outputs);
+interface MLCommandEncoder {};
+
+partial interface MLCommandEncoder {
+  undefined initializeGraph(MLGraph graph);
+};
+
+partial interface MLCommandEncoder {
+  undefined dispatch(MLGraph graph, MLNamedGPUInputs inputs, MLNamedGPUOutputs outputs);
+};
+
+partial interface MLCommandEncoder {
+  GPUCommandBuffer finish(optional GPUCommandBufferDescriptor descriptor = {});
 };

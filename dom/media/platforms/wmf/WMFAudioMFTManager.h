@@ -9,6 +9,7 @@
 
 #  include "MFTDecoder.h"
 #  include "WMF.h"
+#  include "WMFDecoderModule.h"
 #  include "WMFMediaDataDecoder.h"
 #  include "mozilla/RefPtr.h"
 
@@ -39,16 +40,20 @@ class WMFAudioMFTManager : public MFTManager {
  private:
   HRESULT UpdateOutputType();
 
+  bool IsPartialOutput(const media::TimeUnit& aNewOutputDuration,
+                       const bool aIsRateChangedToHigher) const;
+
   uint32_t mAudioChannels;
   AudioConfig::ChannelLayout::ChannelMap mChannelsMap;
   uint32_t mAudioRate;
   nsTArray<BYTE> mUserData;
 
-  enum StreamType { Unknown, AAC, MP3 };
-  StreamType mStreamType;
+  WMFStreamType mStreamType;
 
-  const GUID& GetMFTGUID();
   const GUID& GetMediaSubtypeGUID();
+
+  media::TimeUnit mLastInputTime = media::TimeUnit::Zero();
+  media::TimeUnit mLastOutputDuration = media::TimeUnit::Zero();
 
   bool mFirstFrame = true;
 };

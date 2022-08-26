@@ -1,3 +1,5 @@
-pylint==2.10.2
-typed-ast==1.4.1
-
+pylint==2.13.5
+colorama==0.4.5 # Needed on Windows.
+dill==0.3.4
+tomli==1.2.2
+typing-extensions==3.10.0.2

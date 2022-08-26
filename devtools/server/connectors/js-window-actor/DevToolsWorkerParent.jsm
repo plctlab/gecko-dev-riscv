@@ -5,7 +5,9 @@
 "use strict";
 
 var EXPORTED_SYMBOLS = ["DevToolsWorkerParent"];
-const { loader } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { loader } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const { EventEmitter } = ChromeUtils.import(
   "resource://gre/modules/EventEmitter.jsm"
 );
@@ -13,8 +15,10 @@ const { WatcherRegistry } = ChromeUtils.import(
   "resource://devtools/server/actors/watcher/WatcherRegistry.jsm"
 );
 
+const lazy = {};
+
 loader.lazyRequireGetter(
-  this,
+  lazy,
   "JsWindowActorTransport",
   "devtools/shared/transport/js-window-actor-transport",
   true
@@ -48,14 +52,14 @@ class DevToolsWorkerParent extends JSWindowActorParent {
   }
 
   /**
-   * Request the content process to create Worker Targets if workers matching the browserId
+   * Request the content process to create Worker Targets if workers matching the context
    * are already available.
    */
   async instantiateWorkerTargets({
     watcherActorID,
     connectionPrefix,
-    browserId,
-    watchedData,
+    sessionContext,
+    sessionData,
   }) {
     try {
       await this.sendQuery(
@@ -63,8 +67,8 @@ class DevToolsWorkerParent extends JSWindowActorParent {
         {
           watcherActorID,
           connectionPrefix,
-          browserId,
-          watchedData,
+          sessionContext,
+          sessionData,
         }
       );
     } catch (e) {
@@ -78,26 +82,27 @@ class DevToolsWorkerParent extends JSWindowActorParent {
     }
   }
 
-  destroyWorkerTargets({ watcher, browserId }) {
+  destroyWorkerTargets({ watcherActorID, sessionContext }) {
     return this.sendAsyncMessage("DevToolsWorkerParent:destroy", {
-      watcherActorID: watcher.actorID,
-      browserId,
+      watcherActorID,
+      sessionContext,
     });
   }
 
   /**
    * Communicate to the content process that some data have been added.
    */
-  async addWatcherDataEntry({ watcherActorID, type, entries }) {
+  async addSessionDataEntry({ watcherActorID, sessionContext, type, entries }) {
     try {
-      await this.sendQuery("DevToolsWorkerParent:addWatcherDataEntry", {
+      await this.sendQuery("DevToolsWorkerParent:addSessionDataEntry", {
         watcherActorID,
+        sessionContext,
         type,
         entries,
       });
     } catch (e) {
       console.warn(
-        "Failed to add watcher data entry for worker targets in browsing context",
+        "Failed to add session data entry for worker targets in browsing context",
         this.browsingContext.id,
         "and watcher actor id",
         watcherActorID
@@ -109,9 +114,10 @@ class DevToolsWorkerParent extends JSWindowActorParent {
   /**
    * Communicate to the content process that some data have been removed.
    */
-  removeWatcherDataEntry({ watcherActorID, type, entries }) {
-    this.sendAsyncMessage("DevToolsWorkerParent:removeWatcherDataEntry", {
+  removeSessionDataEntry({ watcherActorID, sessionContext, type, entries }) {
+    this.sendAsyncMessage("DevToolsWorkerParent:removeSessionDataEntry", {
       watcherActorID,
+      sessionContext,
       type,
       entries,
     });
@@ -140,7 +146,7 @@ class DevToolsWorkerParent extends JSWindowActorParent {
       connection.on("closed", this._onConnectionClosed);
 
       // Create a js-window-actor based transport.
-      const transport = new JsWindowActorTransport(this, forwardingPrefix);
+      const transport = new lazy.JsWindowActorTransport(this, forwardingPrefix);
       transport.hooks = {
         onPacket: connection.send.bind(connection),
         onTransportClosed() {},
@@ -193,18 +199,17 @@ class DevToolsWorkerParent extends JSWindowActorParent {
   }
 
   _onConnectionClosed(status, prefix) {
-    if (this._connections.has(prefix)) {
-      const { watcher } = this._connections.get(prefix);
-      this._cleanupConnection(watcher.conn);
-    }
+    this._unregisterWatcher(prefix);
   }
 
-  async _cleanupConnection(connection) {
-    if (!this._connections || !this._connections.has(connection.prefix)) {
+  async _unregisterWatcher(connectionPrefix) {
+    const connectionInfo = this._connections.get(connectionPrefix);
+    if (!connectionInfo) {
       return;
     }
 
-    const { transport } = this._connections.get(connection.prefix);
+    const { watcher, transport } = connectionInfo;
+    const connection = watcher.conn;
 
     connection.off("closed", this._onConnectionClosed);
     if (transport) {
@@ -214,7 +219,8 @@ class DevToolsWorkerParent extends JSWindowActorParent {
       transport.close();
     }
 
-    this._connections.delete(connection.prefix);
+    this._connections.delete(connectionPrefix);
+
     if (!this._connections.size) {
       this._destroy();
     }
@@ -231,7 +237,7 @@ class DevToolsWorkerParent extends JSWindowActorParent {
         watcher.notifyTargetDestroyed(actor);
       }
 
-      this._cleanupConnection(watcher.conn);
+      this._unregisterWatcher(watcher.conn.prefix);
     }
   }
 

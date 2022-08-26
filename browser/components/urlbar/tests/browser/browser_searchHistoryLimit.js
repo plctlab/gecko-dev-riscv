@@ -9,13 +9,13 @@
 
 "use strict";
 
-const { SearchSuggestionController } = ChromeUtils.import(
-  "resource://gre/modules/SearchSuggestionController.jsm"
+const { SearchSuggestionController } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchSuggestionController.sys.mjs"
 );
 
 let gEngine;
 
-add_task(async function setup() {
+add_setup(async function() {
   await SearchTestUtils.installSearchExtension();
   gEngine = Services.search.getEngineByName("Example");
   let oldDefaultEngine = await Services.search.getDefault();

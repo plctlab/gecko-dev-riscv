@@ -50,18 +50,13 @@
  * dialog is accepted.
  */
 
-/* import-globals-from editBookmark.js */
-/* import-globals-from controller.js */
+/* import-globals-from instantEditBookmark.js */
 
 /* Shared Places Import - change other consumers if you change this: */
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  PlacesUIUtils: "resource:///modules/PlacesUIUtils.jsm",
-  PlacesTransactions: "resource://gre/modules/PlacesTransactions.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
 });
 XPCOMUtils.defineLazyScriptGetter(
@@ -421,13 +416,16 @@ var BookmarkPropertiesPanel = {
 
   onDialogAccept() {
     // We must blur current focused element to save its changes correctly
-    document.commandDispatcher.focusedElement.blur();
+    document.commandDispatcher.focusedElement?.blur();
+
+    // Get the states to compare bookmark and editedBookmark
+    window.arguments[0].bookmarkState = gEditItemOverlay._bookmarkState;
+
     // We have to uninit the panel first, otherwise late changes could force it
     // to commit more transactions.
     gEditItemOverlay.uninitPanel(true);
-    if (this._node.bookmarkGuid) {
-      window.arguments[0].bookmarkGuid = this._node.bookmarkGuid;
-    }
+
+    window.arguments[0].bookmarkGuid = this._node.bookmarkGuid;
   },
 
   onDialogCancel() {

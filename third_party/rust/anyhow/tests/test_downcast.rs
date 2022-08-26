@@ -1,4 +1,4 @@
-#![allow(clippy::wildcard_imports)]
+#![allow(clippy::assertions_on_result_states, clippy::wildcard_imports)]
 
 mod common;
 mod drop;
@@ -82,6 +82,15 @@ fn test_drop() {
     let error = Error::new(DetectDrop::new(&has_dropped));
     drop(error.downcast::<DetectDrop>().unwrap());
     assert!(has_dropped.get());
+}
+
+#[test]
+fn test_as_ref() {
+    let error = bail_error().unwrap_err();
+    let ref_dyn: &dyn StdError = error.as_ref();
+    assert_eq!("oh no!", ref_dyn.to_string());
+    let ref_dyn_send_sync: &(dyn StdError + Send + Sync) = error.as_ref();
+    assert_eq!("oh no!", ref_dyn_send_sync.to_string());
 }
 
 #[test]

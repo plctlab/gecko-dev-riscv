@@ -31,6 +31,12 @@
 #include "vm/JSObject-inl.h"
 #include "vm/Shape-inl.h"
 
+#ifdef ENABLE_RECORD_TUPLE
+// Defined in vm/RecordTupleShared.{h,cpp}. We cannot include that file
+// because it causes circular dependencies.
+extern bool js::IsExtendedPrimitive(const JSObject& obj);
+#endif
+
 namespace js {
 
 inline uint32_t NativeObject::numFixedSlotsMaybeForwarded() const {
@@ -54,7 +60,7 @@ inline void NativeObject::setDenseElementHole(uint32_t index) {
 }
 
 inline void NativeObject::removeDenseElementForSparseIndex(uint32_t index) {
-  MOZ_ASSERT(containsPure(INT_TO_JSID(index)));
+  MOZ_ASSERT(containsPure(PropertyKey::Int(index)));
   if (containsDenseElement(index)) {
     setDenseElementHole(index);
   }
@@ -423,7 +429,7 @@ inline bool NativeObject::isInWholeCellBuffer() const {
 /* static */
 inline NativeObject* NativeObject::create(
     JSContext* cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
-    js::HandleShape shape, js::gc::AllocSite* site /* = nullptr */) {
+    js::Handle<Shape*> shape, js::gc::AllocSite* site /* = nullptr */) {
   debugCheckNewObject(shape, kind, heap);
 
   const JSClass* clasp = shape->getObjectClass();
@@ -617,7 +623,8 @@ inline bool NativeObject::denseElementsMaybeInIteration() {
  *  - Otherwise no property was resolved. Set propp to NotFound and return true.
  */
 static MOZ_ALWAYS_INLINE bool CallResolveOp(JSContext* cx,
-                                            HandleNativeObject obj, HandleId id,
+                                            Handle<NativeObject*> obj,
+                                            HandleId id,
                                             PropertyResult* propp) {
   MOZ_ASSERT(!cx->isHelperThreadContext());
 
@@ -645,8 +652,8 @@ static MOZ_ALWAYS_INLINE bool CallResolveOp(JSContext* cx,
   MOZ_ASSERT_IF(obj->getClass()->getMayResolve(),
                 obj->getClass()->getMayResolve()(cx->names(), id, obj));
 
-  if (JSID_IS_INT(id)) {
-    uint32_t index = JSID_TO_INT(id);
+  if (id.isInt()) {
+    uint32_t index = id.toInt();
     if (obj->containsDenseElement(index)) {
       propp->setDenseElement(index);
       return true;
@@ -681,10 +688,13 @@ static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
   // violate this guidance are the ModuleEnvironmentObject.
   MOZ_ASSERT_IF(obj->getOpsLookupProperty(),
                 obj->template is<ModuleEnvironmentObject>());
+#ifdef ENABLE_RECORD_TUPLE
+  MOZ_ASSERT(!js::IsExtendedPrimitive(*obj));
+#endif
 
   // Check for a native dense element.
-  if (JSID_IS_INT(id)) {
-    uint32_t index = JSID_TO_INT(id);
+  if (id.isInt()) {
+    uint32_t index = id.toInt();
     if (obj->containsDenseElement(index)) {
       propp->setDenseElement(index);
       return true;
@@ -695,15 +705,7 @@ static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
   // so that integer properties on the prototype are ignored even for out
   // of bounds accesses.
   if (obj->template is<TypedArrayObject>()) {
-    mozilla::Maybe<uint64_t> index;
-    if (!ToTypedArrayIndex(cx, id, &index)) {
-      if (!allowGC) {
-        cx->recoverFromOutOfMemory();
-      }
-      return false;
-    }
-
-    if (index.isSome()) {
+    if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
       uint64_t idx = index.value();
       if (idx < obj->template as<TypedArrayObject>().length()) {
         propp->setTypedArrayElement(idx);
@@ -854,11 +856,13 @@ inline bool IsPackedArray(JSObject* obj) {
   return true;
 }
 
-MOZ_ALWAYS_INLINE bool AddDataPropertyNonPrototype(JSContext* cx,
-                                                   HandlePlainObject obj,
-                                                   HandleId id, HandleValue v) {
-  MOZ_ASSERT(!JSID_IS_INT(id));
-  MOZ_ASSERT(!obj->isUsedAsPrototype());
+// Like AddDataProperty but optimized for plain objects. Plain objects don't
+// have an addProperty hook.
+MOZ_ALWAYS_INLINE bool AddDataPropertyToPlainObject(JSContext* cx,
+                                                    Handle<PlainObject*> obj,
+                                                    HandleId id,
+                                                    HandleValue v) {
+  MOZ_ASSERT(!id.isInt());
 
   uint32_t slot;
   if (!NativeObject::addProperty(cx, obj, id,

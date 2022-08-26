@@ -5,7 +5,9 @@
 "use strict";
 
 var EXPORTED_SYMBOLS = ["DevToolsFrameParent"];
-const { loader } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { loader } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const { EventEmitter } = ChromeUtils.import(
   "resource://gre/modules/EventEmitter.jsm"
 );
@@ -13,8 +15,10 @@ const { WatcherRegistry } = ChromeUtils.import(
   "resource://devtools/server/actors/watcher/WatcherRegistry.jsm"
 );
 
+const lazy = {};
+
 loader.lazyRequireGetter(
-  this,
+  lazy,
   "JsWindowActorTransport",
   "devtools/shared/transport/js-window-actor-transport",
   true
@@ -55,38 +59,46 @@ class DevToolsFrameParent extends JSWindowActorParent {
   async instantiateTarget({
     watcherActorID,
     connectionPrefix,
-    browserId,
-    watchedData,
+    sessionContext,
+    sessionData,
   }) {
     await this.sendQuery("DevToolsFrameParent:instantiate-already-available", {
       watcherActorID,
       connectionPrefix,
-      browserId,
-      watchedData,
+      sessionContext,
+      sessionData,
     });
   }
 
-  destroyTarget({ watcherActorID, browserId }) {
+  /**
+   * @param {object} arg
+   * @param {object} arg.sessionContext
+   * @param {object} arg.options
+   * @param {boolean} arg.options.isModeSwitching
+   *        true when this is called as the result of a change to the devtools.browsertoolbox.scope pref
+   */
+  destroyTarget({ watcherActorID, sessionContext, options }) {
     this.sendAsyncMessage("DevToolsFrameParent:destroy", {
       watcherActorID,
-      browserId,
+      sessionContext,
+      options,
     });
   }
 
   /**
    * Communicate to the content process that some data have been added.
    */
-  async addWatcherDataEntry({ watcherActorID, browserId, type, entries }) {
+  async addSessionDataEntry({ watcherActorID, sessionContext, type, entries }) {
     try {
-      await this.sendQuery("DevToolsFrameParent:addWatcherDataEntry", {
+      await this.sendQuery("DevToolsFrameParent:addSessionDataEntry", {
         watcherActorID,
-        browserId,
+        sessionContext,
         type,
         entries,
       });
     } catch (e) {
       console.warn(
-        "Failed to add watcher data entry for frame targets in browsing context",
+        "Failed to add session data entry for frame targets in browsing context",
         this.browsingContext.id
       );
       console.warn(e);
@@ -96,10 +108,10 @@ class DevToolsFrameParent extends JSWindowActorParent {
   /**
    * Communicate to the content process that some data have been removed.
    */
-  removeWatcherDataEntry({ watcherActorID, browserId, type, entries }) {
-    this.sendAsyncMessage("DevToolsFrameParent:removeWatcherDataEntry", {
+  removeSessionDataEntry({ watcherActorID, sessionContext, type, entries }) {
+    this.sendAsyncMessage("DevToolsFrameParent:removeSessionDataEntry", {
       watcherActorID,
-      browserId,
+      sessionContext,
       type,
       entries,
     });
@@ -118,7 +130,7 @@ class DevToolsFrameParent extends JSWindowActorParent {
     connection.on("closed", this._onConnectionClosed);
 
     // Create a js-window-actor based transport.
-    const transport = new JsWindowActorTransport(this, forwardingPrefix);
+    const transport = new lazy.JsWindowActorTransport(this, forwardingPrefix);
     transport.hooks = {
       onPacket: connection.send.bind(connection),
       onTransportClosed() {},
@@ -143,18 +155,24 @@ class DevToolsFrameParent extends JSWindowActorParent {
     watcher.notifyTargetAvailable(actor);
   }
 
-  _onConnectionClosed(status, prefix) {
-    if (this._connections.has(prefix)) {
-      const { connection } = this._connections.get(prefix);
-      this._cleanupConnection(connection);
-      this._connections.delete(connection.prefix);
-    }
+  _onConnectionClosed(status, connectionPrefix) {
+    this._unregisterWatcher(connectionPrefix);
   }
 
-  async _cleanupConnection(connection) {
-    const { forwardingPrefix, transport } = this._connections.get(
-      connection.prefix
-    );
+  /**
+   * Given a watcher connection prefix, unregister everything related to the Watcher
+   * in this JSWindowActor.
+   *
+   * @param {String} connectionPrefix
+   *        The connection prefix of the watcher to unregister
+   */
+  async _unregisterWatcher(connectionPrefix) {
+    const connectionInfo = this._connections.get(connectionPrefix);
+    if (!connectionInfo) {
+      return;
+    }
+    const { forwardingPrefix, transport, connection } = connectionInfo;
+    this._connections.delete(connectionPrefix);
 
     connection.off("closed", this._onConnectionClosed);
     if (transport) {
@@ -181,12 +199,15 @@ class DevToolsFrameParent extends JSWindowActorParent {
    * When navigating away, we will destroy them and call this method.
    * Then when navigating back, we will reuse the same instances.
    * So that we should be careful to keep the class fully function and only clear all its state.
+   *
+   * @param {object} options
+   * @param {boolean} options.isModeSwitching
+   *        true when this is called as the result of a change to the devtools.browsertoolbox.scope pref
    */
-  _closeAllConnections() {
-    for (const { actor, connection, watcher } of this._connections.values()) {
-      watcher.notifyTargetDestroyed(actor);
-
-      this._cleanupConnection(connection);
+  _closeAllConnections(options) {
+    for (const { actor, watcher } of this._connections.values()) {
+      watcher.notifyTargetDestroyed(actor, options);
+      this._unregisterWatcher(watcher.conn.prefix);
     }
     this._connections.clear();
   }
@@ -212,9 +233,15 @@ class DevToolsFrameParent extends JSWindowActorParent {
       case "DevToolsFrameChild:destroy":
         for (const { form, watcherActorID } of message.data.actors) {
           const watcher = WatcherRegistry.getWatcher(watcherActorID);
-          watcher.notifyTargetDestroyed(form);
+          // As we instruct to destroy all targets when the watcher is destroyed,
+          // we may easily receive the target destruction notification *after*
+          // the watcher has been removed from the registry.
+          if (watcher) {
+            watcher.notifyTargetDestroyed(form, message.data.options);
+            this._unregisterWatcher(watcher.conn.prefix);
+          }
         }
-        return this._closeAllConnections();
+        return null;
       case "DevToolsFrameChild:bf-cache-navigation-pageshow":
         for (const watcherActor of WatcherRegistry.getWatchersForBrowserId(
           this.browsingContext.browserId

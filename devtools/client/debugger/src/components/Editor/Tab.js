@@ -3,6 +3,7 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import React, { PureComponent } from "react";
+import PropTypes from "prop-types";
 import { connect } from "../../utils/connect";
 
 import { showMenu, buildMenu } from "../../context-menu/menu";
@@ -28,13 +29,33 @@ import {
   getSelectedSource,
   getActiveSearch,
   getSourcesForTabs,
-  getHasSiblingOfSameName,
+  isSourceBlackBoxed,
   getContext,
 } from "../../selectors";
 
 import classnames from "classnames";
 
 class Tab extends PureComponent {
+  static get propTypes() {
+    return {
+      activeSearch: PropTypes.string,
+      closeTab: PropTypes.func.isRequired,
+      closeTabs: PropTypes.func.isRequired,
+      copyToClipboard: PropTypes.func.isRequired,
+      cx: PropTypes.object.isRequired,
+      onDragEnd: PropTypes.func.isRequired,
+      onDragOver: PropTypes.func.isRequired,
+      onDragStart: PropTypes.func.isRequired,
+      selectSource: PropTypes.func.isRequired,
+      selectedSource: PropTypes.object,
+      showSource: PropTypes.func.isRequired,
+      source: PropTypes.object.isRequired,
+      tabSources: PropTypes.array.isRequired,
+      toggleBlackBox: PropTypes.func.isRequired,
+      togglePrettyPrint: PropTypes.func.isRequired,
+    };
+  }
+
   onTabContextMenu = (event, tab) => {
     event.preventDefault();
     this.showContextMenu(event, tab);
@@ -52,6 +73,7 @@ class Tab extends PureComponent {
       togglePrettyPrint,
       selectedSource,
       source,
+      isBlackBoxed,
     } = this.props;
 
     const tabCount = tabSources.length;
@@ -125,7 +147,7 @@ class Tab extends PureComponent {
       {
         item: {
           ...tabMenuItems.toggleBlackBox,
-          label: source.isBlackBoxed
+          label: isBlackBoxed
             ? L10N.getStr("ignoreContextItem.unignore")
             : L10N.getStr("ignoreContextItem.ignore"),
           disabled: !shouldBlackbox(source),
@@ -160,7 +182,6 @@ class Tab extends PureComponent {
       closeTab,
       source,
       tabSources,
-      hasSiblingOfSameName,
       onDragOver,
       onDragStart,
       onDragEnd,
@@ -190,7 +211,7 @@ class Tab extends PureComponent {
     });
 
     const path = getDisplayPath(source, tabSources);
-    const query = hasSiblingOfSameName ? getSourceQueryString(source) : "";
+    const query = getSourceQueryString(source);
 
     return (
       <div
@@ -232,8 +253,8 @@ const mapStateToProps = (state, { source }) => {
     cx: getContext(state),
     tabSources: getSourcesForTabs(state),
     selectedSource,
+    isBlackBoxed: isSourceBlackBoxed(state, source),
     activeSearch: getActiveSearch(state),
-    hasSiblingOfSameName: getHasSiblingOfSameName(state, source),
   };
 };
 

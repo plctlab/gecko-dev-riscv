@@ -12,7 +12,6 @@ const { AppConstants } = ChromeUtils.import(
 const { BitsError, BitsUnknownError } = ChromeUtils.import(
   "resource://gre/modules/Bits.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 var AUSTLMY = {
   // Telemetry for the application update background update check occurs when
@@ -632,6 +631,25 @@ var AUSTLMY = {
    */
   pingMoveResult: function UT_pingMoveResult(aResult) {
     Services.telemetry.keyedScalarAdd("update.move_result", aResult, 1);
+  },
+
+  pingSuppressPrompts: function UT_pingSuppressPrompts() {
+    try {
+      let val = Services.prefs.getBoolPref("app.update.suppressPrompts", false);
+      if (val === true) {
+        Services.telemetry.scalarSet("update.suppress_prompts", true);
+      }
+    } catch (e) {
+      Cu.reportError(e);
+    }
+  },
+
+  pingPinPolicy: function UT_pingPinPolicy(updatePin) {
+    try {
+      Services.telemetry.scalarSet("update.version_pin", updatePin);
+    } catch (e) {
+      Cu.reportError(e);
+    }
   },
 };
 Object.freeze(AUSTLMY);

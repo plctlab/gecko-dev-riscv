@@ -139,7 +139,7 @@ class Builder {
   // Check that |thing| is in the same compartment as our debuggerObject. Used
   // for assertions when constructing BuiltThings. We can overload this as we
   // add more instantiations of BuiltThing.
-#if DEBUG
+#ifdef DEBUG
   void assertBuilt(JSObject* obj);
 #else
   void assertBuilt(JSObject* obj) {}
@@ -160,7 +160,7 @@ class Builder {
     PersistentRooted<T> value;
 
     BuiltThing(JSContext* cx, Builder& owner_,
-               T value_ = SafelyInitialized<T>())
+               T value_ = SafelyInitialized<T>::create())
         : owner(owner_), value(cx, value_) {
       owner.assertBuilt(value_);
     }

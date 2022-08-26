@@ -8,6 +8,7 @@
  */
 
 import { PROMISE } from "../utils/middleware/promise";
+import { asyncStore } from "../../utils/prefs";
 import {
   getBreakpointsList,
   getXHRBreakpoints,
@@ -23,8 +24,8 @@ import {
   enableBreakpoint,
   disableBreakpoint,
 } from "./modify";
-import remapLocations from "./remapLocations";
 
+import { isOriginalId } from "devtools-source-map";
 // this will need to be changed so that addCLientBreakpoint is removed
 
 export * from "./breakpointPositions";
@@ -127,10 +128,11 @@ export function toggleBreakpointsAtLine(cx, shouldDisableBreakpoints, line) {
 export function removeAllBreakpoints(cx) {
   return async ({ dispatch, getState }) => {
     const breakpointList = getBreakpointsList(getState());
+
     await Promise.all(
       breakpointList.map(bp => dispatch(removeBreakpoint(cx, bp)))
     );
-    dispatch({ type: "REMOVE_BREAKPOINTS" });
+    dispatch({ type: "CLEAR_BREAKPOINTS" });
   };
 }
 
@@ -163,13 +165,34 @@ export function removeBreakpointsInSource(cx, source) {
   };
 }
 
-export function remapBreakpoints(cx, sourceId) {
+/**
+ * Update the original location information of breakpoints.
+
+/*
+ * Update breakpoints for a source that just got pretty printed.
+ * This method maps the breakpoints currently set only against the
+ * non-pretty-printed (generated) source to the related pretty-printed
+ * (original) source by querying the SourceMap service.
+ *
+ * @param {Objeect} cx
+ * @param {String} sourceId - the generated source id
+ */
+export function updateBreakpointsForNewPrettyPrintedSource(cx, sourceId) {
   return async ({ dispatch, getState, sourceMaps }) => {
+    if (isOriginalId(sourceId)) {
+      console.error("Can't update breakpoints on original sources");
+      return;
+    }
     const breakpoints = getBreakpointsForSource(getState(), sourceId);
-    const newBreakpoints = await remapLocations(
-      breakpoints,
-      sourceId,
-      sourceMaps
+    // Remap the breakpoints with the original location information from
+    // the pretty-printed source.
+    const newBreakpoints = await Promise.all(
+      breakpoints.map(async breakpoint => {
+        const location = await sourceMaps.getOriginalLocation(
+          breakpoint.generatedLocation
+        );
+        return { ...breakpoint, location };
+      })
     );
 
     // Normally old breakpoints will be clobbered if we re-add them, but when
@@ -365,6 +388,20 @@ export function setXHRBreakpoint(path, method) {
       breakpoint,
       [PROMISE]: client.setXHRBreakpoint(path, method),
     });
+  };
+}
+
+export function removeAllXHRBreakpoints() {
+  return async ({ dispatch, getState, client }) => {
+    const xhrBreakpoints = getXHRBreakpoints(getState());
+    const promises = xhrBreakpoints.map(breakpoint =>
+      client.removeXHRBreakpoint(breakpoint.path, breakpoint.method)
+    );
+    await dispatch({
+      type: "CLEAR_XHR_BREAKPOINTS",
+      [PROMISE]: Promise.all(promises),
+    });
+    asyncStore.xhrBreakpoints = [];
   };
 }
 

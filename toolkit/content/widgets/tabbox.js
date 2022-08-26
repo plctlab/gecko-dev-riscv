@@ -7,9 +7,6 @@
 // This is loaded into chrome windows with the subscript loader. Wrap in
 // a block to prevent accidentally leaking globals onto `window`.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
   const { AppConstants } = ChromeUtils.import(
     "resource://gre/modules/AppConstants.jsm"
   );
@@ -114,6 +111,11 @@
 
       // Skip this only if something has explicitly cancelled it.
       if (event.defaultCancelled) {
+        return;
+      }
+
+      // Skip if chrome code has cancelled this:
+      if (event.defaultPreventedByChrome) {
         return;
       }
 

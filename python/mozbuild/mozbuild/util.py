@@ -10,6 +10,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 import argparse
 import collections
 import collections.abc
+import copy
 import ctypes
 import difflib
 import errno
@@ -133,6 +134,16 @@ class ReadOnlyDict(dict):
     def update(self, *args, **kwargs):
         raise Exception("Object does not support update.")
 
+    def __copy__(self, *args, **kwargs):
+        return ReadOnlyDict(**dict.copy(self, *args, **kwargs))
+
+    def __deepcopy__(self, memo):
+        result = {}
+        for k, v in self.items():
+            result[k] = copy.deepcopy(v, memo)
+
+        return ReadOnlyDict(**result)
+
 
 class undefined_default(object):
     """Represents an undefined argument value that isn't None."""
@@ -225,7 +236,7 @@ class FileAvoidWrite(BytesIO):
     still occur, as well as diff capture if requested.
     """
 
-    def __init__(self, filename, capture_diff=False, dry_run=False, readmode="rU"):
+    def __init__(self, filename, capture_diff=False, dry_run=False, readmode="r"):
         BytesIO.__init__(self)
         self.name = filename
         assert type(capture_diff) == bool
@@ -1193,9 +1204,6 @@ def group_unified_files(files, unified_prefix, unified_suffix, files_per_unified
     This function handles the details of generating names for the unified
     files, and determining which original source files go in which unified
     file."""
-
-    # Make sure the input list is sorted. If it's not, bad things could happen!
-    files = sorted(files)
 
     # Our last returned list of source filenames may be short, and we
     # don't want the fill value inserted by zip_longest to be an

@@ -5,11 +5,13 @@
 
 #include "TextEditor.h"
 
+#include "AutoRangeArray.h"
+#include "EditAction.h"
+#include "EditorDOMPoint.h"
+#include "EditorUtils.h"
+#include "HTMLEditor.h"
+
 #include "mozilla/Assertions.h"
-#include "mozilla/EditAction.h"
-#include "mozilla/EditorDOMPoint.h"
-#include "mozilla/EditorUtils.h"
-#include "mozilla/HTMLEditor.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_editor.h"
@@ -19,6 +21,7 @@
 #include "mozilla/dom/NodeFilterBinding.h"
 #include "mozilla/dom/NodeIterator.h"
 #include "mozilla/dom/Selection.h"
+
 #include "nsAString.h"
 #include "nsCOMPtr.h"
 #include "nsCRT.h"
@@ -81,7 +84,7 @@ void TextEditor::OnStartToHandleTopLevelEditSubAction(
     // For spell checker, previous selected node should be text node if
     // possible. If anchor is root of editor, it may become invalid offset
     // after inserting text.
-    EditorRawDOMPoint point =
+    const EditorRawDOMPoint point =
         FindBetterInsertionPoint(EditorRawDOMPoint(SelectionRef().AnchorRef()));
     NS_WARNING_ASSERTION(
         point.IsSet(),
@@ -199,67 +202,59 @@ EditActionResult TextEditor::InsertLineFeedCharacterAtSelection() {
     }
   }
 
-  // get the (collapsed) selection location
-  const nsRange* firstRange = SelectionRef().GetRangeAt(0);
-  if (NS_WARN_IF(!firstRange)) {
-    return EditActionIgnored(NS_ERROR_FAILURE);
-  }
-
-  EditorRawDOMPoint pointToInsert(firstRange->StartRef());
-  if (NS_WARN_IF(!pointToInsert.IsSet())) {
-    return EditActionIgnored(NS_ERROR_FAILURE);
+  const auto pointToInsert = GetFirstSelectionStartPoint<EditorDOMPoint>();
+  if (MOZ_UNLIKELY(NS_WARN_IF(!pointToInsert.IsSet()))) {
+    return EditActionResult(NS_ERROR_FAILURE);
   }
   MOZ_ASSERT(pointToInsert.IsSetAndValid());
   MOZ_ASSERT(!pointToInsert.IsContainerHTMLElement(nsGkAtoms::br));
 
   RefPtr<Document> document = GetDocument();
-  if (NS_WARN_IF(!document)) {
-    return EditActionIgnored(NS_ERROR_NOT_INITIALIZED);
+  if (MOZ_UNLIKELY(NS_WARN_IF(!document))) {
+    return EditActionResult(NS_ERROR_NOT_INITIALIZED);
   }
 
   // Don't change my selection in sub-transactions.
   AutoTransactionsConserveSelection dontChangeMySelection(*this);
 
   // Insert a linefeed character.
-  EditorRawDOMPoint pointAfterInsertedLineFeed;
-  nsresult rv = InsertTextWithTransaction(*document, u"\n"_ns, pointToInsert,
-                                          &pointAfterInsertedLineFeed);
-  if (!pointAfterInsertedLineFeed.IsSet()) {
-    NS_WARNING(
-        "EditorBase::InsertTextWithTransaction(\\n) didn't return position of "
-        "inserted linefeed");
-    return EditActionIgnored(NS_ERROR_FAILURE);
+  Result<EditorDOMPoint, nsresult> insertTextResult =
+      InsertTextWithTransaction(*document, u"\n"_ns, pointToInsert);
+  if (MOZ_UNLIKELY(insertTextResult.isErr())) {
+    NS_WARNING("TextEditor::InsertTextWithTransaction(\"\\n\") failed");
+    return EditActionResult(insertTextResult.unwrapErr());
   }
-  if (NS_FAILED(rv)) {
-    NS_WARNING("TextEditor::InsertTextWithTransaction(\\n) failed");
-    return EditActionIgnored(rv);
+  if (MOZ_UNLIKELY(!insertTextResult.inspect().IsSet())) {
+    NS_WARNING(
+        "EditorBase::InsertTextWithTransaction(\"\\n\") didn't return position "
+        "of inserted linefeed");
+    return EditActionHandled(NS_ERROR_FAILURE);
   }
 
   // set the selection to the correct location
-  MOZ_ASSERT(
-      !pointAfterInsertedLineFeed.GetChild(),
-      "After inserting text into a text node, pointAfterInsertedLineFeed."
-      "GetChild() should be nullptr");
-  rv = SelectionRef().CollapseInLimiter(pointAfterInsertedLineFeed);
-  if (NS_FAILED(rv)) {
-    NS_WARNING("Selection::CollapseInLimiter() failed");
-    return EditActionIgnored(rv);
+  MOZ_ASSERT(insertTextResult.inspect().IsInTextNode(),
+             "After inserting text into a text node, insertTextResult should "
+             "return a point in a text node");
+  nsresult rv = CollapseSelectionTo(insertTextResult.inspect());
+  if (MOZ_UNLIKELY(NS_FAILED(rv))) {
+    NS_WARNING("EditorBase::CollapseSelectionTo() failed");
+    return EditActionHandled(rv);
   }
 
   // XXX I don't think we still need this.  This must have been required when
   //     `<textarea>` was implemented with text nodes and `<br>` elements.
   // see if we're at the end of the editor range
-  EditorRawDOMPoint endPoint(EditorBase::GetEndPoint(SelectionRef()));
-  if (endPoint == pointAfterInsertedLineFeed) {
+  const auto endPoint = GetFirstSelectionEndPoint<EditorRawDOMPoint>();
+  if (endPoint == insertTextResult.inspect()) {
     // SetInterlinePosition(true) means we want the caret to stick to the
     // content on the "right".  We want the caret to stick to whatever is
     // past the break.  This is because the break is on the same line we
     // were on, but the next content will be on the following line.
-    IgnoredErrorResult ignoredError;
-    SelectionRef().SetInterlinePosition(true, ignoredError);
-    NS_WARNING_ASSERTION(
-        !ignoredError.Failed(),
-        "Selection::SetInterlinePosition(true) failed, but ignored");
+    DebugOnly<nsresult> rvIgnored =
+        SelectionRef().SetInterlinePosition(InterlinePosition::StartOfNextLine);
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                         "Selection::SetInterlinePosition(InterlinePosition::"
+                         "StartOfNextLine) failed, but ignored");
   }
 
   return EditActionHandled();
@@ -276,13 +271,16 @@ nsresult TextEditor::EnsureCaretNotAtEndOfTextNode() {
     return NS_OK;
   }
 
-  DebugOnly<nsresult> rvIgnored = CollapseSelectionToEnd();
-  if (NS_WARN_IF(Destroyed())) {
+  nsresult rv = CollapseSelectionToEndOfLastLeafNode();
+  if (MOZ_UNLIKELY(rv == NS_ERROR_EDITOR_DESTROYED)) {
+    NS_WARNING(
+        "EditorBase::CollapseSelectionToEndOfLastLeafNode() caused destroying "
+        "the editor");
     return NS_ERROR_EDITOR_DESTROYED;
   }
   NS_WARNING_ASSERTION(
-      NS_SUCCEEDED(rvIgnored),
-      "EditorBase::CollapseSelectionToEnd() failed, but ignored");
+      NS_SUCCEEDED(rv),
+      "EditorBase::CollapseSelectionToEndOfLastLeafNode() failed, but ignored");
 
   return NS_OK;
 }
@@ -451,13 +449,8 @@ EditActionResult TextEditor::HandleInsertText(
     HandleNewLinesInStringForSingleLineEditor(insertionString);
   }
 
-  // get the (collapsed) selection location
-  const nsRange* firstRange = SelectionRef().GetRangeAt(0);
-  if (NS_WARN_IF(!firstRange)) {
-    return EditActionHandled(NS_ERROR_FAILURE);
-  }
-  EditorRawDOMPoint atStartOfSelection(firstRange->StartRef());
-  if (NS_WARN_IF(!atStartOfSelection.IsSetAndValid())) {
+  const auto atStartOfSelection = GetFirstSelectionStartPoint<EditorDOMPoint>();
+  if (MOZ_UNLIKELY(NS_WARN_IF(!atStartOfSelection.IsSetAndValid()))) {
     return EditActionHandled(NS_ERROR_FAILURE);
   }
   MOZ_ASSERT(!atStartOfSelection.IsContainerHTMLElement(nsGkAtoms::br));
@@ -468,21 +461,20 @@ EditActionResult TextEditor::HandleInsertText(
   }
 
   if (aEditSubAction == EditSubAction::eInsertTextComingFromIME) {
-    EditorRawDOMPoint compositionStartPoint = GetCompositionStartPoint();
+    EditorDOMPoint compositionStartPoint =
+        GetFirstIMESelectionStartPoint<EditorDOMPoint>();
     if (!compositionStartPoint.IsSet()) {
       compositionStartPoint = FindBetterInsertionPoint(atStartOfSelection);
       NS_WARNING_ASSERTION(
           compositionStartPoint.IsSet(),
           "EditorBase::FindBetterInsertionPoint() failed, but ignored");
     }
-    nsresult rv = InsertTextWithTransaction(*document, insertionString,
-                                            compositionStartPoint);
-    if (NS_WARN_IF(Destroyed())) {
-      return EditActionHandled(NS_ERROR_EDITOR_DESTROYED);
-    }
-    if (NS_FAILED(rv)) {
+    Result<EditorDOMPoint, nsresult> insertTextResult =
+        InsertTextWithTransaction(*document, insertionString,
+                                  compositionStartPoint);
+    if (MOZ_UNLIKELY(insertTextResult.isErr())) {
       NS_WARNING("EditorBase::InsertTextWithTransaction() failed");
-      return EditActionHandled(rv);
+      return EditActionResult(insertTextResult.unwrapErr());
     }
   } else {
     MOZ_ASSERT(aEditSubAction == EditSubAction::eInsertText);
@@ -490,41 +482,35 @@ EditActionResult TextEditor::HandleInsertText(
     // don't change my selection in subtransactions
     AutoTransactionsConserveSelection dontChangeMySelection(*this);
 
-    EditorRawDOMPoint pointAfterStringInserted;
-    nsresult rv = InsertTextWithTransaction(*document, insertionString,
-                                            atStartOfSelection,
-                                            &pointAfterStringInserted);
-    if (NS_WARN_IF(Destroyed())) {
-      return EditActionHandled(NS_ERROR_EDITOR_DESTROYED);
-    }
-    if (NS_FAILED(rv)) {
+    Result<EditorDOMPoint, nsresult> insertTextResult =
+        InsertTextWithTransaction(*document, insertionString,
+                                  atStartOfSelection);
+    if (MOZ_UNLIKELY(insertTextResult.isErr())) {
       NS_WARNING("EditorBase::InsertTextWithTransaction() failed");
-      return EditActionHandled(rv);
+      return EditActionResult(insertTextResult.unwrapErr());
     }
 
-    if (pointAfterStringInserted.IsSet()) {
+    if (insertTextResult.inspect().IsSet()) {
       // Make the caret attach to the inserted text, unless this text ends with
       // a LF, in which case make the caret attach to the next line.
-      bool endsWithLF =
+      const bool endsWithLF =
           !insertionString.IsEmpty() && insertionString.Last() == nsCRT::LF;
-      IgnoredErrorResult ignoredError;
-      SelectionRef().SetInterlinePosition(endsWithLF, ignoredError);
-      NS_WARNING_ASSERTION(
-          !ignoredError.Failed(),
-          "Selection::SetInterlinePosition() failed, but ignored");
-
-      MOZ_ASSERT(
-          !pointAfterStringInserted.GetChild(),
-          "After inserting text into a text node, pointAfterStringInserted."
-          "GetChild() should be nullptr");
-      ignoredError = IgnoredErrorResult();
-      SelectionRef().CollapseInLimiter(pointAfterStringInserted, ignoredError);
-      if (NS_WARN_IF(Destroyed())) {
+      EditorDOMPoint pointToPutCaret = insertTextResult.unwrap();
+      pointToPutCaret.SetInterlinePosition(
+          endsWithLF ? InterlinePosition::StartOfNextLine
+                     : InterlinePosition::EndOfLine);
+      MOZ_ASSERT(pointToPutCaret.IsInTextNode(),
+                 "After inserting text into a text node, insertTextResult "
+                 "should return a point in a text node");
+      nsresult rv = CollapseSelectionTo(pointToPutCaret);
+      if (MOZ_UNLIKELY(rv == NS_ERROR_EDITOR_DESTROYED)) {
+        NS_WARNING(
+            "EditorBase::CollapseSelectionTo() caused destroying the editor");
         return EditActionHandled(NS_ERROR_EDITOR_DESTROYED);
       }
       NS_WARNING_ASSERTION(
-          !ignoredError.Failed(),
-          "Selection::CollapseInLimiter() failed, but ignored");
+          NS_SUCCEEDED(rv),
+          "EditorBase::CollapseSelectionTo() failed, but ignored");
     }
   }
 
@@ -631,15 +617,15 @@ EditActionResult TextEditor::HandleDeleteSelectionInternal(
   // want to send a single selectionchange event to the document, so we
   // batch the selectionchange events, such that a single event fires after
   // the AutoHideSelectionChanges destructor has been run.
-  SelectionBatcher selectionBatcher(SelectionRef());
+  SelectionBatcher selectionBatcher(SelectionRef(), __FUNCTION__);
   AutoHideSelectionChanges hideSelection(SelectionRef());
   nsAutoScriptBlocker scriptBlocker;
 
   if (IsPasswordEditor() && IsMaskingPassword()) {
     MaskAllCharacters();
   } else {
-    EditorRawDOMPoint selectionStartPoint(
-        EditorBase::GetStartPoint(SelectionRef()));
+    const auto selectionStartPoint =
+        GetFirstSelectionStartPoint<EditorRawDOMPoint>();
     if (NS_WARN_IF(!selectionStartPoint.IsSet())) {
       return EditActionResult(NS_ERROR_FAILURE);
     }
@@ -672,6 +658,9 @@ EditActionResult TextEditor::HandleDeleteSelectionInternal(
   if (result.isErr()) {
     NS_WARNING("AutoRangeArray::ExtendAnchorFocusRangeFor() failed");
     return EditActionResult(result.unwrapErr());
+  }
+  if (const Text* theTextNode = GetTextNode()) {
+    rangesToDelete.EnsureRangesInTextNode(*theTextNode);
   }
 
   nsresult rv = DeleteRangesWithTransaction(

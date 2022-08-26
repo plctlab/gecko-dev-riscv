@@ -11,7 +11,9 @@
 
 var CC = Components.Constructor;
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const { Match } = ChromeUtils.import("resource://test/Match.jsm");
 const { Census } = ChromeUtils.import("resource://test/Census.jsm");
 const { addDebuggerToGlobal } = ChromeUtils.import(
@@ -141,7 +143,7 @@ function readHeapSnapshot(filePath) {
   const snapshot = ChromeUtils.readHeapSnapshot(filePath);
   ok(snapshot, "Should have read a heap snapshot back from " + filePath);
   ok(
-    snapshot instanceof HeapSnapshot,
+    HeapSnapshot.isInstance(snapshot),
     "snapshot should be an instance of HeapSnapshot"
   );
   return snapshot;
@@ -205,7 +207,7 @@ function saveHeapSnapshotAndComputeDominatorTree(dbg = null) {
 
   ok(dominatorTree, "Should be able to compute a dominator tree");
   ok(
-    dominatorTree instanceof DominatorTree,
+    DominatorTree.isInstance(dominatorTree),
     "Should be an instance of DominatorTree"
   );
 

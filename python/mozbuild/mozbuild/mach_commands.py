@@ -17,10 +17,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import errno
 
 import mozbuild.settings  # noqa need @SettingsProvider hook to execute
 import mozpack.path as mozpath
 
+from pathlib import Path
 from mach.decorators import (
     CommandArgument,
     CommandArgumentGroup,
@@ -70,6 +72,7 @@ class StoreDebugParamsAndWarnAction(argparse.Action):
     category="post-build",
     description="Watch and re-build (parts of) the tree.",
     conditions=[conditions.is_firefox],
+    virtualenv_name="watch",
 )
 @CommandArgument(
     "-v",
@@ -87,16 +90,6 @@ def watch(command_context, verbose=False):
     if not command_context.substs.get("WATCHMAN", None):
         print(
             "mach watch requires watchman to be installed and found at configure time. See "
-            "https://developer.mozilla.org/docs/Mozilla/Developer_guide/Build_Instructions/Incremental_builds_with_filesystem_watching"  # noqa
-        )
-        return 1
-
-    command_context.activate_virtualenv()
-    try:
-        command_context.virtualenv_manager.install_pip_package("pywatchman==1.4.1")
-    except Exception:
-        print(
-            "Could not install pywatchman from pip. See "
             "https://developer.mozilla.org/docs/Mozilla/Developer_guide/Build_Instructions/Incremental_builds_with_filesystem_watching"  # noqa
         )
         return 1
@@ -141,12 +134,23 @@ def cargo(command_context):
     help="Run the tests in parallel using multiple processes.",
 )
 @CommandArgument("-v", "--verbose", action="store_true", help="Verbose output.")
-def check(command_context, all_crates=None, crates=None, jobs=0, verbose=False):
+@CommandArgument(
+    "--message-format-json",
+    action="store_true",
+    help="Emit error messages as JSON.",
+)
+def check(
+    command_context,
+    all_crates=None,
+    crates=None,
+    jobs=0,
+    verbose=False,
+    message_format_json=False,
+):
     # XXX duplication with `mach vendor rust`
     crates_and_roots = {
         "gkrust": "toolkit/library/rust",
         "gkrust-gtest": "toolkit/library/gtest/rust",
-        "baldrdash": "js/src/wasm/cranelift",
         "geckodriver": "testing/geckodriver",
     }
 
@@ -171,6 +175,10 @@ def check(command_context, all_crates=None, crates=None, jobs=0, verbose=False):
             "force-cargo-host-program-check",
         ]
 
+        append_env = {}
+        if message_format_json:
+            append_env["USE_CARGO_JSON_MESSAGE_FORMAT"] = "1"
+
         ret = command_context._run_make(
             srcdir=False,
             directory=root,
@@ -179,11 +187,75 @@ def check(command_context, all_crates=None, crates=None, jobs=0, verbose=False):
             print_directory=False,
             target=check_targets,
             num_jobs=jobs,
+            append_env=append_env,
         )
         if ret != 0:
             return ret
 
     return 0
+
+
+@SubCommand(
+    "cargo",
+    "vet",
+    description="Run `cargo vet`.",
+)
+@CommandArgument("arguments", nargs=argparse.REMAINDER)
+def cargo_vet(command_context, arguments, stdout=None, env=os.environ):
+    from mozbuild.bootstrap import bootstrap_toolchain
+
+    # Logging of commands enables logging from `bootstrap_toolchain` that we
+    # don't want to expose. Disable them temporarily.
+    logger = logging.getLogger("gecko_taskgraph.generator")
+    level = logger.getEffectiveLevel()
+    logger.setLevel(logging.ERROR)
+
+    env = env.copy()
+    cargo_vet = bootstrap_toolchain("cargo-vet")
+    if cargo_vet:
+        env["PATH"] = os.pathsep.join([cargo_vet, env["PATH"]])
+    logger.setLevel(level)
+    try:
+        cargo = command_context.substs["CARGO"]
+    except (BuildEnvironmentNotFoundException, KeyError):
+        # Default if this tree isn't configured.
+        from mozfile import which
+
+        cargo = which("cargo", path=env["PATH"])
+        if not cargo:
+            raise OSError(
+                errno.ENOENT,
+                (
+                    "Could not find 'cargo' on your $PATH. "
+                    "Hint: have you run `mach build` or `mach configure`?"
+                ),
+            )
+
+    locked = "--locked" in arguments
+    if locked:
+        # The use of --locked requires .cargo/config to exist, but other things,
+        # like cargo update, don't want it there, so remove it once we're done.
+        topsrcdir = Path(command_context.topsrcdir)
+        shutil.copyfile(
+            topsrcdir / ".cargo" / "config.in", topsrcdir / ".cargo" / "config"
+        )
+
+    try:
+        res = subprocess.run(
+            [cargo, "vet"] + arguments,
+            cwd=command_context.topsrcdir,
+            stdout=stdout,
+            env=env,
+        )
+    finally:
+        if locked:
+            (topsrcdir / ".cargo" / "config").unlink()
+
+    # When the function is invoked without stdout set (the default when running
+    # as a mach subcommand), exit with the returncode from cargo vet.
+    # When the function is invoked with stdout (direct function call), return
+    # the full result from subprocess.run.
+    return res if stdout else res.returncode
 
 
 @Command(
@@ -205,18 +277,17 @@ def check(command_context, all_crates=None, crates=None, jobs=0, verbose=False):
 )
 def doctor(command_context, fix=False, verbose=False):
     """Diagnose common build environment problems"""
-    command_context.activate_virtualenv()
     from mozbuild.doctor import run_doctor
 
     return run_doctor(
         topsrcdir=command_context.topsrcdir,
         topobjdir=command_context.topobjdir,
+        configure_args=command_context.mozconfig["configure_args"],
         fix=fix,
         verbose=verbose,
     )
 
 
-NO_AUTO_LOG = True
 CLOBBER_CHOICES = {"objdir", "python", "gradle"}
 
 
@@ -224,6 +295,7 @@ CLOBBER_CHOICES = {"objdir", "python", "gradle"}
     "clobber",
     category="build",
     description="Clobber the tree (delete the object directory).",
+    no_auto_log=True,
 )
 @CommandArgument(
     "what",
@@ -332,10 +404,9 @@ def clobber(command_context, what, full=False):
     return ret
 
 
-NO_AUTO_LOG = True
-
-
-@Command("show-log", category="post-build", description="Display mach logs")
+@Command(
+    "show-log", category="post-build", description="Display mach logs", no_auto_log=True
+)
 @CommandArgument(
     "log_file",
     nargs="?",
@@ -344,7 +415,11 @@ NO_AUTO_LOG = True
     "mach command.",
 )
 def show_log(command_context, log_file=None):
-    """Show mach logs."""
+    """Show mach logs
+    If we're in a terminal context, the log is piped to 'less'
+    for more convenient viewing.
+    (https://man7.org/linux/man-pages/man1/less.1.html)
+    """
     if not log_file:
         path = command_context._get_state_filename("last_log.json")
         log_file = open(path, "rb")
@@ -352,22 +427,75 @@ def show_log(command_context, log_file=None):
     if os.isatty(sys.stdout.fileno()):
         env = dict(os.environ)
         if "LESS" not in env:
-            # Sensible default flags if none have been set in the user
-            # environment.
-            env[b"LESS"] = b"FRX"
-        less = subprocess.Popen(["less"], stdin=subprocess.PIPE, env=env)
-        # Various objects already have a reference to sys.stdout, so we
-        # can't just change it, we need to change the file descriptor under
-        # it to redirect to less's input.
-        # First keep a copy of the sys.stdout file descriptor.
-        output_fd = os.dup(sys.stdout.fileno())
-        os.dup2(less.stdin.fileno(), sys.stdout.fileno())
+            # Sensible default flags if none have been set in the user environment.
+            env["LESS"] = "FRX"
+        less = subprocess.Popen(
+            ["less"], stdin=subprocess.PIPE, env=env, encoding="UTF-8"
+        )
 
-    startTime = 0
+        try:
+            # Create a new logger handler with the stream being the stdin of our 'less'
+            # process so that we can pipe the logger output into 'less'
+            less_handler = logging.StreamHandler(stream=less.stdin)
+            less_handler.setFormatter(
+                command_context.log_manager.terminal_handler.formatter
+            )
+            less_handler.setLevel(command_context.log_manager.terminal_handler.level)
+
+            # replace the existing terminal handler with the new one for 'less' while
+            # still keeping the original one to set back later
+            original_handler = command_context.log_manager.replace_terminal_handler(
+                less_handler
+            )
+
+            # Save this value so we can set it back to the original value later
+            original_logging_raise_exceptions = logging.raiseExceptions
+
+            # We need to explicitly disable raising exceptions inside logging so
+            # that we can catch them here ourselves to ignore the ones we want
+            logging.raiseExceptions = False
+
+            # Parses the log file line by line and streams
+            # (to less.stdin) the relevant records we want
+            handle_log_file(command_context, log_file)
+
+            # At this point we've piped the entire log file to
+            # 'less', so we can close the input stream
+            less.stdin.close()
+
+            # Wait for the user to manually terminate `less`
+            less.wait()
+        except OSError as os_error:
+            # (POSIX)   errno.EPIPE: BrokenPipeError: [Errno 32] Broken pipe
+            # (Windows) errno.EINVAL: OSError:        [Errno 22] Invalid argument
+            if os_error.errno == errno.EPIPE or os_error.errno == errno.EINVAL:
+                # If the user manually terminates 'less' before the entire log file
+                # is piped (without scrolling close enough to the bottom) we will get
+                # one of these errors (depends on the OS) because the logger will still
+                # attempt to stream to the now invalid less.stdin. To prevent a bunch
+                # of errors being shown after a user terminates 'less', we just catch
+                # the first of those exceptions here, and stop parsing the log file.
+                pass
+            else:
+                raise
+        except Exception:
+            raise
+        finally:
+            # Ensure these values are changed back to the originals, regardless of outcome
+            command_context.log_manager.replace_terminal_handler(original_handler)
+            logging.raiseExceptions = original_logging_raise_exceptions
+    else:
+        # Not in a terminal context, so just handle the log file with the
+        # default stream without piping it to a pager (less)
+        handle_log_file(command_context, log_file)
+
+
+def handle_log_file(command_context, log_file):
+    start_time = 0
     for line in log_file:
         created, action, params = json.loads(line)
-        if not startTime:
-            startTime = created
+        if not start_time:
+            start_time = created
             command_context.log_manager.terminal_handler.formatter.start_time = created
         if "line" in params:
             record = logging.makeLogRecord(
@@ -381,17 +509,6 @@ def show_log(command_context, log_file=None):
                 }
             )
             command_context._logger.handle(record)
-
-    if command_context.log_manager.terminal:
-        # Close less's input so that it knows that we're done sending data.
-        less.stdin.close()
-        # Since the less's input file descriptor is now also the stdout
-        # file descriptor, we still actually have a non-closed system file
-        # descriptor for less's input. Replacing sys.stdout's file
-        # descriptor with what it was before we replaced it will properly
-        # close less's input.
-        os.dup2(output_fd, sys.stdout.fileno())
-        less.wait()
 
 
 # Provide commands for inspecting warnings.
@@ -572,7 +689,7 @@ def join_ensure_dir(dir1, dir2):
 @CommandArgumentGroup("Android")
 @CommandArgument(
     "--package",
-    default="org.mozilla.geckoview.test",
+    default="org.mozilla.geckoview.test_runner",
     group="Android",
     help="Package name of test app.",
 )
@@ -687,7 +804,6 @@ def gtest(
             device_serial,
             remote_test_root,
             libxul_path,
-            enable_webrender,
             InstallIntent.NO if no_install else InstallIntent.YES,
         )
 
@@ -800,7 +916,6 @@ def android_gtest(
     device_serial,
     remote_test_root,
     libxul_path,
-    enable_webrender,
     install,
 ):
     # setup logging for mozrunner
@@ -844,7 +959,6 @@ def android_gtest(
         remote_test_root,
         libxul_path,
         None,
-        enable_webrender,
     ):
         exit_code = 1
     tester.cleanup()
@@ -885,6 +999,11 @@ def _get_android_install_parser():
         "-v",
         action="store_true",
         help="Print verbose output when installing.",
+    )
+    parser.add_argument(
+        "--aab",
+        action="store_true",
+        help="Install as AAB (Android App Bundle)",
     )
     return parser
 
@@ -969,6 +1088,12 @@ def _get_android_run_parser():
         "or /path/to/target/profile",
     )
     group.add_argument("--url", default=None, help="URL to open")
+    group.add_argument(
+        "--aab",
+        action="store_true",
+        default=False,
+        help="Install app ass App Bundle (AAB).",
+    )
     group.add_argument(
         "--no-install",
         action="store_true",
@@ -1119,9 +1244,9 @@ def _get_desktop_run_parser():
         help="Run the program with the crash reporter enabled.",
     )
     group.add_argument(
-        "--enable-fission",
+        "--disable-fission",
         action="store_true",
-        help="Run the program with Fission (site isolation) enabled.",
+        help="Run the program with Fission (site isolation) disabled.",
     )
     group.add_argument(
         "--setpref",
@@ -1228,6 +1353,7 @@ def _run_android(
     env=[],
     profile=None,
     url=None,
+    aab=False,
     no_install=None,
     no_wait=None,
     fail_if_running=None,
@@ -1248,8 +1374,8 @@ def _run_android(
 
     if app == "org.mozilla.geckoview_example":
         activity_name = "org.mozilla.geckoview_example.GeckoViewActivity"
-    elif app == "org.mozilla.geckoview.test":
-        activity_name = "org.mozilla.geckoview.test.TestRunnerActivity"
+    elif app == "org.mozilla.geckoview.test_runner":
+        activity_name = "org.mozilla.geckoview.test_runner.TestRunnerActivity"
     elif "fennec" in app or "firefox" in app:
         activity_name = "org.mozilla.gecko.BrowserApp"
     else:
@@ -1264,6 +1390,7 @@ def _run_android(
     verify_android_device(
         command_context,
         app=app,
+        aab=aab,
         debugger=debug,
         install=InstallIntent.NO if no_install else InstallIntent.YES,
     )
@@ -1319,10 +1446,12 @@ def _run_android(
                     'Using profile from target "{target_profile}"',
                 )
 
+            args = ["--profile", shlex_quote(target_profile)]
+
+        # FIXME: When android switches to using Fission by default,
+        # MOZ_FORCE_DISABLE_FISSION will need to be configured correctly.
         if enable_fission:
             env.append("MOZ_FORCE_ENABLE_FISSION=1")
-
-            args = ["--profile", shlex_quote(target_profile)]
 
         extras = {}
         for i, e in enumerate(env):
@@ -1621,7 +1750,7 @@ def _run_desktop(
     noprofile,
     disable_e10s,
     enable_crash_reporter,
-    enable_fission,
+    disable_fission,
     setpref,
     temp_profile,
     macos_open,
@@ -1696,7 +1825,14 @@ def _run_desktop(
     no_profile_option_given = all(
         p not in params for p in ["-profile", "--profile", "-P"]
     )
-    if no_profile_option_given and not noprofile:
+    no_backgroundtask_mode_option_given = all(
+        p not in params for p in ["-backgroundtask", "--backgroundtask"]
+    )
+    if (
+        no_profile_option_given
+        and no_backgroundtask_mode_option_given
+        and not noprofile
+    ):
         prefs = {
             "browser.aboutConfig.showWarning": False,
             "browser.shell.checkDefaultBrowser": False,
@@ -1764,8 +1900,8 @@ def _run_desktop(
         f = open(version_file, "r")
         extra_env["MOZ_FORCE_DISABLE_E10S"] = f.read().strip()
 
-    if enable_fission:
-        extra_env["MOZ_FORCE_ENABLE_FISSION"] = "1"
+    if disable_fission:
+        extra_env["MOZ_FORCE_DISABLE_FISSION"] = "1"
 
     if some_debugging_option:
         if "INSIDE_EMACS" in os.environ:
@@ -2087,8 +2223,7 @@ def repackage_msi(
 @CommandArgument(
     "--input",
     type=str,
-    required=True,
-    help="Package (ZIP) or directory to repackage.",
+    help="Package (ZIP) or directory to repackage. Defaults to $OBJDIR/dist/bin",
 )
 @CommandArgument(
     "--version",
@@ -2098,7 +2233,7 @@ def repackage_msi(
 )
 @CommandArgument(
     "--channel",
-    required=True,
+    type=str,
     choices=["official", "beta", "aurora", "nightly", "unofficial"],
     help="Release channel.",
 )
@@ -2113,8 +2248,8 @@ def repackage_msi(
 @CommandArgument(
     "--arch",
     type=str,
-    required=True,
-    help="The architecture you are building (Choices: 'x86', 'x86_64', 'aarch64').",
+    choices=["x86", "x86_64", "aarch64"],
+    help="The architecture you are building.",
 )
 @CommandArgument(
     "--vendor",
@@ -2191,6 +2326,65 @@ def repackage_msix(
     from mozbuild.repackaging.msix import repackage_msix
 
     command_context._set_log_level(verbose)
+
+    firefox_to_msix_channel = {
+        "release": "official",
+        "beta": "beta",
+        "aurora": "aurora",
+        "nightly": "nightly",
+    }
+
+    if not input:
+        if os.path.exists(command_context.bindir):
+            input = command_context.bindir
+        else:
+            command_context.log(
+                logging.ERROR,
+                "repackage-msix-no-input",
+                {},
+                "No build found in objdir, please run ./mach build or pass --input",
+            )
+            return 1
+
+    if not os.path.exists(input):
+        command_context.log(
+            logging.ERROR,
+            "repackage-msix-invalid-input",
+            {"input": input},
+            "Input file or directory for msix repackaging does not exist: {input}",
+        )
+        return 1
+
+    if not channel:
+        # Only try to guess the channel when this is clearly a local build.
+        if input.endswith("bin"):
+            channel = firefox_to_msix_channel.get(
+                command_context.defines.get("MOZ_UPDATE_CHANNEL"), "unofficial"
+            )
+        else:
+            command_context.log(
+                logging.ERROR,
+                "repackage-msix-invalid-channel",
+                {},
+                "Could not determine channel, please set --channel",
+            )
+            return 1
+
+    if not arch:
+        # Only try to guess the arch when this is clearly a local build.
+        if input.endswith("bin"):
+            if command_context.substs["TARGET_CPU"] in ("i686", "x86_64", "aarch64"):
+                arch = command_context.substs["TARGET_CPU"].replace("i686", "x86")
+
+        if not arch:
+            command_context.log(
+                logging.ERROR,
+                "repackage-msix-couldnt-detect-arch",
+                {},
+                "Could not automatically detect architecture for msix repackaging. "
+                "Please pass --arch",
+            )
+            return 1
 
     template = os.path.join(
         command_context.topsrcdir, "browser", "installer", "windows", "msix"
@@ -2430,45 +2624,6 @@ def package_l10n(command_context, verbose=False, locales=[]):
         )
 
     return 0
-
-
-@Command(
-    "create-mach-environment",
-    category="devenv",
-    description="Create the `mach` virtualenv.",
-)
-@CommandArgument(
-    "-f",
-    "--force",
-    action="store_true",
-    help=("Force re-creating the virtualenv even if it is already up-to-date."),
-)
-def create_mach_environment(command_context, force=False):
-    """Create the mach virtualenv."""
-    from mozboot.util import get_mach_virtualenv_root
-    from mozbuild.virtualenv import VirtualenvManager
-
-    virtualenv_path = get_mach_virtualenv_root()
-    if sys.executable.startswith(virtualenv_path):
-        print(
-            "You can only create a mach environment with the system "
-            "Python. Re-run this `mach` command with the system Python.",
-            file=sys.stderr,
-        )
-        return 1
-
-    manager = VirtualenvManager(
-        command_context.topsrcdir,
-        os.path.dirname(virtualenv_path),
-        "mach",
-        populate_local_paths=False,
-    )
-
-    if manager.up_to_date() and not force:
-        print("virtualenv at %s is already up to date." % virtualenv_path)
-    else:
-        manager.build()
-    print("Mach environment created.")
 
 
 def _prepend_debugger_args(args, debugger, debugger_args):

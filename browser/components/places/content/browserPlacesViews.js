@@ -259,10 +259,7 @@ PlacesViewBase.prototype = {
     window.updateCommands("places");
 
     // Ensure that an existing "Show Other Bookmarks" item is removed before adding it
-    // again. This item should only be added when gBookmarksToolbar2h2020 is true, but
-    // its possible the pref could be toggled off in the same window. This results in
-    // the "Show Other Bookmarks" menu item still being visible even when the pref is
-    // set to false.
+    // again.
     let existingOtherBookmarksItem = aPopup.querySelector(
       "#show-other-bookmarks_PersonalToolbar"
     );
@@ -273,33 +270,26 @@ PlacesViewBase.prototype = {
     );
     // Add the View menu for the Bookmarks Toolbar and "Show Other Bookmarks" menu item
     // if the click originated from the Bookmarks Toolbar.
-    if (gBookmarksToolbar2h2020) {
-      let existingSubmenu = aPopup.querySelector("#toggle_PersonalToolbar");
-      existingSubmenu?.remove();
-      let bookmarksToolbar = document.getElementById("PersonalToolbar");
-      if (bookmarksToolbar?.contains(aPopup.triggerNode)) {
-        manageBookmarksMenu.removeAttribute("hidden");
+    let existingSubmenu = aPopup.querySelector("#toggle_PersonalToolbar");
+    existingSubmenu?.remove();
+    let bookmarksToolbar = document.getElementById("PersonalToolbar");
+    if (bookmarksToolbar?.contains(aPopup.triggerNode)) {
+      manageBookmarksMenu.removeAttribute("hidden");
 
-        let menu = BookmarkingUI.buildBookmarksToolbarSubmenu(bookmarksToolbar);
-        aPopup.insertBefore(menu, manageBookmarksMenu);
+      let menu = BookmarkingUI.buildBookmarksToolbarSubmenu(bookmarksToolbar);
+      aPopup.insertBefore(menu, manageBookmarksMenu);
 
-        if (
-          aPopup.triggerNode.id === "OtherBookmarks" ||
-          aPopup.triggerNode.id === "PlacesChevron" ||
-          aPopup.triggerNode.id === "PlacesToolbarItems" ||
-          aPopup.triggerNode.parentNode.id === "PlacesToolbarItems"
-        ) {
-          let otherBookmarksMenuItem = BookmarkingUI.buildShowOtherBookmarksMenuItem();
+      if (
+        aPopup.triggerNode.id === "OtherBookmarks" ||
+        aPopup.triggerNode.id === "PlacesChevron" ||
+        aPopup.triggerNode.id === "PlacesToolbarItems" ||
+        aPopup.triggerNode.parentNode.id === "PlacesToolbarItems"
+      ) {
+        let otherBookmarksMenuItem = BookmarkingUI.buildShowOtherBookmarksMenuItem();
 
-          if (otherBookmarksMenuItem) {
-            aPopup.insertBefore(
-              otherBookmarksMenuItem,
-              menu.nextElementSibling
-            );
-          }
+        if (otherBookmarksMenuItem) {
+          aPopup.insertBefore(otherBookmarksMenuItem, menu.nextElementSibling);
         }
-      } else {
-        manageBookmarksMenu.setAttribute("hidden", "true");
       }
     } else {
       manageBookmarksMenu.setAttribute("hidden", "true");
@@ -1347,7 +1337,7 @@ PlacesToolbar.prototype = {
           if (icon) {
             child.setAttribute("image", icon);
           }
-          child.style.visibility = "visible";
+          child.style.removeProperty("visibility");
         }
       }
 
@@ -1767,6 +1757,9 @@ PlacesToolbar.prototype = {
         this._allowPopupShowing = false;
       }
     }
+    if (target._placesNode?.uri) {
+      PlacesUIUtils.setupSpeculativeConnection(target._placesNode.uri, window);
+    }
   },
 
   _cleanupDragDetails: function PT__cleanupDragDetails() {
@@ -2003,7 +1996,7 @@ function PlacesMenu(aPopupShowingEvent, aPlace, aOptions) {
   this._viewElt._placesView = this;
   this._addEventListeners(this._rootElt, ["popupshowing", "popuphidden"], true);
   this._addEventListeners(window, ["unload"], false);
-
+  this._addEventListeners(this._rootElt, ["mousedown"], false);
   if (AppConstants.platform === "macosx") {
     // Must walk up to support views in sub-menus, like Bookmarks Toolbar menu.
     for (let elt = this._viewElt.parentNode; elt; elt = elt.parentNode) {
@@ -2032,6 +2025,7 @@ PlacesMenu.prototype = {
       true
     );
     this._removeEventListeners(window, ["unload"], false);
+    this._removeEventListeners(this._rootElt, ["mousedown"], false);
 
     PlacesViewBase.prototype.uninit.apply(this, arguments);
   },
@@ -2046,6 +2040,9 @@ PlacesMenu.prototype = {
         break;
       case "popuphidden":
         this._onPopupHidden(aEvent);
+        break;
+      case "mousedown":
+        this._onMouseDown(aEvent);
         break;
     }
   },
@@ -2069,6 +2066,15 @@ PlacesMenu.prototype = {
     // when the folder closes because it is no longer applicable.
     popup.removeAttribute("autoopened");
     popup.removeAttribute("dragstart");
+  },
+
+  // We don't have a facility for catch "mousedown" events on the native
+  // Mac menus because Mac doesn't expose it
+  _onMouseDown(aEvent) {
+    let target = aEvent.target;
+    if (target._placesNode?.uri) {
+      PlacesUIUtils.setupSpeculativeConnection(target._placesNode.uri, window);
+    }
   },
 };
 

@@ -10,14 +10,6 @@ const { GeckoViewModule } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewModule.jsm"
 );
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
-});
-
 class GeckoViewProcessHangMonitor extends GeckoViewModule {
   constructor(aModuleInfo) {
     super(aModuleInfo);

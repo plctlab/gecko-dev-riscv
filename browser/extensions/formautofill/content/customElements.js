@@ -10,10 +10,6 @@
 
 // Wrap in a block to prevent leaking to window scope.
 (() => {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-
   function sendMessageToBrowser(msgName, data) {
     let { AutoCompleteParent } = ChromeUtils.import(
       "resource://gre/actors/AutoCompleteParent.jsm"
@@ -278,8 +274,7 @@
       this.setAttribute("formautofillattached", "true");
 
       let { AppConstants } = ChromeUtils.import(
-        "resource://gre/modules/AppConstants.jsm",
-        {}
+        "resource://gre/modules/AppConstants.jsm"
       );
 
       let buttonTextBundleKey;

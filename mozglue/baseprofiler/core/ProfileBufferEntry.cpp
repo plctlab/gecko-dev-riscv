@@ -154,7 +154,7 @@ class MOZ_RAII AutoArraySchemaWriter {
  public:
   explicit AutoArraySchemaWriter(SpliceableJSONWriter& aWriter)
       : mJSONWriter(aWriter), mNextFreeIndex(0) {
-    mJSONWriter.StartArrayElement(SpliceableJSONWriter::SingleLineStyle);
+    mJSONWriter.StartArrayElement();
   }
 
   ~AutoArraySchemaWriter() { mJSONWriter.EndArray(); }
@@ -320,15 +320,6 @@ void UniqueStacks::StreamNonJITFrame(const FrameKey& aFrame) {
     writer.IntElement(SUBCATEGORY, info.mSubcategoryIndex);
   }
 }
-
-struct CStringWriteFunc : public JSONWriteFunc {
-  std::string& mBuffer;  // The struct must not outlive this buffer
-  explicit CStringWriteFunc(std::string& aBuffer) : mBuffer(aBuffer) {}
-
-  void Write(const Span<const char>& aStr) override {
-    mBuffer.append(aStr.data(), aStr.size());
-  }
-};
 
 struct ProfileSample {
   uint32_t mStack;
@@ -807,27 +798,24 @@ void ProfileBuffer::StreamMarkersToJSON(SpliceableJSONWriter& aWriter,
     MOZ_ASSERT(static_cast<ProfileBufferEntry::KindUnderlyingType>(type) <
                static_cast<ProfileBufferEntry::KindUnderlyingType>(
                    ProfileBufferEntry::Kind::MODERN_LIMIT));
-    bool entryWasFullyRead = false;
-
     if (type == ProfileBufferEntry::Kind::Marker) {
-      entryWasFullyRead = ::mozilla::base_profiler_markers_detail::
-          DeserializeAfterKindAndStream(
-              aER, aWriter, aThreadId,
-              [&](ProfileChunkedBuffer& aChunkedBuffer) {
-                ProfilerBacktrace backtrace("", &aChunkedBuffer);
-                backtrace.StreamJSON(aWriter, TimeStamp::ProcessCreation(),
-                                     aUniqueStacks);
-              },
-              // We don't have Rust markers in the mozglue.
-              [&](mozilla::base_profiler_markers_detail::Streaming::
-                      DeserializerTag) {
-                MOZ_ASSERT_UNREACHABLE("No Rust markers in mozglue.");
-              });
-    }
-
-    if (!entryWasFullyRead) {
-      // Not a marker, or marker for another thread.
-      // We probably didn't read the whole entry, so we need to skip to the end.
+      ::mozilla::base_profiler_markers_detail::DeserializeAfterKindAndStream(
+          aER,
+          [&](const BaseProfilerThreadId& aMarkerThreadId) {
+            return (aMarkerThreadId == aThreadId) ? &aWriter : nullptr;
+          },
+          [&](ProfileChunkedBuffer& aChunkedBuffer) {
+            ProfilerBacktrace backtrace("", &aChunkedBuffer);
+            backtrace.StreamJSON(aWriter, TimeStamp::ProcessCreation(),
+                                 aUniqueStacks);
+          },
+          // We don't have Rust markers in the mozglue.
+          [&](mozilla::base_profiler_markers_detail::Streaming::
+                  DeserializerTag) {
+            MOZ_ASSERT_UNREACHABLE("No Rust markers in mozglue.");
+          });
+    } else {
+      // The entry was not a marker, we need to skip to the end.
       aER.SetRemainingBytes(0);
     }
   });
@@ -1042,8 +1030,8 @@ void ProfileBuffer::StreamCountersToJSON(SpliceableJSONWriter& aWriter,
           ERROR_AND_CONTINUE("expected a Time entry");
         }
         double time = e.Get().GetDouble();
+        e.Next();
         if (time >= aSinceTime) {
-          e.Next();
           while (e.Has() && e.Get().IsCounterKey()) {
             uint64_t key = e.Get().GetUint64();
             CounterKeyedSamples& data = LookupOrAdd(counter, key);
@@ -1058,6 +1046,7 @@ void ProfileBuffer::StreamCountersToJSON(SpliceableJSONWriter& aWriter,
               number = 0;
             } else {
               number = e.Get().GetInt64();
+              e.Next();
             }
             CounterKeyedSample sample = {time, number, count};
             MOZ_RELEASE_ASSERT(data.append(sample));
@@ -1066,8 +1055,9 @@ void ProfileBuffer::StreamCountersToJSON(SpliceableJSONWriter& aWriter,
           // skip counter sample - only need to skip the initial counter
           // id, then let the loop at the top skip the rest
         }
+      } else {
+        e.Next();
       }
-      e.Next();
     }
     // we have a map of a map of counter entries; dump them to JSON
     if (counters.count() == 0) {
@@ -1213,10 +1203,10 @@ bool ProfileBuffer::DuplicateLastSample(BaseProfilerThreadId aThreadId,
   }
 
   ProfileChunkedBuffer tempBuffer(
-      ProfileChunkedBuffer::ThreadSafety::WithoutMutex, mWorkerChunkManager);
+      ProfileChunkedBuffer::ThreadSafety::WithoutMutex, WorkerChunkManager());
 
   auto retrieveWorkerChunk = MakeScopeExit(
-      [&]() { mWorkerChunkManager.Reset(tempBuffer.GetAllChunks()); });
+      [&]() { WorkerChunkManager().Reset(tempBuffer.GetAllChunks()); });
 
   const bool ok = mEntries.Read([&](ProfileChunkedBuffer::Reader* aReader) {
     MOZ_ASSERT(aReader,

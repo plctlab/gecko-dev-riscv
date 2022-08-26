@@ -13,7 +13,7 @@
 let tracker;
 {
   const { DevToolsLoader } = ChromeUtils.import(
-    "resource://devtools/shared/Loader.jsm"
+    "resource://devtools/shared/loader/Loader.jsm"
   );
   const loader = new DevToolsLoader({
     invisibleToDebugger: true,
@@ -34,8 +34,8 @@ let tracker;
 // => Avoid loading devtools module as much as possible
 // => If you really have to, lazy load them
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 XPCOMUtils.defineLazyGetter(this, "TrackedObjects", () => {
   return ChromeUtils.import(
@@ -87,7 +87,7 @@ async function startRecordingAllocations({
       [DEBUG_ALLOCATIONS],
       async debug_allocations => {
         const { DevToolsLoader } = ChromeUtils.import(
-          "resource://devtools/shared/Loader.jsm"
+          "resource://devtools/shared/loader/Loader.jsm"
         );
         const loader = new DevToolsLoader({
           invisibleToDebugger: true,
@@ -106,6 +106,9 @@ async function startRecordingAllocations({
         await tracker.startRecordingAllocations(debug_allocations);
       }
     );
+    // Trigger a GC in the parent process as this additional ContentTask
+    // seems to make harder to release objects created before we start recording.
+    await tracker.doGC();
   }
 
   await tracker.startRecordingAllocations(DEBUG_ALLOCATIONS);
@@ -138,7 +141,7 @@ async function stopRecordingAllocations(
       [DEBUG_ALLOCATIONS],
       debug_allocations => {
         const { DevToolsLoader } = ChromeUtils.import(
-          "resource://devtools/shared/Loader.jsm"
+          "resource://devtools/shared/loader/Loader.jsm"
         );
         const { tracker } = DevToolsLoader;
         ok(
@@ -160,7 +163,7 @@ async function stopRecordingAllocations(
       const objectNodeIds = TrackedObjects.getAllNodeIds();
       if (objectNodeIds.length > 0) {
         const { DevToolsLoader } = ChromeUtils.import(
-          "resource://devtools/shared/Loader.jsm"
+          "resource://devtools/shared/loader/Loader.jsm"
         );
         const { tracker } = DevToolsLoader;
         // Record the heap snapshot from the content process,

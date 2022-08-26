@@ -783,12 +783,13 @@ let ThirdPartyCookies = new (class ThirdPartyCookies extends ProtectionCategory 
   }
 
   _getExceptionState(origin) {
-    for (let perm of Services.perms.getAllForPrincipal(
-      gBrowser.contentPrincipal
-    )) {
-      if (perm.type == "3rdPartyStorage^" + origin) {
-        return perm.capability;
-      }
+    let thirdPartyStorage = Services.perms.testPermissionFromPrincipal(
+      gBrowser.contentPrincipal,
+      "3rdPartyStorage^" + origin
+    );
+
+    if (thirdPartyStorage != Services.perms.UNKNOWN_ACTION) {
+      return thirdPartyStorage;
     }
 
     let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
@@ -1095,12 +1096,6 @@ var gProtectionsHandler = {
     delete this.iconBox;
     return (this.iconBox = document.getElementById(
       "tracking-protection-icon-box"
-    ));
-  },
-  get _protectionsIconBox() {
-    delete this._protectionsIconBox;
-    return (this._protectionsIconBox = document.getElementById(
-      "tracking-protection-icon-animatable-box"
     ));
   },
   get _protectionsPopupMultiView() {
@@ -2148,7 +2143,7 @@ var gProtectionsHandler = {
         "popupshown",
         () => {
           this._toastPanelTimer = setTimeout(() => {
-            PanelMultiView.hidePopup(this._protectionsPopup);
+            PanelMultiView.hidePopup(this._protectionsPopup, true);
             delete this._toastPanelTimer;
           }, this._protectionsPopupToastTimeout);
         },
@@ -2262,9 +2257,6 @@ var gProtectionsHandler = {
     )}\n`;
     body += `${ThirdPartyCookies.prefEnabled}: ${Services.prefs.getIntPref(
       ThirdPartyCookies.prefEnabled
-    )}\n`;
-    body += `network.cookie.lifetimePolicy: ${Services.prefs.getIntPref(
-      "network.cookie.lifetimePolicy"
     )}\n`;
     body += `privacy.annotate_channels.strict_list.enabled: ${Services.prefs.getBoolPref(
       "privacy.annotate_channels.strict_list.enabled"

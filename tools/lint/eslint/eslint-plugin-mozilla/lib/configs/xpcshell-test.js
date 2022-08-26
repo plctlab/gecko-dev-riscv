@@ -3,6 +3,8 @@
 
 module.exports = {
   env: {
+    browser: false,
+    "mozilla/privileged": true,
     "mozilla/xpcshell": true,
   },
 
@@ -19,6 +21,19 @@ module.exports = {
           {
             args: "none",
             vars: "local",
+          },
+        ],
+      },
+    },
+    {
+      // No declaring variables that are never used
+      files: "test*.js",
+      rules: {
+        "no-unused-vars": [
+          "error",
+          {
+            args: "none",
+            vars: "all",
           },
         ],
       },

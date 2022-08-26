@@ -4,10 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIFactory.h"
-#include "mozilla/Module.h"
 #include "nsXULAppAPI.h"
 #include "nsIThread.h"
 
+#include "nsComponentManager.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsXPCOMCIDInternal.h"
@@ -80,10 +80,7 @@ class Factory final : public nsIFactory {
 
   Factory() : mFirstComponentCreated(false) {}
 
-  NS_IMETHOD CreateInstance(nsISupports* aDelegate, const nsIID& aIID,
-                            void** aResult) override;
-
-  NS_IMETHOD LockFactory(bool aLock) override { return NS_OK; }
+  NS_IMETHOD CreateInstance(const nsIID& aIID, void** aResult) override;
 
   bool mFirstComponentCreated;
 };
@@ -131,8 +128,7 @@ NS_INTERFACE_MAP_BEGIN(Component2)
 NS_INTERFACE_MAP_END
 
 NS_IMETHODIMP
-Factory::CreateInstance(nsISupports* aDelegate, const nsIID& aIID,
-                        void** aResult) {
+Factory::CreateInstance(const nsIID& aIID, void** aResult) {
   // Make sure that the second thread beat the main thread to the getService
   // call.
   MOZ_RELEASE_ASSERT(!NS_IsMainThread(), "Wrong thread!");
@@ -146,7 +142,6 @@ Factory::CreateInstance(nsISupports* aDelegate, const nsIID& aIID,
     mon.Wait(PR_MillisecondsToInterval(3000));
   }
 
-  NS_ENSURE_FALSE(aDelegate, NS_ERROR_NO_AGGREGATION);
   NS_ENSURE_ARG_POINTER(aResult);
 
   nsCOMPtr<nsISupports> instance;
@@ -200,31 +195,17 @@ TestRunnable::Run() {
 
 static Factory* gFactory;
 
-static already_AddRefed<nsIFactory> CreateFactory(
-    const mozilla::Module& module, const mozilla::Module::CIDEntry& entry) {
-  if (!gFactory) {
-    gFactory = new Factory();
-    NS_ADDREF(gFactory);
-  }
-  nsCOMPtr<nsIFactory> ret = gFactory;
-  return ret.forget();
-}
-
-static const mozilla::Module::CIDEntry kLocalCIDs[] = {
-    {&kFactoryCID1, false, CreateFactory, nullptr},
-    {&kFactoryCID2, false, CreateFactory, nullptr},
-    {nullptr}};
-
-static const mozilla::Module::ContractIDEntry kLocalContracts[] = {
-    {FACTORY_CONTRACTID, &kFactoryCID2}, {nullptr}};
-
-static const mozilla::Module kLocalModule = {mozilla::Module::kVersion,
-                                             kLocalCIDs, kLocalContracts};
-
 TEST(RacingServiceManager, Test)
 {
   nsresult rv;
-  XRE_AddStaticComponent(&kLocalModule);
+
+  gFactory = new Factory();
+  NS_ADDREF(gFactory);
+
+  nsComponentManagerImpl::gComponentManager->RegisterFactory(
+      kFactoryCID2, "factory1", FACTORY_CONTRACTID, gFactory);
+  nsComponentManagerImpl::gComponentManager->RegisterFactory(
+      kFactoryCID1, "factory2", nullptr, gFactory);
 
   AutoCreateAndDestroyReentrantMonitor mon1(&gReentrantMonitor);
 

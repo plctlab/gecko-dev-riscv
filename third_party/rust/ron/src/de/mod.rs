@@ -1,6 +1,5 @@
 /// Deserialization module.
-pub use crate::error::{Error, ErrorCode, Result};
-pub use crate::parse::Position;
+pub use crate::error::{Error, ErrorCode, Position, Result};
 
 use serde::de::{self, DeserializeSeed, Deserializer as SerdeError, Visitor};
 use std::{borrow::Cow, io, str};
@@ -8,6 +7,7 @@ use std::{borrow::Cow, io, str};
 use self::{id::IdDeserializer, tag::TagDeserializer};
 use crate::{
     extensions::Extensions,
+    options::Options,
     parse::{AnyNum, Bytes, ParsedStr},
 };
 
@@ -23,37 +23,48 @@ mod value;
 /// you can use the `from_str` convenience function.
 pub struct Deserializer<'de> {
     bytes: Bytes<'de>,
+    newtype_variant: bool,
 }
 
 impl<'de> Deserializer<'de> {
     // Cannot implement trait here since output is tied to input lifetime 'de.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'de str) -> Result<Self> {
-        Deserializer::from_bytes(input.as_bytes())
+        Self::from_str_with_options(input, Options::default())
     }
 
     pub fn from_bytes(input: &'de [u8]) -> Result<Self> {
-        Ok(Deserializer {
+        Self::from_bytes_with_options(input, Options::default())
+    }
+
+    pub fn from_str_with_options(input: &'de str, options: Options) -> Result<Self> {
+        Self::from_bytes_with_options(input.as_bytes(), options)
+    }
+
+    pub fn from_bytes_with_options(input: &'de [u8], options: Options) -> Result<Self> {
+        let mut deserializer = Deserializer {
             bytes: Bytes::new(input)?,
-        })
+            newtype_variant: false,
+        };
+
+        deserializer.bytes.exts |= options.default_extensions;
+
+        Ok(deserializer)
     }
 
     pub fn remainder(&self) -> Cow<'_, str> {
-        String::from_utf8_lossy(&self.bytes.bytes())
+        String::from_utf8_lossy(self.bytes.bytes())
     }
 }
 
-/// A convenience function for reading data from a reader
-/// and feeding into a deserializer.
-pub fn from_reader<R, T>(mut rdr: R) -> Result<T>
+/// A convenience function for building a deserializer
+/// and deserializing a value of type `T` from a reader.
+pub fn from_reader<R, T>(rdr: R) -> Result<T>
 where
     R: io::Read,
     T: de::DeserializeOwned,
 {
-    let mut bytes = Vec::new();
-    rdr.read_to_end(&mut bytes)?;
-
-    from_bytes(&bytes)
+    Options::default().from_reader(rdr)
 }
 
 /// A convenience function for building a deserializer
@@ -62,7 +73,7 @@ pub fn from_str<'a, T>(s: &'a str) -> Result<T>
 where
     T: de::Deserialize<'a>,
 {
-    from_bytes(s.as_bytes())
+    Options::default().from_str(s)
 }
 
 /// A convenience function for building a deserializer
@@ -71,12 +82,7 @@ pub fn from_bytes<'a, T>(s: &'a [u8]) -> Result<T>
 where
     T: de::Deserialize<'a>,
 {
-    let mut deserializer = Deserializer::from_bytes(s)?;
-    let t = T::deserialize(&mut deserializer)?;
-
-    deserializer.end()?;
-
-    Ok(t)
+    Options::default().from_bytes(s)
 }
 
 impl<'de> Deserializer<'de> {
@@ -127,6 +133,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        // Newtype variants can only be unwrapped if we receive information
+        //  about the wrapped type - with `deserialize_any` we don't
+        self.newtype_variant = false;
+
         if self.bytes.consume_ident("true") {
             return visitor.visit_bool(true);
         } else if self.bytes.consume_ident("false") {
@@ -313,7 +323,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             let string = self.bytes.string()?;
             let base64_str = match string {
                 ParsedStr::Allocated(ref s) => s.as_str(),
-                ParsedStr::Slice(ref s) => s,
+                ParsedStr::Slice(s) => s,
             };
             base64::decode(base64_str)
         };
@@ -330,8 +340,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     {
         if self.bytes.consume("None") {
             visitor.visit_none()
-        } else if self.bytes.exts.contains(Extensions::IMPLICIT_SOME) {
-            visitor.visit_some(&mut *self)
         } else if self.bytes.consume("Some") && {
             self.bytes.skip_ws()?;
             self.bytes.consume("(")
@@ -347,6 +355,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             } else {
                 self.bytes.err(ErrorCode::ExpectedOptionEnd)
             }
+        } else if self.bytes.exts.contains(Extensions::IMPLICIT_SOME) {
+            visitor.visit_some(&mut *self)
         } else {
             self.bytes.err(ErrorCode::ExpectedOption)
         }
@@ -357,7 +367,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.bytes.consume("()") {
+        if self.newtype_variant || self.bytes.consume("()") {
+            self.newtype_variant = false;
+
             visitor.visit_unit()
         } else {
             self.bytes.err(ErrorCode::ExpectedUnit)
@@ -368,7 +380,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.bytes.consume(name) {
+        if self.newtype_variant || self.bytes.consume_struct_name(name)? {
+            self.newtype_variant = false;
+
             visitor.visit_unit()
         } else {
             self.deserialize_unit(visitor)
@@ -379,11 +393,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.bytes.exts.contains(Extensions::UNWRAP_NEWTYPES) {
+        if self.bytes.exts.contains(Extensions::UNWRAP_NEWTYPES) || self.newtype_variant {
+            self.newtype_variant = false;
+
             return visitor.visit_newtype_struct(&mut *self);
         }
 
-        self.bytes.consume(name);
+        self.bytes.consume_struct_name(name)?;
 
         self.bytes.skip_ws()?;
 
@@ -397,8 +413,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             } else {
                 self.bytes.err(ErrorCode::ExpectedStructEnd)
             }
-        } else {
+        } else if name.is_empty() {
             self.bytes.err(ErrorCode::ExpectedStruct)
+        } else {
+            self.bytes.err(ErrorCode::ExpectedNamedStruct(name))
         }
     }
 
@@ -406,8 +424,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        self.newtype_variant = false;
+
         if self.bytes.consume("[") {
-            let value = visitor.visit_seq(CommaSeparated::new(b']', &mut self))?;
+            let value = visitor.visit_seq(CommaSeparated::new(b']', self))?;
             self.bytes.comma()?;
 
             if self.bytes.consume("]") {
@@ -424,11 +444,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.bytes.consume("(") {
-            let value = visitor.visit_seq(CommaSeparated::new(b')', &mut self))?;
+        if self.newtype_variant || self.bytes.consume("(") {
+            let old_newtype_variant = self.newtype_variant;
+            self.newtype_variant = false;
+
+            let value = visitor.visit_seq(CommaSeparated::new(b')', self))?;
             self.bytes.comma()?;
 
-            if self.bytes.consume(")") {
+            if old_newtype_variant || self.bytes.consume(")") {
                 Ok(value)
             } else {
                 self.bytes.err(ErrorCode::ExpectedArrayEnd)
@@ -447,7 +470,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.bytes.consume(name);
+        if !self.newtype_variant {
+            self.bytes.consume_struct_name(name)?;
+        }
+
         self.deserialize_tuple(len, visitor)
     }
 
@@ -455,8 +481,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        self.newtype_variant = false;
+
         if self.bytes.consume("{") {
-            let value = visitor.visit_map(CommaSeparated::new(b'}', &mut self))?;
+            let value = visitor.visit_map(CommaSeparated::new(b'}', self))?;
             self.bytes.comma()?;
 
             if self.bytes.consume("}") {
@@ -478,21 +506,28 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.bytes.consume(name);
+        if !self.newtype_variant {
+            self.bytes.consume_struct_name(name)?;
+        }
 
         self.bytes.skip_ws()?;
 
-        if self.bytes.consume("(") {
-            let value = visitor.visit_map(CommaSeparated::new(b')', &mut self))?;
+        if self.newtype_variant || self.bytes.consume("(") {
+            let old_newtype_variant = self.newtype_variant;
+            self.newtype_variant = false;
+
+            let value = visitor.visit_map(CommaSeparated::new(b')', self))?;
             self.bytes.comma()?;
 
-            if self.bytes.consume(")") {
+            if old_newtype_variant || self.bytes.consume(")") {
                 Ok(value)
             } else {
                 self.bytes.err(ErrorCode::ExpectedStructEnd)
             }
-        } else {
+        } else if name.is_empty() {
             self.bytes.err(ErrorCode::ExpectedStruct)
+        } else {
+            self.bytes.err(ErrorCode::ExpectedNamedStruct(name))
         }
     }
 
@@ -505,6 +540,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        self.newtype_variant = false;
+
         visitor.visit_enum(Enum::new(self))
     }
 
@@ -547,7 +584,17 @@ impl<'a, 'de> CommaSeparated<'a, 'de> {
     fn has_element(&mut self) -> Result<bool> {
         self.de.bytes.skip_ws()?;
 
-        Ok(self.had_comma && self.de.bytes.peek_or_eof()? != self.terminator)
+        match (
+            self.had_comma,
+            self.de.bytes.peek_or_eof()? != self.terminator,
+        ) {
+            // Trailing comma, maybe has a next element
+            (true, has_element) => Ok(has_element),
+            // No trailing comma but terminator
+            (false, false) => Ok(false),
+            // No trailing comma or terminator
+            (false, true) => self.err(ErrorCode::ExpectedComma),
+        }
     }
 }
 
@@ -651,7 +698,15 @@ impl<'de, 'a> de::VariantAccess<'de> for Enum<'a, 'de> {
         if self.de.bytes.consume("(") {
             self.de.bytes.skip_ws()?;
 
+            self.de.newtype_variant = self
+                .de
+                .bytes
+                .exts
+                .contains(Extensions::UNWRAP_VARIANT_NEWTYPES);
+
             let val = seed.deserialize(&mut *self.de)?;
+
+            self.de.newtype_variant = false;
 
             self.de.bytes.comma()?;
 

@@ -1,13 +1,11 @@
 /* eslint max-len: ["error", 80] */
 
 const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm",
-  {}
+  "resource://testing-common/AddonTestUtils.jsm"
 );
 
 const { ExtensionPermissions } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionPermissions.jsm",
-  {}
+  "resource://gre/modules/ExtensionPermissions.jsm"
 );
 
 const SUPPORT_URL = Services.urlFormatter.formatURL(
@@ -163,6 +161,30 @@ add_task(async function enableHtmlViews() {
         permissions: ["alarms", "contextMenus"],
       },
       type: "extension",
+    },
+    {
+      id: "addon3@mochi.test",
+      name: "Test add-on 3",
+      creator: { name: "Look a super long description" },
+      description: "Short description",
+      fullDescription: "Mozilla\n".repeat(100),
+      userPermissions: {
+        origins: [],
+        permissions: ["alarms", "contextMenus"],
+      },
+      type: "extension",
+      contributionURL: "http://example.com/contribute",
+      updateDate: new Date("2022-03-07T01:00:00"),
+    },
+    {
+      id: "sitepermission@mochi.test",
+      name: "Test site permission add-on",
+      creator: { name: "you got it" },
+      description: "permission description",
+      fullDescription: "detailed description",
+      siteOrigin: "http://mochi.test",
+      sitePermissions: ["midi"],
+      type: "sitepermission",
     },
     {
       id: "theme1@mochi.test",
@@ -455,6 +477,7 @@ add_task(async function testDetailOperations() {
 add_task(async function testFullDetails() {
   Services.telemetry.clearEvents();
   let id = "addon1@mochi.test";
+  let headingId = "addon1_mochi_test-heading";
   let win = await loadInitialView("extension");
   let doc = win.document;
 
@@ -475,6 +498,15 @@ add_task(async function testFullDetails() {
   card = getAddonCard(win, id);
   ok(card.hasAttribute("expanded"), "The detail card is expanded");
 
+  let cardHeading = card.querySelector("h1");
+  is(cardHeading.textContent, "Test add-on 1", "Card heading is set");
+  is(cardHeading.id, headingId, "Heading has correct id");
+  is(
+    card.querySelector(".card").getAttribute("aria-labelledby"),
+    headingId,
+    "Card is labelled by the heading"
+  );
+
   // Make sure the preview is hidden.
   preview = card.querySelector(".card-heading-image");
   ok(preview, "There is a preview");
@@ -491,6 +523,19 @@ add_task(async function testFullDetails() {
     "Longer description<br>With brs!",
     "The full description replaces newlines with <br>"
   );
+
+  let sitepermissionsRow = details.querySelector(
+    ".addon-detail-sitepermissions"
+  );
+  is(
+    sitepermissionsRow.hidden,
+    true,
+    "AddonSitePermissionsList should be hidden for this addon type"
+  );
+
+  // Check the show more button is not there
+  const showMoreBtn = card.querySelector(".addon-detail-description-toggle");
+  ok(showMoreBtn.hidden, "The show more button is not visible");
 
   let contrib = details.querySelector(".addon-detail-contribute");
   ok(contrib, "The contribution section is visible");
@@ -629,6 +674,42 @@ add_task(async function testFullDetails() {
   ]);
 });
 
+add_task(async function testFullDetailsShowMoreButton() {
+  Services.telemetry.clearEvents();
+  const id = "addon3@mochi.test";
+  const win = await loadInitialView("extension");
+
+  // The list card.
+  let card = getAddonCard(win, id);
+  const loaded = waitForViewLoad(win);
+  card.querySelector('[action="expand"]').click();
+  await loaded;
+
+  // This is now the detail card.
+  card = getAddonCard(win, id);
+
+  // Check the show more button is there
+  const showMoreBtn = card.querySelector(".addon-detail-description-toggle");
+  ok(!showMoreBtn.hidden, "The show more button is visible");
+
+  const descriptionWrapper = card.querySelector(
+    ".addon-detail-description-wrapper"
+  );
+  ok(
+    descriptionWrapper.classList.contains("addon-detail-description-collapse"),
+    "The long description is collapsed"
+  );
+
+  // After click the description should be expanded
+  showMoreBtn.click();
+  ok(
+    !descriptionWrapper.classList.contains("addon-detail-description-collapse"),
+    "The long description is expanded"
+  );
+
+  await closeView(win);
+});
+
 add_task(async function testMinimalExtension() {
   let win = await loadInitialView("extension");
   let doc = win.document;
@@ -676,7 +757,7 @@ add_task(async function testMinimalExtension() {
   checkLabel(row, "author");
   let text = row.lastChild;
   is(text.textContent, "I made it", "The author is set");
-  ok(text instanceof Text, "The author is a text node");
+  ok(Text.isInstance(text), "The author is a text node");
 
   is(rows.length, 0, "There are no more rows");
 
@@ -778,6 +859,66 @@ add_task(async function testStaticTheme() {
   is(text.textContent, "Artist", "The author is set");
 
   is(rows.length, 0, "There was only 1 row");
+
+  await closeView(win);
+});
+
+add_task(async function testSitePermission() {
+  let win = await loadInitialView("sitepermission");
+  let doc = win.document;
+
+  // The list card.
+  let card = getAddonCard(win, "sitepermission@mochi.test");
+  ok(!card.hasAttribute("expanded"), "The list card is not expanded");
+
+  // Load the detail view.
+  let loaded = waitForViewLoad(win);
+  card.querySelector('[action="expand"]').click();
+  await loaded;
+
+  card = getAddonCard(win, "sitepermission@mochi.test");
+
+  // Check all the deck buttons are hidden.
+  assertDeckHeadingHidden(card.details.tabGroup);
+
+  let rows = getDetailRows(card);
+  is(rows.length, 4, "There are 4 rows");
+
+  let sitepermissionsRow = card.querySelector(".addon-detail-sitepermissions");
+  is(
+    sitepermissionsRow.hidden,
+    false,
+    "AddonSitePermissionsList should be visible for this addon type"
+  );
+
+  // Automatic updates.
+  let row = rows.shift();
+  checkLabel(row, "updates");
+
+  // Private browsing.
+  let private = rows.shift();
+  checkLabel(private, "private-browsing");
+
+  let help = rows.shift();
+  ok(help.classList.contains("addon-detail-help-row"), "There's a help row");
+  ok(!row.hidden, "The help row is shown");
+  is(
+    doc.l10n.getAttributes(help).id,
+    "addon-detail-private-browsing-help",
+    "The help row is for private browsing"
+  );
+
+  // Author.
+  let author = rows.shift();
+  checkLabel(author, "author");
+
+  is(rows.length, 0, "There was only 1 row");
+
+  let permissions = Array.from(
+    card.querySelectorAll(".addon-permissions-list .permission-info")
+  );
+  is(permissions.length, 1, "a permission is listed");
+  is(permissions[0].textContent, "Access MIDI devices", "got midi permission");
 
   await closeView(win);
 });

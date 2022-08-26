@@ -50,7 +50,6 @@ EXPORTS.mozilla.dom.indexedDB += [
     "IDBResult.h",
     "Key.h",
     "KeyPath.h",
-    "PermissionRequestBase.h",
     "SerializationHelpers.h",
     "ThreadLocal.h",
 ]
@@ -77,7 +76,6 @@ UNIFIED_SOURCES += [
     "IndexedDatabaseManager.cpp",
     "IndexedDBCommon.cpp",
     "KeyPath.cpp",
-    "PermissionRequestBase.cpp",
     "ProfilerHelpers.cpp",
     "ReportInternalError.cpp",
     "SchemaUpgrades.cpp",
@@ -111,7 +109,6 @@ if CONFIG["CC_TYPE"] in ("clang", "gcc"):
     # Suppress gcc warning about a comparison being always false due to the
     # range of the data type
     SOURCES["Key.cpp"].flags += ["-Wno-error=type-limits"]
-    CXXFLAGS += ["-Wno-error=shadow"]
 
 LOCAL_INCLUDES += [
     "/dom/base",

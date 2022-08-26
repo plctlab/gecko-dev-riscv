@@ -210,7 +210,7 @@ inline bool PtrIsInRange(const void* ptr, const void* start, size_t length) {
 
 static void RelocateCell(Zone* zone, TenuredCell* src, AllocKind thingKind,
                          size_t thingSize) {
-  JS::AutoSuppressGCAnalysis nogc(TlsContext.get());
+  JS::AutoSuppressGCAnalysis nogc;
 
   // Allocate a new cell.
   MOZ_ASSERT(zone == src->zone());
@@ -450,20 +450,18 @@ inline T* MovingTracer::onEdge(T* thing) {
 }
 
 void Zone::prepareForCompacting() {
-  JSFreeOp* fop = runtimeFromMainThread()->defaultFreeOp();
-  discardJitCode(fop);
+  JS::GCContext* gcx = runtimeFromMainThread()->gcContext();
+  discardJitCode(gcx);
 }
 
 void GCRuntime::sweepZoneAfterCompacting(MovingTracer* trc, Zone* zone) {
   MOZ_ASSERT(zone->isCollecting());
-  sweepFinalizationRegistries(zone);
-  zone->weakRefMap().sweep(&storeBuffer());
+  traceWeakFinalizationObserverEdges(trc, zone);
 
-  {
-    zone->sweepWeakMaps();
-    for (auto* cache : zone->weakCaches()) {
-      cache->sweep(nullptr);
-    }
+  zone->traceWeakMaps(trc);
+
+  for (auto* cache : zone->weakCaches()) {
+    cache->traceWeak(trc, nullptr);
   }
 
   if (jit::JitZone* jitZone = zone->jitZone()) {
@@ -473,8 +471,8 @@ void GCRuntime::sweepZoneAfterCompacting(MovingTracer* trc, Zone* zone) {
   for (RealmsInZoneIter r(zone); !r.done(); r.next()) {
     r->traceWeakRegExps(trc);
     r->traceWeakSavedStacks(trc);
-    r->traceWeakObjects(trc);
-    r->sweepDebugEnvironments();
+    r->traceWeakGlobalEdge(trc);
+    r->traceWeakDebugEnvironmentEdges(trc);
     r->traceWeakEdgesInJitRealm(trc);
     r->traceWeakObjectRealm(trc);
   }
@@ -656,7 +654,7 @@ void GCRuntime::updateRttValueObjects(MovingTracer* trc, Zone* zone) {
   // need to be updated. Do not update any non-reserved slots, since they might
   // point back to unprocessed descriptor objects.
 
-  zone->rttValueObjects().sweep(nullptr);
+  zone->rttValueObjects().traceWeak(trc, nullptr);
 
   for (auto r = zone->rttValueObjects().all(); !r.empty(); r.popFront()) {
     RttValue* obj = &MaybeForwardedObjectAs<RttValue>(r.front());
@@ -681,7 +679,8 @@ void GCRuntime::updateCellPointers(Zone* zone, AllocKinds kinds) {
 
   AutoRunParallelWork bgTasks(this, UpdateArenaListSegmentPointers,
                               gcstats::PhaseKind::COMPACT_UPDATE_CELLS,
-                              bgArenas, SliceBudget::unlimited(), lock);
+                              GCUse::Unspecified, bgArenas,
+                              SliceBudget::unlimited(), lock);
 
   AutoUnlockHelperThreadState unlock(lock);
 
@@ -789,7 +788,7 @@ void GCRuntime::updateZonePointersToRelocatedCells(Zone* zone) {
 
   zone->externalStringCache().purge();
   zone->functionToStringCache().purge();
-  zone->shapeZone().purgeShapeCaches(rt->defaultFreeOp());
+  zone->shapeZone().purgeShapeCaches(rt->gcContext());
   rt->caches().stringToAtomCache.purge();
 
   // Iterate through all cells that can contain relocatable pointers to update
@@ -797,20 +796,13 @@ void GCRuntime::updateZonePointersToRelocatedCells(Zone* zone) {
   // as much as possible.
   updateAllCellPointers(&trc, zone);
 
-  // Mark roots to update them.
-  {
-    gcstats::AutoPhase ap(stats(), gcstats::PhaseKind::MARK_ROOTS);
-
-    WeakMapBase::traceZone(zone, &trc);
-  }
-
   // Sweep everything to fix up weak pointers.
   sweepZoneAfterCompacting(&trc, zone);
 
   // Call callbacks to get the rest of the system to fixup other untraced
   // pointers.
   for (CompartmentsInZoneIter comp(zone); !comp.done(); comp.next()) {
-    callWeakPointerCompartmentCallbacks(comp);
+    callWeakPointerCompartmentCallbacks(&trc, comp);
   }
 }
 
@@ -843,10 +835,9 @@ void GCRuntime::updateRuntimePointersToRelocatedCells(AutoGCSession& session) {
   }
 
   // Sweep everything to fix up weak pointers.
-  DebugAPI::sweepAll(rt->defaultFreeOp());
   jit::JitRuntime::TraceWeakJitcodeGlobalTable(rt, &trc);
   for (JS::detail::WeakCacheBase* cache : rt->weakCaches()) {
-    cache->sweep(nullptr);
+    cache->traceWeak(&trc, nullptr);
   }
 
   // Type inference may put more blocks here to free.
@@ -857,7 +848,7 @@ void GCRuntime::updateRuntimePointersToRelocatedCells(AutoGCSession& session) {
 
   // Call callbacks to get the rest of the system to fixup other untraced
   // pointers.
-  callWeakPointerZonesCallbacks();
+  callWeakPointerZonesCallbacks(&trc);
 }
 
 void GCRuntime::clearRelocatedArenas(Arena* arenaList, JS::GCReason reason) {
@@ -890,11 +881,15 @@ void GCRuntime::clearRelocatedArenasWithoutUnlocking(Arena* arenaList,
                  JS_MOVED_TENURED_PATTERN, arena->getThingsSpan(),
                  MemCheckKind::MakeNoAccess);
 
-    // Don't count arenas as being freed by the GC if we purposely moved
-    // everything to new arenas, as that will already have allocated a similar
-    // number of arenas. This only happens for collections triggered by GC zeal.
+    // Don't count emptied arenas as being freed by the current GC:
+    //  - if we purposely moved everything to new arenas, as that will already
+    //    have allocated a similar number of arenas. (This only happens for
+    //    collections triggered by GC zeal.)
+    //  - if they were allocated since the start of the GC.
     bool allArenasRelocated = ShouldRelocateAllArenas(reason);
-    arena->zone->gcHeapSize.removeBytes(ArenaSize, !allArenasRelocated);
+    bool updateRetainedSize = !allArenasRelocated && !arena->isNewlyCreated();
+    arena->zone->gcHeapSize.removeBytes(ArenaSize, updateRetainedSize,
+                                        heapSize);
 
     // Release the arena but don't return it to the chunk yet.
     arena->release(lock);

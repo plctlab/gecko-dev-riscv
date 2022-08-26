@@ -24,24 +24,16 @@ const BINDINGS_FILE: &str = "bindings.rs";
 lazy_static! {
     static ref BINDGEN_FLAGS: Vec<String> = {
         // Load build-specific config overrides.
-        let path = PathBuf::from(env::var_os("MOZ_TOPOBJDIR").unwrap())
-            .join("tools/profiler/rust-api/extra-bindgen-flags");
+        let path = mozbuild::TOPOBJDIR.join("tools/profiler/rust-api/extra-bindgen-flags");
         println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
         fs::read_to_string(path).expect("Failed to read extra-bindgen-flags file")
             .split_whitespace()
             .map(std::borrow::ToOwned::to_owned)
             .collect()
     };
-    static ref DISTDIR_PATH: PathBuf = {
-        let path = PathBuf::from(env::var_os("MOZ_DIST").unwrap());
-        if !path.is_absolute() || !path.is_dir() {
-            panic!("MOZ_DIST must be an absolute directory, was: {}", path.display());
-        }
-        path
-    };
     static ref SEARCH_PATHS: Vec<PathBuf> = vec![
-        DISTDIR_PATH.join("include"),
-        DISTDIR_PATH.join("include/nspr"),
+        mozbuild::TOPOBJDIR.join("dist/include"),
+        mozbuild::TOPOBJDIR.join("dist/include/nspr"),
     ];
 }
 
@@ -69,6 +61,7 @@ fn generate_bindings() {
     let mut builder = Builder::default()
         .enable_cxx_namespaces()
         .with_codegen_config(CodegenConfig::TYPES | CodegenConfig::VARS | CodegenConfig::FUNCTIONS)
+        .disable_untagged_union()
         .size_t_is_usize(true);
 
     for dir in SEARCH_PATHS.iter() {
@@ -86,9 +79,9 @@ fn generate_bindings() {
     let bindings = builder
         .header(add_include("GeckoProfiler.h"))
         .header(add_include("ProfilerBindings.h"))
-        .whitelist_function("gecko_profiler_.*")
-        .whitelist_var("mozilla::profiler::detail::RacyFeatures::sActiveAndFeatures")
-        .whitelist_type("mozilla::profiler::detail::RacyFeatures")
+        .allowlist_function("gecko_profiler_.*")
+        .allowlist_var("mozilla::profiler::detail::RacyFeatures::sActiveAndFeatures")
+        .allowlist_type("mozilla::profiler::detail::RacyFeatures")
         .rustified_enum("mozilla::StackCaptureOptions")
         .rustified_enum("mozilla::MarkerSchema_Location")
         .rustified_enum("mozilla::MarkerSchema_Format")
@@ -97,6 +90,10 @@ fn generate_bindings() {
         // successfully. Otherwise, it fails to build because MarkerSchema has
         // some std::strings as its fields.
         .opaque_type("std::string")
+        // std::vector needs to be converted to an opaque type because, if it's
+        // not an opaque type, bindgen can't find its size properly and
+        // MarkerSchema's total size reduces. That causes a heap buffer overflow.
+        .opaque_type("std::vector")
         .raw_line("pub use self::root::*;")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.

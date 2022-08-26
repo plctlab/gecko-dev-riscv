@@ -3,7 +3,6 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import { getTokenLocation } from ".";
-import { isEqual } from "lodash";
 
 function isInvalidTarget(target) {
   if (!target || !target.innerText) {
@@ -55,7 +54,8 @@ export function onMouseOver(codeMirror) {
 
   function onMouseLeave(event) {
     if (invalidLeaveTarget(event.relatedTarget)) {
-      return addMouseLeave(event.target);
+      addMouseLeave(event.target);
+      return;
     }
 
     prevTokenPos = null;
@@ -78,7 +78,10 @@ export function onMouseOver(codeMirror) {
 
     const tokenPos = getTokenLocation(codeMirror, target);
 
-    if (!isEqual(prevTokenPos, tokenPos)) {
+    if (
+      prevTokenPos?.line !== tokenPos?.line ||
+      prevTokenPos?.column !== tokenPos?.column
+    ) {
       addMouseLeave(target);
 
       dispatch(codeMirror, "tokenenter", {

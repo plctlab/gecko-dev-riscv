@@ -6,11 +6,13 @@
 
 var EXPORTED_SYMBOLS = ["Session"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   DomainCache: "chrome://remote/content/cdp/domains/DomainCache.jsm",
   NetworkObserver: "chrome://remote/content/cdp/observers/NetworkObserver.jsm",
   ParentProcessDomains:
@@ -47,7 +49,7 @@ class Session {
     this.target = target;
     this.id = id;
 
-    this.domains = new DomainCache(this, ParentProcessDomains);
+    this.domains = new lazy.DomainCache(this, lazy.ParentProcessDomains);
   }
 
   destructor() {
@@ -66,7 +68,7 @@ class Session {
 
   get networkObserver() {
     if (!this._networkObserver) {
-      this._networkObserver = new NetworkObserver();
+      this._networkObserver = new lazy.NetworkObserver();
     }
     return this._networkObserver;
   }

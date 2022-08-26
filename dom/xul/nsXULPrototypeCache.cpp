@@ -25,6 +25,7 @@
 
 #include "mozilla/StyleSheetInlines.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_nglayout.h"
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
 #include "mozilla/Telemetry.h"
@@ -35,34 +36,12 @@ using namespace mozilla;
 using namespace mozilla::scache;
 using mozilla::intl::LocaleService;
 
-#define XUL_CACHE_DISABLED_DEFAULT false
-
-static bool gDisableXULCache =
-    XUL_CACHE_DISABLED_DEFAULT;  // enabled by default
-static const char kDisableXULCachePref[] = "nglayout.debug.disable_xul_cache";
 static const char kXULCacheInfoKey[] = "nsXULPrototypeCache.startupCache";
-static const char kXULCachePrefix[] = "xulcache";
-
-//----------------------------------------------------------------------
-
-static void UpdategDisableXULCache() {
-  // Get the value of "nglayout.debug.disable_xul_cache" preference
-  gDisableXULCache =
-      Preferences::GetBool(kDisableXULCachePref, XUL_CACHE_DISABLED_DEFAULT);
-
-  // Sets the flag if the XUL cache is disabled
-  if (gDisableXULCache) {
-    Telemetry::Accumulate(Telemetry::XUL_CACHE_DISABLED, true);
-  }
-}
+#define CACHE_PREFIX(aCompilationTarget) "xulcache/" aCompilationTarget
 
 static void DisableXULCacheChangedCallback(const char* aPref, void* aClosure) {
-  bool wasEnabled = !gDisableXULCache;
-  UpdategDisableXULCache();
-
-  if (wasEnabled && gDisableXULCache) {
-    nsXULPrototypeCache* cache = nsXULPrototypeCache::GetInstance();
-    if (cache) {
+  if (nsXULPrototypeCache* cache = nsXULPrototypeCache::GetInstance()) {
+    if (!cache->IsEnabled()) {
       // AbortCaching() calls Flush() for us.
       cache->AbortCaching();
     }
@@ -82,10 +61,10 @@ nsXULPrototypeCache* nsXULPrototypeCache::GetInstance() {
   if (!sInstance) {
     NS_ADDREF(sInstance = new nsXULPrototypeCache());
 
-    UpdategDisableXULCache();
-
-    Preferences::RegisterCallback(DisableXULCacheChangedCallback,
-                                  kDisableXULCachePref);
+    Preferences::RegisterCallback(
+        DisableXULCacheChangedCallback,
+        nsDependentCString(
+            StaticPrefs::GetPrefName_nglayout_debug_disable_xul_cache()));
 
     nsCOMPtr<nsIObserverService> obsSvc =
         mozilla::services::GetObserverService();
@@ -131,7 +110,7 @@ nsXULPrototypeDocument* nsXULPrototypeCache::GetPrototype(nsIURI* aURI) {
 
   // No prototype in XUL memory cache. Spin up the cache Service.
   nsCOMPtr<nsIObjectInputStream> ois;
-  rv = GetInputStream(aURI, getter_AddRefs(ois));
+  rv = GetPrototypeInputStream(aURI, getter_AddRefs(ois));
   if (NS_FAILED(rv)) {
     return nullptr;
   }
@@ -196,13 +175,11 @@ void nsXULPrototypeCache::Flush() {
   mStencilTable.Clear();
 }
 
-bool nsXULPrototypeCache::IsEnabled() { return !gDisableXULCache; }
+bool nsXULPrototypeCache::IsEnabled() {
+  return !StaticPrefs::nglayout_debug_disable_xul_cache();
+}
 
 void nsXULPrototypeCache::AbortCaching() {
-#ifdef DEBUG_brendan
-  NS_BREAK();
-#endif
-
   // Flush the XUL cache for good measure, in case we cached a bogus/downrev
   // script, somehow.
   Flush();
@@ -220,19 +197,31 @@ nsresult nsXULPrototypeCache::WritePrototype(
   nsCOMPtr<nsIURI> protoURI = aPrototypeDocument->GetURI();
 
   nsCOMPtr<nsIObjectOutputStream> oos;
-  rv = GetOutputStream(protoURI, getter_AddRefs(oos));
+  rv = GetPrototypeOutputStream(protoURI, getter_AddRefs(oos));
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = aPrototypeDocument->Write(oos);
   NS_ENSURE_SUCCESS(rv, rv);
-  FinishOutputStream(protoURI);
+  FinishPrototypeOutputStream(protoURI);
   return NS_FAILED(rv) ? rv : rv2;
 }
 
-nsresult nsXULPrototypeCache::GetInputStream(nsIURI* uri,
+static nsresult PathifyURIForType(nsXULPrototypeCache::CacheType cacheType,
+                                  nsIURI* in, nsACString& out) {
+  switch (cacheType) {
+    case nsXULPrototypeCache::CacheType::Prototype:
+      return PathifyURI(CACHE_PREFIX("proto"), in, out);
+    case nsXULPrototypeCache::CacheType::Script:
+      return PathifyURI(CACHE_PREFIX("script"), in, out);
+  }
+  MOZ_ASSERT_UNREACHABLE("unknown cache type?");
+  return NS_ERROR_UNEXPECTED;
+}
+
+nsresult nsXULPrototypeCache::GetInputStream(CacheType cacheType, nsIURI* uri,
                                              nsIObjectInputStream** stream) {
-  nsAutoCString spec(kXULCachePrefix);
-  nsresult rv = PathifyURI(uri, spec);
+  nsAutoCString spec;
+  nsresult rv = PathifyURIForType(cacheType, uri, spec);
   if (NS_FAILED(rv)) return NS_ERROR_NOT_AVAILABLE;
 
   const char* buf;
@@ -284,7 +273,8 @@ nsresult nsXULPrototypeCache::GetOutputStream(nsIURI* uri,
   return NS_OK;
 }
 
-nsresult nsXULPrototypeCache::FinishOutputStream(nsIURI* uri) {
+nsresult nsXULPrototypeCache::FinishOutputStream(CacheType cacheType,
+                                                 nsIURI* uri) {
   nsresult rv;
   StartupCache* sc = StartupCache::GetSingleton();
   if (!sc) return NS_ERROR_NOT_AVAILABLE;
@@ -301,8 +291,8 @@ nsresult nsXULPrototypeCache::FinishOutputStream(nsIURI* uri) {
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (!mStartupCacheURITable.GetEntry(uri)) {
-    nsAutoCString spec(kXULCachePrefix);
-    rv = PathifyURI(uri, spec);
+    nsAutoCString spec;
+    rv = PathifyURIForType(cacheType, uri, spec);
     if (NS_FAILED(rv)) return NS_ERROR_NOT_AVAILABLE;
     rv = sc->PutBuffer(spec.get(), std::move(buf), len);
     if (NS_SUCCEEDED(rv)) {
@@ -316,13 +306,14 @@ nsresult nsXULPrototypeCache::FinishOutputStream(nsIURI* uri) {
 
 // We have data if we're in the middle of writing it or we already
 // have it in the cache.
-nsresult nsXULPrototypeCache::HasData(nsIURI* uri, bool* exists) {
+nsresult nsXULPrototypeCache::HasData(CacheType cacheType, nsIURI* uri,
+                                      bool* exists) {
   if (mOutputStreamTable.Get(uri, nullptr)) {
     *exists = true;
     return NS_OK;
   }
-  nsAutoCString spec(kXULCachePrefix);
-  nsresult rv = PathifyURI(uri, spec);
+  nsAutoCString spec;
+  nsresult rv = PathifyURIForType(cacheType, uri, spec);
   if (NS_FAILED(rv)) {
     *exists = false;
     return NS_OK;
@@ -349,7 +340,9 @@ nsresult nsXULPrototypeCache::BeginCaching(nsIURI* aURI) {
   StartupCache* startupCache = StartupCache::GetSingleton();
   if (!startupCache) return NS_ERROR_FAILURE;
 
-  if (gDisableXULCache) return NS_ERROR_NOT_AVAILABLE;
+  if (StaticPrefs::nglayout_debug_disable_xul_cache()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
 
   // Get the chrome directory to validate against the one stored in the
   // cache file, or to store there if we're generating a new file.
@@ -388,7 +381,7 @@ nsresult nsXULPrototypeCache::BeginCaching(nsIURI* aURI) {
         (!fileChromePath.Equals(chromePath) || !fileLocale.Equals(locale))) {
       // Our cache won't be valid in this case, we'll need to rewrite.
       // XXX This blows away work that other consumers (like
-      // mozJSComponentLoader) have done, need more fine-grained control.
+      // mozJSModuleLoader) have done, need more fine-grained control.
       startupCache->InvalidateCache();
       mStartupCacheURITable.Clear();
       rv = NS_ERROR_UNEXPECTED;

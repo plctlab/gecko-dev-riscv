@@ -8,7 +8,6 @@
 use crate::context::SharedStyleContext;
 use crate::data::ElementData;
 use crate::dom::TElement;
-use crate::element_state::ElementState;
 use crate::invalidation::element::element_wrapper::{ElementSnapshot, ElementWrapper};
 use crate::invalidation::element::invalidation_map::*;
 use crate::invalidation::element::invalidator::{DescendantInvalidationLists, InvalidationVector};
@@ -18,9 +17,9 @@ use crate::selector_map::SelectorMap;
 use crate::selector_parser::Snapshot;
 use crate::stylesheets::origin::OriginSet;
 use crate::{Atom, WeakAtom};
+use dom::ElementState;
 use selectors::attr::CaseSensitivity;
-use selectors::matching::matches_selector;
-use selectors::matching::{MatchingContext, MatchingMode, VisitedHandlingMode};
+use selectors::matching::{matches_selector, MatchingContext, MatchingMode, VisitedHandlingMode, NeedsSelectorFlags};
 use selectors::NthIndexCache;
 use smallvec::SmallVec;
 
@@ -67,6 +66,7 @@ impl<'a, 'b: 'a, E: TElement + 'b> StateAndAttrInvalidationProcessor<'a, 'b, E> 
             Some(nth_index_cache),
             VisitedHandlingMode::AllLinksVisitedAndUnvisited,
             shared_context.quirks_mode(),
+            NeedsSelectorFlags::No,
         );
 
         Self {
@@ -84,7 +84,7 @@ pub fn check_dependency<E, W>(
     dependency: &Dependency,
     element: &E,
     wrapper: &W,
-    mut context: &mut MatchingContext<'_, E::Impl>,
+    context: &mut MatchingContext<'_, E::Impl>,
 ) -> bool
 where
     E: TElement,
@@ -95,8 +95,7 @@ where
         dependency.selector_offset,
         None,
         element,
-        &mut context,
-        &mut |_, _| {},
+        context,
     );
 
     let matched_then = matches_selector(
@@ -104,8 +103,7 @@ where
         dependency.selector_offset,
         None,
         wrapper,
-        &mut context,
-        &mut |_, _| {},
+        context,
     );
 
     matched_then != matches_now
@@ -203,7 +201,7 @@ where
         // TODO(emilio): This piece of code should be removed when
         // layout.css.always-repaint-on-unvisited is true, since we cannot get
         // into this situation in that case.
-        if state_changes.contains(ElementState::IN_VISITED_OR_UNVISITED_STATE) {
+        if state_changes.contains(ElementState::VISITED_OR_UNVISITED) {
             trace!(" > visitedness change, force subtree restyle");
             // We can't just return here because there may also be attribute
             // changes as well that imply additional hints for siblings.
@@ -409,24 +407,24 @@ where
             }
         });
 
-        let state_changes = self.state_changes;
-        if !state_changes.is_empty() {
-            self.collect_state_dependencies(&map.state_affecting_selectors, state_changes)
-        }
+        self.collect_state_dependencies(&map.state_affecting_selectors)
     }
 
     fn collect_state_dependencies(
         &mut self,
         map: &'selectors SelectorMap<StateDependency>,
-        state_changes: ElementState,
     ) {
+        if self.state_changes.is_empty() {
+            return;
+        }
         map.lookup_with_additional(
             self.lookup_element,
             self.matching_context.quirks_mode(),
             self.removed_id,
             self.classes_removed,
+            self.state_changes,
             |dependency| {
-                if !dependency.state.intersects(state_changes) {
+                if !dependency.state.intersects(self.state_changes) {
                     return true;
                 }
                 self.scan_dependency(&dependency.dep);

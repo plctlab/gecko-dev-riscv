@@ -19,7 +19,6 @@
  * notification with the headers, so there are two ways to produce
  */
 
-ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Downloads } = ChromeUtils.import(
   "resource://gre/modules/Downloads.jsm"
 );
@@ -70,10 +69,15 @@ async function performCanceledDownload(tab, path) {
 
   if (
     Services.prefs.getBoolPref(
-      "browser.download.improvements_to_download_panel",
+      "browser.download.always_ask_before_handling_new_types",
       false
     )
   ) {
+    // Start waiting for the download dialog before triggering the download.
+    cancelledDownload = promiseClickDownloadDialogButton("cancel");
+    // Wait for the cancelation to have been triggered.
+    info("waiting for download popup");
+  } else {
     let downloadView;
     cancelledDownload = new Promise(resolve => {
       downloadView = {
@@ -85,11 +89,6 @@ async function performCanceledDownload(tab, path) {
     });
     const downloadList = await Downloads.getList(Downloads.ALL);
     await downloadList.addView(downloadView);
-  } else {
-    // Start waiting for the download dialog before triggering the download.
-    cancelledDownload = promiseClickDownloadDialogButton("cancel");
-    // Wait for the cancelation to have been triggered.
-    info("waiting for download popup");
   }
 
   // Trigger the download.
@@ -141,7 +140,6 @@ add_task(async function interruptedDownloads() {
       ["dom.serviceWorkers.enabled", true],
       ["dom.serviceWorkers.exemptFromPerDomainMax", true],
       ["dom.serviceWorkers.testing.enabled", true],
-      ["javascript.options.streams", true],
     ],
   });
 

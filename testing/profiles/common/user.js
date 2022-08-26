@@ -28,6 +28,8 @@ user_pref("browser.pagethumbnails.capturing_disabled", true);
 // Tell the search service we are running in the US.  This also has the desired
 // side-effect of preventing our geoip lookup.
 user_pref("browser.search.region", "US");
+// disable infobar for tests
+user_pref("browser.search.removeEngineInfobar.enabled", false);
 // Disable webapp updates.  Yes, it is supposed to be an integer.
 user_pref("browser.webapps.checkForUpdates", 0);
 // We do not wish to display datareporting policy notifications as it might
@@ -49,8 +51,6 @@ user_pref("extensions.getAddons.discovery.api_url", "data:;base64,eyJyZXN1bHRzIj
 user_pref("extensions.webextensions.warnings-as-errors", true);
 // Disable useragent updates.
 user_pref("general.useragent.updates.enabled", false);
-// Ensure WR doesn't get enabled in tests unless we do it explicitly with the MOZ_WEBRENDER envvar.
-user_pref("gfx.webrender.all.qualified", false);
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("media.gmp-manager.updateEnabled", false);
 // Don't do network connections for mitm priming
@@ -77,3 +77,13 @@ user_pref("browser.region.network.url", "");
 user_pref("browser.tabs.unloadOnLowMemory", false);
 // Don't pull Top Sites content from the network
 user_pref("browser.topsites.contile.enabled", false);
+// Default Glean to "record but don't report" mode. Docs:
+// https://firefox-source-docs.mozilla.org/toolkit/components/glean/dev/preferences.html
+user_pref("telemetry.fog.test.localhost_port", -1);
+// Disable overlay scrollbars on GTK for testing. A bunch of tests (specially
+// mochitests) assume scrollbars take space. We disable them on macOS (where
+// overlay is also the default) at the system level as well, so this is
+// probably ok.
+//
+// We test the relevant overlay scrollbar code-paths on Android.
+user_pref("widget.gtk.overlay-scrollbars.enabled", false);

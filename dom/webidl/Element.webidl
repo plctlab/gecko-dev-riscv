@@ -13,6 +13,8 @@
  * liability, trademark and document use rules apply.
  */
 
+interface nsIScreen;
+
 [Exposed=Window]
 interface Element : Node {
   [Constant]
@@ -169,9 +171,7 @@ interface Element : Node {
 // https://html.spec.whatwg.org/#focus-management-apis
 dictionary FocusOptions {
   boolean preventScroll = false;
-  // Prevents the focus ring if this is not a text control / editable element.
-  [Func="nsContentUtils::IsCallerChromeOrErrorPage"]
-  boolean preventFocusRing = false;
+  boolean focusVisible;
 };
 
 interface mixin HTMLOrForeignElement {
@@ -199,10 +199,18 @@ dictionary ScrollIntoViewOptions : ScrollOptions {
   ScrollLogicalPosition inline = "nearest";
 };
 
+dictionary CheckVisibilityOptions {
+  boolean checkOpacity = false;
+  boolean checkVisibilityCSS = false;
+  [ChromeOnly] boolean flush = true;
+};
+
 // http://dev.w3.org/csswg/cssom-view/#extensions-to-the-element-interface
 partial interface Element {
   DOMRectList getClientRects();
   DOMRect getBoundingClientRect();
+
+  boolean checkVisibility(optional CheckVisibilityOptions options = {});
 
   // scrolling
   void scrollIntoView(optional (boolean or ScrollIntoViewOptions) arg = {});
@@ -228,6 +236,12 @@ partial interface Element {
   readonly attribute long clientLeft;
   readonly attribute long clientWidth;
   readonly attribute long clientHeight;
+
+  // Return the screen coordinates of the element, in CSS pixels relative to
+  // the window's screen.
+  [ChromeOnly] readonly attribute long screenX;
+  [ChromeOnly] readonly attribute long screenY;
+  [ChromeOnly] readonly attribute nsIScreen? screen;
 
   // Mozilla specific stuff
   /* The minimum/maximum offset that the element can be scrolled to
@@ -297,9 +311,9 @@ Element includes AriaAttributes;
 
 // https://fullscreen.spec.whatwg.org/#api
 partial interface Element {
-  [Throws, NeedsCallerType]
+  [NewObject, NeedsCallerType]
   Promise<void> requestFullscreen();
-  [Throws, BinaryName="requestFullscreen", NeedsCallerType, Deprecated="MozRequestFullScreenDeprecatedPrefix"]
+  [NewObject, BinaryName="requestFullscreen", NeedsCallerType, Deprecated="MozRequestFullScreenDeprecatedPrefix"]
   Promise<void> mozRequestFullScreen();
 
   // Events handlers
@@ -388,6 +402,6 @@ dictionary SetHTMLOptions {
 };
 
 partial interface Element {
-  [Throws, Pref="dom.security.sanitizer.enabled"]
+  [SecureContext, UseCounter, Throws, Pref="dom.security.sanitizer.enabled"]
     void setHTML(DOMString aInnerHTML, optional SetHTMLOptions options = {});
 };

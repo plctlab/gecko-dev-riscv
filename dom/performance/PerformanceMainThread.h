@@ -10,8 +10,7 @@
 #include "Performance.h"
 #include "PerformanceStorage.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PerformanceNavigationTiming;
 class PerformanceEventTiming;
@@ -99,14 +98,14 @@ class PerformanceMainThread final : public Performance,
 
   class EventCounts* EventCounts() override;
 
+  bool IsGlobalObjectWindow() const override { return true; };
+
  protected:
   ~PerformanceMainThread();
 
   void CreateNavigationTimingEntry();
 
   void InsertUserEntry(PerformanceEntry* aEntry) override;
-
-  bool IsPerformanceTimingAttribute(const nsAString& aName) override;
 
   DOMHighResTimeStamp GetPerformanceTimingFromString(
       const nsAString& aTimingName) override;
@@ -141,7 +140,6 @@ class PerformanceMainThread final : public Performance,
   PresShell* GetPresShell();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PerformanceMainThread_h

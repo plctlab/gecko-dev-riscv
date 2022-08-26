@@ -6,13 +6,13 @@ const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ManifestObtainer: "resource://gre/modules/ManifestObtainer.jsm",
 });
 
@@ -42,10 +42,6 @@ class ContentDelegateChild extends GeckoViewActorChild {
   // eslint-disable-next-line complexity
   handleEvent(aEvent) {
     debug`handleEvent: ${aEvent.type}`;
-    if (!this.isContentWindow) {
-      // This not a GeckoView-controlled window
-      return;
-    }
 
     switch (aEvent.type) {
       case "contextmenu": {
@@ -80,12 +76,20 @@ class ContentDelegateChild extends GeckoViewActorChild {
         const isMedia =
           elementType === "HTMLVideoElement" ||
           elementType === "HTMLAudioElement";
-        const elementSrc =
-          (isImage || isMedia) && (node.currentSrc || node.src);
+        let elementSrc = (isImage || isMedia) && (node.currentSrc || node.src);
+        if (elementSrc) {
+          const isBlob = elementSrc.startsWith("blob:");
+          if (isBlob && !URL.isValidURL(elementSrc)) {
+            elementSrc = null;
+          }
+        }
 
         if (uri || isImage || isMedia) {
           const msg = {
             type: "GeckoView:ContextMenu",
+            // We don't have full zoom on Android, so using CSS coordinates
+            // here is fine, since the CSS coordinate spaces match between the
+            // child and parent processes.
             screenX: aEvent.screenX,
             screenY: aEvent.screenY,
             baseUri: (baseUri && baseUri.displaySpec) || null,
@@ -133,7 +137,7 @@ class ContentDelegateChild extends GeckoViewActorChild {
           return;
         }
         this.contentWindow.requestIdleCallback(async () => {
-          const manifest = await ManifestObtainer.contentObtainManifest(
+          const manifest = await lazy.ManifestObtainer.contentObtainManifest(
             this.contentWindow
           );
           if (manifest) {

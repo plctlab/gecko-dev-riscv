@@ -5,27 +5,41 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = ["ClickHandlerParent"];
+var EXPORTED_SYMBOLS = ["ClickHandlerParent", "MiddleMousePasteHandlerParent"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "E10SUtils",
   "resource://gre/modules/E10SUtils.jsm"
 );
 
 let gContentClickListeners = new Set();
+
+class MiddleMousePasteHandlerParent extends JSWindowActorParent {
+  receiveMessage(message) {
+    if (message.name == "MiddleClickPaste") {
+      // This is heavily based on contentAreaClick from browser.js (Bug 903016)
+      // The data is set up in a way to look like an Event.
+      let browser = this.manager.browsingContext.top.embedderElement;
+      if (!browser) {
+        // Can be null if the tab disappeared by the time we got the message.
+        // Just bail.
+        return;
+      }
+      browser.ownerGlobal.middleMousePaste(message.data);
+    }
+  }
+}
 
 class ClickHandlerParent extends JSWindowActorParent {
   static addContentClickListener(listener) {
@@ -62,17 +76,6 @@ class ClickHandlerParent extends JSWindowActorParent {
     }
     let window = browser.ownerGlobal;
 
-    if (!data.href) {
-      // Might be middle mouse navigation.
-      if (
-        Services.prefs.getBoolPref("middlemouse.contentLoadURL") &&
-        !Services.prefs.getBoolPref("general.autoScroll")
-      ) {
-        window.middleMousePaste(data);
-      }
-      return;
-    }
-
     // If the browser is not in a place where we can open links, bail out.
     // This can happen in osx sheets, dialogs, etc. that are not browser
     // windows.  Specifically the payments UI is in an osx sheet.
@@ -85,8 +88,8 @@ class ClickHandlerParent extends JSWindowActorParent {
     // pages loaded in frames are embed visits and lost with the session, while
     // visits across frames should be preserved.
     try {
-      if (!PrivateBrowsingUtils.isWindowPrivate(window)) {
-        PlacesUIUtils.markPageAsFollowedLink(data.href);
+      if (!lazy.PrivateBrowsingUtils.isWindowPrivate(window)) {
+        lazy.PlacesUIUtils.markPageAsFollowedLink(data.href);
       }
     } catch (ex) {
       /* Skip invalid URIs. */
@@ -102,14 +105,28 @@ class ClickHandlerParent extends JSWindowActorParent {
 
     let params = {
       charset: browser.characterSet,
-      referrerInfo: E10SUtils.deserializeReferrerInfo(data.referrerInfo),
+      referrerInfo: lazy.E10SUtils.deserializeReferrerInfo(data.referrerInfo),
       isContentWindowPrivate: data.isContentWindowPrivate,
       originPrincipal: data.originPrincipal,
       originStoragePrincipal: data.originStoragePrincipal,
       triggeringPrincipal: data.triggeringPrincipal,
-      csp: data.csp ? E10SUtils.deserializeCSP(data.csp) : null,
+      csp: data.csp ? lazy.E10SUtils.deserializeCSP(data.csp) : null,
       frameID: data.frameID,
+      openerBrowser: browser,
+      // The child ensures that untrusted events have a valid user activation.
+      hasValidUserGestureActivation: true,
     };
+
+    if (data.globalHistoryOptions) {
+      params.globalHistoryOptions = data.globalHistoryOptions;
+    } else {
+      params.globalHistoryOptions = {
+        triggeringSponsoredURL: browser.getAttribute("triggeringSponsoredURL"),
+        triggeringSponsoredURLVisitTimeMS: browser.getAttribute(
+          "triggeringSponsoredURLVisitTimeMS"
+        ),
+      };
+    }
 
     // The new tab/window must use the same userContextId.
     if (data.originAttributes.userContextId) {

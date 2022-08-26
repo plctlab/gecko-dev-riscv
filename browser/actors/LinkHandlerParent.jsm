@@ -6,13 +6,11 @@
 
 const EXPORTED_SYMBOLS = ["LinkHandlerParent"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 
 let gTestListeners = new Set();
 
@@ -146,7 +144,7 @@ class LinkHandlerParent extends JSWindowActorParent {
     }
     if (canStoreIcon) {
       try {
-        PlacesUIUtils.loadFavicon(
+        lazy.PlacesUIUtils.loadFavicon(
           browser,
           Services.scriptSecurityManager.getSystemPrincipal(),
           Services.io.newURI(pageURL),

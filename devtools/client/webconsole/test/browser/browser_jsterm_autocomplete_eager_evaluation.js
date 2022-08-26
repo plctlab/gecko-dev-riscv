@@ -5,7 +5,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf8,Test autocompletion for expression variables<script>
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html>Test autocompletion for expression variables<script>
     var testObj = {
       fun: () => ({ yay: "yay", yo: "yo", boo: "boo" })
     };
@@ -19,7 +19,7 @@ add_task(async function() {
   const cases = [
     { input: "testObj.fun().y", results: ["yay", "yo"] },
     {
-      input: `Array.from([1,2,3]).reduce((i, agg) => agg + i).toS`,
+      input: `Array.of(1,2,3).reduce((i, agg) => agg + i).toS`,
       results: ["toString"],
     },
     { input: `1..toE`, results: ["toExponential"] },

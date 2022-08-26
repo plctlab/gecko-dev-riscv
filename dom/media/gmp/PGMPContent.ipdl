@@ -11,10 +11,13 @@ include protocol PChromiumCDM;
 include protocol PSandboxTesting;
 #endif
 
+include "GMPContentChild.h";
+
 namespace mozilla {
 namespace gmp {
 
-[RefCounted] intr protocol PGMPContent
+[NeedsOtherPid, ChildImpl="GMPContentChild", ParentImpl=virtual]
+sync protocol PGMPContent
 {
   manages PGMPVideoDecoder;
   manages PGMPVideoEncoder;

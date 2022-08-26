@@ -33,6 +33,9 @@
 
 mozilla::LazyLogModule gRemoteWorkerManagerLog("RemoteWorkerManager");
 
+#ifdef LOG
+#  undef LOG
+#endif
 #define LOG(fmt) \
   MOZ_LOG(gRemoteWorkerManagerLog, mozilla::LogLevel::Verbose, fmt)
 
@@ -94,10 +97,6 @@ bool RemoteWorkerManager::MatchRemoteType(const nsACString& processRemoteType,
   // and so workerRemoteType is not expected to be set to a coop+coep
   // remoteType and here we can just assert that it is not happening.
   MOZ_ASSERT(!IsWebCoopCoepRemoteType(workerRemoteType));
-
-  // For similar reasons to the ones related to COOP+COEP processes,
-  // we don't expect workerRemoteType to be set to a large allocation one.
-  MOZ_ASSERT(workerRemoteType != LARGE_ALLOCATION_REMOTE_TYPE);
 
   return processRemoteType.Equals(workerRemoteType);
 }

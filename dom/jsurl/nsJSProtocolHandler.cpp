@@ -137,9 +137,11 @@ static bool AllowedByCSP(nsIContentSecurityPolicy* aCSP,
     return true;
   }
 
+  // javascript: is a "navigation" type, so script-src-elem applies.
+  // https://w3c.github.io/webappsec-csp/#effective-directive-for-inline-check
   bool allowsInlineScript = true;
   nsresult rv =
-      aCSP->GetAllowsInline(nsIContentSecurityPolicy::SCRIPT_SRC_DIRECTIVE,
+      aCSP->GetAllowsInline(nsIContentSecurityPolicy::SCRIPT_SRC_ELEM_DIRECTIVE,
                             u""_ns,                  // aNonce
                             true,                    // aParserCreated
                             nullptr,                 // aElement,
@@ -232,13 +234,19 @@ nsresult nsJSThunk::EvaluateScript(
 
   mozilla::dom::Document* targetDoc = innerWin->GetExtantDoc();
 
-  if (targetDoc) {
-    // Sandboxed document check: javascript: URI execution is disabled
-    // in a sandboxed document unless 'allow-scripts' was specified.
-    if (targetDoc->HasScriptsBlockedBySandbox()) {
-      return NS_ERROR_DOM_RETVAL_UNDEFINED;
+  // Sandboxed document check: javascript: URI execution is disabled in a
+  // sandboxed document unless 'allow-scripts' was specified.
+  if ((targetDoc && !targetDoc->IsScriptEnabled()) ||
+      (loadInfo->GetTriggeringSandboxFlags() & SANDBOXED_SCRIPTS)) {
+    if (nsCOMPtr<nsIObserverService> obs =
+            mozilla::services::GetObserverService()) {
+      obs->NotifyWhenScriptSafe(ToSupports(innerWin),
+                                "javascript-uri-blocked-by-sandbox");
     }
+    return NS_ERROR_DOM_RETVAL_UNDEFINED;
+  }
 
+  if (targetDoc) {
     // Perform a Security check against the CSP of the document we are
     // running against. javascript: URIs are disabled unless "inline"
     // scripts are allowed. We only do that if targetDoc->NodePrincipal()

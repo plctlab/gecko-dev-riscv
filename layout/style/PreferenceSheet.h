@@ -10,6 +10,7 @@
 #define mozilla_ColorPreferences_h
 
 #include "nsColor.h"
+#include "mozilla/ColorScheme.h"
 
 namespace mozilla {
 
@@ -19,7 +20,7 @@ class Document;
 
 struct PreferenceSheet {
   struct Prefs {
-    struct {
+    struct Colors {
       nscolor mLink = NS_RGB(0x00, 0x00, 0xEE);
       nscolor mActiveLink = NS_RGB(0xEE, 0x00, 0x00);
       nscolor mVisitedLink = NS_RGB(0x55, 0x1A, 0x8B);
@@ -29,17 +30,42 @@ struct PreferenceSheet {
 
       nscolor mFocusText = mDefault;
       nscolor mFocusBackground = mDefaultBackground;
-    } mColors;
+    } mLightColors, mDarkColors;
+
+    const Colors& ColorsFor(ColorScheme aScheme) const {
+      return mMustUseLightColorSet || aScheme == ColorScheme::Light
+                 ? mLightColors
+                 : mDarkColors;
+    }
 
     bool mIsChrome = false;
     bool mUseAccessibilityTheme = false;
-
     bool mUseDocumentColors = true;
+    bool mUsePrefColors = false;
+    bool mUseStandins = false;
+    bool mMustUseLightColorSet = false;
 
-    // Whether the non-native theme should use system colors for widgets.
-    bool NonNativeThemeShouldUseSystemColors() const;
+    // Sometimes we can force a color scheme on a document, or honor the
+    // preferred color-scheme in more cases, depending on whether we're forcing
+    // colors or not.
+    enum class ColorSchemeChoice : uint8_t {
+      // We're not forcing colors, use standard algorithm based on specified
+      // style and meta tags and so on.
+      Standard,
+      // We can honor whatever the preferred color-scheme for the document is
+      // (the preferred color-scheme of the user, since we're forcing colors).
+      UserPreferred,
+      Light,
+      Dark,
+    };
+
+    ColorSchemeChoice mColorSchemeChoice = ColorSchemeChoice::Standard;
+
+    // Whether the non-native theme should use real system colors for widgets.
+    bool NonNativeThemeShouldBeHighContrast() const;
 
     void Load(bool aIsChrome);
+    void LoadColors(bool aIsLight);
   };
 
   static void EnsureInitialized() {
@@ -82,6 +108,8 @@ struct PreferenceSheet {
   static bool ShouldUseChromePrefs(const dom::Document& aDocument) {
     return PrefsKindFor(aDocument) == PrefsKind::Chrome;
   }
+
+  static bool MayForceColors() { return !ContentPrefs().mUseDocumentColors; }
 
   static const Prefs& PrefsFor(const dom::Document& aDocument) {
     switch (PrefsKindFor(aDocument)) {

@@ -6,7 +6,7 @@
 "use strict";
 
 const { require, DevToolsLoader } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
 const Services = require("Services");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
@@ -27,7 +27,7 @@ var ALLOW_CONSOLE_ERRORS = false;
 // this needs turning back on!
 /* eslint-disable no-undef */
 var listener = {
-  observe: function(message) {
+  observe(message) {
     let string;
     try {
       message.QueryInterface(Ci.nsIScriptError);

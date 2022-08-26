@@ -3,11 +3,7 @@
 
 "use strict";
 
-const {
-  createAppInfo,
-  promiseShutdownManager,
-  promiseStartupManager,
-} = AddonTestUtils;
+const { promiseShutdownManager, promiseStartupManager } = AddonTestUtils;
 
 add_task(async function setup() {
   await SearchTestUtils.useTestEngines("data1");
@@ -91,7 +87,7 @@ add_task(async function test_upgrade_changes_name() {
   // When we add engines currently, we normally force using the saved order.
   // Reset that here, so we can check the order is reset in the case this
   // is a application provided engine change.
-  Services.search.wrappedJSObject._settings.setAttribute(
+  Services.search.wrappedJSObject._settings.setMetaDataAttribute(
     "useSavedOrder",
     false
   );

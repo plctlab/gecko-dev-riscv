@@ -44,7 +44,6 @@ namespace jit {
 
 using RecoverOffset = uint32_t;
 using SnapshotOffset = uint32_t;
-using BailoutId = uint32_t;
 
 // The maximum size of any buffer associated with an assembler or code object.
 // This is chosen to not overflow a signed integer, leaving room for an extra
@@ -168,8 +167,16 @@ enum class BailoutKind : uint8_t {
   // A bailout to baseline from Ion on exception to handle Debugger hooks.
   IonExceptionDebugMode,
 
+  // A bailout to baseline from Ion on exception to handle a finally block.
+  Finally,
+
   // We returned to a stack frame after invalidating its IonScript.
   OnStackInvalidation,
+
+  // We returned to a stack frame while calling the |return| method of an
+  // iterator, and  we have to throw an exception because the return value
+  // was not an object.
+  ThrowCheckIsObject,
 
   // We have executed code that should be unreachable, and need to assert.
   Unreachable,
@@ -211,8 +218,12 @@ inline const char* BailoutKindString(BailoutKind kind) {
       return "UninitializedLexical";
     case BailoutKind::IonExceptionDebugMode:
       return "IonExceptionDebugMode";
+    case BailoutKind::Finally:
+      return "Finally";
     case BailoutKind::OnStackInvalidation:
       return "OnStackInvalidation";
+    case BailoutKind::ThrowCheckIsObject:
+      return "ThrowCheckIsObject";
     case BailoutKind::Unreachable:
       return "Unreachable";
 
@@ -741,12 +752,12 @@ enum ABIArgType {
 
 namespace detail {
 
-static constexpr int MakeABIFunctionType(
+static constexpr uint64_t MakeABIFunctionType(
     ABIArgType ret, std::initializer_list<ABIArgType> args) {
-  int abiType = ret << RetType_Shift;
+  uint64_t abiType = (uint64_t)ret << RetType_Shift;
   int i = 1;
   for (auto arg : args) {
-    abiType |= (arg << (ArgType_Shift * i));
+    abiType |= ((uint64_t)arg << (ArgType_Shift * i));
     i++;
   }
   return abiType;
@@ -754,7 +765,7 @@ static constexpr int MakeABIFunctionType(
 
 }  // namespace detail
 
-enum ABIFunctionType : uint32_t {
+enum ABIFunctionType : uint64_t {
   // The enum must be explicitly typed to avoid UB: some validly constructed
   // members are larger than any explicitly declared members.
 
@@ -879,6 +890,29 @@ enum ABIFunctionType : uint32_t {
   Args_Int32_GeneralInt32Int32Int32Int32General = detail::MakeABIFunctionType(
       ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32,
                       ArgType_Int32, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Int32Int32Int32Int32Int32General =
+      detail::MakeABIFunctionType(
+          ArgType_Int32,
+          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_Int32,
+           ArgType_Int32, ArgType_Int32, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Float32Float32Int32Int32Int32General =
+      detail::MakeABIFunctionType(
+          ArgType_Int32,
+          {ArgType_General, ArgType_Int32, ArgType_Float32, ArgType_Float32,
+           ArgType_Int32, ArgType_Int32, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Float32Float32Float32Float32Int32Int32Int32Int32General =
+      detail::MakeABIFunctionType(
+          ArgType_Int32,
+          {ArgType_General, ArgType_Int32, ArgType_Float32, ArgType_Float32,
+           ArgType_Float32, ArgType_Float32, ArgType_Int32, ArgType_Int32,
+           ArgType_Int32, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Float32Float32Int32Float32Float32Int32Float32Int32Int32Int32Int32General =
+      detail::MakeABIFunctionType(
+          ArgType_Int32,
+          {ArgType_General, ArgType_Int32, ArgType_Float32, ArgType_Float32,
+           ArgType_Int32, ArgType_Float32, ArgType_Float32, ArgType_Int32,
+           ArgType_Float32, ArgType_Int32, ArgType_Int32, ArgType_Int32,
+           ArgType_Int32, ArgType_General}),
   Args_Int32_GeneralInt32Int32Int32General = detail::MakeABIFunctionType(
       ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32,
                       ArgType_Int32, ArgType_General}),
@@ -912,6 +946,31 @@ enum ABIFunctionType : uint32_t {
       ArgType_General, {ArgType_General, ArgType_Int32, ArgType_Int32}),
   Args_General_GeneralInt32General = detail::MakeABIFunctionType(
       ArgType_General, {ArgType_General, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt64Int32Int32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int64, ArgType_Int32,
+                      ArgType_Int32, ArgType_Int32}),
+  Args_Int32_GeneralInt64Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int64, ArgType_Int32}),
+  Args_Int32_GeneralInt64Int32Int64 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int64, ArgType_Int32, ArgType_Int64}),
+  Args_Int32_GeneralInt64Int32Int64General = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int64, ArgType_Int32,
+                      ArgType_Int64, ArgType_General}),
+  Args_Int32_GeneralInt64Int64Int64 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int64, ArgType_Int64, ArgType_Int64}),
+  Args_Int32_GeneralInt64Int64Int64General = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int64, ArgType_Int64,
+                      ArgType_Int64, ArgType_General}),
+
+  // Functions that return Int64 are tricky because SpiderMonkey's ReturnRegI64
+  // does not match the ABI int64 return register on x86.  Wasm only!
+  Args_Int64_General =
+      detail::MakeABIFunctionType(ArgType_Int64, {ArgType_General}),
+  Args_Int64_GeneralInt64 = detail::MakeABIFunctionType(
+      ArgType_Int64, {ArgType_General, ArgType_Int64}),
+
 };
 
 static constexpr ABIFunctionType MakeABIFunctionType(
@@ -941,6 +1000,72 @@ constexpr T SplatByteToUInt(uint8_t val, uint8_t x) {
     splatted |= splatted << 8;
   }
   return splatted;
+}
+
+// Resume information for a frame, stored in a resume point.
+enum class ResumeMode : uint8_t {
+  // Innermost frame. Resume at the next bytecode op when bailing out.
+  ResumeAfter,
+
+  // Innermost frame. This resume point captures an additional value
+  // that is not on the expression stack. Resume at the next bytecode
+  // op when bailing out, but first check that the intermediate value
+  // is an object. This is used if calling the |return| method for a
+  // CloseIter causes an invalidation bailout.
+  ResumeAfterCheckIsObject,
+
+  // Innermost frame. Resume at the current bytecode op when bailing out.
+  ResumeAt,
+
+  // Outer frame for an inlined "standard" call at an IsInvokeOp bytecode op.
+  InlinedStandardCall,
+
+  // Outer frame for an inlined js::fun_call at an IsInvokeOp bytecode op.
+  InlinedFunCall,
+
+  // Outer frame for an inlined getter/setter at a Get*/Set* bytecode op.
+  InlinedAccessor,
+
+  Last = InlinedAccessor
+};
+
+inline const char* ResumeModeToString(ResumeMode mode) {
+  switch (mode) {
+    case ResumeMode::ResumeAfter:
+      return "ResumeAfter";
+    case ResumeMode::ResumeAt:
+      return "ResumeAt";
+    case ResumeMode::InlinedStandardCall:
+      return "InlinedStandardCall";
+    case ResumeMode::InlinedFunCall:
+      return "InlinedFunCall";
+    case ResumeMode::InlinedAccessor:
+      return "InlinedAccessor";
+    case ResumeMode::ResumeAfterCheckIsObject:
+      return "ResumeAfterCheckIsObject";
+  }
+  MOZ_CRASH("Invalid mode");
+}
+
+inline bool IsResumeAfter(ResumeMode mode) {
+  switch (mode) {
+    case ResumeMode::ResumeAfter:
+    case ResumeMode::ResumeAfterCheckIsObject:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The number of intermediate values captured by this resume point
+// that aren't on the expression stack, but are needed during bailouts.
+inline uint32_t NumIntermediateValues(ResumeMode mode) {
+  switch (mode) {
+    case ResumeMode::ResumeAfterCheckIsObject:
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 }  // namespace jit

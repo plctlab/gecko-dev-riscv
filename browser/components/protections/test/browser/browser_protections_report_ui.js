@@ -29,11 +29,11 @@ const SQL = {
   selectAll: "SELECT * FROM events",
 };
 
-add_task(async function setup() {
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.contentblocking.database.enabled", true],
-      ["browser.contentblocking.report.vpn.enabled", false],
+      ["browser.vpn_promo.enabled", false],
     ],
   });
 });
@@ -702,7 +702,7 @@ add_task(async function test_etp_custom_protections_off() {
     count: 1,
     timestamp: date,
   });
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     await ContentTaskUtils.waitForCondition(() => {
       let etpCard = content.document.querySelector(".etp-card");

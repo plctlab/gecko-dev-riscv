@@ -197,14 +197,33 @@ impl rpc::Server for CallbackServer {
                 })
             }
             CallbackReq::SharedMem(mut handle, shm_area_size) => {
-                let shm = unsafe {
-                    SharedMem::from(handle.take_handle(), shm_area_size)
-                        .expect("Client failed to set up shmem")
+                self.shm = match unsafe { SharedMem::from(handle.take_handle(), shm_area_size) } {
+                    Ok(shm) => Some(shm),
+                    Err(e) => {
+                        warn!(
+                            "sharedmem client mapping failed (size={}, err={:?})",
+                            shm_area_size, e
+                        );
+                        return self
+                            .cpu_pool
+                            .spawn_fn(move || Ok(CallbackResp::Error(ffi::CUBEB_ERROR)));
+                    }
                 };
-                self.shm = Some(shm);
 
                 self.duplex_input = if let StreamDirection::Duplex = self.dir {
-                    Some(Vec::with_capacity(shm_area_size))
+                    let mut duplex_input = Vec::new();
+                    match duplex_input.try_reserve_exact(shm_area_size) {
+                        Ok(()) => Some(duplex_input),
+                        Err(e) => {
+                            warn!(
+                                "duplex_input allocation failed (size={}, err={:?})",
+                                shm_area_size, e
+                            );
+                            return self
+                                .cpu_pool
+                                .spawn_fn(move || Ok(CallbackResp::Error(ffi::CUBEB_ERROR)));
+                        }
+                    }
                 } else {
                     None
                 };

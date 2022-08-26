@@ -3,25 +3,25 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "RemoteSettings",
   "resource://services-settings/remote-settings.js"
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
+  "Utils",
+  "resource://services-settings/Utils.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  lazy,
   "NewTabUtils",
   "resource://gre/modules/NewTabUtils.jsm"
 );
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
 
 const { BasePromiseWorker } = ChromeUtils.import(
   "resource://gre/modules/PromiseWorker.jsm"
@@ -30,7 +30,7 @@ const { BasePromiseWorker } = ChromeUtils.import(
 const RECIPE_NAME = "personality-provider-recipe";
 const MODELS_NAME = "personality-provider-models";
 
-this.PersonalityProvider = class PersonalityProvider {
+class PersonalityProvider {
   constructor(modelKeys) {
     this.modelKeys = modelKeys;
     this.onSync = this.onSync.bind(this);
@@ -52,10 +52,6 @@ this.PersonalityProvider = class PersonalityProvider {
       "resource://activity-stream/lib/PersonalityProvider/PersonalityProviderWorker.js"
     );
 
-    // As the PersonalityProviderWorker performs I/O, we can receive instances of
-    // OS.File.Error, so we need to install a decoder.
-    this._personalityProviderWorker.ExceptionHandlers["OS.File.Error"] =
-      OS.File.Error.fromMsg;
     return this._personalityProviderWorker;
   }
 
@@ -68,7 +64,7 @@ this.PersonalityProvider = class PersonalityProvider {
     if (this._baseAttachmentsURL) {
       return this._baseAttachmentsURL;
     }
-    const server = Services.prefs.getCharPref("services.settings.server");
+    const server = lazy.Utils.SERVER_URL;
     const serverInfo = await (
       await fetch(`${server}/`, {
         credentials: "omit",
@@ -97,11 +93,11 @@ this.PersonalityProvider = class PersonalityProvider {
   }
 
   setupSyncAttachment(collection) {
-    RemoteSettings(collection).on("sync", this.onSync);
+    lazy.RemoteSettings(collection).on("sync", this.onSync);
   }
 
   teardownSyncAttachment(collection) {
-    RemoteSettings(collection).off("sync", this.onSync);
+    lazy.RemoteSettings(collection).off("sync", this.onSync);
   }
 
   onSync(event) {
@@ -122,7 +118,7 @@ this.PersonalityProvider = class PersonalityProvider {
    */
   async getRecipe() {
     if (!this.recipes || !this.recipes.length) {
-      const result = await RemoteSettings(RECIPE_NAME).get();
+      const result = await lazy.RemoteSettings(RECIPE_NAME).get();
       this.recipes = await Promise.all(
         result.map(async record => ({
           ...(await this.getAttachment(record)),
@@ -146,7 +142,7 @@ this.PersonalityProvider = class PersonalityProvider {
     });
     sql += " LIMIT 30000";
 
-    const { activityStreamProvider } = NewTabUtils;
+    const { activityStreamProvider } = lazy.NewTabUtils;
     const history = await activityStreamProvider.executePlacesQuery(sql, {
       columns,
       params: {},
@@ -197,7 +193,7 @@ this.PersonalityProvider = class PersonalityProvider {
   }
 
   async fetchModels() {
-    const models = await RemoteSettings(MODELS_NAME).get();
+    const models = await lazy.RemoteSettings(MODELS_NAME).get();
     return this.personalityProviderWorker.post("fetchModels", [models]);
   }
 
@@ -293,6 +289,6 @@ this.PersonalityProvider = class PersonalityProvider {
       interestVector: this.interestVector,
     };
   }
-};
+}
 
 const EXPORTED_SYMBOLS = ["PersonalityProvider"];

@@ -53,7 +53,7 @@ describe("#CachedTargetingGetter", () => {
   it("should cache allow for optional getter argument", async () => {
     let cachedGetter = new CachedTargetingGetter(
       "doesAppNeedPin",
-      undefined,
+      true,
       undefined,
       { doesAppNeedPin: doesAppNeedPinStub }
     );
@@ -66,6 +66,9 @@ describe("#CachedTargetingGetter", () => {
 
     // Called once; cached request
     assert.calledOnce(doesAppNeedPinStub);
+
+    // Called with option argument
+    assert.calledWith(doesAppNeedPinStub, true);
 
     // Expire and call again
     clock.tick(sixHours);
@@ -313,6 +316,7 @@ describe("ASRouterTargeting", () => {
     fakeTargetingContext = {
       combineContexts: sandbox.stub(),
       evalWithDefault: sandbox.stub().resolves(),
+      setTelemetrySource: sandbox.stub(),
     };
     globals = new GlobalOverrider();
     globals.set(
@@ -320,6 +324,10 @@ describe("ASRouterTargeting", () => {
       class {
         static combineContexts(...args) {
           return fakeTargetingContext.combineContexts.apply(sandbox, args);
+        }
+
+        setTelemetrySource(id) {
+          fakeTargetingContext.setTelemetrySource(id);
         }
 
         evalWithDefault(expr) {
@@ -333,6 +341,23 @@ describe("ASRouterTargeting", () => {
     clock.restore();
     sandbox.restore();
     globals.restore();
+  });
+  it("should provide message.id as source", async () => {
+    await ASRouterTargeting.checkMessageTargeting(
+      {
+        id: "message",
+        targeting: "true",
+      },
+      fakeTargetingContext,
+      sandbox.stub(),
+      false
+    );
+    assert.calledOnce(fakeTargetingContext.evalWithDefault);
+    assert.calledWithExactly(fakeTargetingContext.evalWithDefault, "true");
+    assert.calledWithExactly(
+      fakeTargetingContext.setTelemetrySource,
+      "message"
+    );
   });
   it("should cache evaluation result", async () => {
     evalStub.resolves(true);

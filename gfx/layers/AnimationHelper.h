@@ -8,7 +8,6 @@
 #define mozilla_layers_AnimationHelper_h
 
 #include "mozilla/dom/Nullable.h"
-#include "mozilla/ComputedTimingFunction.h"  // for ComputedTimingFunction
 #include "mozilla/layers/AnimationStorageData.h"
 #include "mozilla/layers/LayersMessages.h"     // for TransformData, etc
 #include "mozilla/webrender/WebRenderTypes.h"  // for RenderRoot
@@ -18,9 +17,9 @@
 #include "X11UndefineNone.h"
 #include <unordered_map>
 
-namespace mozilla {
-namespace layers {
+namespace mozilla::layers {
 class Animation;
+class APZSampler;
 class CompositorAnimationStorage;
 struct AnimatedValue;
 
@@ -74,8 +73,9 @@ class AnimationHelper {
    * result of the various transform properties into a final matrix.
    */
   static SampleResult SampleAnimationForEachNode(
-      TimeStamp aPreviousFrameTime, TimeStamp aCurrentFrameTime,
-      const AnimatedValue* aPreviousValue,
+      const APZSampler* aAPZSampler, const LayersId& aLayersId,
+      const MutexAutoLock& aProofOfMapLock, TimeStamp aPreviousFrameTime,
+      TimeStamp aCurrentFrameTime, const AnimatedValue* aPreviousValue,
       nsTArray<PropertyAnimationGroup>& aPropertyAnimationGroups,
       nsTArray<RefPtr<RawServoAnimationValue>>& aAnimationValues);
 
@@ -146,7 +146,6 @@ class AnimationHelper {
                            const ParentLayerRect& aClipRect);
 };
 
-}  // namespace layers
-}  // namespace mozilla
+}  // namespace mozilla::layers
 
 #endif  // mozilla_layers_AnimationHelper_h

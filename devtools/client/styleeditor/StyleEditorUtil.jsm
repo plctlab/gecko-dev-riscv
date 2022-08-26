@@ -12,7 +12,6 @@ const EXPORTED_SYMBOLS = [
   "assert",
   "log",
   "text",
-  "wire",
   "showFilePicker",
   "optionsPopupMenu",
 ];
@@ -20,14 +19,16 @@ const EXPORTED_SYMBOLS = [
 const PROPERTIES_URL = "chrome://devtools/locale/styleeditor.properties";
 
 const { loader, require } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
 const Services = require("Services");
 const gStringBundle = Services.strings.createBundle(PROPERTIES_URL);
 
-loader.lazyRequireGetter(this, "Menu", "devtools/client/framework/menu");
+const lazy = {};
+
+loader.lazyRequireGetter(lazy, "Menu", "devtools/client/framework/menu");
 loader.lazyRequireGetter(
-  this,
+  lazy,
   "MenuItem",
   "devtools/client/framework/menu-item"
 );
@@ -129,50 +130,6 @@ function log() {
 }
 
 /**
- * Wire up element(s) matching selector with attributes, event listeners, etc.
- *
- * @param DOMElement root
- *        The element to use for querySelectorAll.
- *        Can be null if selector is a DOMElement.
- * @param string|DOMElement selectorOrElement
- *        Selector string or DOMElement for the element(s) to wire up.
- * @param object descriptor
- *        An object describing how to wire matching selector,
- *        supported properties are "events" and "attributes" taking
- *        objects themselves.
- *        Each key of properties above represents the name of the event or
- *        attribute, with the value being a function used as an event handler or
- *        string to use as attribute value.
- *        If descriptor is a function, the argument is equivalent to :
- *        {events: {'click': descriptor}}
- */
-function wire(root, selectorOrElement, descriptor) {
-  let matches;
-  if (typeof selectorOrElement == "string") {
-    // selector
-    matches = root.querySelectorAll(selectorOrElement);
-    if (!matches.length) {
-      return;
-    }
-  } else {
-    // element
-    matches = [selectorOrElement];
-  }
-
-  if (typeof descriptor == "function") {
-    descriptor = { events: { click: descriptor } };
-  }
-
-  for (let i = 0; i < matches.length; i++) {
-    const element = matches[i];
-    forEach(descriptor.events, function(name, handler) {
-      element.addEventListener(name, handler);
-    });
-    forEach(descriptor.attributes, element.setAttribute);
-  }
-}
-
-/**
  * Show file picker and return the file user selected.
  *
  * @param mixed file
@@ -254,9 +211,9 @@ function showFilePicker(
  *         A Menu object holding the MenuItems
  */
 function optionsPopupMenu(toggleOrigSources, toggleMediaSidebar) {
-  const popupMenu = new Menu();
+  const popupMenu = new lazy.Menu();
   popupMenu.append(
-    new MenuItem({
+    new lazy.MenuItem({
       id: "options-origsources",
       label: getString("showOriginalSources.label"),
       accesskey: getString("showOriginalSources.accesskey"),
@@ -266,7 +223,7 @@ function optionsPopupMenu(toggleOrigSources, toggleMediaSidebar) {
     })
   );
   popupMenu.append(
-    new MenuItem({
+    new lazy.MenuItem({
       id: "options-show-media",
       label: getString("showMediaSidebar.label"),
       accesskey: getString("showMediaSidebar.accesskey"),

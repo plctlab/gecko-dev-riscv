@@ -69,7 +69,7 @@ class WebGLFBAttachPoint final {
   ////
 
   bool HasAttachment() const {
-    return bool(mTexturePtr) | bool(mRenderbufferPtr);
+    return bool(mTexturePtr) || bool(mRenderbufferPtr);
   }
 
   void Clear();
@@ -102,7 +102,7 @@ class WebGLFBAttachPoint final {
                              GLenum pname) const;
 
   bool IsEquivalentForFeedback(const WebGLFBAttachPoint& other) const {
-    if (!HasAttachment() | !other.HasAttachment()) return false;
+    if (!HasAttachment() || !other.HasAttachment()) return false;
 
 #define _(X) (X == other.X)
     return (_(mRenderbufferPtr) && _(mTexturePtr) && _(mTexImageLevel) &&
@@ -144,8 +144,10 @@ class WebGLFramebuffer final : public WebGLContextBoundObject,
   const GLuint mGLName;
   bool mHasBeenBound = false;
   const UniquePtr<gl::MozFramebuffer> mOpaque;
-  gl::SwapChain mOpaqueSwapChain;
   bool mInOpaqueRAF = false;
+  // Swap chain that may be used to present this framebuffer, for opaque
+  // framebuffers or other use cases. (e.g. DrawTargetWebgl)
+  gl::SwapChain mSwapChain;
 
  private:
   mutable uint64_t mNumFBStatusInvals = 0;

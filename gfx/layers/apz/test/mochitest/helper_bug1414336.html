@@ -6,7 +6,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1414336
 <head>
   <meta charset="utf-8">
   <title>Test for Bug 1414336</title>
-  <script src="/tests/SimpleTest/SimpleTest.js"></script>
   <script src="/tests/SimpleTest/EventUtils.js"></script>
   <script type="text/javascript" src="apz_test_native_event_utils.js"></script>
   <script type="text/javascript" src="apz_test_utils.js"></script>
@@ -59,7 +58,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1414336
 </div>
 <script type="text/javascript">
 /** Test for Bug 1414336 **/
-waitUntilApzStable().then(() => {
+waitUntilApzStable().then(async () => {
   let target0 = window.document.getElementById("target0");
   let target0_events = ["pointerdown", "pointermove"];
 
@@ -90,7 +89,7 @@ waitUntilApzStable().then(() => {
     setTimeout(subtestDone, 0);
   }, { once: true });
 
-  synthesizeNativeTouchDrag(target0, 2, 2, 0, 80);
+  await synthesizeNativeTouchDrag(target0, 2, 2, 0, 80);
 });
 
 </script>

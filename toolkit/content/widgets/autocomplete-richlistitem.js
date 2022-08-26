@@ -7,10 +7,6 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-
   MozElements.MozAutocompleteRichlistitem = class MozAutocompleteRichlistitem extends MozElements.MozRichlistitem {
     constructor() {
       super();
@@ -590,41 +586,12 @@
     }
   }
 
-  class MozAutocompleteRichlistitemLoginsFooter extends MozElements.MozAutocompleteRichlistitem {
-    constructor() {
-      super();
-
-      function handleEvent(event) {
-        if (event.button != 0) {
-          return;
-        }
-
-        const { LoginHelper } = ChromeUtils.import(
-          "resource://gre/modules/LoginHelper.jsm"
-        );
-
-        LoginHelper.openPasswordManager(this.ownerGlobal, {
-          entryPoint: "autocomplete",
-        });
-      }
-
-      this.addEventListener("click", handleEvent);
-    }
-  }
+  class MozAutocompleteRichlistitemLoginsFooter extends MozElements.MozAutocompleteRichlistitem {}
 
   class MozAutocompleteImportableLearnMoreRichlistitem extends MozElements.MozAutocompleteRichlistitem {
     constructor() {
       super();
       MozXULElement.insertFTLIfNeeded("toolkit/main-window/autocomplete.ftl");
-
-      this.addEventListener("click", event => {
-        window.openTrustedLinkIn(
-          Services.urlFormatter.formatURLPref("app.support.baseURL") +
-            "password-import",
-          "tab",
-          { relatedToCurrent: true }
-        );
-      });
     }
 
     static get markup() {
@@ -721,6 +688,9 @@
 
       let details = JSON.parse(this.getAttribute("ac-label"));
       this.querySelector(".line2-label").textContent = details.comment;
+      this.querySelector(
+        ".ac-site-icon"
+      ).src = `page-icon:${details.login?.origin}`;
     }
   }
 
@@ -777,22 +747,14 @@
     constructor() {
       super();
       MozXULElement.insertFTLIfNeeded("toolkit/main-window/autocomplete.ftl");
+    }
 
-      this.addEventListener("click", event => {
-        if (event.button != 0) {
-          return;
-        }
-
-        // Let the login manager parent handle this importable browser click.
-        gBrowser.selectedBrowser.browsingContext.currentWindowGlobal
-          .getActor("LoginManager")
-          .receiveMessage({
-            name: "PasswordManager:HandleImportable",
-            data: {
-              browserId: this.getAttribute("ac-value"),
-            },
-          });
-      });
+    static get inheritedAttributes() {
+      return {
+        // getLabelAt:
+        ".line1-label": "text=ac-value",
+        // Don't inherit ac-label with getCommentAt since the label is JSON.
+      };
     }
 
     static get markup() {
@@ -810,14 +772,17 @@
     }
 
     _adjustAcItem() {
+      super._adjustAcItem();
       document.l10n.setAttributes(
         this.querySelector(".labels-wrapper"),
         `autocomplete-import-logins-${this.getAttribute("ac-value")}`,
         {
-          host: this.getAttribute("ac-label").replace(/^www\./, ""),
+          host: JSON.parse(this.getAttribute("ac-label")).hostname.replace(
+            /^www\./,
+            ""
+          ),
         }
       );
-      super._adjustAcItem();
     }
   }
 

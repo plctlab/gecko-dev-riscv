@@ -7,16 +7,13 @@
 
 mod conn_ext;
 mod each_chunk;
-mod interrupt;
 mod maybe_cached;
-mod query_plan;
+pub mod open_database;
 mod repeat;
 
 pub use crate::conn_ext::*;
 pub use crate::each_chunk::*;
-pub use crate::interrupt::*;
 pub use crate::maybe_cached::*;
-pub use crate::query_plan::*;
 pub use crate::repeat::*;
 
 /// In PRAGMA foo='bar', `'bar'` must be a constant string (it cannot be a
@@ -24,7 +21,7 @@ pub use crate::repeat::*;
 /// https://www.sqlite.org/faq.html, the only character that must be escaped is
 /// the single quote, which is escaped by placing two single quotes in a row.
 pub fn escape_string_for_pragma(s: &str) -> String {
-    s.replace("'", "''")
+    s.replace('\'', "''")
 }
 
 #[cfg(test)]

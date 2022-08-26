@@ -2,11 +2,9 @@
 
 const PROFILE_DIR = do_get_profile().path;
 
-const { Promise } = ChromeUtils.import("resource://gre/modules/Promise.jsm");
 const { PromiseUtils } = ChromeUtils.import(
   "resource://gre/modules/PromiseUtils.jsm"
 );
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { FileUtils } = ChromeUtils.import(
   "resource://gre/modules/FileUtils.jsm"
 );
@@ -464,7 +462,7 @@ add_task(async function test_execute_transaction_success() {
 add_task(async function test_execute_transaction_rollback() {
   let c = await getDummyDatabase("execute_transaction_rollback");
 
-  let deferred = Promise.defer();
+  let deferred = PromiseUtils.defer();
 
   c.executeTransaction(async function transaction(conn) {
     await conn.execute("INSERT INTO dirs (path) VALUES ('foo')");
@@ -543,13 +541,18 @@ add_task(async function test_wrapped_connection_transaction() {
     PathUtils.join(PROFILE_DIR, "test_wrapStorageConnection.sqlite")
   );
   let c = await new Promise((resolve, reject) => {
-    Services.storage.openAsyncDatabase(file, null, (status, db) => {
-      if (Components.isSuccessCode(status)) {
-        resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
-      } else {
-        reject(new Error(status));
+    Services.storage.openAsyncDatabase(
+      file,
+      /* openFlags */ Ci.mozIStorageService.OPEN_DEFAULT,
+      /* connectionFlags */ Ci.mozIStorageService.CONNECTION_DEFAULT,
+      (status, db) => {
+        if (Components.isSuccessCode(status)) {
+          resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
+        } else {
+          reject(new Error(status));
+        }
       }
-    });
+    );
   });
 
   let wrapper = await Sqlite.wrapStorageConnection({ connection: c });
@@ -918,7 +921,11 @@ add_task(
       });
     } catch (ex) {
       print("Caught expected exception: " + ex);
-      Assert.ok(ex.result, "The ex.result value should be forwarded.");
+      Assert.greater(
+        ex.result,
+        0x80000000,
+        "The ex.result value should be forwarded."
+      );
     }
 
     // We did not get to the end of our in-transaction block.
@@ -951,7 +958,11 @@ add_task(async function test_programmatic_binding_implicit_transaction() {
     secondSucceeded = true;
   } catch (ex) {
     print("Caught expected exception: " + ex);
-    Assert.ok(ex.result, "The ex.result value should be forwarded.");
+    Assert.greater(
+      ex.result,
+      0x80000000,
+      "The ex.result value should be forwarded."
+    );
   }
 
   Assert.ok(!secondSucceeded);
@@ -993,7 +1004,7 @@ add_task(async function test_direct() {
   let begin = db.createAsyncStatement("BEGIN DEFERRED TRANSACTION");
   let end = db.createAsyncStatement("COMMIT TRANSACTION");
 
-  let deferred = Promise.defer();
+  let deferred = PromiseUtils.defer();
   begin.executeAsync({
     handleCompletion(reason) {
       deferred.resolve();
@@ -1003,7 +1014,7 @@ add_task(async function test_direct() {
 
   statement.bindParameters(params);
 
-  deferred = Promise.defer();
+  deferred = PromiseUtils.defer();
   print("Executing async.");
   statement.executeAsync({
     handleResult(resultSet) {},
@@ -1024,7 +1035,7 @@ add_task(async function test_direct() {
 
   await deferred.promise;
 
-  deferred = Promise.defer();
+  deferred = PromiseUtils.defer();
   end.executeAsync({
     handleCompletion(reason) {
       deferred.resolve();
@@ -1036,7 +1047,7 @@ add_task(async function test_direct() {
   begin.finalize();
   end.finalize();
 
-  deferred = Promise.defer();
+  deferred = PromiseUtils.defer();
   db.asyncClose(function() {
     deferred.resolve();
   });
@@ -1049,13 +1060,18 @@ add_task(async function test_cloneStorageConnection() {
     PathUtils.join(PROFILE_DIR, "test_cloneStorageConnection.sqlite")
   );
   let c = await new Promise((resolve, reject) => {
-    Services.storage.openAsyncDatabase(file, null, (status, db) => {
-      if (Components.isSuccessCode(status)) {
-        resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
-      } else {
-        reject(new Error(status));
+    Services.storage.openAsyncDatabase(
+      file,
+      /* openFlags */ Ci.mozIStorageService.OPEN_DEFAULT,
+      /* connectionFlags */ Ci.mozIStorageService.CONNECTION_DEFAULT,
+      (status, db) => {
+        if (Components.isSuccessCode(status)) {
+          resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
+        } else {
+          reject(new Error(status));
+        }
       }
-    });
+    );
   });
 
   let clone = await Sqlite.cloneStorageConnection({
@@ -1132,13 +1148,18 @@ add_task(async function test_wrapStorageConnection() {
     PathUtils.join(PROFILE_DIR, "test_wrapStorageConnection.sqlite")
   );
   let c = await new Promise((resolve, reject) => {
-    Services.storage.openAsyncDatabase(file, null, (status, db) => {
-      if (Components.isSuccessCode(status)) {
-        resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
-      } else {
-        reject(new Error(status));
+    Services.storage.openAsyncDatabase(
+      file,
+      /* openFlags */ Ci.mozIStorageService.OPEN_DEFAULT,
+      /* connectionFlags */ Ci.mozIStorageService.CONNECTION_DEFAULT,
+      (status, db) => {
+        if (Components.isSuccessCode(status)) {
+          resolve(db.QueryInterface(Ci.mozIStorageAsyncConnection));
+        } else {
+          reject(new Error(status));
+        }
       }
-    });
+    );
   });
 
   let wrapper = await Sqlite.wrapStorageConnection({ connection: c });
@@ -1186,7 +1207,7 @@ add_task(async function test_warning_message_on_finalization() {
   failTestsOnAutoClose(false);
   let c = await getDummyDatabase("warning_message_on_finalization");
   let identifier = c._connectionData._identifier;
-  let deferred = Promise.defer();
+  let deferred = PromiseUtils.defer();
 
   let listener = {
     observe(msg) {
@@ -1214,7 +1235,7 @@ add_task(async function test_warning_message_on_finalization() {
 
 add_task(async function test_error_message_on_unknown_finalization() {
   failTestsOnAutoClose(false);
-  let deferred = Promise.defer();
+  let deferred = PromiseUtils.defer();
 
   let listener = {
     observe(msg) {
@@ -1349,11 +1370,8 @@ add_task(async function test_interrupt() {
   // Testing the interrupt functionality is left to mozStorage unit tests, here
   // we'll just test error conditions.
   let c = await getDummyDatabase("interrupt");
-  Assert.throws(
-    () => c.interrupt(),
-    /NS_ERROR_ILLEGAL_VALUE/,
-    "Sqlite.interrupt() should throw on a writable connection"
-  );
+  await c.interrupt();
+  ok(true, "Sqlite.interrupt() should not throw on a writable connection");
   await c.close();
   Assert.throws(
     () => c.interrupt(),

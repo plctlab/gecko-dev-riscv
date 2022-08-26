@@ -14,7 +14,7 @@ const { CreditCard } = ChromeUtils.import(
 );
 
 let FormAutofillStorage;
-add_task(async function setup() {
+add_setup(async () => {
   ({ FormAutofillStorage } = ChromeUtils.import(
     "resource://autofill/FormAutofillStorage.jsm"
   ));
@@ -859,33 +859,6 @@ add_task(async function test_creditCardFillDisabled() {
 
   Services.prefs.setBoolPref(
     "extensions.formautofill.creditCards.enabled",
-    true
-  );
-});
-
-add_task(async function test_creditCardFillUnavailable() {
-  Services.prefs.setBoolPref(
-    "extensions.formautofill.creditCards.available",
-    false
-  );
-
-  let path = getTempFile(TEST_STORE_FILE_NAME).path;
-  let profileStorage = new FormAutofillStorage(path);
-  await profileStorage.initialize();
-
-  try {
-    profileStorage.creditCards; // eslint-disable-line no-unused-expressions
-    throw new Error("Access credit card didn't throw.");
-  } catch (err) {
-    Assert.equal(
-      err.message,
-      "CreditCards is not initialized. " +
-        "Please restart if you flip the pref manually."
-    );
-  }
-
-  Services.prefs.setBoolPref(
-    "extensions.formautofill.creditCards.available",
     true
   );
 });

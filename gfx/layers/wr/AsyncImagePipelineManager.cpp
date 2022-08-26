@@ -251,13 +251,16 @@ Maybe<TextureHost::ResourceUpdateOp> AsyncImagePipelineManager::UpdateImageKeys(
   // If we already had a texture and the format hasn't changed, better to reuse
   // the image keys than create new ones.
   auto backend = aSceneBuilderTxn.GetBackendType();
-  bool canUpdate = !!previousTexture &&
-                   previousTexture->GetSize() == texture->GetSize() &&
-                   previousTexture->GetFormat() == texture->GetFormat() &&
-                   previousTexture->NeedsYFlip() == texture->NeedsYFlip() &&
-                   previousTexture->SupportsExternalCompositing(backend) ==
-                       texture->SupportsExternalCompositing(backend) &&
-                   aPipeline->mKeys.Length() == numKeys;
+  bool canUpdate =
+      !!previousTexture &&
+      previousTexture->GetTextureHostType() == texture->GetTextureHostType() &&
+      previousTexture->GetSize() == texture->GetSize() &&
+      previousTexture->GetFormat() == texture->GetFormat() &&
+      previousTexture->GetColorDepth() == texture->GetColorDepth() &&
+      previousTexture->NeedsYFlip() == texture->NeedsYFlip() &&
+      previousTexture->SupportsExternalCompositing(backend) ==
+          texture->SupportsExternalCompositing(backend) &&
+      aPipeline->mKeys.Length() == numKeys;
 
   if (!canUpdate) {
     for (auto key : aPipeline->mKeys) {
@@ -422,9 +425,10 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
       float(aPipeline->mCurrentTexture->GetSize().width),
       float(aPipeline->mCurrentTexture->GetSize().height)};
   computedTransform.rotation = ToWrRotation(aPipeline->mRotation);
-  // We don't have a frame / per-frame key here, but we can use the pipeline id and
-  // the key kind to create a unique stable key.
-  computedTransform.key = wr::SpatialKey(aPipelineId.mNamespace, aPipelineId.mHandle, wr::SpatialKeyKind::APZ);
+  // We don't have a frame / per-frame key here, but we can use the pipeline id
+  // and the key kind to create a unique stable key.
+  computedTransform.key = wr::SpatialKey(
+      aPipelineId.mNamespace, aPipelineId.mHandle, wr::SpatialKeyKind::APZ);
   params.computed_transform = &computedTransform;
 
   Maybe<wr::WrSpatialId> referenceFrameId =
@@ -460,7 +464,7 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
     } else {
       MOZ_ASSERT(keys.Length() == 1);
       aPipeline->mDLBuilder.PushImage(wr::ToLayoutRect(rect),
-                                      wr::ToLayoutRect(rect), true,
+                                      wr::ToLayoutRect(rect), true, false,
                                       aPipeline->mFilter, keys[0]);
     }
   }

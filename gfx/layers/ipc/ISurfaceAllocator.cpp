@@ -18,22 +18,6 @@ NS_IMPL_ISUPPORTS(GfxMemoryImageReporter, nsIMemoryReporter)
 
 mozilla::Atomic<ptrdiff_t> GfxMemoryImageReporter::sAmount(0);
 
-/* static */
-uint32_t CompositableForwarder::GetMaxFileDescriptorsPerMessage() {
-#if defined(OS_POSIX)
-  static const uint32_t kMaxFileDescriptors =
-      FileDescriptorSet::MAX_DESCRIPTORS_PER_MESSAGE;
-#else
-  // default number that works everywhere else
-  static const uint32_t kMaxFileDescriptors = 250;
-#endif
-  return kMaxFileDescriptors;
-}
-
-mozilla::ipc::SharedMemory::SharedMemoryType OptimalShmemType() {
-  return ipc::SharedMemory::SharedMemoryType::TYPE_BASIC;
-}
-
 void HostIPCAllocator::SendPendingAsyncMessages() {
   if (mPendingAsyncMessage.empty()) {
     return;
@@ -43,13 +27,8 @@ void HostIPCAllocator::SendPendingAsyncMessages() {
   // one file descriptor (e.g. OpDeliverFence).
   // A number of file descriptors per gecko ipc message have a limitation
   // on OS_POSIX (MACOSX or LINUX).
-#if defined(OS_POSIX)
   static const uint32_t kMaxMessageNumber =
-      FileDescriptorSet::MAX_DESCRIPTORS_PER_MESSAGE;
-#else
-  // default number that works everywhere else
-  static const uint32_t kMaxMessageNumber = 250;
-#endif
+      IPC::Message::MAX_DESCRIPTORS_PER_MESSAGE;
 
   nsTArray<AsyncParentMessageData> messages;
   messages.SetCapacity(mPendingAsyncMessage.size());
@@ -119,8 +98,7 @@ bool FixedSizeSmallShmemSectionAllocator::AllocShmemSection(
 
   if (!aShmemSection->shmem().IsWritable()) {
     ipc::Shmem tmp;
-    if (!mShmProvider->AllocUnsafeShmem(sShmemPageSize, OptimalShmemType(),
-                                        &tmp)) {
+    if (!mShmProvider->AllocUnsafeShmem(sShmemPageSize, &tmp)) {
       return false;
     }
 

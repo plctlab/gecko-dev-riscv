@@ -16,6 +16,7 @@
 #include "mozilla/AutoRestore.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/CSSAlignUtils.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/dom/GridBinding.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/Maybe.h"
@@ -51,6 +52,10 @@ using NameList = StyleOwnedSlice<StyleCustomIdent>;
 using SizingConstraint = nsGridContainerFrame::SizingConstraint;
 using GridItemCachedBAxisMeasurement =
     nsGridContainerFrame::CachedBAxisMeasurement;
+
+static mozilla::LazyLogModule gGridContainerLog("GridContainer");
+#define GRID_LOG(...) \
+  MOZ_LOG(gGridContainerLog, LogLevel::Debug, (__VA_ARGS__));
 
 static const int32_t kMaxLine = StyleMAX_GRID_LINE;
 static const int32_t kMinLine = StyleMIN_GRID_LINE;
@@ -4537,9 +4542,19 @@ void nsGridContainerFrame::Grid::PlaceGridItems(
                              subgridAxisIsSameDirection);
 
   if (!aState.mFrame->IsRowSubgrid()) {
+    const Maybe<nscoord> containBSize = aState.mFrame->ContainIntrinsicBSize();
+    const nscoord repeatTrackSizingBSize = [&] {
+      // This clamping only applies to auto sizes.
+      if (containBSize &&
+          aSizes.mSize.BSize(aState.mWM) == NS_UNCONSTRAINEDSIZE) {
+        return NS_CSS_MINMAX(*containBSize, aSizes.mMin.BSize(aState.mWM),
+                             aSizes.mMax.BSize(aState.mWM));
+      }
+      return aSizes.mSize.BSize(aState.mWM);
+    }();
     aState.mRowFunctions.InitRepeatTracks(
         gridStyle->mRowGap, aSizes.mMin.BSize(aState.mWM),
-        aSizes.mSize.BSize(aState.mWM), aSizes.mMax.BSize(aState.mWM));
+        repeatTrackSizingBSize, aSizes.mMax.BSize(aState.mWM));
     uint32_t areaRows = areas ? areas->strings.Length() + 1 : 1;
     mExplicitGridRowEnd = aState.mRowFunctions.ComputeExplicitGridEnd(areaRows);
     parentLineNameMap = nullptr;
@@ -5029,8 +5044,14 @@ static nscoord MeasuringReflow(nsIFrame* aChild,
         aChild->GetProperty(GridItemCachedBAxisMeasurement::Prop(), &found);
     if (found && cachedMeasurement.IsValidFor(aChild, aCBSize)) {
       childSize.BSize(wm) = cachedMeasurement.BSize();
+      childSize.ISize(wm) = aChild->ISize(wm);
       nsContainerFrame::FinishReflowChild(aChild, pc, childSize, &childRI, wm,
                                           LogicalPoint(wm), nsSize(), flags);
+      GRID_LOG(
+          "[perf] MeasuringReflow accepted cached value=%d, child=%p, "
+          "aCBSize.ISize=%d",
+          cachedMeasurement.BSize(), aChild,
+          aCBSize.ISize(aChild->GetWritingMode()));
       return cachedMeasurement.BSize();
     }
   }
@@ -5053,12 +5074,28 @@ static nscoord MeasuringReflow(nsIFrame* aChild,
                                                        childSize.BSize(wm));
       aChild->SetProperty(GridItemCachedBAxisMeasurement::Prop(),
                           cachedMeasurement);
+      GRID_LOG(
+          "[perf] MeasuringReflow created new cached value=%d, child=%p, "
+          "aCBSize.ISize=%d",
+          cachedMeasurement.BSize(), aChild,
+          aCBSize.ISize(aChild->GetWritingMode()));
     } else if (found) {
       if (GridItemCachedBAxisMeasurement::CanCacheMeasurement(aChild,
                                                               aCBSize)) {
         cachedMeasurement.Update(aChild, aCBSize, childSize.BSize(wm));
+        GRID_LOG(
+            "[perf] MeasuringReflow rejected but updated cached value=%d, "
+            "child=%p, aCBSize.ISize=%d",
+            cachedMeasurement.BSize(), aChild,
+            aCBSize.ISize(aChild->GetWritingMode()));
+        aChild->SetProperty(GridItemCachedBAxisMeasurement::Prop(),
+                            cachedMeasurement);
       } else {
         aChild->RemoveProperty(GridItemCachedBAxisMeasurement::Prop());
+        GRID_LOG(
+            "[perf] MeasuringReflow rejected and removed cached value, "
+            "child=%p",
+            aChild);
       }
     }
   }
@@ -8570,12 +8607,26 @@ void nsGridContainerFrame::Reflow(nsPresContext* aPresContext,
       grid.mGridColEnd = subgrid->mGridColEnd;
       grid.mGridRowEnd = subgrid->mGridRowEnd;
     }
-    gridReflowInput.CalculateTrackSizes(grid, computedSize,
+    // XXX Technically incorrect: 'contain-intrinsic-block-size: none' is
+    // treated as 0, ignoring our row sizes, when really we should use them but
+    // *they* should be computed as if we had no children. To be fixed in bug
+    // 1488878.
+    const Maybe<nscoord> containBSize =
+        aReflowInput.mFrame->ContainIntrinsicBSize();
+    const nscoord trackSizingBSize = [&] {
+      // This clamping only applies to auto sizes.
+      if (containBSize && computedBSize == NS_UNCONSTRAINEDSIZE) {
+        return NS_CSS_MINMAX(*containBSize, aReflowInput.ComputedMinBSize(),
+                             aReflowInput.ComputedMaxBSize());
+      }
+      return computedBSize;
+    }();
+    const LogicalSize containLogicalSize(wm, computedISize, trackSizingBSize);
+    gridReflowInput.CalculateTrackSizes(grid, containLogicalSize,
                                         SizingConstraint::NoConstraint);
-    // XXX Technically incorrect: We're ignoring our row sizes, when really
-    // we should use them but *they* should be computed as if we had no
-    // children. To be fixed in bug 1488878.
-    if (!aReflowInput.mStyleDisplay->IsContainSize()) {
+    if (containBSize) {
+      bSize = *containBSize;
+    } else {
       if (IsMasonry(eLogicalAxisBlock)) {
         bSize = computedBSize;
       } else {
@@ -8596,10 +8647,14 @@ void nsGridContainerFrame::Reflow(nsPresContext* aPresContext,
   } else {
     consumedBSize = CalcAndCacheConsumedBSize();
     gridReflowInput.InitializeForContinuation(this, consumedBSize);
-    // XXX Technically incorrect: We're ignoring our row sizes, when really
-    // we should use them but *they* should be computed as if we had no
-    // children. To be fixed in bug 1488878.
-    if (!aReflowInput.mStyleDisplay->IsContainSize()) {
+    // XXX Technically incorrect: 'contain-intrinsic-block-size: none' is
+    // treated as 0, ignoring our row sizes, when really we should use them but
+    // *they* should be computed as if we had no children. To be fixed in bug
+    // 1488878.
+    if (Maybe<nscoord> containBSize =
+            aReflowInput.mFrame->ContainIntrinsicBSize()) {
+      bSize = *containBSize;
+    } else {
       const uint32_t numRows = gridReflowInput.mRows.mSizes.Length();
       bSize = gridReflowInput.mRows.GridLineEdge(numRows,
                                                  GridLineSide::AfterGridGap);
@@ -8608,6 +8663,10 @@ void nsGridContainerFrame::Reflow(nsPresContext* aPresContext,
   if (computedBSize == NS_UNCONSTRAINEDSIZE) {
     bSize = NS_CSS_MINMAX(bSize, aReflowInput.ComputedMinBSize(),
                           aReflowInput.ComputedMaxBSize());
+  } else if (aReflowInput.ShouldApplyAutomaticMinimumOnBlockAxis()) {
+    nscoord contentBSize = NS_CSS_MINMAX(bSize, aReflowInput.ComputedMinBSize(),
+                                         aReflowInput.ComputedMaxBSize());
+    bSize = std::max(contentBSize, computedBSize);
   } else {
     bSize = computedBSize;
   }
@@ -9089,7 +9148,6 @@ void nsGridContainerFrame::Reflow(nsPresContext* aPresContext,
   }
 
   FinishAndStoreOverflow(&aDesiredSize);
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsGridContainerFrame::UpdateSubgridFrameState() {
@@ -9326,8 +9384,9 @@ nscoord nsGridContainerFrame::GetMinISize(gfxContext* aRC) {
 
   DISPLAY_MIN_INLINE_SIZE(this, mCachedMinISize);
   if (mCachedMinISize == NS_INTRINSIC_ISIZE_UNKNOWN) {
-    mCachedMinISize = StyleDisplay()->IsContainSize()
-                          ? 0
+    Maybe<nscoord> containISize = ContainIntrinsicISize();
+    mCachedMinISize = containISize
+                          ? *containISize
                           : IntrinsicISize(aRC, IntrinsicISizeType::MinISize);
   }
   return mCachedMinISize;
@@ -9341,8 +9400,9 @@ nscoord nsGridContainerFrame::GetPrefISize(gfxContext* aRC) {
 
   DISPLAY_PREF_INLINE_SIZE(this, mCachedPrefISize);
   if (mCachedPrefISize == NS_INTRINSIC_ISIZE_UNKNOWN) {
-    mCachedPrefISize = StyleDisplay()->IsContainSize()
-                           ? 0
+    Maybe<nscoord> containISize = ContainIntrinsicISize();
+    mCachedPrefISize = containISize
+                           ? *containISize
                            : IntrinsicISize(aRC, IntrinsicISizeType::PrefISize);
   }
   return mCachedPrefISize;

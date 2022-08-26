@@ -93,7 +93,8 @@ class Tabbar extends Component {
     this.renderTab = this.renderTab.bind(this);
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     const { activeTabId, children = [] } = nextProps;
     const tabs = this.createTabs(children);
     const activeTab = tabs.findIndex((tab, index) => tab.id === activeTabId);
@@ -210,12 +211,12 @@ class Tabbar extends Component {
 
     const tabs = this.state.tabs.slice();
     tabs[index] = Object.assign({}, tabs[index], {
-      isVisible: isVisible,
+      isVisible,
     });
 
     this.setState(
       Object.assign({}, this.state, {
-        tabs: tabs,
+        tabs,
       })
     );
   }
@@ -316,7 +317,7 @@ class Tabbar extends Component {
     });
 
     // Show a drop down menu with frames.
-    menu.popupAtTarget(target, this.props.menuDocument);
+    menu.popupAtTarget(target);
 
     return menu;
   }

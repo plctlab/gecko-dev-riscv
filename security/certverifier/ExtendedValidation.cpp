@@ -145,17 +145,6 @@ static const struct EVInfo kEVInfos[] = {
   },
 #endif
   {
-    // CN=Cybertrust Global Root,O=Cybertrust, Inc
-    "1.3.6.1.4.1.6334.1.100.1",
-    "Cybertrust EV OID",
-    { 0x96, 0x0A, 0xDF, 0x00, 0x63, 0xE9, 0x63, 0x56, 0x75, 0x0C, 0x29,
-      0x65, 0xDD, 0x0A, 0x08, 0x67, 0xDA, 0x0B, 0x9C, 0xBD, 0x6E, 0x77,
-      0x71, 0x4A, 0xEA, 0xFB, 0x23, 0x49, 0xAB, 0x39, 0x3D, 0xA3 },
-    "MDsxGDAWBgNVBAoTD0N5YmVydHJ1c3QsIEluYzEfMB0GA1UEAxMWQ3liZXJ0cnVz"
-    "dCBHbG9iYWwgUm9vdA==",
-    "BAAAAAABD4WqLUg=",
-  },
-  {
     // CN=SwissSign Gold CA - G2,O=SwissSign AG,C=CH
     "2.16.756.1.89.1.2.1.1",
     "SwissSign EV OID",
@@ -529,6 +518,30 @@ static const struct EVInfo kEVInfos[] = {
     "amg+nFGby1M=",
   },
   {
+    // CN=E-Tugra Global Root CA RSA v3,OU=E-Tugra Trust Center,O=E-Tugra EBG A.S.,L=Ankara,C=TR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0xEF, 0x66, 0xB0, 0xB1, 0x0A, 0x3C, 0xDB, 0x9F, 0x2E, 0x36, 0x48,
+      0xC7, 0x6B, 0xD2, 0xAF, 0x18, 0xEA, 0xD2, 0xBF, 0xE6, 0xF1, 0x17,
+      0x65, 0x5E, 0x28, 0xC4, 0x06, 0x0D, 0xA1, 0xA3, 0xF4, 0xC2 },
+    "MIGAMQswCQYDVQQGEwJUUjEPMA0GA1UEBxMGQW5rYXJhMRkwFwYDVQQKExBFLVR1"
+    "Z3JhIEVCRyBBLlMuMR0wGwYDVQQLExRFLVR1Z3JhIFRydXN0IENlbnRlcjEmMCQG"
+    "A1UEAxMdRS1UdWdyYSBHbG9iYWwgUm9vdCBDQSBSU0EgdjM=",
+    "DU3FzRYilZYIfrgLfxUGNPt5EDQ=",
+  },
+  {
+    // CN=E-Tugra Global Root CA ECC v3,OU=E-Tugra Trust Center,O=E-Tugra EBG A.S.,L=Ankara,C=TR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x87, 0x3F, 0x46, 0x85, 0xFA, 0x7F, 0x56, 0x36, 0x25, 0x25, 0x2E,
+      0x6D, 0x36, 0xBC, 0xD7, 0xF1, 0x6F, 0xC2, 0x49, 0x51, 0xF2, 0x64,
+      0xE4, 0x7E, 0x1B, 0x95, 0x4F, 0x49, 0x08, 0xCD, 0xCA, 0x13 },
+    "MIGAMQswCQYDVQQGEwJUUjEPMA0GA1UEBxMGQW5rYXJhMRkwFwYDVQQKExBFLVR1"
+    "Z3JhIEVCRyBBLlMuMR0wGwYDVQQLExRFLVR1Z3JhIFRydXN0IENlbnRlcjEmMCQG"
+    "A1UEAxMdRS1UdWdyYSBHbG9iYWwgUm9vdCBDQSBFQ0MgdjM=",
+    "JkYZdzHhT28oNt45UYbm1JeIIsE=",
+  },
+  {
     // CN=Actalis Authentication Root CA,O=Actalis S.p.A./03358520967,L=Milan,C=IT
     "1.3.159.1.17.1",
     "Actalis EV OID",
@@ -599,6 +612,28 @@ static const struct EVInfo kEVInfos[] = {
     "EHd3dy5kaWdpY2VydC5jb20xITAfBgNVBAMTGERpZ2lDZXJ0IFRydXN0ZWQgUm9v"
     "dCBHNA==",
     "BZsbV56OITLiOQe9p3d1XA==",
+  },
+  {
+    // CN=DigiCert TLS RSA4096 Root G5,O="DigiCert, Inc.",C=US
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x37, 0x1A, 0x00, 0xDC, 0x05, 0x33, 0xB3, 0x72, 0x1A, 0x7E, 0xEB,
+      0x40, 0xE8, 0x41, 0x9E, 0x70, 0x79, 0x9D, 0x2B, 0x0A, 0x0F, 0x2C,
+      0x1D, 0x80, 0x69, 0x31, 0x65, 0xF7, 0xCE, 0xC4, 0xAD, 0x75 },
+    "ME0xCzAJBgNVBAYTAlVTMRcwFQYDVQQKEw5EaWdpQ2VydCwgSW5jLjElMCMGA1UE"
+    "AxMcRGlnaUNlcnQgVExTIFJTQTQwOTYgUm9vdCBHNQ==",
+    "CPm0eKj6ftpqMzeJ3nzPig==",
+  },
+  {
+    // CN=DigiCert TLS ECC P384 Root G5,O="DigiCert, Inc.",C=US
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x01, 0x8E, 0x13, 0xF0, 0x77, 0x25, 0x32, 0xCF, 0x80, 0x9B, 0xD1,
+      0xB1, 0x72, 0x81, 0x86, 0x72, 0x83, 0xFC, 0x48, 0xC6, 0xE1, 0x3B,
+      0xE9, 0xC6, 0x98, 0x12, 0x85, 0x4A, 0x49, 0x0C, 0x1B, 0x05 },
+    "ME4xCzAJBgNVBAYTAlVTMRcwFQYDVQQKEw5EaWdpQ2VydCwgSW5jLjEmMCQGA1UE"
+    "AxMdRGlnaUNlcnQgVExTIEVDQyBQMzg0IFJvb3QgRzU=",
+    "CeCTZaz32ci5PhwLBCou8w==",
   },
   {
     // CN=QuoVadis Root CA 2 G3,O=QuoVadis Limited,C=BM
@@ -1038,6 +1073,124 @@ static const struct EVInfo kEVInfos[] = {
     "YWl6MSIwIAYDVQQDExlBTkYgU2VjdXJlIFNlcnZlciBSb290IENB",
     "DdPjvGz5a7E=",
   },
+  {
+    // CN=Hellenic Academic and Research Institutions ECC RootCA 2015,O=Hellenic Academic and Research Institutions Cert. Authority,L=Athens,C=GR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x44, 0xB5, 0x45, 0xAA, 0x8A, 0x25, 0xE6, 0x5A, 0x73, 0xCA, 0x15,
+      0xDC, 0x27, 0xFC, 0x36, 0xD2, 0x4C, 0x1C, 0xB9, 0x95, 0x3A, 0x06,
+      0x65, 0x39, 0xB1, 0x15, 0x82, 0xDC, 0x48, 0x7B, 0x48, 0x33 },
+    "MIGqMQswCQYDVQQGEwJHUjEPMA0GA1UEBxMGQXRoZW5zMUQwQgYDVQQKEztIZWxs"
+    "ZW5pYyBBY2FkZW1pYyBhbmQgUmVzZWFyY2ggSW5zdGl0dXRpb25zIENlcnQuIEF1"
+    "dGhvcml0eTFEMEIGA1UEAxM7SGVsbGVuaWMgQWNhZGVtaWMgYW5kIFJlc2VhcmNo"
+    "IEluc3RpdHV0aW9ucyBFQ0MgUm9vdENBIDIwMTU=",
+    "AA==",
+  },
+  {
+    // CN=Hellenic Academic and Research Institutions RootCA 2015,O=Hellenic Academic and Research Institutions Cert. Authority,L=Athens,C=GR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0xA0, 0x40, 0x92, 0x9A, 0x02, 0xCE, 0x53, 0xB4, 0xAC, 0xF4, 0xF2,
+      0xFF, 0xC6, 0x98, 0x1C, 0xE4, 0x49, 0x6F, 0x75, 0x5E, 0x6D, 0x45,
+      0xFE, 0x0B, 0x2A, 0x69, 0x2B, 0xCD, 0x52, 0x52, 0x3F, 0x36 },
+    "MIGmMQswCQYDVQQGEwJHUjEPMA0GA1UEBxMGQXRoZW5zMUQwQgYDVQQKEztIZWxs"
+    "ZW5pYyBBY2FkZW1pYyBhbmQgUmVzZWFyY2ggSW5zdGl0dXRpb25zIENlcnQuIEF1"
+    "dGhvcml0eTFAMD4GA1UEAxM3SGVsbGVuaWMgQWNhZGVtaWMgYW5kIFJlc2VhcmNo"
+    "IEluc3RpdHV0aW9ucyBSb290Q0EgMjAxNQ==",
+    "AA==",
+  },
+  {
+    // CN=HARICA TLS RSA Root CA 2021,O=Hellenic Academic and Research Institutions CA,C=GR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0xD9, 0x5D, 0x0E, 0x8E, 0xDA, 0x79, 0x52, 0x5B, 0xF9, 0xBE, 0xB1,
+      0x1B, 0x14, 0xD2, 0x10, 0x0D, 0x32, 0x94, 0x98, 0x5F, 0x0C, 0x62,
+      0xD9, 0xFA, 0xBD, 0x9C, 0xD9, 0x99, 0xEC, 0xCB, 0x7B, 0x1D },
+    "MGwxCzAJBgNVBAYTAkdSMTcwNQYDVQQKDC5IZWxsZW5pYyBBY2FkZW1pYyBhbmQg"
+    "UmVzZWFyY2ggSW5zdGl0dXRpb25zIENBMSQwIgYDVQQDDBtIQVJJQ0EgVExTIFJT"
+    "QSBSb290IENBIDIwMjE=",
+    "OcqTHO9D88aOk8f0ZIk4fg==",
+  },
+  {
+    // CN=HARICA TLS ECC Root CA 2021,O=Hellenic Academic and Research Institutions CA,C=GR
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x3F, 0x99, 0xCC, 0x47, 0x4A, 0xCF, 0xCE, 0x4D, 0xFE, 0xD5, 0x87,
+      0x94, 0x66, 0x5E, 0x47, 0x8D, 0x15, 0x47, 0x73, 0x9F, 0x2E, 0x78,
+      0x0F, 0x1B, 0xB4, 0xCA, 0x9B, 0x13, 0x30, 0x97, 0xD4, 0x01 },
+    "MGwxCzAJBgNVBAYTAkdSMTcwNQYDVQQKDC5IZWxsZW5pYyBBY2FkZW1pYyBhbmQg"
+    "UmVzZWFyY2ggSW5zdGl0dXRpb25zIENBMSQwIgYDVQQDDBtIQVJJQ0EgVExTIEVD"
+    "QyBSb290IENBIDIwMjE=",
+    "Z3SdjXfYO2rbIvT/WeK/zg==",
+  },
+  {
+    // CN=HiPKI Root CA - G1,O="Chunghwa Telecom Co., Ltd.",C=TW
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0xF0, 0x15, 0xCE, 0x3C, 0xC2, 0x39, 0xBF, 0xEF, 0x06, 0x4B, 0xE9,
+      0xF1, 0xD2, 0xC4, 0x17, 0xE1, 0xA0, 0x26, 0x4A, 0x0A, 0x94, 0xBE,
+      0x1F, 0x0C, 0x8D, 0x12, 0x18, 0x64, 0xEB, 0x69, 0x49, 0xCC },
+    "ME8xCzAJBgNVBAYTAlRXMSMwIQYDVQQKDBpDaHVuZ2h3YSBUZWxlY29tIENvLiwg"
+    "THRkLjEbMBkGA1UEAwwSSGlQS0kgUm9vdCBDQSAtIEcx",
+    "Ld2szmKXlKFD6LDNdmpeYA==",
+  },
+  {
+    // CN=vTrus Root CA,O="iTrusChina Co.,Ltd.",C=CN
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x8A, 0x71, 0xDE, 0x65, 0x59, 0x33, 0x6F, 0x42, 0x6C, 0x26, 0xE5,
+      0x38, 0x80, 0xD0, 0x0D, 0x88, 0xA1, 0x8D, 0xA4, 0xC6, 0xA9, 0x1F,
+      0x0D, 0xCB, 0x61, 0x94, 0xE2, 0x06, 0xC5, 0xC9, 0x63, 0x87 },
+    "MEMxCzAJBgNVBAYTAkNOMRwwGgYDVQQKExNpVHJ1c0NoaW5hIENvLixMdGQuMRYw"
+    "FAYDVQQDEw12VHJ1cyBSb290IENB",
+    "Q+NxE9izWRRdt86M/TX9b7wFjUU=",
+  },
+  {
+    // CN=vTrus ECC Root CA,O="iTrusChina Co.,Ltd.",C=CN
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x30, 0xFB, 0xBA, 0x2C, 0x32, 0x23, 0x8E, 0x2A, 0x98, 0x54, 0x7A,
+      0xF9, 0x79, 0x31, 0xE5, 0x50, 0x42, 0x8B, 0x9B, 0x3F, 0x1C, 0x8E,
+      0xEB, 0x66, 0x33, 0xDC, 0xFA, 0x86, 0xC5, 0xB2, 0x7D, 0xD3 },
+    "MEcxCzAJBgNVBAYTAkNOMRwwGgYDVQQKExNpVHJ1c0NoaW5hIENvLixMdGQuMRow"
+    "GAYDVQQDExF2VHJ1cyBFQ0MgUm9vdCBDQQ==",
+    "bmq8WapTvpg5Z6LSa6Q75m0c1to=",
+  },
+  {
+    // CN=Autoridad de Certificacion Firmaprofesional CIF A62634068,C=ES
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x57, 0xDE, 0x05, 0x83, 0xEF, 0xD2, 0xB2, 0x6E, 0x03, 0x61, 0xDA,
+      0x99, 0xDA, 0x9D, 0xF4, 0x64, 0x8D, 0xEF, 0x7E, 0xE8, 0x44, 0x1C,
+      0x3B, 0x72, 0x8A, 0xFA, 0x9B, 0xCD, 0xE0, 0xF9, 0xB2, 0x6A },
+    "MFExCzAJBgNVBAYTAkVTMUIwQAYDVQQDDDlBdXRvcmlkYWQgZGUgQ2VydGlmaWNh"
+    "Y2lvbiBGaXJtYXByb2Zlc2lvbmFsIENJRiBBNjI2MzQwNjg=",
+    "G3Dp0v+ubHE=",
+  },
+  {
+    // CN=NetLock Arany (Class Gold) Főtanúsítvány,OU=Tanúsítványkiadók (Certification Services),O=NetLock Kft.,L=Budapest,C=HU
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x6C, 0x61, 0xDA, 0xC3, 0xA2, 0xDE, 0xF0, 0x31, 0x50, 0x6B, 0xE0,
+      0x36, 0xD2, 0xA6, 0xFE, 0x40, 0x19, 0x94, 0xFB, 0xD1, 0x3D, 0xF9,
+      0xC8, 0xD4, 0x66, 0x59, 0x92, 0x74, 0xC4, 0x46, 0xEC, 0x98 },
+    "MIGnMQswCQYDVQQGEwJIVTERMA8GA1UEBwwIQnVkYXBlc3QxFTATBgNVBAoMDE5l"
+    "dExvY2sgS2Z0LjE3MDUGA1UECwwuVGFuw7pzw610dsOhbnlraWFkw7NrIChDZXJ0"
+    "aWZpY2F0aW9uIFNlcnZpY2VzKTE1MDMGA1UEAwwsTmV0TG9jayBBcmFueSAoQ2xh"
+    "c3MgR29sZCkgRsWRdGFuw7pzw610dsOhbnk=",
+    "SUEs5AAQ",
+  },
+  {
+    // CN=D-TRUST EV Root CA 1 2020,O=D-Trust GmbH,C=DE
+    "2.23.140.1.1",
+    "CA/Browser Forum EV OID",
+    { 0x08, 0x17, 0x0D, 0x1A, 0xA3, 0x64, 0x53, 0x90, 0x1A, 0x2F, 0x95,
+      0x92, 0x45, 0xE3, 0x47, 0xDB, 0x0C, 0x8D, 0x37, 0xAB, 0xAA, 0xBC,
+      0x56, 0xB8, 0x1A, 0xA1, 0x00, 0xDC, 0x95, 0x89, 0x70, 0xDB },
+    "MEgxCzAJBgNVBAYTAkRFMRUwEwYDVQQKEwxELVRydXN0IEdtYkgxIjAgBgNVBAMT"
+    "GUQtVFJVU1QgRVYgUm9vdCBDQSAxIDIwMjA=",
+    "XwJB13qHfEwDo6yWjfv/0A==",
+  },
     // clang-format on
 };
 
@@ -1169,34 +1322,35 @@ nsresult LoadExtendedValidationInfo() {
   return NS_OK;
 }
 
-// Helper function for GetFirstEVPolicy(): reads an EV Policy if there is one
-bool FindMatchingEVPolicy(Reader& idReader,
-                          mozilla::pkix::CertPolicyId& policy) {
+// Helper function for GetKnownEVPolicies(): reads an EV Policy if there is one,
+// and appends it to the given list of CertPolicyIds.
+void FindMatchingEVPolicy(Reader& idReader,
+                          nsTArray<mozilla::pkix::CertPolicyId>& policies) {
   Input cabForumEVIdBytes;
   Result rv =
       cabForumEVIdBytes.Init(sCABForumEVId.bytes, sCABForumEVId.numBytes);
   if (rv == Success && idReader.MatchRest(cabForumEVIdBytes)) {
-    policy = sCABForumEVId;
-    return true;
+    policies.AppendElement(sCABForumEVId);
+    return;
   }
 
   for (const CertPolicyId& id : sEVInfoIds) {
     Input idBytes;
     rv = idBytes.Init(id.bytes, id.numBytes);
     if (rv == Success && idReader.MatchRest(idBytes)) {
-      policy = id;
-      return true;
+      policies.AppendElement(id);
+      return;
     }
   }
-  return false;
 }
 
-bool GetFirstEVPolicy(const nsTArray<uint8_t>& certBytes,
-                      /*out*/ mozilla::pkix::CertPolicyId& policy) {
+void GetKnownEVPolicies(
+    const nsTArray<uint8_t>& certBytes,
+    /*out*/ nsTArray<mozilla::pkix::CertPolicyId>& policies) {
   Input certInput;
   Result rv = certInput.Init(certBytes.Elements(), certBytes.Length());
   if (rv != Success) {
-    return false;
+    return;
   }
   // we don't use the certificate for path building, so this parameter
   // doesn't matter
@@ -1204,15 +1358,15 @@ bool GetFirstEVPolicy(const nsTArray<uint8_t>& certBytes,
   BackCert cert(certInput, notUsedForPaths, nullptr);
   rv = cert.Init();
   if (rv != Success) {
-    return false;
+    return;
   }
 
-  const Input* policies = cert.GetCertificatePolicies();
-  if (!policies) {
-    return false;
+  const Input* extensionInput = cert.GetCertificatePolicies();
+  if (!extensionInput) {
+    return;
   }
 
-  Reader extension(*policies);
+  Reader extension(*extensionInput);
   Reader certificatePolicies;
   // certificatePolicies ::= SEQUENCE SIZE (1..MAX) OF PolicyInformation
   // PolicyInformation ::= SEQUENCE {
@@ -1222,7 +1376,7 @@ bool GetFirstEVPolicy(const nsTArray<uint8_t>& certBytes,
   // CertPolicyId ::= OBJECT IDENTIFIER
   rv = der::ExpectTagAndGetValue(extension, der::SEQUENCE, certificatePolicies);
   if (rv != Success || !extension.AtEnd()) {
-    return false;
+    return;
   }
 
   do {
@@ -1230,22 +1384,18 @@ bool GetFirstEVPolicy(const nsTArray<uint8_t>& certBytes,
     rv = der::ExpectTagAndGetValue(certificatePolicies, der::SEQUENCE,
                                    policyInformation);
     if (rv != Success) {
-      return false;
+      return;
     }
 
     Reader policyOid;
     rv = der::ExpectTagAndGetValue(policyInformation, der::OIDTag, policyOid);
     if (rv != Success) {
-      return false;
+      return;
     }
 
     // we don't validate policy qualifiers here
-    if (FindMatchingEVPolicy(policyOid, policy)) {
-      return true;
-    }
+    FindMatchingEVPolicy(policyOid, policies);
   } while (!certificatePolicies.AtEnd());
-
-  return false;
 }
 
 }  // namespace psm

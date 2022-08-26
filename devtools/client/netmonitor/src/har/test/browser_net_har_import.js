@@ -7,8 +7,6 @@
  * Tests for importing HAR data.
  */
 add_task(async () => {
-  await pushPref("dom.security.https_first", false);
-
   const { tab, monitor } = await initNetMonitor(
     HAR_EXAMPLE_URL + "html_har_import-test-page.html",
     { requestCount: 1 }

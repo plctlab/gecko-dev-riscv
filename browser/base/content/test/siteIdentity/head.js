@@ -1,5 +1,5 @@
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 function openIdentityPopup() {
@@ -14,8 +14,12 @@ function openPermissionPopup() {
   gPermissionPanel._initializePopup();
   let mainView = document.getElementById("permission-popup-mainView");
   let viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
-  gPermissionPanel._openPopup();
+  gPermissionPanel.openPopup();
   return viewShown;
+}
+
+function getIdentityMode(aWindow = window) {
+  return aWindow.document.getElementById("identity-box").className;
 }
 
 /**
@@ -417,4 +421,19 @@ async function loadBadCertPage(url) {
     content.document.getElementById("exceptionDialogButton").click();
   });
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+}
+
+// nsITLSServerSocket needs a certificate with a corresponding private key
+// available. In mochitests, the certificate with the common name "Mochitest
+// client" has such a key.
+function getTestServerCertificate() {
+  const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
+  );
+  for (const cert of certDB.getCerts()) {
+    if (cert.commonName == "Mochitest client") {
+      return cert;
+    }
+  }
+  return null;
 }

@@ -6,8 +6,6 @@ const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const EXPORTED_SYMBOLS = ["TestSupportChild"];
 
 class TestSupportChild extends GeckoViewActorChild {
@@ -54,6 +52,29 @@ class TestSupportChild extends GeckoViewActorChild {
           }
           waitForPaints();
         });
+      case "GetLinkColor": {
+        const { selector } = aMsg.data;
+        const element = this.document.querySelector(selector);
+        if (!element) {
+          throw new Error("No element for " + selector);
+        }
+        const color = this.contentWindow.windowUtils.getVisitedDependentComputedStyle(
+          element,
+          "",
+          "color"
+        );
+        return color;
+      }
+      case "SetResolutionAndScaleTo": {
+        return new Promise(resolve => {
+          const window = this.contentWindow;
+          const { resolution } = aMsg.data;
+          window.visualViewport.addEventListener("resize", () => resolve(), {
+            once: true,
+          });
+          window.windowUtils.setResolutionAndScaleTo(resolution);
+        });
+      }
     }
     return null;
   }

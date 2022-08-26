@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* Cribbed from upgradeDialog.js; whether this is actually still required
+/* Whether this is actually still required
  * is not totally clear, but better to be safe than sorry:
  *
  * For some reason SubDialog browser sizing can result in scrollbars, so just
@@ -10,73 +10,76 @@
  * scrollbar. This should be okay as we wrap content for this fixed width
  * dialog unless the window is actually narrow and really does need
  * horizontal scrollbars. */
-@media (min-width: 604px) {
+@media (min-width: 544px) {
 body {
   overflow-x: hidden;
 }
 }
 
 body {
-  width: 604px;
-  padding: 12px 30px;
+  padding: 20px 40px;
+  /* Keep as multiple of 4px. Match min-width media query above + padding. */
+  width: 464px;
 }
 
 #dialog-content {
-  min-height: 330px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-around;
+  text-align: center;
 }
 
 .logo {
   width: 100px;
   height: 100px;
   object-fit: contain;
-  margin-bottom: 13px;
+  margin-bottom: 8px;
 }
 
 #title {
   font-weight: 500;
   font-size: 26px;
-  line-height: 36px;
-  text-align: center;
-  margin-bottom: 5px;
+  margin-bottom: 0;
+  white-space: pre-wrap;
 }
 
 #content {
   font-weight: 400;
   font-size: 13px;
-  line-height: 16px;
-  max-width: 372px;
-  text-align: center;
-  margin-bottom: 24px;
+  margin-block: 10px 18px;
+}
+
+#learn-more-toggle::after {
+  background: url("chrome://global/skin/icons/arrow-right.svg") center / 12px no-repeat;
+  content: "";
+  -moz-context-properties: fill;
+  fill: currentColor;
+  padding-inline: .5em;
+}
+
+#learn-more-toggle:dir(rtl)::after {
+  background-image: url("chrome://global/skin/icons/arrow-left.svg");
+}
+
+#learn-more-toggle[aria-expanded="true"]::after {
+  background-image: url("chrome://global/skin/icons/arrow-down.svg");
+}
+
+#learn-more-toggle[aria-expanded="false"] + .expanded {
+  visibility: hidden;
+}
+
+.expanded {
+  margin-bottom: 0;
 }
 
 #primary {
   font-size: 13px;
 }
 
-/*
- * In high-contrast mode, the button border gets forced for real buttons.
- * Since This is semantically a button, but is styled to act like a link, we
- * need to override that so that the border stays transparent.
- */
-@media (prefers-contrast) {
-  #secondary {
-    border: 1px solid transparent;
-  }
-}
-
 #secondary {
-  /* make this look like a link rather than a button */
-  background: none;
-
-  /* without this; we fall back to black on mouseover */
-  color: var(--in-content-link-color);
-
   /* make the font look like the mock */
   font-size: 13px;
-  line-height: 16px;
-  font-weight: normal;
+  padding: 4px;
 }

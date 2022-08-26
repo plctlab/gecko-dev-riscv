@@ -50,11 +50,12 @@ const ContentProcessTargetActor = TargetActorMixin(
   Targets.TYPES.PROCESS,
   contentProcessTargetSpec,
   {
-    initialize: function(connection, { isXpcShellTarget = false } = {}) {
+    initialize(connection, { isXpcShellTarget = false, sessionContext } = {}) {
       Actor.prototype.initialize.call(this, connection);
       this.conn = connection;
       this.threadActor = null;
       this.isXpcShellTarget = isXpcShellTarget;
+      this.sessionContext = sessionContext;
 
       // Use a see-everything debugger
       this.makeDebugger = makeDebugger.bind(null, {
@@ -134,7 +135,7 @@ const ContentProcessTargetActor = TargetActorMixin(
       return this._dbg;
     },
 
-    form: function() {
+    form() {
       if (!this._consoleActor) {
         this._consoleActor = new WebConsoleActor(this.conn, this);
         this.manage(this._consoleActor);
@@ -152,10 +153,11 @@ const ContentProcessTargetActor = TargetActorMixin(
       return {
         actor: this.actorID,
         consoleActor: this._consoleActor.actorID,
-        threadActor: this.threadActor.actorID,
+        isXpcShellTarget: this.isXpcShellTarget,
         memoryActor: this.memoryActor.actorID,
         processID: Services.appinfo.processID,
         remoteType: Services.appinfo.remoteType,
+        threadActor: this.threadActor.actorID,
 
         traits: {
           networkMonitor: false,
@@ -172,7 +174,7 @@ const ContentProcessTargetActor = TargetActorMixin(
       return this._workerList;
     },
 
-    listWorkers: function() {
+    listWorkers() {
       return this.ensureWorkerList()
         .getList()
         .then(actors => {
@@ -197,7 +199,7 @@ const ContentProcessTargetActor = TargetActorMixin(
         });
     },
 
-    _onWorkerListChanged: function() {
+    _onWorkerListChanged() {
       this.conn.send({ from: this.actorID, type: "workerListChanged" });
       this._workerList.onListChanged = null;
     },
@@ -208,11 +210,19 @@ const ContentProcessTargetActor = TargetActorMixin(
       );
     },
 
-    destroy: function() {
-      if (this.isDestroyed()) {
+    destroy() {
+      // Avoid reentrancy. We will destroy the Transport when emitting "destroyed",
+      // which will force destroying all actors.
+      if (this.destroying) {
         return;
       }
-      Resources.unwatchAllTargetResources(this);
+      this.destroying = true;
+
+      // Unregistering watchers first is important
+      // otherwise you might have leaks reported when running browser_browser_toolbox_netmonitor.js in debug builds
+      Resources.unwatchAllResources(this);
+
+      this.emit("destroyed");
 
       Actor.prototype.destroy.call(this);
 

@@ -14,6 +14,10 @@
 
 using namespace mozilla::a11y;
 
+Accessible* ia2AccessibleHyperlink::Acc() {
+  return static_cast<MsaaAccessible*>(this)->Acc();
+}
+
 AccessibleWrap* ia2AccessibleHyperlink::LocalAcc() {
   return static_cast<MsaaAccessible*>(this)->LocalAcc();
 }
@@ -27,8 +31,8 @@ ia2AccessibleHyperlink::QueryInterface(REFIID iid, void** ppv) {
   *ppv = nullptr;
 
   if (IID_IAccessibleHyperlink == iid) {
-    auto accWrap = LocalAcc();
-    if (!accWrap || !accWrap->IsLink()) {
+    Accessible* acc = Acc();
+    if (!acc || !acc->IsLink()) {
       return E_NOINTERFACE;
     }
 
@@ -116,7 +120,7 @@ ia2AccessibleHyperlink::get_startIndex(long* aIndex) {
 
   *aIndex = 0;
 
-  LocalAccessible* thisObj = LocalAcc();
+  Accessible* thisObj = Acc();
   if (!thisObj) {
     return CO_E_OBJNOTCONNECTED;
   }
@@ -133,7 +137,7 @@ ia2AccessibleHyperlink::get_endIndex(long* aIndex) {
 
   *aIndex = 0;
 
-  LocalAccessible* thisObj = LocalAcc();
+  Accessible* thisObj = Acc();
   if (!thisObj) {
     return CO_E_OBJNOTCONNECTED;
   }

@@ -89,23 +89,23 @@ restart-later = Restart Later
 
 # This string is shown to notify the user that the password manager setting
 # is being controlled by an extension
-extension-controlled-password-saving = An extension, <img data-l10n-name="icon"/> { $name }, is controlling this setting.
+extension-controlling-password-saving = <img data-l10n-name="icon"/> <strong>{ $name }</strong> controls this setting.
 
 # This string is shown to notify the user that their notifications permission
 # is being controlled by an extension.
-extension-controlled-web-notifications= An extension, <img data-l10n-name="icon"/> { $name }, is controlling this setting.
+extension-controlling-web-notifications = <img data-l10n-name="icon"/> <strong>{ $name }</strong> controls this setting.
 
 # This string is shown to notify the user that Container Tabs
 # are being enabled by an extension.
-extension-controlled-privacy-containers = An extension, <img data-l10n-name="icon"/> { $name }, requires Container Tabs.
+extension-controlling-privacy-containers = <img data-l10n-name="icon"/> <strong>{ $name }</strong> requires Container Tabs.
 
 # This string is shown to notify the user that their content blocking "All Detected Trackers"
 # preferences are being controlled by an extension.
-extension-controlled-websites-content-blocking-all-trackers = An extension, <img data-l10n-name="icon"/> { $name }, is controlling this setting.
+extension-controlling-websites-content-blocking-all-trackers = <img data-l10n-name="icon"/> <strong>{ $name }</strong> controls this setting.
 
 # This string is shown to notify the user that their proxy configuration preferences
 # are being controlled by an extension.
-extension-controlled-proxy-config = An extension, <img data-l10n-name="icon"/> { $name }, is controlling how { -brand-short-name } connects to the internet.
+extension-controlling-proxy-config = <img data-l10n-name ="icon"/> <strong>{ $name }</strong> controls how { -brand-short-name } connects to the internet.
 
 # This string is shown after the user disables an extension to notify the user
 # how to enable an extension that they disabled.
@@ -225,7 +225,53 @@ containers-remove-cancel-button = Don’t remove this Container
 
 language-and-appearance-header = Language and Appearance
 
-fonts-and-colors-header = Fonts and Colors
+preferences-web-appearance-header = Website appearance
+
+preferences-web-appearance-description = Some websites adapt their color scheme based on your preferences. Choose which color scheme you’d like to use for those sites.
+
+preferences-web-appearance-choice-browser = { -brand-short-name } theme
+preferences-web-appearance-choice-system = System theme
+preferences-web-appearance-choice-light = Light
+preferences-web-appearance-choice-dark = Dark
+
+preferences-web-appearance-choice-tooltip-browser =
+  .title = Match your { -brand-short-name } theme settings for website backgrounds and content.
+preferences-web-appearance-choice-tooltip-system =
+  .title = Match your system settings for website backgrounds and content.
+preferences-web-appearance-choice-tooltip-light =
+  .title = Use a light appearance for website backgrounds and content.
+preferences-web-appearance-choice-tooltip-dark =
+  .title = Use a dark appearance for website backgrounds and content.
+
+preferences-web-appearance-choice-input-browser =
+  .aria-description = { preferences-web-appearance-choice-tooltip-browser.title }
+
+preferences-web-appearance-choice-input-system =
+  .aria-description = { preferences-web-appearance-choice-tooltip-system.title }
+
+preferences-web-appearance-choice-input-light =
+  .aria-description = { preferences-web-appearance-choice-tooltip-light.title }
+
+preferences-web-appearance-choice-input-dark =
+  .aria-description = { preferences-web-appearance-choice-tooltip-dark.title }
+
+# This can appear when using windows HCM or "Override colors: always" without
+# system colors.
+preferences-web-appearance-override-warning = Your color selections are overriding website appearance. <a data-l10n-name="colors-link">Manage colors</a>
+
+# This message contains one link. It can be moved within the sentence as needed
+# to adapt to your language, but should not be changed.
+preferences-web-appearance-footer = Manage { -brand-short-name } themes in <a data-l10n-name="themes-link">Extensions & Themes</a>
+
+preferences-colors-header = Colors
+
+preferences-colors-description = Override { -brand-short-name }’s default colors for text, website backgrounds, and links.
+
+preferences-colors-manage-button =
+    .label = Manage Colors…
+    .accesskey = C
+
+preferences-fonts-header = Fonts
 
 default-font = Default font
     .accesskey = D
@@ -235,10 +281,6 @@ default-font-size = Size
 advanced-fonts =
     .label = Advanced…
     .accesskey = A
-
-colors-settings =
-    .label = Colors…
-    .accesskey = C
 
 # Zoom is a noun, and the message is used as header for a group of options
 preferences-zoom-header = Zoom
@@ -297,8 +339,7 @@ files-and-applications-title = Files and Applications
 
 download-header = Downloads
 
-download-save-to =
-    .label = Save files to
+download-save-where = Save files to
     .accesskey = v
 
 download-choose-folder =
@@ -412,6 +453,16 @@ applications-use-os-default-label =
 
 ##
 
+applications-handle-new-file-types-description = What should { -brand-short-name } do with other files?
+
+applications-save-for-new-types =
+    .label = Save files
+    .accesskey = S
+
+applications-ask-before-handling =
+    .label = Ask whether to open or save files
+    .accesskey = A
+
 drm-content-header = Digital Rights Management (DRM) Content
 
 play-drm-content =
@@ -453,6 +504,10 @@ update-application-warning-cross-user-setting = This setting will apply to all W
 update-application-use-service =
     .label = Use a background service to install updates
     .accesskey = b
+
+update-application-suppress-prompts =
+    .label = Show fewer update notification prompts
+    .accesskey = n
 
 update-setting-write-failure-title2 = Error saving Update settings
 
@@ -512,6 +567,10 @@ browsing-use-autoscroll =
 browsing-use-smooth-scrolling =
     .label = Use smooth scrolling
     .accesskey = m
+
+browsing-gtk-use-non-overlay-scrollbars =
+    .label = Always show scrollbars
+    .accesskey = o
 
 browsing-use-onscreen-keyboard =
     .label = Show a touch keyboard when necessary
@@ -574,10 +633,8 @@ home-restore-defaults =
     .label = Restore Defaults
     .accesskey = R
 
-# "Firefox" should be treated as a brand and kept in English,
-# while "Home" and "(Default)" can be localized.
-home-mode-choice-default =
-    .label = Firefox Home (Default)
+home-mode-choice-default-fx =
+    .label = { -firefox-home-brand-name } (Default)
 
 home-mode-choice-custom =
     .label = Custom URLs…
@@ -606,8 +663,8 @@ choose-bookmark =
 
 ## Home Section - Firefox Home Content Customization
 
-home-prefs-content-header = Firefox Home Content
-home-prefs-content-description = Choose what content you want on your Firefox Home screen.
+home-prefs-content-header2 = { -firefox-home-brand-name } Content
+home-prefs-content-description2 = Choose what content you want on your { -firefox-home-brand-name } screen.
 
 home-prefs-search-header =
     .label = Web Search
@@ -629,6 +686,8 @@ home-prefs-recommended-by-description-new = Exceptional content curated by { $pr
 home-prefs-recommended-by-learn-more = How it works
 home-prefs-recommended-by-option-sponsored-stories =
     .label = Sponsored Stories
+home-prefs-recommended-by-option-recent-saves =
+    .label = Show Recent Saves
 
 home-prefs-highlights-option-visited-pages =
     .label = Visited Pages
@@ -1048,14 +1107,10 @@ sitedata-block-desc = Type blocked
 
 sitedata-option-block-cross-site-trackers =
     .label = Cross-site trackers
-sitedata-option-block-cross-site-and-social-media-trackers =
-    .label = Cross-site and social media trackers
-sitedata-option-block-cross-site-tracking-cookies-including-social-media =
-    .label = Cross-site tracking cookies — includes social media cookies
-sitedata-option-block-cross-site-cookies-including-social-media =
-    .label = Cross-site cookies — includes social media cookies
-sitedata-option-block-cross-site-and-social-media-trackers-plus-isolate =
-    .label = Cross-site and social media trackers, and isolate remaining cookies
+sitedata-option-block-cross-site-tracking-cookies =
+    .label = Cross-site tracking cookies
+sitedata-option-block-cross-site-cookies =
+    .label = Cross-site tracking cookies, and isolate other cross-site cookies
 sitedata-option-block-unvisited =
     .label = Cookies from unvisited websites
 sitedata-option-block-all-third-party =
@@ -1100,8 +1155,13 @@ addressbar-locbar-topsites-option =
 addressbar-locbar-engines-option =
     .label = Search engines
     .accesskey = a
+addressbar-locbar-quickactions-option =
+    .label = Quick actions
+    .accesskey = Q
 
 addressbar-suggestions-settings = Change preferences for search engine suggestions
+
+addressbar-quickactions-learn-more = Learn more
 
 ## Privacy Section - Content Blocking
 
@@ -1135,7 +1195,7 @@ content-blocking-etp-custom-desc = Choose which trackers and scripts to block.
 content-blocking-etp-blocking-desc = { -brand-short-name } blocks the following:
 
 content-blocking-private-windows = Tracking content in Private Windows
-content-blocking-cross-site-cookies-in-all-windows = Cross-site cookies in all windows (includes tracking cookies)
+content-blocking-cross-site-cookies-in-all-windows2 = Cross-site cookies in all windows
 content-blocking-cross-site-tracking-cookies = Cross-site tracking cookies
 content-blocking-all-cross-site-cookies-private-windows = Cross-site cookies in Private Windows
 content-blocking-cross-site-tracking-cookies-plus-isolate = Cross-site tracking cookies, and isolate remaining cookies
@@ -1147,8 +1207,19 @@ content-blocking-all-third-party-cookies = All third-party cookies
 content-blocking-cryptominers = Cryptominers
 content-blocking-fingerprinters = Fingerprinters
 
+# "Test pilot" is used as a verb. Possible alternatives:
+# "Be the first to try", "Join an early experiment".
+content-blocking-etp-standard-tcp-rollout-checkbox =
+  .label = Test pilot our most powerful privacy feature ever
+  .accesskey = T
+
+# "Contains" here means "isolates", "limits".
+content-blocking-etp-standard-tcp-rollout-description = Total Cookie Protection contains cookies to the site you’re on, so trackers can’t use them to follow you between sites.
+content-blocking-etp-standard-tcp-rollout-learn-more = Learn more
+
+content-blocking-etp-standard-tcp-title = Includes Total Cookie Protection, our most powerful privacy feature ever
+
 content-blocking-warning-title = Heads up!
-content-blocking-and-isolating-etp-warning-description = Blocking trackers and isolating cookies could impact the functionality of some sites. Reload a page with trackers to load all content.
 content-blocking-and-isolating-etp-warning-description-2 = This setting may cause some websites to not display content or work correctly. If a site seems broken, you may want to turn off tracking protection for that site to load all content.
 content-blocking-warning-learn-how = Learn how
 
@@ -1349,8 +1420,3 @@ httpsonly-radio-disabled =
 desktop-folder-name = Desktop
 downloads-folder-name = Downloads
 choose-download-folder-title = Choose Download Folder:
-
-# Variables:
-#   $service-name (String) - Name of a cloud storage provider like Dropbox, Google Drive, etc...
-save-files-to-cloud-storage =
-    .label = Save files to { $service-name }

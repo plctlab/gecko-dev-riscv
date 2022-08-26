@@ -11,14 +11,29 @@
 namespace mozilla {
 namespace layers {
 
-IAPZHitTester::HitTestResult
-IAPZHitTester::HitTestResult::CopyWithoutScrollbarNode() const {
+IAPZHitTester::HitTestResult IAPZHitTester::CloneHitTestResult(
+    RecursiveMutexAutoLock& aProofOfTreeLock,
+    const IAPZHitTester::HitTestResult& aHitTestResult) const {
   HitTestResult result;
-  result.mTargetApzc = mTargetApzc;
-  result.mHitResult = mHitResult;
-  result.mLayersId = mLayersId;
-  result.mFixedPosSides = mFixedPosSides;
-  result.mHitOverscrollGutter = mHitOverscrollGutter;
+
+  result.mTargetApzc = aHitTestResult.mTargetApzc;
+  result.mHitResult = aHitTestResult.mHitResult;
+  result.mLayersId = aHitTestResult.mLayersId;
+  result.mFixedPosSides = aHitTestResult.mFixedPosSides;
+  result.mHitOverscrollGutter = aHitTestResult.mHitOverscrollGutter;
+
+  RefPtr<HitTestingTreeNode> scrollbarNode =
+      aHitTestResult.mScrollbarNode.Get(aProofOfTreeLock);
+  RefPtr<HitTestingTreeNode> node = aHitTestResult.mNode.Get(aProofOfTreeLock);
+
+  if (aHitTestResult.mScrollbarNode) {
+    InitializeHitTestingTreeNodeAutoLock(result.mScrollbarNode,
+                                         aProofOfTreeLock, scrollbarNode);
+  }
+  if (aHitTestResult.mNode) {
+    InitializeHitTestingTreeNodeAutoLock(result.mNode, aProofOfTreeLock, node);
+  }
+
   return result;
 }
 
@@ -27,6 +42,7 @@ LayersId IAPZHitTester::GetRootLayersId() const {
 }
 
 HitTestingTreeNode* IAPZHitTester::GetRootNode() const {
+  mTreeManager->mTreeLock.AssertCurrentThreadIn();
   return mTreeManager->mRootNode;
 }
 
@@ -44,31 +60,18 @@ AsyncPanZoomController* IAPZHitTester::FindRootApzcForLayersId(
 already_AddRefed<HitTestingTreeNode> IAPZHitTester::GetTargetNode(
     const ScrollableLayerGuid& aGuid,
     ScrollableLayerGuid::Comparator aComparator) {
+  // Acquire the tree lock so that derived classes can call this from
+  // methods other than GetAPZCAtPoint().
+  RecursiveMutexAutoLock lock(mTreeManager->mTreeLock);
   return mTreeManager->GetTargetNode(aGuid, aComparator);
 }
 
 void IAPZHitTester::InitializeHitTestingTreeNodeAutoLock(
     HitTestingTreeNodeAutoLock& aAutoLock,
     const RecursiveMutexAutoLock& aProofOfTreeLock,
-    RefPtr<HitTestingTreeNode>& aNode) {
+    RefPtr<HitTestingTreeNode>& aNode) const {
   aAutoLock.Initialize(aProofOfTreeLock, aNode.forget(),
                        mTreeManager->mTreeLock);
-}
-
-AsyncPanZoomController* IAPZHitTester::GetTargetApzcForNode(
-    const HitTestingTreeNode* aNode) {
-  return mTreeManager->GetTargetApzcForNode(aNode);
-}
-
-bool IAPZHitTester::IsFixedToRootContent(const HitTestingTreeNode* aNode) {
-  return mTreeManager->IsFixedToRootContent(aNode);
-}
-
-LayerToParentLayerMatrix4x4 IAPZHitTester::ComputeTransformForNode(
-    const HitTestingTreeNode* aNode,
-    const AsyncPanZoomController** aOutSourceOfOverscrollTransform) const {
-  return mTreeManager->ComputeTransformForNode(aNode,
-                                               aOutSourceOfOverscrollTransform);
 }
 
 }  // namespace layers

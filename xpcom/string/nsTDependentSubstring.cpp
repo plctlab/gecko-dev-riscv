@@ -4,11 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// FIXME: Due to an include cycle, we need to include `nsTSubstring` first.
+#include "nsTSubstring.h"
 #include "nsTDependentSubstring.h"
 
 template <typename T>
 void nsTDependentSubstring<T>::Rebind(const substring_type& str,
-                                      uint32_t startPos, uint32_t length) {
+                                      size_type startPos, size_type length) {
   // If we currently own a buffer, release it.
   this->Finalize();
 
@@ -50,7 +52,7 @@ void nsTDependentSubstring<T>::Rebind(const char_type* aStart,
 template <typename T>
 nsTDependentSubstring<T>::nsTDependentSubstring(const char_type* aStart,
                                                 const char_type* aEnd)
-    : substring_type(const_cast<char_type*>(aStart), uint32_t(aEnd - aStart),
+    : substring_type(const_cast<char_type*>(aStart), aEnd - aStart,
                      DataFlags(0), ClassFlags(0)) {
   MOZ_RELEASE_ASSERT(aStart <= aEnd, "Overflow!");
 }
@@ -72,8 +74,7 @@ template <typename T>
 nsTDependentSubstring<T>::nsTDependentSubstring(const const_iterator& aStart,
                                                 const const_iterator& aEnd)
     : substring_type(const_cast<char_type*>(aStart.get()),
-                     uint32_t(aEnd.get() - aStart.get()), DataFlags(0),
-                     ClassFlags(0)) {
+                     aEnd.get() - aStart.get(), DataFlags(0), ClassFlags(0)) {
   MOZ_RELEASE_ASSERT(aStart.get() <= aEnd.get(), "Overflow!");
 }
 
@@ -90,7 +91,7 @@ template nsTDependentSubstring<char16_t> const Substring<char16_t>(
 
 #if defined(MOZ_USE_CHAR16_WRAPPER)
 const nsTDependentSubstring<char16_t> Substring(char16ptr_t aData,
-                                                uint32_t aLength) {
+                                                size_t aLength) {
   return nsTDependentSubstring<char16_t>(aData, aLength);
 }
 
@@ -100,3 +101,6 @@ const nsTDependentSubstring<char16_t> Substring(char16ptr_t aStart,
                    static_cast<const char16_t*>(aEnd));
 }
 #endif
+
+template class nsTDependentSubstring<char>;
+template class nsTDependentSubstring<char16_t>;

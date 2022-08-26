@@ -28,6 +28,9 @@ if CONFIG["OS_ARCH"] == "WINNT":
 if CONFIG["OS_TARGET"] == "Android":
     UNIFIED_SOURCES += ["ProfileUnlockerAndroid.cpp"]
 
+if CONFIG["MOZ_BACKGROUNDTASKS"]:
+    DEFINES["MOZ_BACKGROUNDTASKS"] = True
+
 UNIFIED_SOURCES += ["nsToolkitProfileService.cpp"]
 
 LOCAL_INCLUDES += [
@@ -36,7 +39,8 @@ LOCAL_INCLUDES += [
 
 FINAL_LIBRARY = "xul"
 
-DEFINES["MOZ_APP_NAME"] = '"%s"' % CONFIG["MOZ_APP_NAME"]
+for var in ("MOZ_APP_NAME", "MOZ_APP_BASENAME"):
+    DEFINES[var] = '"%s"' % CONFIG[var]
 
 JAR_MANIFESTS += ["jar.mn"]
 

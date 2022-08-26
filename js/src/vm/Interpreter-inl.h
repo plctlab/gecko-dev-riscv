@@ -7,24 +7,23 @@
 #ifndef vm_Interpreter_inl_h
 #define vm_Interpreter_inl_h
 
-#include "vm/Interpreter.h"
-
 #include "jsnum.h"
 
-#include "js/friend/DumpFunctions.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "vm/ArgumentsObject.h"
 #include "vm/BytecodeUtil.h"  // JSDVG_SEARCH_STACK
 #include "vm/Realm.h"
 #include "vm/SharedStencil.h"  // GCThingIndex
+#include "vm/StaticStrings.h"
 #include "vm/ThrowMsgKind.h"
+#ifdef ENABLE_RECORD_TUPLE
+#  include "vm/RecordTupleShared.h"
+#endif
 
-#include "vm/EnvironmentObject-inl.h"
 #include "vm/GlobalObject-inl.h"
 #include "vm/JSAtom-inl.h"
 #include "vm/JSObject-inl.h"
 #include "vm/ObjectOperations-inl.h"
-#include "vm/Stack-inl.h"
 #include "vm/StringType-inl.h"
 
 namespace js {
@@ -65,7 +64,7 @@ static inline bool IsUninitializedLexicalSlot(HandleObject obj,
 static inline bool CheckUninitializedLexical(JSContext* cx, PropertyName* name_,
                                              HandleValue val) {
   if (IsUninitializedLexical(val)) {
-    RootedPropertyName name(cx, name_);
+    Rooted<PropertyName*> name(cx, name_);
     ReportRuntimeLexicalError(cx, JSMSG_UNINITIALIZED_LEXICAL, name);
     return false;
   }
@@ -103,7 +102,7 @@ enum class GetNameMode { Normal, TypeOf };
 
 template <GetNameMode mode>
 inline bool FetchName(JSContext* cx, HandleObject receiver, HandleObject holder,
-                      HandlePropertyName name, const PropertyResult& prop,
+                      Handle<PropertyName*> name, const PropertyResult& prop,
                       MutableHandleValue vp) {
   if (prop.isNotFound()) {
     switch (mode) {
@@ -165,7 +164,8 @@ inline bool FetchNameNoGC(NativeObject* pobj, PropertyResult prop, Value* vp) {
 
 template <js::GetNameMode mode>
 inline bool GetEnvironmentName(JSContext* cx, HandleObject envChain,
-                               HandlePropertyName name, MutableHandleValue vp) {
+                               Handle<PropertyName*> name,
+                               MutableHandleValue vp) {
   {
     PropertyResult prop;
     JSObject* obj = nullptr;
@@ -221,22 +221,14 @@ inline bool HasOwnProperty(JSContext* cx, HandleValue val, HandleValue idValue,
 
 inline bool GetIntrinsicOperation(JSContext* cx, HandleScript script,
                                   jsbytecode* pc, MutableHandleValue vp) {
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
   return GlobalObject::getIntrinsicValue(cx, cx->global(), name, vp);
 }
 
 inline bool SetIntrinsicOperation(JSContext* cx, JSScript* script,
                                   jsbytecode* pc, HandleValue val) {
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
   return GlobalObject::setIntrinsicValue(cx, cx->global(), name, val);
-}
-
-inline void SetAliasedVarOperation(JSContext* cx, JSScript* script,
-                                   jsbytecode* pc, EnvironmentObject& obj,
-                                   EnvironmentCoordinate ec, const Value& val,
-                                   MaybeCheckTDZ checkTDZ) {
-  MOZ_ASSERT_IF(checkTDZ, !IsUninitializedLexical(obj.aliasedBinding(ec)));
-  obj.setAliasedBinding(cx, ec, val);
 }
 
 inline bool SetNameOperation(JSContext* cx, JSScript* script, jsbytecode* pc,
@@ -253,7 +245,7 @@ inline bool SetNameOperation(JSContext* cx, JSScript* script, jsbytecode* pc,
 
   bool strict =
       JSOp(*pc) == JSOp::StrictSetName || JSOp(*pc) == JSOp::StrictSetGName;
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
 
   // In strict mode, assigning to an undeclared global variable is an
   // error. To detect this, we call NativeSetProperty directly and pass
@@ -263,7 +255,7 @@ inline bool SetNameOperation(JSContext* cx, JSScript* script, jsbytecode* pc,
   RootedId id(cx, NameToId(name));
   RootedValue receiver(cx, ObjectValue(*env));
   if (env->isUnqualifiedVarObj()) {
-    RootedNativeObject varobj(cx);
+    Rooted<NativeObject*> varobj(cx);
     if (env->is<DebugEnvironmentProxy>()) {
       varobj =
           &env->as<DebugEnvironmentProxy>().environment().as<NativeObject>();
@@ -293,9 +285,10 @@ inline void InitGlobalLexicalOperation(
   lexicalEnv->setSlot(prop->slot(), value);
 }
 
-inline bool InitPropertyOperation(JSContext* cx, JSOp op, HandleObject obj,
-                                  HandlePropertyName name, HandleValue rhs) {
-  unsigned propAttrs = GetInitDataPropAttrs(op);
+inline bool InitPropertyOperation(JSContext* cx, jsbytecode* pc,
+                                  HandleObject obj, Handle<PropertyName*> name,
+                                  HandleValue rhs) {
+  unsigned propAttrs = GetInitDataPropAttrs(JSOp(*pc));
   return DefineDataProperty(cx, obj, name, rhs, propAttrs);
 }
 
@@ -429,6 +422,19 @@ static MOZ_ALWAYS_INLINE bool GetObjectElementOperation(
 static MOZ_ALWAYS_INLINE bool GetPrimitiveElementOperation(
     JSContext* cx, JS::HandleValue receiver, int receiverIndex, HandleValue key,
     MutableHandleValue res) {
+#ifdef ENABLE_RECORD_TUPLE
+  if (receiver.isExtendedPrimitive()) {
+    RootedId id(cx);
+    if (!ToPropertyKey(cx, key, &id)) {
+      return false;
+    }
+    RootedObject obj(cx, &receiver.toExtendedPrimitive());
+    if (!ExtendedPrimitiveGetProperty(cx, obj, receiver, id, res)) {
+      return false;
+    }
+  }
+#endif
+
   // FIXME: Bug 1234324 We shouldn't be boxing here.
   RootedObject boxed(
       cx, ToObjectFromStackForPropertyAccess(cx, receiver, receiverIndex, key));
@@ -579,11 +585,11 @@ static MOZ_ALWAYS_INLINE bool CheckPrivateFieldOperation(JSContext* cx,
   return false;
 }
 
-static inline JS::Symbol* NewPrivateName(JSContext* cx, HandleAtom name) {
+static inline JS::Symbol* NewPrivateName(JSContext* cx, Handle<JSAtom*> name) {
   return JS::Symbol::new_(cx, JS::SymbolCode::PrivateNameSymbol, name);
 }
 
-inline bool InitElemIncOperation(JSContext* cx, HandleArrayObject arr,
+inline bool InitElemIncOperation(JSContext* cx, Handle<ArrayObject*> arr,
                                  uint32_t index, HandleValue val) {
   if (index == INT32_MAX) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
@@ -604,10 +610,10 @@ inline bool InitElemIncOperation(JSContext* cx, HandleArrayObject arr,
 
 static inline ArrayObject* ProcessCallSiteObjOperation(JSContext* cx,
                                                        HandleScript script,
-                                                       jsbytecode* pc) {
+                                                       const jsbytecode* pc) {
   MOZ_ASSERT(JSOp(*pc) == JSOp::CallSiteObj);
 
-  RootedArrayObject cso(cx, &script->getObject(pc)->as<ArrayObject>());
+  Rooted<ArrayObject*> cso(cx, &script->getObject(pc)->as<ArrayObject>());
 
   if (cso->isExtensible()) {
     RootedObject raw(cx, script->getObject(GET_GCTHING_INDEX(pc).next()));

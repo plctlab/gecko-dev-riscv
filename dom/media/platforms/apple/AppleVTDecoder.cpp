@@ -17,6 +17,7 @@
 #include "MediaData.h"
 #include "VPXDecoder.h"
 #include "VideoUtils.h"
+#include "gfxMacUtils.h"
 #include "gfxPlatform.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Logging.h"
@@ -44,13 +45,17 @@ AppleVTDecoder::AppleVTDecoder(const VideoInfo& aConfig,
       mColorSpace(aConfig.mColorSpace
                       ? *aConfig.mColorSpace
                       : DefaultColorSpace({mPictureWidth, mPictureHeight})),
+      mTransferFunction(aConfig.mTransferFunction
+                            ? *aConfig.mTransferFunction
+                            : gfx::TransferFunction::BT709),
       mColorRange(aConfig.mColorRange),
+      mColorDepth(aConfig.mColorDepth),
       mStreamType(MP4Decoder::IsH264(aConfig.mMimeType)  ? StreamType::H264
                   : VPXDecoder::IsVP9(aConfig.mMimeType) ? StreamType::VP9
                                                          : StreamType::Unknown),
-      mTaskQueue(
-          new TaskQueue(GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
-                        "AppleVTDecoder")),
+      mTaskQueue(TaskQueue::Create(
+          GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
+          "AppleVTDecoder")),
       mMaxRefFrames(
           mStreamType != StreamType::H264 ||
                   aOptions.contains(CreateDecoderParams::Option::LowLatency)
@@ -63,7 +68,9 @@ AppleVTDecoder::AppleVTDecoder(const VideoInfo& aConfig,
       mUseSoftwareImages(true)
 #else
       ,
-      mUseSoftwareImages(false)
+      mUseSoftwareImages(aKnowsCompositor &&
+                         aKnowsCompositor->GetWebRenderCompositorType() ==
+                             layers::WebRenderCompositor::SOFTWARE)
 #endif
       ,
       mIsFlushing(false),
@@ -144,6 +151,7 @@ static CMSampleTimingInfo TimingInfoFromSample(MediaRawData* aSample) {
 
 void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
   AssertOnTaskQueue();
+  PROCESS_DECODE_LOG(aSample);
 
   if (mIsFlushing) {
     MonitorAutoLock mon(mMonitor);
@@ -409,6 +417,7 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
     buffer.mPlanes[2].mHeight = (height + 1) / 2;
     buffer.mPlanes[2].mSkip = 0;
 
+    buffer.mChromaSubsampling = gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT;
     buffer.mYUVColorSpace = mColorSpace;
     buffer.mColorRange = mColorRange;
 
@@ -424,20 +433,39 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
     CVPixelBufferUnlockBaseAddress(aImage, kCVPixelBufferLock_ReadOnly);
   } else {
 #ifndef MOZ_WIDGET_UIKIT
+    // Set pixel buffer properties on aImage before we extract its surface.
+    // This ensures that we can use defined enums to set values instead
+    // of later setting magic CFSTR values on the surface itself.
+    if (mColorSpace == gfx::YUVColorSpace::BT601) {
+      CVBufferSetAttachment(aImage, kCVImageBufferYCbCrMatrixKey,
+                            kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+                            kCVAttachmentMode_ShouldPropagate);
+    } else if (mColorSpace == gfx::YUVColorSpace::BT709) {
+      CVBufferSetAttachment(aImage, kCVImageBufferYCbCrMatrixKey,
+                            kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                            kCVAttachmentMode_ShouldPropagate);
+      CVBufferSetAttachment(aImage, kCVImageBufferColorPrimariesKey,
+                            kCVImageBufferColorPrimaries_ITU_R_709_2,
+                            kCVAttachmentMode_ShouldPropagate);
+    } else if (mColorSpace == gfx::YUVColorSpace::BT2020) {
+      CVBufferSetAttachment(aImage, kCVImageBufferYCbCrMatrixKey,
+                            kCVImageBufferYCbCrMatrix_ITU_R_2020,
+                            kCVAttachmentMode_ShouldPropagate);
+      CVBufferSetAttachment(aImage, kCVImageBufferColorPrimariesKey,
+                            kCVImageBufferColorPrimaries_ITU_R_2020,
+                            kCVAttachmentMode_ShouldPropagate);
+    }
+
+    // Transfer function is applied independently from the colorSpace.
+    CVBufferSetAttachment(
+        aImage, kCVImageBufferTransferFunctionKey,
+        gfxMacUtils::CFStringForTransferFunction(mTransferFunction),
+        kCVAttachmentMode_ShouldPropagate);
+
     CFTypeRefPtr<IOSurfaceRef> surface =
         CFTypeRefPtr<IOSurfaceRef>::WrapUnderGetRule(
             CVPixelBufferGetIOSurface(aImage));
     MOZ_ASSERT(surface, "Decoder didn't return an IOSurface backed buffer");
-
-    // Setup the correct YCbCr conversion matrix on the IOSurface, in case we
-    // pass this directly to CoreAnimation.
-    if (mColorSpace == gfx::YUVColorSpace::BT601) {
-      IOSurfaceSetValue(surface.get(), CFSTR("IOSurfaceYCbCrMatrix"),
-                        CFSTR("ITU_R_601_4"));
-    } else {
-      IOSurfaceSetValue(surface.get(), CFSTR("IOSurfaceYCbCrMatrix"),
-                        CFSTR("ITU_R_709_2"));
-    }
 
     RefPtr<MacIOSurface> macSurface = new MacIOSurface(std::move(surface));
     macSurface->SetYUVColorSpace(mColorSpace);
@@ -535,6 +563,9 @@ MediaResult AppleVTDecoder::InitializeSession() {
     LOG("AppleVTDecoder: maybe hardware accelerated decoding "
         "(VTSessionCopyProperty query failed)");
   }
+  if (isUsingHW) {
+    CFRelease(isUsingHW);
+  }
 
   return NS_OK;
 }
@@ -605,10 +636,14 @@ CFDictionaryRef AppleVTDecoder::CreateOutputConfiguration() {
 
 #ifndef MOZ_WIDGET_UIKIT
   // Output format type:
+
+  bool is10Bit = (gfx::BitDepthForColorDepth(mColorDepth) == 10);
   SInt32 PixelFormatTypeValue =
       mColorRange == gfx::ColorRange::FULL
-          ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-          : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+          ? (is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                     : kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+          : (is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                     : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
   AutoCFRelease<CFNumberRef> PixelFormatTypeNumber = CFNumberCreate(
       kCFAllocatorDefault, kCFNumberSInt32Type, &PixelFormatTypeValue);
   // Construct IOSurface Properties

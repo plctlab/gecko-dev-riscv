@@ -18,6 +18,11 @@ async function cleanup() {
 
 testEngine_setup();
 
+registerCleanupFunction(async () => {
+  Services.prefs.clearUserPref("browser.urlbar.suggest.quickactions");
+});
+Services.prefs.setBoolPref("browser.urlbar.suggest.quickactions", false);
+
 // "example.com/" should match http://example.com/.  i.e., the search string
 // should be treated as if it didn't have the trailing slash.
 add_task(async function trailingSlash() {
@@ -32,10 +37,11 @@ add_task(async function trailingSlash() {
     context,
     autofilled: `${origin}/`,
     completed: `http://${origin}/`,
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://${origin}/`,
-        title: `${origin}/`,
+        title: `test visit for http://${origin}/`,
         heuristic: true,
       }),
     ],
@@ -56,10 +62,11 @@ add_task(async function trailingSlashWWW() {
     context,
     autofilled: "example.com/",
     completed: "http://www.example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://www.${origin}/`,
-        title: `www.${origin}/`,
+        title: `test visit for http://www.${origin}/`,
         heuristic: true,
       }),
     ],
@@ -79,10 +86,11 @@ add_task(async function port() {
     context,
     autofilled: "example.com:8888/",
     completed: "http://example.com:8888/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://${origin}:8888/`,
-        title: `${origin}:8888`,
+        title: `test visit for http://${origin}:8888/`,
         heuristic: true,
       }),
     ],
@@ -103,10 +111,11 @@ add_task(async function portPartial() {
     context,
     autofilled: "example.com:8888/",
     completed: "http://example.com:8888/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://${origin}:8888/`,
-        title: `${origin}:8888`,
+        title: `test visit for http://${origin}:8888/`,
         heuristic: true,
       }),
     ],
@@ -127,10 +136,11 @@ add_task(async function preserveCase() {
     context,
     autofilled: "EXaMple.com/",
     completed: "http://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://${origin}/`,
-        title: `${origin}`,
+        title: `test visit for http://${origin}/`,
         heuristic: true,
       }),
     ],
@@ -152,10 +162,11 @@ add_task(async function preserveCasePort() {
     context,
     autofilled: "EXaMple.com:8888/",
     completed: "http://example.com:8888/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: `http://${origin}:8888/`,
-        title: `${origin}:8888`,
+        title: `test visit for http://${origin}:8888/`,
         heuristic: true,
       }),
     ],
@@ -247,10 +258,11 @@ add_task(async function multidotted() {
     context,
     autofilled: "www.example.co.jp:8888/",
     completed: "http://www.example.co.jp:8888/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "http://www.example.co.jp:8888/",
-        title: "www.example.co.jp:8888",
+        title: "test visit for http://www.example.co.jp:8888/",
         heuristic: true,
       }),
     ],
@@ -278,10 +290,11 @@ add_task(async function test_ip() {
         context,
         autofilled: str,
         completed: "http://" + str,
+        hasAutofillTitle: true,
         matches: [
           makeVisitResult(context, {
             uri: "http://" + str,
-            title: str.replace(/\/$/, ""), // strip trailing slash
+            title: `test visit for http://${str}`,
             heuristic: true,
           }),
         ],
@@ -304,10 +317,11 @@ add_task(async function large_number_host() {
     context,
     autofilled: "12345example.it:8888/",
     completed: "http://12345example.it:8888/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "http://12345example.it:8888/",
-        title: "12345example.it:8888",
+        title: "test visit for http://12345example.it:8888/",
         heuristic: true,
       }),
     ],
@@ -361,10 +375,11 @@ add_task(async function groupByHost() {
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
       }),
     ],
@@ -426,10 +441,11 @@ add_task(async function groupByHostNonDefaultStddevMultiplier() {
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
       }),
     ],
@@ -517,6 +533,7 @@ add_task(async function suggestHistoryFalse_bookmark_multiple() {
     context,
     autofilled: "example.com/",
     completed: baseURL,
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: baseURL,
@@ -534,8 +551,8 @@ add_task(async function suggestHistoryFalse_bookmark_multiple() {
 });
 
 // This is similar to suggestHistoryFalse_bookmark_prefix_0 in
-// autofill_tasks.js, but it adds unbookmarked visits for multiple URLs with the
-// same origin.
+// autofill_test_autofill_originsAndQueries.js, but it adds unbookmarked visits
+// for multiple URLs with the same origin.
 add_task(async function suggestHistoryFalse_bookmark_prefix_multiple() {
   // Force only bookmarked pages to be suggested and therefore only bookmarked
   // pages to be completed.
@@ -620,6 +637,7 @@ add_task(async function suggestHistoryFalse_bookmark_prefix_multiple() {
     context,
     autofilled: "http://example.com/",
     completed: baseURL,
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: baseURL,
@@ -679,10 +697,11 @@ add_task(async function searchParams() {
     context,
     autofilled: "example.com/",
     completed: "http://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "http://example.com/",
-        title: "example.com",
+        title: "test visit for http://example.com/",
         heuristic: true,
       }),
       makeVisitResult(context, {
@@ -740,10 +759,11 @@ add_task(async function searchParams_https() {
     context,
     autofilled: "example.com/",
     completed: "https://example.com/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "https://example.com/",
-        title: "https://example.com",
+        title: "test visit for https://example.com/",
         heuristic: true,
       }),
       makeVisitResult(context, {
@@ -754,4 +774,116 @@ add_task(async function searchParams_https() {
   });
 
   await cleanup();
+});
+
+// Checks an origin that looks like a prefix: a scheme with no dots + a port.
+add_task(async function originLooksLikePrefix() {
+  let hostAndPort = "localhost:8888";
+  let address = `http://${hostAndPort}/`;
+  await PlacesTestUtils.addVisits([{ uri: address }]);
+
+  // addTestSuggestionsEngine adds a search engine
+  // with localhost as a server, so we have to disable the
+  // TTS result or else it will show up as a second result
+  // when searching l to localhost
+  UrlbarPrefs.set("suggest.engines", false);
+
+  for (let search of ["lo", "localhost", "localhost:", "localhost:8888"]) {
+    let context = createContext(search, { isPrivate: false });
+    await check_results({
+      context,
+      autofilled: hostAndPort + "/",
+      completed: address,
+      hasAutofillTitle: true,
+      matches: [
+        makeVisitResult(context, {
+          uri: address,
+          title: `test visit for http://${hostAndPort}/`,
+          heuristic: true,
+        }),
+      ],
+    });
+  }
+  await cleanup();
+});
+
+// Checks an origin whose prefix is "about:".
+add_task(async function about() {
+  const testData = [
+    {
+      uri: "about:config",
+      input: "conf",
+      results: [
+        context =>
+          makeSearchResult(context, {
+            engineName: "Suggestions",
+            heuristic: true,
+          }),
+        context =>
+          makeBookmarkResult(context, {
+            uri: "about:config",
+            title: "A bookmark",
+          }),
+      ],
+    },
+    {
+      uri: "about:blank",
+      input: "about:blan",
+      results: [
+        context =>
+          makeVisitResult(context, {
+            uri: "about:blan",
+            title: "about:blan",
+            source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+            heuristic: true,
+          }),
+        context =>
+          makeBookmarkResult(context, {
+            uri: "about:blank",
+            title: "A bookmark",
+          }),
+      ],
+    },
+  ];
+
+  for (const { uri, input, results } of testData) {
+    await PlacesTestUtils.addBookmarkWithDetails({ uri });
+
+    const context = createContext(input, { isPrivate: false });
+    await check_results({
+      context,
+      matches: results.map(f => f(context)),
+    });
+    await cleanup();
+  }
+});
+
+// Checks an origin whose prefix is "place:".
+add_task(async function place() {
+  const testData = [
+    {
+      uri: "place:transition=7&sort=4",
+      input: "tran",
+    },
+    {
+      uri: "place:transition=7&sort=4",
+      input: "place:tran",
+    },
+  ];
+
+  for (const { uri, input } of testData) {
+    await PlacesTestUtils.addBookmarkWithDetails({ uri });
+
+    const context = createContext(input, { isPrivate: false });
+    await check_results({
+      context,
+      matches: [
+        makeSearchResult(context, {
+          engineName: "Suggestions",
+          heuristic: true,
+        }),
+      ],
+    });
+    await cleanup();
+  }
 });

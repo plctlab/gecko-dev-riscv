@@ -2,9 +2,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-<!-- Temporary wrapper until we move away from XUL flex to allow a negative
-     margin-top to slide the toolbox off screen in fullscreen layout.-->
-<box>
+<!--
+  GTK needs to draw behind the lightweight theme toolbox backgrounds, thus the extra box.
+  Also this box allows a negative margin-top to slide the toolbox off screen in
+  fullscreen layout.
+-->
+<box id="navigator-toolbox-background">
 <toolbox id="navigator-toolbox" flex="1">
 
   <vbox id="titlebar">
@@ -13,11 +16,6 @@
              class="browser-toolbar chromeclass-menubar titlebar-color"
              customizable="true"
              mode="icons"
-#ifdef MENUBAR_CAN_AUTOHIDE
-             data-l10n-id="toolbar-context-menu-menu-bar-cmd"
-             data-l10n-attrs="toolbarname"
-             autohide="true"
-#endif
              context="toolbar-context-menu">
       <toolbaritem id="menubar-items" align="center">
 # The entire main menubar is placed into browser-menubar.inc, so that it can be
@@ -41,6 +39,7 @@
       <hbox class="titlebar-spacer" type="pre-tabs"/>
 
       <hbox flex="1" align="end" class="toolbar-items">
+        <toolbartabstop/>
         <hbox id="TabsToolbar-customization-target" flex="1">
           <tabs id="tabbrowser-tabs"
                 is="tabbrowser-tabs"
@@ -50,14 +49,21 @@
                 tooltip="tabbrowser-tab-tooltip"
                 stopwatchid="FX_TAB_CLICK_MS">
             <hbox class="tab-drop-indicator" hidden="true"/>
+# If the name (tabbrowser-arrowscrollbox) or structure of this changes
+# significantly, there is an optimization in
+# DisplayPortUtils::MaybeCreateDisplayPortInFirstScrollFrameEncountered based
+# the current structure that we may want to revisit.
             <arrowscrollbox id="tabbrowser-arrowscrollbox" orient="horizontal" flex="1" style="min-width: 1px;" clicktoscroll="true" scrolledtostart="true" scrolledtoend="true">
               <tab is="tabbrowser-tab" class="tabbrowser-tab" selected="true" visuallyselected="true" fadein="true"/>
-              <toolbarbutton id="tabs-newtab-button"
-                             class="toolbarbutton-1"
-                             command="cmd_newNavigatorTab"
-                             onclick="checkForMiddleClick(this, event);"
-                             tooltip="dynamic-shortcut-tooltip"/>
-              <spacer class="closing-tabs-spacer" style="width: 0;"/>
+              <hbox id="tabbrowser-arrowscrollbox-periphery">
+                <toolbartabstop/>
+                <toolbarbutton id="tabs-newtab-button"
+                               class="toolbarbutton-1"
+                               command="cmd_newNavigatorTab"
+                               onclick="checkForMiddleClick(this, event);"
+                               tooltip="dynamic-shortcut-tooltip"/>
+                <spacer class="closing-tabs-spacer" style="width: 0;"/>
+              </hbox>
             </arrowscrollbox>
             <html:span id="tabbrowser-tab-a11y-desc" hidden="true"/>
           </tabs>
@@ -77,7 +83,7 @@
           <toolbarbutton id="alltabs-button"
                          class="toolbarbutton-1 chromeclass-toolbar-additional tabs-alltabs-button"
                          badged="true"
-                         oncommand="gTabsPanel.showAllTabsPanel(event);"
+                         onmousedown="gTabsPanel.showAllTabsPanel(event);"
                          data-l10n-id="tabs-toolbar-list-all-tabs"
                          removable="false"/>
         </hbox>
@@ -85,9 +91,11 @@
 
       <hbox class="titlebar-spacer" type="post-tabs"/>
 
-      <button class="accessibility-indicator" data-l10n-id="navbar-accessibility-indicator"
-              aria-live="polite"/>
       <hbox class="private-browsing-indicator"/>
+      <hbox id="private-browsing-indicator-with-label">
+        <image class="private-browsing-indicator-icon"/>
+        <label data-l10n-id="private-browsing-indicator-label"></label>
+      </hbox>
 
 #include titlebar-items.inc.xhtml
 
@@ -147,7 +155,7 @@
         </toolbarbutton>
       </toolbaritem>
       <toolbarspring cui-areatype="toolbar" class="chromeclass-toolbar-additional"/>
-      <toolbaritem id="urlbar-container" flex="400" persist="width"
+      <toolbaritem id="urlbar-container" persist="width"
                    removable="false"
                    class="chromeclass-location" overflows="false">
         <toolbartabstop/>
@@ -253,7 +261,7 @@
                        data-l10n-id="urlbar-canvas-notification-anchor"/>
                 <image id="indexedDB-notification-icon" class="notification-anchor-icon indexedDB-icon" role="button"
                        data-l10n-id="urlbar-indexed-db-notification-anchor"/>
-                <image id="password-notification-icon" class="notification-anchor-icon login-icon" role="button"
+                <image id="password-notification-icon" class="notification-anchor-icon" role="button"
                        data-l10n-id="urlbar-password-notification-anchor"/>
                 <stack id="plugins-notification-icon" class="notification-anchor-icon" role="button" align="center" data-l10n-id="urlbar-plugins-notification-anchor">
                   <image class="plugin-icon" />
@@ -416,6 +424,15 @@
       </toolbarbutton>
     </hbox>
 
+    <toolbarbutton id="unified-extensions-button"
+                   class="toolbarbutton-1"
+                   data-l10n-id="unified-extensions-button"
+                   hidden="true"
+                   onkeypress="gUnifiedExtensions.togglePanel(event)"
+                   onmousedown="gUnifiedExtensions.togglePanel(event)"
+                   overflows="false"
+                   removable="false" />
+
     <toolbarbutton id="nav-bar-overflow-button"
                    class="toolbarbutton-1 chromeclass-toolbar-additional overflow-button"
                    skipintoolbarset="true"
@@ -446,21 +463,6 @@
                      consumeanchor="PanelUI-button"
                      data-l10n-id="appmenu-menu-button-closed2"/>
     </toolbaritem>
-
-    <hbox id="window-controls" hidden="true" pack="end" skipintoolbarset="true"
-          style="-moz-box-ordinal-group: 1000;">
-      <toolbarbutton id="minimize-button"
-                     data-l10n-id="browser-window-minimize-button"
-                     oncommand="window.minimize();"/>
-
-      <toolbarbutton id="restore-button"
-                     data-l10n-id="browser-window-restore-down-button"
-                     oncommand="BrowserFullScreen();"/>
-
-      <toolbarbutton id="close-button"
-                     data-l10n-id="browser-window-close-button"
-                     oncommand="BrowserTryToCloseWindow(event);"/>
-    </hbox>
   </toolbar>
 
   <toolbar id="PersonalToolbar"
@@ -580,7 +582,8 @@
                   class="subviewbutton"
                   data-l10n-id="bookmarks-tools-sidebar-visibility"
                   data-l10n-args='{ "isVisible": false }'
-                  oncommand="SidebarUI.toggle('viewBookmarksSidebar');"/>
+                  oncommand="SidebarUI.toggle('viewBookmarksSidebar');"
+                  key="viewBookmarksSidebarKb"/>
         <!-- NB: temporary solution for bug 985024, this should go away soon. -->
         <menuitem id="BMB_bookmarksShowAllTop"
                   class="subviewbutton"
@@ -651,7 +654,6 @@
                  class="chromeclass-toolbar-additional"
                  data-l10n-id="navbar-search"
                  align="center"
-                 flex="175"
                  persist="width">
       <toolbartabstop/>
       <searchbar id="searchbar" flex="1"/>

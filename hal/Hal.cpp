@@ -11,11 +11,8 @@
 #include "HalSandbox.h"
 #include "HalWakeLockInternal.h"
 #include "mozilla/dom/Document.h"
-#include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 #include "nsPIDOMWindow.h"
-#include "nsJSUtils.h"
-#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Observer.h"
 #include "mozilla/dom/ContentChild.h"
 #include "WindowIdentifier.h"
@@ -258,22 +255,6 @@ class WakeLockObserversManager final
   }
 };
 
-class ScreenConfigurationObserversManager final
-    : public CachingObserversManager<ScreenConfiguration> {
- protected:
-  void EnableNotifications() override {
-    PROXY_IF_SANDBOXED(EnableScreenConfigurationNotifications());
-  }
-
-  void DisableNotifications() override {
-    PROXY_IF_SANDBOXED(DisableScreenConfigurationNotifications());
-  }
-
-  void GetCurrentInformationInternal(ScreenConfiguration* aInfo) override {
-    PROXY_IF_SANDBOXED(GetCurrentScreenConfiguration(aInfo));
-  }
-};
-
 typedef mozilla::ObserverList<SensorData> SensorObserverList;
 StaticAutoPtr<SensorObserverList> sSensorObservers[NUM_SENSOR_TYPE];
 
@@ -394,22 +375,10 @@ void NotifyWakeLockChange(const WakeLockInformation& aInfo) {
   WakeLockObservers()->BroadcastInformation(aInfo);
 }
 
-MOZ_IMPL_HAL_OBSERVER(ScreenConfiguration)
-
-void GetCurrentScreenConfiguration(ScreenConfiguration* aScreenConfiguration) {
-  *aScreenConfiguration =
-      ScreenConfigurationObservers()->GetCurrentInformation();
-}
-
-void NotifyScreenConfigurationChange(
-    const ScreenConfiguration& aScreenConfiguration) {
-  ScreenConfigurationObservers()->CacheInformation(aScreenConfiguration);
-  ScreenConfigurationObservers()->BroadcastCachedInformation();
-}
-
-bool LockScreenOrientation(const ScreenOrientation& aOrientation) {
+RefPtr<GenericNonExclusivePromise> LockScreenOrientation(
+    const ScreenOrientation& aOrientation) {
   AssertMainThread();
-  RETURN_PROXY_IF_SANDBOXED(LockScreenOrientation(aOrientation), false);
+  RETURN_PROXY_IF_SANDBOXED(LockScreenOrientation(aOrientation), nullptr);
 }
 
 void UnlockScreenOrientation() {
@@ -468,7 +437,6 @@ void Shutdown() {
   sBatteryObservers = nullptr;
   sNetworkObservers = nullptr;
   sWakeLockObservers = nullptr;
-  sScreenConfigurationObservers = nullptr;
 
   for (auto& sensorObserver : sSensorObservers) {
     sensorObserver = nullptr;

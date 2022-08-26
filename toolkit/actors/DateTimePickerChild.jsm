@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LayoutUtils",
   "resource://gre/modules/LayoutUtils.jsm"
 );
@@ -78,7 +78,7 @@ class DateTimePickerChild extends JSWindowActorChild {
    * relative to the left/top of the content area.
    */
   getBoundingContentRect(aElement) {
-    return LayoutUtils.getElementBoundingScreenRect(aElement);
+    return lazy.LayoutUtils.getElementBoundingScreenRect(aElement);
   }
 
   getTimePickerPref() {
@@ -131,9 +131,8 @@ class DateTimePickerChild extends JSWindowActorChild {
       case "MozOpenDateTimePicker": {
         // Time picker is disabled when preffed off
         if (
-          !(
-            aEvent.originalTarget instanceof
-            aEvent.originalTarget.ownerGlobal.HTMLInputElement
+          !aEvent.originalTarget.ownerGlobal.HTMLInputElement.isInstance(
+            aEvent.originalTarget
           ) ||
           (aEvent.originalTarget.type == "time" && !this.getTimePickerPref())
         ) {

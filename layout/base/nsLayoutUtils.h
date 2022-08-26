@@ -18,6 +18,7 @@
 #include "mozilla/SVGImageContext.h"
 #include "mozilla/ToString.h"
 #include "mozilla/TypedEnumBits.h"
+#include "mozilla/Span.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WritingModes.h"
 #include "mozilla/layout/FrameChildList.h"
@@ -67,6 +68,7 @@ class nsDisplayItem;
 class nsDisplayList;
 class nsDisplayListBuilder;
 enum class nsDisplayListBuilderMode : uint8_t;
+class RetainedDisplayListBuilder;
 struct AspectRatio;
 class ComputedStyle;
 class DisplayPortUtils;
@@ -94,6 +96,7 @@ class Event;
 class HTMLImageElement;
 class HTMLCanvasElement;
 class HTMLVideoElement;
+class ImageBitmap;
 class InspectorFontFace;
 class OffscreenCanvas;
 class Selection;
@@ -162,6 +165,8 @@ class nsLayoutUtils {
   typedef mozilla::gfx::Size Size;
   typedef mozilla::gfx::Matrix4x4 Matrix4x4;
   typedef mozilla::gfx::Matrix4x4Flagged Matrix4x4Flagged;
+  typedef mozilla::gfx::MatrixScales MatrixScales;
+  typedef mozilla::gfx::MatrixScalesDouble MatrixScalesDouble;
   typedef mozilla::gfx::RectCornerRadii RectCornerRadii;
   typedef mozilla::gfx::StrokeOptions StrokeOptions;
   typedef mozilla::image::ImgDrawResult ImgDrawResult;
@@ -170,6 +175,7 @@ class nsLayoutUtils {
   using nsDisplayList = mozilla::nsDisplayList;
   using nsDisplayListBuilder = mozilla::nsDisplayListBuilder;
   using nsDisplayListBuilderMode = mozilla::nsDisplayListBuilderMode;
+  using RetainedDisplayListBuilder = mozilla::RetainedDisplayListBuilder;
 
  public:
   typedef mozilla::layers::FrameMetrics FrameMetrics;
@@ -551,9 +557,6 @@ class nsLayoutUtils {
       const nsIFrame* aAncestorFrame, const nsIFrame* aFrame,
       const nsIFrame* aCommonAncestor = nullptr);
 
-  static mozilla::SideBits GetSideBitsAndAdjustAnchorForFixedPositionContent(
-      const nsIFrame* aViewportFrame, const nsIFrame* aFixedPosFrame,
-      mozilla::LayerPoint* aAnchor, const Rect* aAnchorRect);
   static mozilla::SideBits GetSideBitsForFixedPositionContent(
       const nsIFrame* aFixedPosFrame);
 
@@ -734,13 +737,26 @@ class nsLayoutUtils {
 
   /**
    * Get the popup frame of a given native mouse event.
-   * @param aPresContext only check popups within aPresContext or a descendant
+   * @param aRootPresContext only check popups within aRootPresContext or a
+   * descendant
    * @param aEvent  the event.
    * @return        Null, if there is no popup frame at the point, otherwise,
    *                returns top-most popup frame at the point.
    */
   static nsIFrame* GetPopupFrameForEventCoordinates(
-      nsPresContext* aPresContext, const mozilla::WidgetEvent* aEvent);
+      nsPresContext* aRootPresContext, const mozilla::WidgetEvent* aEvent);
+
+  /**
+   * Get the popup frame of a given point relative to a widget.
+   * @param aRootPresContext only check popups within aRootPresContext or a
+   * descendant
+   * @param aEvent  the event.
+   * @return        Null, if there is no popup frame at the point, otherwise,
+   *                returns top-most popup frame at the point.
+   */
+  static nsIFrame* GetPopupFrameForPoint(
+      nsPresContext* aRootPresContext, nsIWidget* aWidget,
+      const mozilla::LayoutDeviceIntPoint& aPoint);
 
   /**
    * Get container and offset if aEvent collapses Selection.
@@ -932,9 +948,10 @@ class nsLayoutUtils {
 
   /**
    * Gets the scale factors of the transform for aFrame relative to the root
-   * frame if this transform is 2D, or the identity scale factors otherwise.
+   * frame if this transform can be drawn 2D, or the identity scale factors
+   * otherwise.
    */
-  static gfxSize GetTransformToAncestorScale(const nsIFrame* aFrame);
+  static MatrixScales GetTransformToAncestorScale(const nsIFrame* aFrame);
 
   /**
    * Gets the scale factors of the transform for aFrame relative to the root
@@ -942,7 +959,21 @@ class nsLayoutUtils {
    * If some frame on the path from aFrame to the display root frame may have an
    * animated scale, returns the identity scale factors.
    */
-  static gfxSize GetTransformToAncestorScaleExcludingAnimated(nsIFrame* aFrame);
+  static MatrixScales GetTransformToAncestorScaleExcludingAnimated(
+      nsIFrame* aFrame);
+
+  /**
+   * Gets a scale that includes CSS transforms in this process as well as the
+   * transform to ancestor scale passed down from our direct ancestor process
+   * (which includes any enclosing CSS transforms and resolution). Note: this
+   * does not include any resolution in the current process (this is on purpose
+   * because that is what the transform to ancestor field on FrameMetrics needs,
+   * see its definition for explanation as to why). This is the transform to
+   * ancestor scale to set on FrameMetrics.
+   */
+  static mozilla::ParentLayerToScreenScale2D
+  GetTransformToAncestorScaleCrossProcessForFrameMetrics(
+      const nsIFrame* aFrame);
 
   /**
    * Find the nearest common ancestor frame for aFrame1 and aFrame2. The
@@ -982,8 +1013,8 @@ class nsLayoutUtils {
     NO_COMMON_ANCESTOR,
     NONINVERTIBLE_TRANSFORM
   };
-  static TransformResult TransformPoints(nsIFrame* aFromFrame,
-                                         nsIFrame* aToFrame,
+  static TransformResult TransformPoints(RelativeTo aFromFrame,
+                                         RelativeTo aToFrame,
                                          uint32_t aPointCount,
                                          CSSPoint* aPoints);
 
@@ -1374,7 +1405,7 @@ class nsLayoutUtils {
    * @param aSizeInflation number to multiply font size by
    */
   static already_AddRefed<nsFontMetrics> GetFontMetricsForComputedStyle(
-      ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
+      const ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
       float aSizeInflation = 1.0f,
       uint8_t aVariantWidth = NS_FONT_VARIANT_WIDTH_NORMAL);
 
@@ -1643,11 +1674,11 @@ class nsLayoutUtils {
                                       DrawTarget* aDrawTarget) {
     return AppUnitWidthOfString(&aC, 1, aFontMetrics, aDrawTarget);
   }
-  static nscoord AppUnitWidthOfString(const nsString& aString,
+  static nscoord AppUnitWidthOfString(mozilla::Span<const char16_t> aString,
                                       nsFontMetrics& aFontMetrics,
                                       DrawTarget* aDrawTarget) {
-    return nsLayoutUtils::AppUnitWidthOfString(aString.get(), aString.Length(),
-                                               aFontMetrics, aDrawTarget);
+    return nsLayoutUtils::AppUnitWidthOfString(
+        aString.Elements(), aString.Length(), aFontMetrics, aDrawTarget);
   }
   static nscoord AppUnitWidthOfString(const char16_t* aString, uint32_t aLength,
                                       nsFontMetrics& aFontMetrics,
@@ -1909,7 +1940,7 @@ class nsLayoutUtils {
   static ImgDrawResult DrawSingleUnscaledImage(
       gfxContext& aContext, nsPresContext* aPresContext, imgIContainer* aImage,
       const SamplingFilter aSamplingFilter, const nsPoint& aDest,
-      const nsRect* aDirty, const mozilla::Maybe<SVGImageContext>& aSVGContext,
+      const nsRect* aDirty, const mozilla::SVGImageContext& aSVGContext,
       uint32_t aImageFlags, const nsRect* aSourceArea = nullptr);
 
   /**
@@ -1941,7 +1972,7 @@ class nsLayoutUtils {
   static ImgDrawResult DrawSingleImage(
       gfxContext& aContext, nsPresContext* aPresContext, imgIContainer* aImage,
       SamplingFilter aSamplingFilter, const nsRect& aDest, const nsRect& aDirty,
-      const mozilla::Maybe<SVGImageContext>& aSVGContext, uint32_t aImageFlags,
+      const mozilla::SVGImageContext& aSVGContext, uint32_t aImageFlags,
       const nsPoint* aAnchorPoint = nullptr,
       const nsRect* aSourceArea = nullptr);
 
@@ -1994,7 +2025,7 @@ class nsLayoutUtils {
       imgIContainer* aImage, nsIFrame* aForFrame,
       const LayoutDeviceRect& aDestRect, const LayoutDeviceRect& aFillRect,
       const StackingContextHelper& aSc, uint32_t aFlags,
-      mozilla::Maybe<SVGImageContext>& aSVGContext,
+      mozilla::SVGImageContext& aSVGContext,
       mozilla::Maybe<mozilla::image::ImageIntRegion>& aRegion);
 
   /**
@@ -2039,15 +2070,6 @@ class nsLayoutUtils {
    */
   static bool HasNonZeroCornerOnSide(const mozilla::BorderRadius& aCorners,
                                      mozilla::Side aSide);
-
-  /**
-   * Return the border radius size (width, height) based only on the top-left
-   * corner. This is a special case used for drawing the Windows 10 drop-shadow,
-   * and only supports a specified length (not percentages) on the top-left
-   * corner.
-   */
-  static LayoutDeviceIntSize GetBorderRadiusForMenuDropShadow(
-      const nsIFrame* aFrame);
 
   /**
    * Determine if a widget is likely to require transparency or translucency.
@@ -2096,15 +2118,14 @@ class nsLayoutUtils {
    * and prefs indicate we should be optimizing for speed over quality
    */
   static mozilla::gfx::ShapedTextFlags GetTextRunFlagsForStyle(
-      ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
-      const nsStyleFont* aStyleFont, const nsStyleText* aStyleText,
-      nscoord aLetterSpacing);
+      const ComputedStyle*, nsPresContext*, const nsStyleFont*,
+      const nsStyleText*, nscoord aLetterSpacing);
 
   /**
    * Get orientation flags for textrun construction.
    */
   static mozilla::gfx::ShapedTextFlags GetTextRunOrientFlagsForStyle(
-      ComputedStyle* aComputedStyle);
+      const ComputedStyle*);
 
   /**
    * Takes two rectangles whose origins must be the same, and computes
@@ -2197,20 +2218,42 @@ class nsLayoutUtils {
     RefPtr<DrawTarget> target = nullptr;
     return SurfaceFromOffscreenCanvas(aOffscreenCanvas, aSurfaceFlags, target);
   }
+  static mozilla::SurfaceFromElementResult SurfaceFromImageBitmap(
+      mozilla::dom::ImageBitmap* aImageBitmap, uint32_t aSurfaceFlags);
 
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
-      mozilla::dom::Element* aElement, uint32_t aSurfaceFlags,
+      mozilla::dom::Element* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
       mozilla::dom::Element* aElement, uint32_t aSurfaceFlags = 0) {
     RefPtr<DrawTarget> target = nullptr;
-    return SurfaceFromElement(aElement, aSurfaceFlags, target);
+    return SurfaceFromElement(aElement, mozilla::Nothing(), mozilla::Nothing(),
+                              aSurfaceFlags, target);
+  }
+  static mozilla::SurfaceFromElementResult SurfaceFromElement(
+      mozilla::dom::Element* aElement, uint32_t aSurfaceFlags,
+      RefPtr<DrawTarget>& aTarget) {
+    return SurfaceFromElement(aElement, mozilla::Nothing(), mozilla::Nothing(),
+                              aSurfaceFlags, aTarget);
+  }
+  static mozilla::SurfaceFromElementResult SurfaceFromElement(
+      mozilla::dom::Element* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight,
+      uint32_t aSurfaceFlags = 0) {
+    RefPtr<DrawTarget> target = nullptr;
+    return SurfaceFromElement(aElement, aResizeWidth, aResizeHeight,
+                              aSurfaceFlags, target);
   }
 
   // There are a bunch of callers of SurfaceFromElement.  Just mark it as
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
-      nsIImageLoadingContent* aElement, uint32_t aSurfaceFlags,
+      nsIImageLoadingContent* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
   // Need an HTMLImageElement overload, because otherwise the
   // nsIImageLoadingContent and mozilla::dom::Element overloads are ambiguous
@@ -2221,6 +2264,11 @@ class nsLayoutUtils {
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
       mozilla::dom::HTMLCanvasElement* aElement, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
+  static mozilla::SurfaceFromElementResult SurfaceFromElement(
+      mozilla::dom::HTMLCanvasElement* aElement, uint32_t aSurfaceFlags) {
+    RefPtr<DrawTarget> target = nullptr;
+    return SurfaceFromElement(aElement, aSurfaceFlags, target);
+  }
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
       mozilla::dom::HTMLVideoElement* aElement, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
@@ -2388,6 +2436,9 @@ class nsLayoutUtils {
 
   static bool DisplayRootHasRetainedDisplayListBuilder(nsIFrame* aFrame);
 
+  static RetainedDisplayListBuilder* GetRetainedDisplayListBuilder(
+      nsIFrame* aFrame);
+
   /**
    * Find a suitable scale for a element (aFrame's content) over the course of
    * any animations and transitions of the CSS transform property on the element
@@ -2398,9 +2449,9 @@ class nsLayoutUtils {
    * @param aVisibleSize is the size of the area we want to paint
    * @param aDisplaySize is the size of the display area of the pres context
    */
-  static Size ComputeSuitableScaleForAnimation(const nsIFrame* aFrame,
-                                               const nsSize& aVisibleSize,
-                                               const nsSize& aDisplaySize);
+  static MatrixScales ComputeSuitableScaleForAnimation(
+      const nsIFrame* aFrame, const nsSize& aVisibleSize,
+      const nsSize& aDisplaySize);
 
   /**
    * Checks whether we want to use the GPU to scale images when
@@ -2411,7 +2462,7 @@ class nsLayoutUtils {
   /**
    * Unions the overflow areas of the children of aFrame with aOverflowAreas.
    * aSkipChildLists specifies any child lists that should be skipped.
-   * kSelectPopupList and kPopupList are always skipped.
+   * kPopupList is always skipped.
    */
   static void UnionChildOverflow(
       nsIFrame* aFrame, mozilla::OverflowAreas& aOverflowAreas,
@@ -2569,11 +2620,6 @@ class nsLayoutUtils {
    */
   static void AssertTreeOnlyEmptyNextInFlows(nsIFrame* aSubtreeRoot);
 #endif
-
-  /**
-   * Helper method to get touch action behaviour from the frame
-   */
-  static mozilla::StyleTouchAction GetTouchActionFromFrame(nsIFrame* aFrame);
 
   /**
    * Helper method to transform |aBounds| from aFrame to aAncestorFrame,
@@ -2781,13 +2827,6 @@ class nsLayoutUtils {
   static nsMargin ScrollbarAreaToExcludeFromCompositionBoundsFor(
       const nsIFrame* aScrollFrame);
 
-  /**
-   * Looks in the layer subtree rooted at aLayer for a metrics with scroll id
-   * aScrollId. Returns true if such is found.
-   */
-  static bool ContainsMetricsWithId(const Layer* aLayer,
-                                    const ViewID& aScrollId);
-
   static bool ShouldUseNoScriptSheet(mozilla::dom::Document*);
   static bool ShouldUseNoFramesSheet(mozilla::dom::Document*);
 
@@ -2920,7 +2959,7 @@ class nsLayoutUtils {
 
   static void ComputeSystemFont(nsFont* aSystemFont,
                                 mozilla::StyleSystemFont aFontID,
-                                const nsFont* aDefaultVariableFont,
+                                const nsFont& aDefaultVariableFont,
                                 const mozilla::dom::Document* aDocument);
 
   static uint32_t ParseFontLanguageOverride(const nsAString& aLangTag);

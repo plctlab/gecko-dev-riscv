@@ -9,7 +9,9 @@
 
 var CC = Components.Constructor;
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const { NetUtil } = require("resource://gre/modules/NetUtil.jsm");
 
 const Services = require("Services");
@@ -47,7 +49,7 @@ function scriptErrorLogLevel(message) {
 // into the ether.
 var errorCount = 0;
 var listener = {
-  observe: function(message) {
+  observe(message) {
     errorCount++;
     let string = "";
     try {
@@ -99,6 +101,8 @@ function initTestDevToolsServer() {
   DevToolsServer.setRootActor(createRootActor);
   // Allow incoming connections.
   DevToolsServer.init();
+  // Avoid the server from being destroyed when the last connection closes
+  DevToolsServer.keepAlive = true;
 }
 
 /**

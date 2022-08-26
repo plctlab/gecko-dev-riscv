@@ -140,6 +140,9 @@ class AppWindow final : public nsIBaseWindow,
   void IgnoreXULSizeMode(bool aEnable) { mIgnoreXULSizeMode = aEnable; }
   void WasRegistered() { mRegistered = true; }
 
+  using nsIBaseWindow::GetPositionAndSize;
+  using nsIBaseWindow::GetSize;
+
   // AppWindow methods...
   nsresult Initialize(nsIAppWindow* aParent, nsIAppWindow* aOpener,
                       int32_t aInitialWidth, int32_t aInitialHeight,
@@ -167,6 +170,7 @@ class AppWindow final : public nsIBaseWindow,
   MOZ_CAN_RUN_SCRIPT void MacFullscreenMenubarOverlapChanged(
       mozilla::DesktopCoord aOverlapAmount);
   MOZ_CAN_RUN_SCRIPT void OcclusionStateChanged(bool aIsFullyOccluded);
+  void RecomputeBrowsingContextVisibility();
   MOZ_CAN_RUN_SCRIPT void OSToolbarButtonPressed();
   MOZ_CAN_RUN_SCRIPT
   bool ZLevelChanged(bool aImmediate, nsWindowZ* aPlacement,
@@ -187,7 +191,7 @@ class AppWindow final : public nsIBaseWindow,
 
   friend class mozilla::AppWindowTimerCallback;
 
-  bool ExecuteCloseHandler();
+  MOZ_CAN_RUN_SCRIPT bool ExecuteCloseHandler();
   void ConstrainToOpenerScreen(int32_t* aX, int32_t* aY);
 
   void SetPersistenceTimer(uint32_t aDirtyFlags);
@@ -339,11 +343,13 @@ class AppWindow final : public nsIBaseWindow,
   uint32_t mChromeFlags;
   nsCOMPtr<nsIOpenWindowInfo> mInitialOpenWindowInfo;
   nsString mTitle;
-  nsIntRect mOpenerScreenRect;  // the screen rect of the opener
+
+  // The screen rect of the opener.
+  mozilla::DesktopIntRect mOpenerScreenRect;
 
   nsCOMPtr<nsIRemoteTab> mPrimaryBrowserParent;
 
-  nsCOMPtr<nsITimer> mSPTimer;
+  nsCOMPtr<nsITimer> mSPTimer MOZ_GUARDED_BY(mSPTimerLock);
   mozilla::Mutex mSPTimerLock;
   WidgetListenerDelegate mWidgetListenerDelegate;
 

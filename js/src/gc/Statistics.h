@@ -19,6 +19,7 @@
 
 #include "gc/GCEnum.h"
 #include "js/AllocPolicy.h"
+#include "js/friend/UsageStatistics.h"
 #include "js/GCAPI.h"
 #include "js/SliceBudget.h"
 #include "js/UniquePtr.h"
@@ -76,9 +77,6 @@ struct ZoneGCStats {
   /* Number of zones collected in this GC. */
   int collectedZoneCount = 0;
 
-  /* Number of zones that could have been collected in this GC. */
-  int collectableZoneCount = 0;
-
   /* Total number of zones in the Runtime at the start of this GC. */
   int zoneCount = 0;
 
@@ -93,10 +91,6 @@ struct ZoneGCStats {
 
   /* Total number of compartments swept by this GC. */
   int sweptCompartmentCount = 0;
-
-  bool isFullCollection() const {
-    return collectedZoneCount == collectableZoneCount;
-  }
 
   ZoneGCStats() = default;
 };
@@ -149,6 +143,8 @@ struct Statistics {
   using PhaseKindTimes =
       EnumeratedArray<PhaseKind, PhaseKind::LIMIT, TimeDuration>;
 
+  using PhaseTimeStamps = EnumeratedArray<Phase, Phase::LIMIT, TimeStamp>;
+
   [[nodiscard]] static bool initialize();
 
   explicit Statistics(gc::GCRuntime* gc);
@@ -196,7 +192,6 @@ struct Statistics {
   }
 
   void measureInitialHeapSize();
-  void adoptHeapSizeDuringIncrementalGC(Zone* mergedZone);
 
   void nonincremental(GCAbortReason reason) {
     MOZ_ASSERT(reason != GCAbortReason::None);
@@ -277,6 +272,7 @@ struct Statistics {
     size_t startFaults = 0;
     size_t endFaults = 0;
     PhaseTimes phaseTimes;
+    PhaseKindTimes totalParallelTimes;
     PhaseKindTimes maxParallelTimes;
 
     TimeDuration duration() const { return end - start; }
@@ -287,11 +283,26 @@ struct Statistics {
 
   const SliceDataVector& slices() const { return slices_; }
 
+  const SliceData* lastSlice() const {
+    if (slices_.length() == 0) {
+      return nullptr;
+    }
+
+    return &slices_.back();
+  }
+
   TimeStamp start() const { return slices_[0].start; }
 
   TimeStamp end() const { return slices_.back().end; }
 
   TimeStamp creationTime() const { return creationTime_; }
+
+  TimeDuration totalGCTime() const { return totalGCTime_; }
+  size_t initialCollectedBytes() const { return preCollectedHeapBytes; }
+
+  // File to write profiling information to, either stderr or file specified
+  // with JS_GC_PROFILE_FILE.
+  FILE* profileFile() const { return gcProfileFile; }
 
   // Occasionally print header lines for profiling information.
   void maybePrintProfileHeaders();
@@ -330,6 +341,9 @@ struct Statistics {
   /* File used for JS_GC_DEBUG output. */
   FILE* gcDebugFile;
 
+  /* File used for JS_GC_PROFILE output. */
+  FILE* gcProfileFile;
+
   ZoneGCStats zoneStats;
 
   JS::GCOptions gcOptions;
@@ -339,11 +353,11 @@ struct Statistics {
   SliceDataVector slices_;
 
   /* Most recent time when the given phase started. */
-  EnumeratedArray<Phase, Phase::LIMIT, TimeStamp> phaseStartTimes;
+  PhaseTimeStamps phaseStartTimes;
 
 #ifdef DEBUG
   /* Most recent time when the given phase ended. */
-  EnumeratedArray<Phase, Phase::LIMIT, TimeStamp> phaseEndTimes;
+  PhaseTimeStamps phaseEndTimes;
 #endif
 
   TimeStamp creationTime_;
@@ -352,8 +366,11 @@ struct Statistics {
   TimeStamp timedGCStart;
   TimeDuration timedGCTime;
 
-  /* Total time in a given phase for this GC. */
+  /* Total main thread time in a given phase for this GC. */
   PhaseTimes phaseTimes;
+
+  /* Total main thread time for this GC. */
+  TimeDuration totalGCTime_;
 
   /* Number of events of this type for this GC. */
   EnumeratedArray<Count, COUNT_LIMIT,
@@ -424,6 +441,7 @@ struct Statistics {
 
   enum class ProfileKey {
     Total,
+    Background,
 #define DEFINE_TIME_KEY(name, text, phase) name,
     FOR_EACH_GC_PROFILE_TIME(DEFINE_TIME_KEY)
 #undef DEFINE_TIME_KEY
@@ -457,7 +475,8 @@ struct Statistics {
   void sccDurations(TimeDuration* total, TimeDuration* maxPause) const;
   void printStats();
 
-  void reportLongestPhaseInMajorGC(PhaseKind longest, int telemetryId);
+  template <typename Fn>
+  void reportLongestPhaseInMajorGC(PhaseKind longest, Fn reportFn);
 
   UniqueChars formatCompactSlicePhaseTimes(const PhaseTimes& phaseTimes) const;
 
@@ -476,7 +495,7 @@ struct Statistics {
   double computeMMU(TimeDuration resolution) const;
 
   void printSliceProfile();
-  static void printProfileTimes(const ProfileDurations& times);
+  void printProfileTimes(const ProfileDurations& times);
 };
 
 struct MOZ_RAII AutoGCSlice {

@@ -8,8 +8,10 @@ from __future__ import absolute_import, print_function, unicode_literals
 import fnmatch
 import multiprocessing
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import yaml
 import uuid
@@ -90,6 +92,9 @@ BASE_LINK = "http://gecko-docs.mozilla.org-l1.s3-website.us-west-2.amazonaws.com
     help="Distribute the build over N processes in parallel.",
 )
 @CommandArgument("--write-url", default=None, help="Write S3 Upload URL to text file")
+@CommandArgument(
+    "--linkcheck", action="store_true", help="Check if the links are still valid"
+)
 @CommandArgument("--verbose", action="store_true", help="Run Sphinx in verbose mode")
 def build_docs(
     command_context,
@@ -103,11 +108,10 @@ def build_docs(
     upload=False,
     jobs=None,
     write_url=None,
+    linkcheck=None,
     verbose=None,
 ):
-
     # TODO: Bug 1704891 - move the ESLint setup tools to a shared place.
-    sys.path.append(mozpath.join(command_context.topsrcdir, "tools", "lint", "eslint"))
     import setup_helper
 
     setup_helper.set_project_root(command_context.topsrcdir)
@@ -126,8 +130,6 @@ def build_docs(
         + os.pathsep
         + os.environ["PATH"]
     )
-
-    command_context.activate_virtualenv()
     command_context.virtualenv_manager.install_pip_requirements(
         os.path.join(here, "requirements.txt")
     )
@@ -152,15 +154,26 @@ def build_docs(
             "%s: could not find docs at this location" % path
         )
 
-    result = _run_sphinx(docdir, savedir, fmt=fmt, jobs=jobs, verbose=verbose)
-    if result != 0:
+    if linkcheck:
+        # We want to verify if the links are valid or not
+        fmt = "linkcheck"
+
+    status, warnings = _run_sphinx(docdir, savedir, fmt=fmt, jobs=jobs, verbose=verbose)
+    if status != 0:
         print(_dump_sphinx_backtrace())
         return die(
             "failed to generate documentation:\n"
-            "%s: sphinx return code %d" % (path, result)
+            "%s: sphinx return code %d" % (path, status)
         )
     else:
         print("\nGenerated documentation:\n%s" % savedir)
+
+    fatal_warnings = _check_sphinx_warnings(warnings)
+    if fatal_warnings:
+        return die(
+            "failed to generate documentation:\n "
+            f"Got fatal warnings:\n{''.join(fatal_warnings)}"
+        )
 
     # Upload the artifact containing the link to S3
     # This would be used by code-review to post the link to Phabricator
@@ -243,22 +256,46 @@ def _run_sphinx(docdir, savedir, config=None, fmt="html", jobs=None, verbose=Non
     # and makes the build generation very very very slow
     # So, disable it to generate the doc faster
     sentry_sdk.init(None)
-    args = [
-        "-T",
-        "-b",
-        fmt,
-        "-c",
-        os.path.dirname(config),
-        docdir,
-        savedir,
-    ]
-    if jobs:
-        args.extend(["-j", jobs])
-    if verbose:
-        args.extend(["-v", "-v"])
-    print("Run sphinx with:")
-    print(args)
-    return sphinx.cmd.build.build_main(args)
+    warn_fd, warn_path = tempfile.mkstemp()
+    os.close(warn_fd)
+    try:
+        args = [
+            "-T",
+            "-b",
+            fmt,
+            "-c",
+            os.path.dirname(config),
+            "-w",
+            warn_path,
+            docdir,
+            savedir,
+        ]
+        if jobs:
+            args.extend(["-j", jobs])
+        if verbose:
+            args.extend(["-v", "-v"])
+        print("Run sphinx with:")
+        print(args)
+        status = sphinx.cmd.build.build_main(args)
+        with open(warn_path) as warn_file:
+            warnings = warn_file.readlines()
+        return status, warnings
+    finally:
+        try:
+            os.unlink(warn_path)
+        except Exception as ex:
+            print(ex)
+
+
+def _check_sphinx_warnings(warnings):
+    with open(os.path.join(DOC_ROOT, "config.yml"), "r") as fh:
+        fatal_warnings_src = yaml.safe_load(fh)["fatal warnings"]
+    fatal_warnings_regex = [re.compile(item) for item in fatal_warnings_src]
+    fatal_warnings = []
+    for warning in warnings:
+        if any(item.search(warning) for item in fatal_warnings_regex):
+            fatal_warnings.append(warning)
+    return fatal_warnings
 
 
 def manager():
@@ -400,6 +437,36 @@ def generate_telemetry_docs(command_context):
         [os.path.join(command_context.topsrcdir, path) for path in set(metrics_paths)]
     )
     subprocess.check_call(args)
+
+
+@SubCommand(
+    "doc",
+    "show-targets",
+    description="List all reference targets. Requires the docs to have been built.",
+)
+@CommandArgument(
+    "--format", default="html", dest="fmt", help="Documentation format used."
+)
+@CommandArgument(
+    "--outdir", default=None, metavar="DESTINATION", help="Where output was written."
+)
+def show_reference_targets(command_context, fmt="html", outdir=None):
+    command_context.activate_virtualenv()
+    command_context.virtualenv_manager.install_pip_requirements(
+        os.path.join(here, "requirements.txt")
+    )
+
+    import sphinx.ext.intersphinx
+
+    outdir = outdir or os.path.join(command_context.topobjdir, "docs")
+    inv_path = os.path.join(outdir, fmt, "objects.inv")
+
+    if not os.path.exists(inv_path):
+        return die(
+            "object inventory not found: {inv_path}.\n"
+            "Rebuild the docs and rerun this command"
+        )
+    sphinx.ext.intersphinx.inspect_main([inv_path])
 
 
 def die(msg, exit_code=1):

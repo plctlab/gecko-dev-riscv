@@ -4,26 +4,21 @@
 
 "use strict";
 
-/* exported ProductAddonChecker */
+var EXPORTED_SYMBOLS = ["ProductAddonChecker", "ProductAddonCheckerTestUtils"];
 
-var EXPORTED_SYMBOLS = ["ProductAddonChecker"];
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { CertUtils } = ChromeUtils.import(
   "resource://gre/modules/CertUtils.jsm"
 );
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["XMLHttpRequest"]);
+const lazy = {};
 
-// This exists so that tests can override the XHR behaviour for downloading
-// the addon update XML file.
-var CreateXHR = function() {
-  return new XMLHttpRequest();
-};
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  ServiceRequest: "resource://gre/modules/ServiceRequest.jsm",
+});
 
 // This will inherit settings from the "addons" logger.
 var logger = Log.repository.getLogger("addons.productaddons");
@@ -32,16 +27,15 @@ var logger = Log.repository.getLogger("addons.productaddons");
 logger.manageLevelFromPref("extensions.logging.productaddons.level");
 
 /**
- * Number of milliseconds after which we need to cancel `downloadXML`.
+ * Number of milliseconds after which we need to cancel `downloadXMLWithRequest`
+ * and `conservativeFetch`.
  *
- * Bug 1087674 suggests that the XHR we use in `downloadXML` may
- * never terminate in presence of network nuisances (e.g. strange
- * antivirus behavior). This timeout is a defensive measure to ensure
- * that we fail cleanly in such case.
+ * Bug 1087674 suggests that the XHR/ServiceRequest we use in
+ * `downloadXMLWithRequest` may never terminate in presence of network nuisances
+ * (e.g. strange antivirus behavior). This timeout is a defensive measure to
+ * ensure that we fail cleanly in such case.
  */
 const TIMEOUT_DELAY_MS = 20000;
-// How much of a file to read into memory at a time for hashing
-const HASH_CHUNK_SIZE = 8192;
 
 /**
  * Gets the status of an XMLHttpRequest either directly or from its underlying
@@ -65,6 +59,165 @@ function getRequestStatus(request) {
 }
 
 /**
+ * A wrapper around `ServiceRequest` that behaves like a limited `fetch()`.
+ * This doesn't handle headers like fetch, but can be expanded as callers need.
+ *
+ * Use this in order to leverage the `beConservative` flag, for
+ * example to avoid using HTTP3 to fetch critical data.
+ *
+ * @param input a resource
+ * @returns a Response object
+ */
+async function conservativeFetch(input) {
+  return new Promise(function(resolve, reject) {
+    const request = new lazy.ServiceRequest({ mozAnon: true });
+    request.timeout = TIMEOUT_DELAY_MS;
+
+    request.onerror = () => {
+      let err = new TypeError("NetworkError: Network request failed");
+      err.addonCheckerErr = ProductAddonChecker.NETWORK_REQUEST_ERR;
+      reject(err);
+    };
+    request.ontimeout = () => {
+      let err = new TypeError("Timeout: Network request failed");
+      err.addonCheckerErr = ProductAddonChecker.NETWORK_TIMEOUT_ERR;
+      reject(err);
+    };
+    request.onabort = () => {
+      let err = new DOMException("Aborted", "AbortError");
+      err.addonCheckerErr = ProductAddonChecker.ABORT_ERR;
+      reject(err);
+    };
+    request.onload = () => {
+      const responseAttributes = {
+        status: request.status,
+        statusText: request.statusText,
+        url: request.responseURL,
+      };
+      resolve(new Response(request.response, responseAttributes));
+    };
+
+    const method = "GET";
+
+    request.open(method, input, true);
+
+    request.send();
+  });
+}
+
+/**
+ * Verifies the content signature on GMP's update.xml. When we fetch update.xml
+ * balrog should send back content signature headers, which this function
+ * is used to verify.
+ *
+ * @param  data
+ *         The data received from balrog. I.e. the xml contents of update.xml.
+ * @param  contentSignatureHeader
+ *         The contents of the 'content-signature' header received along with
+ *         `data`.
+ * @return A promise that will resolve to nothing if the signature verification
+ *         succeeds, or rejects on failure, with an Error that sets its
+ *         addonCheckerErr property disambiguate failure cases and a message
+ *         explaining the error.
+ */
+async function verifyGmpContentSignature(data, contentSignatureHeader) {
+  if (!contentSignatureHeader) {
+    logger.warn(
+      "Unexpected missing content signature header during content signature validation"
+    );
+    let err = new Error(
+      "Content signature validation failed: missing content signature header"
+    );
+    err.addonCheckerErr = ProductAddonChecker.VERIFICATION_MISSING_DATA_ERR;
+    throw err;
+  }
+  // Split out the header. It should contain a the following fields, separated by a semicolon
+  // - x5u - a URI to the cert chain. See also https://datatracker.ietf.org/doc/html/rfc7515#section-4.1.5
+  // - p384ecdsa - the signature to verify. See also https://github.com/mozilla-services/autograph/blob/main/signer/contentsignaturepki/README.md
+  const headerFields = contentSignatureHeader
+    .split(";") // Split fields...
+    .map(s => s.trim()) // Remove whitespace...
+    .map(s => [
+      // Break each field into it's name and value. This more verbose version is
+      // used instead of `split()` to handle values that contain = characters. This
+      // shouldn't happen for the signature because it's base64_url (no = padding),
+      // but it's not clear if it's possible for the x5u URL (as part of a query).
+      // Guard anyway, better safe than sorry.
+      s.substring(0, s.indexOf("=")), // Get field name...
+      s.substring(s.indexOf("=") + 1), // and field value.
+    ]);
+
+  let x5u;
+  let signature;
+  for (const [fieldName, fieldValue] of headerFields) {
+    if (fieldName == "x5u") {
+      x5u = fieldValue;
+    } else if (fieldName == "p384ecdsa") {
+      // The signature needs to contain 'p384ecdsa', so stich it back together.
+      signature = `p384ecdsa=${fieldValue}`;
+    }
+  }
+
+  if (!x5u) {
+    logger.warn("Unexpected missing x5u during content signature validation");
+    let err = Error("Content signature validation failed: missing x5u");
+    err.addonCheckerErr = ProductAddonChecker.VERIFICATION_MISSING_DATA_ERR;
+    throw err;
+  }
+
+  if (!signature) {
+    logger.warn(
+      "Unexpected missing signature during content signature validation"
+    );
+    let err = Error("Content signature validation failed: missing signature");
+    err.addonCheckerErr = ProductAddonChecker.VERIFICATION_MISSING_DATA_ERR;
+    throw err;
+  }
+
+  // The x5u field should contain the location of the cert chain, fetch it.
+  // Use `conservativeFetch` so we get conservative behaviour and ensure (more)
+  // reliable fetching.
+  const certChain = await (await conservativeFetch(x5u)).text();
+
+  const verifier = Cc[
+    "@mozilla.org/security/contentsignatureverifier;1"
+  ].createInstance(Ci.nsIContentSignatureVerifier);
+
+  // See bug 1771992. In the future, this may need to handle staging and dev
+  // environments in addition to just production and testing.
+  let root = Ci.nsIContentSignatureVerifier.ContentSignatureProdRoot;
+  let env = Cc["@mozilla.org/process/environment;1"].getService(
+    Ci.nsIEnvironment
+  );
+  if (env.exists("XPCSHELL_TEST_PROFILE_DIR")) {
+    root = Ci.nsIX509CertDB.AppXPCShellRoot;
+  }
+
+  let valid;
+  try {
+    valid = await verifier.asyncVerifyContentSignature(
+      data,
+      signature,
+      certChain,
+      "aus.content-signature.mozilla.org",
+      root
+    );
+  } catch (err) {
+    logger.warn(`Unexpected error while validating content signature: ${err}`);
+    let newErr = new Error(`Content signature validation failed: ${err}`);
+    newErr.addonCheckerErr = ProductAddonChecker.VERIFICATION_FAILED_ERR;
+    throw newErr;
+  }
+
+  if (!valid) {
+    logger.warn("Unexpected invalid content signature found during validation");
+    let err = new Error("Content signature is not valid");
+    err.addonCheckerErr = ProductAddonChecker.VERIFICATION_INVALID_ERR;
+    throw err;
+  }
+}
+
+/**
  * Downloads an XML document from a URL optionally testing the SSL certificate
  * for certain attributes.
  *
@@ -75,13 +228,17 @@ function getRequestStatus(request) {
  * @param  allowedCerts
  *         The list of certificate attributes to match the SSL certificate
  *         against or null to skip checks.
- * @return a promise that resolves to the DOM document downloaded or rejects
- *         with a JS exception in case of error.
+ * @return a promise that resolves to the ServiceRequest request on success or
+ *         rejects with a JS exception in case of error.
  */
-function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
+function downloadXMLWithRequest(
+  url,
+  allowNonBuiltIn = false,
+  allowedCerts = null
+) {
   return new Promise((resolve, reject) => {
-    let request = CreateXHR();
-    // This is here to let unit test code override XHR
+    let request = new lazy.ServiceRequest();
+    // This is here to let unit test code override the ServiceRequest.
     if (request.wrappedJSObject) {
       request = request.wrappedJSObject;
     }
@@ -95,13 +252,6 @@ function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
     request.channel.loadFlags |= Ci.nsIRequest.INHIBIT_CACHING;
     // Don't send any cookies
     request.channel.loadFlags |= Ci.nsIRequest.LOAD_ANONYMOUS;
-    // Use conservative TLS settings. See bug 1325501.
-    // TODO move to ServiceRequest.
-    if (request.channel instanceof Ci.nsIHttpChannelInternal) {
-      request.channel.QueryInterface(
-        Ci.nsIHttpChannelInternal
-      ).beConservative = true;
-    }
     request.timeout = TIMEOUT_DELAY_MS;
 
     request.overrideMimeType("text/xml");
@@ -121,6 +271,13 @@ function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
       logger.warn(message);
       let ex = new Error(message);
       ex.status = status;
+      if (event.type == "error") {
+        ex.addonCheckerErr = ProductAddonChecker.NETWORK_REQUEST_ERR;
+      } else if (event.type == "abort") {
+        ex.addonCheckerErr = ProductAddonChecker.ABORT_ERR;
+      } else if (event.type == "timeout") {
+        ex.addonCheckerErr = ProductAddonChecker.NETWORK_TIMEOUT_ERR;
+      }
       reject(ex);
     };
 
@@ -133,11 +290,12 @@ function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
       } catch (ex) {
         logger.error("Request failed certificate checks: " + ex);
         ex.status = getRequestStatus(request);
+        ex.addonCheckerErr = ProductAddonChecker.VERIFICATION_FAILED_ERR;
         reject(ex);
         return;
       }
 
-      resolve(request.responseXML);
+      resolve(request);
     };
 
     request.addEventListener("error", fail);
@@ -148,6 +306,43 @@ function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
     logger.info("sending request to: " + url);
     request.send(null);
   });
+}
+
+/**
+ * Downloads an XML document from a URL optionally testing the SSL certificate
+ * for certain attributes, and/or testing the content signature.
+ *
+ * @param  url
+ *         The url to download from.
+ * @param  allowNonBuiltIn
+ *         Whether to trust SSL certificates without a built-in CA issuer.
+ * @param  allowedCerts
+ *         The list of certificate attributes to match the SSL certificate
+ *         against or null to skip checks.
+ * @param  verifyContentSignature
+ *         When true, will verify the content signature information from the
+ *         response header. Failure to verify will result in an error.
+ * @return a promise that resolves to the DOM document downloaded or rejects
+ *         with a JS exception in case of error.
+ */
+async function downloadXML(
+  url,
+  allowNonBuiltIn = false,
+  allowedCerts = null,
+  verifyContentSignature = false
+) {
+  let request = await downloadXMLWithRequest(
+    url,
+    allowNonBuiltIn,
+    allowedCerts
+  );
+  if (verifyContentSignature) {
+    await verifyGmpContentSignature(
+      request.response,
+      request.getResponseHeader("content-signature")
+    );
+  }
+  return request.responseXML;
 }
 
 /**
@@ -162,11 +357,13 @@ function downloadXML(url, allowNonBuiltIn = false, allowedCerts = null) {
 function parseXML(document) {
   // Check that the root element is correct
   if (document.documentElement.localName != "updates") {
-    throw new Error(
+    let err = new Error(
       "got node name: " +
         document.documentElement.localName +
         ", expected: updates"
     );
+    err.addonCheckerErr = ProductAddonChecker.XML_PARSE_ERR;
+    throw err;
   }
 
   // Check if there are any addons elements in the updates element
@@ -204,7 +401,7 @@ function parseXML(document) {
 }
 
 /**
- * Downloads file from a URL using XHR.
+ * Downloads file from a URL using ServiceRequest.
  *
  * @param  url
  *         The url to download from.
@@ -216,22 +413,22 @@ function parseXML(document) {
  */
 function downloadFile(url, options = { httpsOnlyNoUpgrade: false }) {
   return new Promise((resolve, reject) => {
-    let xhr = new XMLHttpRequest();
+    let sr = new lazy.ServiceRequest();
 
-    xhr.onload = function(response) {
-      logger.info("downloadXHR File download. status=" + xhr.status);
-      if (xhr.status != 200 && xhr.status != 206) {
-        reject(Components.Exception("File download failed", xhr.status));
+    sr.onload = function(response) {
+      logger.info("downloadFile File download. status=" + sr.status);
+      if (sr.status != 200 && sr.status != 206) {
+        reject(Components.Exception("File download failed", sr.status));
         return;
       }
       (async function() {
-        let f = await OS.File.openUnique(
-          OS.Path.join(OS.Constants.Path.tmpDir, "tmpaddon")
+        const path = await IOUtils.createUniqueFile(
+          PathUtils.osTempDir,
+          "tmpaddon"
         );
-        let path = f.path;
         logger.info(`Downloaded file will be saved to ${path}`);
-        await f.file.close();
-        await OS.File.writeAtomic(path, new Uint8Array(xhr.response));
+        await IOUtils.write(path, new Uint8Array(sr.response));
+
         return path;
       })().then(resolve, reject);
     };
@@ -240,7 +437,7 @@ function downloadFile(url, options = { httpsOnlyNoUpgrade: false }) {
       let request = event.target;
       let status = getRequestStatus(request);
       let message =
-        "Failed downloading via XHR, status: " +
+        "Failed downloading via ServiceRequest, status: " +
         status +
         ", reason: " +
         event.type;
@@ -249,76 +446,23 @@ function downloadFile(url, options = { httpsOnlyNoUpgrade: false }) {
       ex.status = status;
       reject(ex);
     };
-    xhr.addEventListener("error", fail);
-    xhr.addEventListener("abort", fail);
+    sr.addEventListener("error", fail);
+    sr.addEventListener("abort", fail);
 
-    xhr.responseType = "arraybuffer";
+    sr.responseType = "arraybuffer";
     try {
-      xhr.open("GET", url);
+      sr.open("GET", url);
       if (options.httpsOnlyNoUpgrade) {
-        xhr.channel.loadInfo.httpsOnlyStatus |=
-          Ci.nsILoadInfo.HTTPS_ONLY_EXEMPT;
+        sr.channel.loadInfo.httpsOnlyStatus |= Ci.nsILoadInfo.HTTPS_ONLY_EXEMPT;
       }
       // Allow deprecated HTTP request from SystemPrincipal
-      xhr.channel.loadInfo.allowDeprecatedSystemRequests = true;
-      // Use conservative TLS settings. See bug 1325501.
-      // TODO move to ServiceRequest.
-      if (xhr.channel instanceof Ci.nsIHttpChannelInternal) {
-        xhr.channel.QueryInterface(
-          Ci.nsIHttpChannelInternal
-        ).beConservative = true;
-      }
-      xhr.send(null);
+      sr.channel.loadInfo.allowDeprecatedSystemRequests = true;
+      sr.send(null);
     } catch (ex) {
       reject(ex);
     }
   });
 }
-
-/**
- * Convert a string containing binary values to hex.
- */
-function binaryToHex(input) {
-  let result = "";
-  for (let i = 0; i < input.length; ++i) {
-    let hex = input.charCodeAt(i).toString(16);
-    if (hex.length == 1) {
-      hex = "0" + hex;
-    }
-    result += hex;
-  }
-  return result;
-}
-
-/**
- * Calculates the hash of a file.
- *
- * @param  hashFunction
- *         The type of hash function to use, must be supported by nsICryptoHash.
- * @param  path
- *         The path of the file to hash.
- * @return a promise that resolves to hash of the file or rejects with a JS
- *         exception in case of error.
- */
-var computeHash = async function(hashFunction, path) {
-  let file = await OS.File.open(path, { existing: true, read: true });
-  try {
-    let hasher = Cc["@mozilla.org/security/hash;1"].createInstance(
-      Ci.nsICryptoHash
-    );
-    hasher.initWithString(hashFunction);
-
-    let bytes;
-    do {
-      bytes = await file.read(HASH_CHUNK_SIZE);
-      hasher.update(bytes, bytes.length);
-    } while (bytes.length == HASH_CHUNK_SIZE);
-
-    return binaryToHex(hasher.finish(false));
-  } finally {
-    await file.close();
-  }
-};
 
 /**
  * Verifies that a downloaded file matches what was expected.
@@ -333,7 +477,7 @@ var computeHash = async function(hashFunction, path) {
  */
 var verifyFile = async function(properties, path) {
   if (properties.size !== undefined) {
-    let stat = await OS.File.stat(path);
+    let stat = await IOUtils.stat(path);
     if (stat.size != properties.size) {
       throw new Error(
         "Downloaded file was " +
@@ -347,7 +491,7 @@ var verifyFile = async function(properties, path) {
 
   if (properties.hashFunction !== undefined) {
     let expectedDigest = properties.hashValue.toLowerCase();
-    let digest = await computeHash(properties.hashFunction, path);
+    let digest = await IOUtils.computeHexDigest(path, properties.hashFunction);
     if (digest != expectedDigest) {
       throw new Error(
         "Hash was `" + digest + "` but expected `" + expectedDigest + "`."
@@ -357,9 +501,18 @@ var verifyFile = async function(properties, path) {
 };
 
 const ProductAddonChecker = {
+  // More specific error names to help debug and report failures.
+  NETWORK_REQUEST_ERR: "NetworkRequestError",
+  NETWORK_TIMEOUT_ERR: "NetworkTimeoutError",
+  ABORT_ERR: "AbortError", // Doesn't have network prefix to work with existing convention.
+  VERIFICATION_MISSING_DATA_ERR: "VerificationMissingDataError",
+  VERIFICATION_FAILED_ERR: "VerificationFailedError",
+  VERIFICATION_INVALID_ERR: "VerificationInvalidError",
+  XML_PARSE_ERR: "XMLParseError",
+
   /**
    * Downloads a list of add-ons from a URL optionally testing the SSL
-   * certificate for certain attributes.
+   * certificate for certain attributes, and/or testing the content signature.
    *
    * @param  url
    *         The url to download from.
@@ -368,12 +521,27 @@ const ProductAddonChecker = {
    * @param  allowedCerts
    *         The list of certificate attributes to match the SSL certificate
    *         against or null to skip checks.
+   * @param  verifyContentSignature
+   *         When true, will verify the content signature information from the
+   *         response header. Failure to verify will result in an error.
    * @return a promise that resolves to an object containing the list of add-ons
    *         and whether the local fallback was used, or rejects with a JS
-   *         exception in case of error.
+   *         exception in case of error. In the case of an error, a best effort
+   *         is made to set the error addonCheckerErr property to one of the
+   *         more specific names used by the product addon checker.
    */
-  getProductAddonList(url, allowNonBuiltIn = false, allowedCerts = null) {
-    return downloadXML(url, allowNonBuiltIn, allowedCerts).then(parseXML);
+  getProductAddonList(
+    url,
+    allowNonBuiltIn = false,
+    allowedCerts = null,
+    verifyContentSignature = false
+  ) {
+    return downloadXML(
+      url,
+      allowNonBuiltIn,
+      allowedCerts,
+      verifyContentSignature
+    ).then(parseXML);
   },
 
   /**
@@ -394,8 +562,29 @@ const ProductAddonChecker = {
       await verifyFile(addon, path);
       return path;
     } catch (e) {
-      await OS.File.remove(path);
+      await IOUtils.remove(path);
       throw e;
+    }
+  },
+};
+
+// For test use only.
+const ProductAddonCheckerTestUtils = {
+  /**
+   * Used to override ServiceRequest calls with a mock request.
+   * @param mockRequest The mocked ServiceRequest object.
+   * @param callback Method called with the overridden ServiceRequest. The override
+   *        is undone after the callback returns.
+   */
+  async overrideServiceRequest(mockRequest, callback) {
+    let originalServiceRequest = lazy.ServiceRequest;
+    lazy.ServiceRequest = function() {
+      return mockRequest;
+    };
+    try {
+      return await callback();
+    } finally {
+      lazy.ServiceRequest = originalServiceRequest;
     }
   },
 };

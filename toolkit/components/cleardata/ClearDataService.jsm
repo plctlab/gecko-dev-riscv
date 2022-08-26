@@ -4,29 +4,32 @@
 
 "use strict";
 
-const { ComponentUtils } = ChromeUtils.import(
-  "resource://gre/modules/ComponentUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Downloads: "resource://gre/modules/Downloads.jsm",
   ServiceWorkerCleanUp: "resource://gre/modules/ServiceWorkerCleanUp.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "sas",
   "@mozilla.org/storage/activity-service;1",
   "nsIStorageActivityService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "TrackingDBService",
   "@mozilla.org/tracking-db-service;1",
   "nsITrackingDBService"
@@ -330,7 +333,7 @@ const DownloadsCleaner = {
   async _deleteInternal({ hostOrBaseDomain, principal, originAttributes }) {
     originAttributes = originAttributes || principal?.originAttributes || {};
 
-    let list = await Downloads.getList(Downloads.ALL);
+    let list = await lazy.Downloads.getList(lazy.Downloads.ALL);
     list.removeFinished(({ source }) => {
       if (
         "userContextId" in originAttributes &&
@@ -378,7 +381,7 @@ const DownloadsCleaner = {
     let rangeBeginMs = aFrom / 1000;
     let rangeEndMs = aTo / 1000;
 
-    return Downloads.getList(Downloads.ALL).then(aList => {
+    return lazy.Downloads.getList(lazy.Downloads.ALL).then(aList => {
       aList.removeFinished(
         aDownload =>
           aDownload.startTime >= rangeBeginMs &&
@@ -388,7 +391,7 @@ const DownloadsCleaner = {
   },
 
   deleteAll() {
-    return Downloads.getList(Downloads.ALL).then(aList => {
+    return lazy.Downloads.getList(lazy.Downloads.ALL).then(aList => {
       aList.removeFinished(null);
     });
   },
@@ -538,14 +541,10 @@ const QuotaCleaner = {
     );
 
     // Clear sessionStorage
-    Services.obs.notifyObservers(
-      null,
-      "browser:purge-sessionStorage",
-      aPrincipal.host
-    );
+    Services.sessionStorage.clearStoragesForOrigin(aPrincipal);
 
     // ServiceWorkers: they must be removed before cleaning QuotaManager.
-    return ServiceWorkerCleanUp.removeFromPrincipal(aPrincipal)
+    return lazy.ServiceWorkerCleanUp.removeFromPrincipal(aPrincipal)
       .then(
         _ => /* exceptionThrown = */ false,
         _ => /* exceptionThrown = */ true
@@ -600,7 +599,7 @@ const QuotaCleaner = {
     // completed.
     let swCleanupError;
     try {
-      await ServiceWorkerCleanUp.removeFromBaseDomain(aBaseDomain);
+      await lazy.ServiceWorkerCleanUp.removeFromBaseDomain(aBaseDomain);
     } catch (error) {
       swCleanupError = error;
     }
@@ -631,7 +630,7 @@ const QuotaCleaner = {
     // errors so we can re-throw later once all operations have completed.
     let swCleanupError;
     try {
-      await ServiceWorkerCleanUp.removeFromHost(aHost);
+      await lazy.ServiceWorkerCleanUp.removeFromHost(aHost);
     } catch (error) {
       swCleanupError = error;
     }
@@ -654,7 +653,7 @@ const QuotaCleaner = {
   },
 
   deleteByRange(aFrom, aTo) {
-    let principals = sas
+    let principals = lazy.sas
       .getActiveOrigins(aFrom, aTo)
       .QueryInterface(Ci.nsIArray);
 
@@ -681,7 +680,7 @@ const QuotaCleaner = {
     // And it should've been cleared while notifying observers with
     // clear-origin-attributes-data.
 
-    return ServiceWorkerCleanUp.removeFromOriginAttributes(
+    return lazy.ServiceWorkerCleanUp.removeFromOriginAttributes(
       aOriginAttributesString
     )
       .then(
@@ -717,7 +716,7 @@ const QuotaCleaner = {
     // errors so we can re-throw later once all operations have completed.
     let swCleanupError;
     try {
-      await ServiceWorkerCleanUp.removeAll();
+      await lazy.ServiceWorkerCleanUp.removeAll();
     } catch (error) {
       swCleanupError = error;
     }
@@ -838,10 +837,10 @@ const StorageAccessCleaner = {
     for (let principal of aPrincipalsWithStorage) {
       baseDomainsWithStorage.add(principal.baseDomain);
     }
-
     for (let perm of Services.perms.getAllByTypeSince(
       "storageAccessAPI",
-      aFrom
+      // The permission manager uses milliseconds instead of microseconds
+      aFrom / 1000
     )) {
       if (!baseDomainsWithStorage.has(perm.principal.baseDomain)) {
         Services.perms.removePermission(perm);
@@ -897,14 +896,14 @@ const HistoryCleaner = {
     if (!AppConstants.MOZ_PLACES) {
       return Promise.resolve();
     }
-    return PlacesUtils.history.removeByFilter({ host: "." + aHost });
+    return lazy.PlacesUtils.history.removeByFilter({ host: "." + aHost });
   },
 
   deleteByPrincipal(aPrincipal) {
     if (!AppConstants.MOZ_PLACES) {
       return Promise.resolve();
     }
-    return PlacesUtils.history.removeByFilter({ host: aPrincipal.host });
+    return lazy.PlacesUtils.history.removeByFilter({ host: aPrincipal.host });
   },
 
   deleteByBaseDomain(aBaseDomain) {
@@ -915,7 +914,7 @@ const HistoryCleaner = {
     if (!AppConstants.MOZ_PLACES) {
       return Promise.resolve();
     }
-    return PlacesUtils.history.removeVisitsByFilter({
+    return lazy.PlacesUtils.history.removeVisitsByFilter({
       beginDate: new Date(aFrom / 1000),
       endDate: new Date(aTo / 1000),
     });
@@ -925,7 +924,7 @@ const HistoryCleaner = {
     if (!AppConstants.MOZ_PLACES) {
       return Promise.resolve();
     }
-    return PlacesUtils.history.clear();
+    return lazy.PlacesUtils.history.clear();
   },
 };
 
@@ -1127,21 +1126,8 @@ const PreferencesCleaner = {
   },
 };
 
-const SecuritySettingsCleaner = {
+const ClientAuthRememberCleaner = {
   async deleteByHost(aHost, aOriginAttributes) {
-    let sss = Cc["@mozilla.org/ssservice;1"].getService(
-      Ci.nsISiteSecurityService
-    );
-    // Also remove HSTS information for subdomains by enumerating
-    // the information in the site security service.
-    for (let entry of sss.enumerate()) {
-      let hostname = entry.hostname;
-      if (Services.eTLD.hasRootDomain(hostname, aHost)) {
-        // This uri is used as a key to reset the state.
-        let uri = Services.io.newURI("https://" + hostname);
-        sss.resetState(uri, 0, entry.originAttributes);
-      }
-    }
     let cars = Cc[
       "@mozilla.org/security/clientAuthRememberService;1"
     ].getService(Ci.nsIClientAuthRememberService);
@@ -1154,22 +1140,6 @@ const SecuritySettingsCleaner = {
   },
 
   async deleteByBaseDomain(aDomain) {
-    let sss = Cc["@mozilla.org/ssservice;1"].getService(
-      Ci.nsISiteSecurityService
-    );
-
-    // Remove HSTS information by enumerating entries of the site security
-    // service.
-    Array.from(sss.enumerate())
-      .filter(({ hostname, originAttributes }) =>
-        hasBaseDomain({ host: hostname, originAttributes }, aDomain)
-      )
-      .forEach(({ hostname, originAttributes }) => {
-        // This uri is used as a key to reset the state.
-        let uri = Services.io.newURI("https://" + hostname);
-        sss.resetState(uri, 0, originAttributes);
-      });
-
     let cars = Cc[
       "@mozilla.org/security/clientAuthRememberService;1"
     ].getService(Ci.nsIClientAuthRememberService);
@@ -1208,16 +1178,59 @@ const SecuritySettingsCleaner = {
   },
 
   async deleteAll() {
+    let cars = Cc[
+      "@mozilla.org/security/clientAuthRememberService;1"
+    ].getService(Ci.nsIClientAuthRememberService);
+    cars.clearRememberedDecisions();
+  },
+};
+
+const HSTSCleaner = {
+  async deleteByHost(aHost, aOriginAttributes) {
+    let sss = Cc["@mozilla.org/ssservice;1"].getService(
+      Ci.nsISiteSecurityService
+    );
+    // Remove HSTS information for subdomains by enumerating
+    // the information in the site security service.
+    for (let entry of sss.enumerate()) {
+      let hostname = entry.hostname;
+      if (Services.eTLD.hasRootDomain(hostname, aHost)) {
+        // This uri is used as a key to reset the state.
+        let uri = Services.io.newURI("https://" + hostname);
+        sss.resetState(uri, entry.originAttributes);
+      }
+    }
+  },
+
+  deleteByPrincipal(aPrincipal) {
+    return this.deleteByHost(aPrincipal.host, aPrincipal.originAttributes);
+  },
+
+  async deleteByBaseDomain(aDomain) {
+    let sss = Cc["@mozilla.org/ssservice;1"].getService(
+      Ci.nsISiteSecurityService
+    );
+
+    // Remove HSTS information by enumerating entries of the site security
+    // service.
+    Array.from(sss.enumerate())
+      .filter(({ hostname, originAttributes }) =>
+        hasBaseDomain({ host: hostname, originAttributes }, aDomain)
+      )
+      .forEach(({ hostname, originAttributes }) => {
+        // This uri is used as a key to reset the state.
+        let uri = Services.io.newURI("https://" + hostname);
+        sss.resetState(uri, originAttributes);
+      });
+  },
+
+  async deleteAll() {
     // Clear site security settings - no support for ranges in this
     // interface either, so we clearAll().
     let sss = Cc["@mozilla.org/ssservice;1"].getService(
       Ci.nsISiteSecurityService
     );
     sss.clearAll();
-    let cars = Cc[
-      "@mozilla.org/security/clientAuthRememberService;1"
-    ].getService(Ci.nsIClientAuthRememberService);
-    cars.clearRememberedDecisions();
   },
 };
 
@@ -1273,7 +1286,7 @@ const ReportsCleaner = {
 
 const ContentBlockingCleaner = {
   deleteAll() {
-    return TrackingDBService.clearAll();
+    return lazy.TrackingDBService.clearAll();
   },
 
   async deleteByPrincipal(aPrincipal, aIsUserRequest) {
@@ -1291,7 +1304,7 @@ const ContentBlockingCleaner = {
   },
 
   deleteByRange(aFrom, aTo) {
-    return TrackingDBService.clearSince(aFrom);
+    return lazy.TrackingDBService.clearSince(aFrom);
   },
 };
 
@@ -1399,6 +1412,11 @@ const FLAGS_MAP = [
   },
 
   {
+    flag: Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE,
+    cleaners: [ClientAuthRememberCleaner],
+  },
+
+  {
     flag: Ci.nsIClearDataService.CLEAR_DOWNLOADS,
     cleaners: [DownloadsCleaner, AboutHomeStartupCacheCleaner],
   },
@@ -1456,8 +1474,8 @@ const FLAGS_MAP = [
   },
 
   {
-    flag: Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS,
-    cleaners: [SecuritySettingsCleaner],
+    flag: Ci.nsIClearDataService.CLEAR_HSTS,
+    cleaners: [HSTSCleaner],
   },
 
   { flag: Ci.nsIClearDataService.CLEAR_EME, cleaners: [EMECleaner] },
@@ -1480,14 +1498,13 @@ const FLAGS_MAP = [
   },
 ];
 
-this.ClearDataService = function() {
+function ClearDataService() {
   this._initialize();
-};
+}
 
 ClearDataService.prototype = Object.freeze({
   classID: Components.ID("{0c06583d-7dd8-4293-b1a5-912205f779aa}"),
   QueryInterface: ChromeUtils.generateQI(["nsIClearDataService"]),
-  _xpcom_factory: ComponentUtils.generateSingletonFactory(ClearDataService),
 
   _initialize() {
     // Let's start all the service we need to cleanup data.

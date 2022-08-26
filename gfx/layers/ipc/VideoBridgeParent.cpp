@@ -109,11 +109,12 @@ void VideoBridgeParent::ActorDealloc() {
 }
 
 PTextureParent* VideoBridgeParent::AllocPTextureParent(
-    const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+    const SurfaceDescriptor& aSharedData, ReadLockDescriptor& aReadLock,
     const LayersBackend& aLayersBackend, const TextureFlags& aFlags,
     const uint64_t& aSerial) {
-  PTextureParent* parent = TextureHost::CreateIPDLActor(
-      this, aSharedData, aReadLock, aLayersBackend, aFlags, aSerial, Nothing());
+  PTextureParent* parent =
+      TextureHost::CreateIPDLActor(this, aSharedData, std::move(aReadLock),
+                                   aLayersBackend, aFlags, aSerial, Nothing());
 
   if (!parent) {
     return nullptr;
@@ -133,22 +134,18 @@ void VideoBridgeParent::SendAsyncMessage(
   MOZ_ASSERT(false, "AsyncMessages not supported");
 }
 
-bool VideoBridgeParent::AllocShmem(size_t aSize,
-                                   ipc::SharedMemory::SharedMemoryType aType,
-                                   ipc::Shmem* aShmem) {
+bool VideoBridgeParent::AllocShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (mClosed) {
     return false;
   }
-  return PVideoBridgeParent::AllocShmem(aSize, aType, aShmem);
+  return PVideoBridgeParent::AllocShmem(aSize, aShmem);
 }
 
-bool VideoBridgeParent::AllocUnsafeShmem(
-    size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
-    ipc::Shmem* aShmem) {
+bool VideoBridgeParent::AllocUnsafeShmem(size_t aSize, ipc::Shmem* aShmem) {
   if (mClosed) {
     return false;
   }
-  return PVideoBridgeParent::AllocUnsafeShmem(aSize, aType, aShmem);
+  return PVideoBridgeParent::AllocUnsafeShmem(aSize, aShmem);
 }
 
 bool VideoBridgeParent::DeallocShmem(ipc::Shmem& aShmem) {

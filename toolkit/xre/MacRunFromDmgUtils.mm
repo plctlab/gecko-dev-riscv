@@ -8,6 +8,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreServices/CoreServices.h>
 #include <IOKit/IOKitLib.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/param.h>
@@ -16,6 +17,7 @@
 #include "MacLaunchHelper.h"
 
 #include "mozilla/ErrorResult.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/intl/Localization.h"
 #include "mozilla/Telemetry.h"
 #include "nsCocoaFeatures.h"
@@ -25,6 +27,7 @@
 #include "nsILocalFileMac.h"
 #include "nsIMacDockSupport.h"
 #include "nsObjCExceptions.h"
+#include "prenv.h"
 #include "nsString.h"
 #ifdef MOZ_UPDATER
 #  include "nsUpdateDriver.h"
@@ -35,8 +38,82 @@
 // https://developer.apple.com/documentation/iokit
 // https://developer.apple.com/library/archive/documentation/DeviceDrivers/Conceptual/IOKitFundamentals/
 
-namespace mozilla {
-namespace MacRunFromDmgUtils {
+namespace mozilla::MacRunFromDmgUtils {
+
+/**
+ * Opens a dialog to ask the user whether the existing app in the Applications
+ * folder should be launched, or if the user wants to proceed with launching
+ * the app from the .dmg.
+ * Returns true if the dialog is successfully opened and the user chooses to
+ * launch the app from the Applications folder, otherwise returns false.
+ */
+static bool AskUserIfWeShouldLaunchExistingInstall() {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  // Try to get the localized strings:
+  nsTArray<nsCString> resIds = {
+      "branding/brand.ftl"_ns,
+      "toolkit/global/run-from-dmg.ftl"_ns,
+  };
+  RefPtr<intl::Localization> l10n = intl::Localization::Create(resIds, true);
+
+  ErrorResult rv;
+  nsAutoCString mozTitle, mozMessage, mozLaunchExisting, mozLaunchFromDMG;
+  l10n->FormatValueSync("prompt-to-launch-existing-app-title"_ns, {}, mozTitle, rv);
+  if (rv.Failed()) {
+    return false;
+  }
+  l10n->FormatValueSync("prompt-to-launch-existing-app-message"_ns, {}, mozMessage, rv);
+  if (rv.Failed()) {
+    return false;
+  }
+  l10n->FormatValueSync("prompt-to-launch-existing-app-yes-button"_ns, {}, mozLaunchExisting, rv);
+  if (rv.Failed()) {
+    return false;
+  }
+  l10n->FormatValueSync("prompt-to-launch-existing-app-no-button"_ns, {}, mozLaunchFromDMG, rv);
+  if (rv.Failed()) {
+    return false;
+  }
+
+  NSString* title = [NSString stringWithUTF8String:reinterpret_cast<const char*>(mozTitle.get())];
+  NSString* message =
+      [NSString stringWithUTF8String:reinterpret_cast<const char*>(mozMessage.get())];
+  NSString* launchExisting =
+      [NSString stringWithUTF8String:reinterpret_cast<const char*>(mozLaunchExisting.get())];
+  NSString* launchFromDMG =
+      [NSString stringWithUTF8String:reinterpret_cast<const char*>(mozLaunchFromDMG.get())];
+
+  NSAlert* alert = [[[NSAlert alloc] init] autorelease];
+
+  // Note that we don't set an icon since the app icon is used by default.
+  [alert setAlertStyle:NSAlertStyleInformational];
+  [alert setMessageText:title];
+  [alert setInformativeText:message];
+  // Note that if the user hits 'Enter' the "Install" button is activated,
+  // whereas if they hit  'Space' the "Don't Install" button is activated.
+  // That's standard behavior so probably desirable.
+  [alert addButtonWithTitle:launchExisting];
+  NSButton* launchFromDMGButton = [alert addButtonWithTitle:launchFromDMG];
+  // Since the "Don't Install" button doesn't have the title "Cancel" we need
+  // to map the Escape key to it manually:
+  [launchFromDMGButton setKeyEquivalent:@"\e"];
+
+  __block NSInteger result = -1;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    result = [alert runModal];
+    [NSApp stop:nil];
+  });
+
+  // We need to call run on NSApp here for accessibility. See
+  // AskUserIfWeShouldInstall for a detailed explanation.
+  [NSApp run];
+  MOZ_ASSERT(result != -1);
+
+  return result == NSAlertFirstButtonReturn;
+
+  NS_OBJC_END_TRY_BLOCK_RETURN(false);
+}
 
 /**
  * Opens a dialog to ask the user whether the app should be installed to their
@@ -158,7 +235,17 @@ static void ShowInstallFailedDialog() {
   [alert setMessageText:title];
   [alert setInformativeText:message];
 
-  [alert runModal];
+  __block NSInteger result = -1;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    result = [alert runModal];
+    [NSApp stop:nil];
+  });
+
+  // We need to call run on NSApp here for accessibility. See
+  // AskUserIfWeShouldInstall for a detailed explanation.
+  [NSApp run];
+  MOZ_ASSERT(result != -1);
+  (void)result;
 
   NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
@@ -168,6 +255,7 @@ static void ShowInstallFailedDialog() {
  */
 static void LaunchTask(NSString* aPath, NSArray* aArguments) {
   if (@available(macOS 10.13, *)) {
+    setenv("MOZ_INSTALLED_AND_RELAUNCHED_FROM_DMG", "1", 1);
     NSTask* task = [[NSTask alloc] init];
     [task setExecutableURL:[NSURL fileURLWithPath:aPath]];
     if (aArguments) {
@@ -233,7 +321,7 @@ bool LaunchElevatedDmgInstall(NSString* aBundlePath, NSArray* aArguments) {
 
 // Note: both arguments are expected to contain the app name (to end with
 // '.app').
-static bool InstallFromDmg(NSString* aBundlePath, NSString* aDestPath) {
+static bool InstallFromPath(NSString* aBundlePath, NSString* aDestPath) {
   bool installSuccessful = false;
   NSFileManager* fileManager = [NSFileManager defaultManager];
   if ([fileManager copyItemAtPath:aBundlePath toPath:aDestPath error:nil]) {
@@ -241,6 +329,8 @@ static bool InstallFromDmg(NSString* aBundlePath, NSString* aDestPath) {
     StripQuarantineBit(aDestPath);
     installSuccessful = true;
   }
+
+  bool triedElevatedInstall = false;
 
 #ifdef MOZ_UPDATER
   // The installation may have been unsuccessful if the user did not have the
@@ -261,10 +351,17 @@ static bool InstallFromDmg(NSString* aBundlePath, NSString* aDestPath) {
     NSArray* arguments = @[ @"-dmgInstall", aBundlePath, aDestPath ];
     LaunchElevatedDmgInstall(updaterBinPath, arguments);
     installSuccessful = [fileManager fileExistsAtPath:aDestPath];
+    triedElevatedInstall = true;
   }
 #endif
 
   if (!installSuccessful) {
+    if (!triedElevatedInstall) {
+      glean::startup::run_from_dmg_install_outcome.Get("non_privileged_install_failed"_ns)
+          .Set(true);
+    } else {
+      glean::startup::run_from_dmg_install_outcome.Get("privileged_install_failed"_ns).Set(true);
+    }
     return false;
   }
 
@@ -340,7 +437,7 @@ bool IsAppRunningFromDmg() {
     return false;
   }
   const char* imageClass =
-      nsCocoaFeatures::macOSVersionMajor() >= 12 ? "AppleDiskImageDevice" : "IOHDIXHDDrive";
+      nsCocoaFeatures::OnMontereyOrLater() ? "AppleDiskImageDevice" : "IOHDIXHDDrive";
   for (imageDrive = media; imageDrive; imageDrive = IOIteratorNext(iter)) {
     if (IOObjectConformsTo(imageDrive, imageClass)) {
       break;
@@ -358,15 +455,28 @@ bool IsAppRunningFromDmg() {
   NS_OBJC_END_TRY_BLOCK_RETURN(false);
 }
 
-bool MaybeInstallFromDmgAndRelaunch() {
+bool MaybeInstallAndRelaunch() {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   @autoreleasepool {
     bool isFromDmg = IsAppRunningFromDmg();
+    bool isTranslocated = false;
+    if (!isFromDmg) {
+      NSString* bundlePath = [[NSBundle mainBundle] bundlePath];
+      if ([bundlePath containsString:@"/AppTranslocation/"]) {
+        isTranslocated = true;
+      }
+    }
 
     Telemetry::ScalarSet(Telemetry::ScalarID::STARTUP_IS_RUN_FROM_DMG, isFromDmg);
+    Telemetry::ScalarSet(Telemetry::ScalarID::STARTUP_IS_RUN_FROM_APP_TRANSLOCATED_LOCATION,
+                         isTranslocated);
 
-    if (!isFromDmg) {
+    if (!isFromDmg && !isTranslocated) {
+      if (getenv("MOZ_INSTALLED_AND_RELAUNCHED_FROM_DMG")) {
+        unsetenv("MOZ_INSTALLED_AND_RELAUNCHED_FROM_DMG");
+        glean::startup::run_from_dmg_install_outcome.Get("installed_and_relaunched"_ns).Set(true);
+      }
       return false;
     }
 
@@ -381,6 +491,8 @@ bool MaybeInstallFromDmgAndRelaunch() {
     NSFileManager* fileManager = [NSFileManager defaultManager];
     BOOL isDir;
     if (![fileManager fileExistsAtPath:applicationsDir isDirectory:&isDir] || !isDir) {
+      glean::startup::run_from_dmg_install_outcome.Get("root_applications_dir_missing"_ns)
+          .Set(true);
       return false;
     }
 
@@ -389,23 +501,28 @@ bool MaybeInstallFromDmgAndRelaunch() {
     NSString* destPath = [applicationsDir stringByAppendingPathComponent:appName];
 
     // If the app (an app of the same name) is already installed we can't really
-    // tell if we're dealing with the edge case of an inexperienced user running
-    // from .dmg by mistake, or if we're dealing with a more sophisticated user
-    // intentionally running from .dmg.
-    // We could throw a series of prompts at the user to figure out if they want
-    // to overwrite the installed app, or maybe just launch it, or continue with
-    // running from .dmg, but that seems like overkill for an edge case when
-    // we're just trying to provide mitigate inexperienced mac users trying to
-    // get and run our app for the first time.
+    // tell without asking if we're dealing with the edge case of an
+    // inexperienced user running from .dmg by mistake, or if we're dealing with
+    // a more sophisticated user intentionally running from .dmg.
     if ([fileManager fileExistsAtPath:destPath]) {
+      if (AskUserIfWeShouldLaunchExistingInstall()) {
+        StripQuarantineBit(destPath);
+        LaunchInstalledApp(destPath);
+        glean::startup::run_from_dmg_install_outcome.Get("user_accepted_launch_existing"_ns)
+            .Set(true);
+        return true;
+      }
+      glean::startup::run_from_dmg_install_outcome.Get("user_declined_launch_existing"_ns)
+          .Set(true);
       return false;
     }
 
     if (!AskUserIfWeShouldInstall()) {
+      glean::startup::run_from_dmg_install_outcome.Get("user_declined_install_prompt"_ns).Set(true);
       return false;
     }
 
-    if (!InstallFromDmg(bundlePath, destPath)) {
+    if (!InstallFromPath(bundlePath, destPath)) {
       ShowInstallFailedDialog();
       return false;
     }
@@ -418,5 +535,4 @@ bool MaybeInstallFromDmgAndRelaunch() {
   NS_OBJC_END_TRY_BLOCK_RETURN(false);
 }
 
-}  // namespace MacRunFromDmgUtils
-}  // namespace mozilla
+}  // namespace mozilla::MacRunFromDmgUtils

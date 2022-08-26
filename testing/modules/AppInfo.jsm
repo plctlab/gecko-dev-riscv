@@ -6,8 +6,6 @@
 
 var EXPORTED_SYMBOLS = ["newAppInfo", "getAppInfo", "updateAppInfo"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 let origPlatformInfo = Cc["@mozilla.org/xre/app-info;1"].getService(
   Ci.nsIPlatformInfo
 );
@@ -127,11 +125,7 @@ var updateAppInfo = function(options) {
   } catch (ex) {}
 
   let factory = {
-    createInstance(outer, iid) {
-      if (outer != null) {
-        throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-      }
-
+    createInstance(iid) {
       return currentAppInfo.QueryInterface(iid);
     },
   };

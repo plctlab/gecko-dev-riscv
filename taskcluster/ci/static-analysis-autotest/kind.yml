@@ -2,16 +2,16 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ---
-loader: taskgraph.loader.transform:loader
+loader: gecko_taskgraph.loader.transform:loader
 
 kind-dependencies:
     - toolchain
 
 transforms:
-    - taskgraph.transforms.build_attrs:transforms
-    - taskgraph.transforms.build_lints:transforms
-    - taskgraph.transforms.job:transforms
-    - taskgraph.transforms.task:transforms
+    - gecko_taskgraph.transforms.build_attrs:transforms
+    - gecko_taskgraph.transforms.build_lints:transforms
+    - gecko_taskgraph.transforms.job:transforms
+    - gecko_taskgraph.transforms.task:transforms
 
 job-defaults:
     attributes:
@@ -75,16 +75,12 @@ jobs:
             platform: windows2012-64/debug
             tier: 2
         worker-type: b-win2012
-        worker:
-            env:
-                TOOLTOOL_MANIFEST: "browser/config/tooltool-manifests/vs2017-15.9.manifest"
         run:
             config:
                 - builds/releng_base_firefox.py
                 - builds/taskcluster_base_windows.py
                 - builds/taskcluster_base_win64.py
                 - builds/taskcluster_sub_win64/debug.py
-            tooltool-downloads: internal
             extra-config:
                 mozconfig_variant: debug
         use-sccache: true
@@ -99,4 +95,5 @@ jobs:
                 - win64-node
                 - win64-dump_syms
                 - win64-winchecksec
+                - win64-vs2017
                 - sysroot-wasm32-wasi

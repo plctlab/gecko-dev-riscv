@@ -14,13 +14,21 @@ namespace mozilla {
 namespace layers {
 
 class APZInputBridgeChild : public PAPZInputBridgeChild, public APZInputBridge {
-  NS_INLINE_DECL_REFCOUNTING(APZInputBridgeChild, final)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(APZInputBridgeChild, final)
 
  public:
-  APZInputBridgeChild();
+  static RefPtr<APZInputBridgeChild> Create(
+      const uint64_t& aProcessToken,
+      Endpoint<PAPZInputBridgeChild>&& aEndpoint);
+
   void Destroy();
 
-  APZEventResult ReceiveInputEvent(InputData& aEvent) override;
+  APZEventResult ReceiveInputEvent(
+      InputData& aEvent,
+      InputBlockCallback&& aCallback = InputBlockCallback()) override;
+
+  mozilla::ipc::IPCResult RecvCallInputBlockCallback(
+      uint64_t aInputBlockId, const APZHandledResult& handledResult);
 
  protected:
   void ProcessUnhandledEvent(LayoutDeviceIntPoint* aRefPoint,
@@ -33,10 +41,19 @@ class APZInputBridgeChild : public PAPZInputBridgeChild, public APZInputBridge {
       const Maybe<ScrollableLayerGuid>& aTargetGuid) override;
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
+
+  explicit APZInputBridgeChild(const uint64_t& aProcessToken);
   virtual ~APZInputBridgeChild();
 
  private:
-  bool mDestroyed;
+  void Open(Endpoint<PAPZInputBridgeChild>&& aEndpoint);
+
+  bool mIsOpen;
+  uint64_t mProcessToken;
+
+  using InputBlockCallbackMap =
+      std::unordered_map<uint64_t, InputBlockCallback>;
+  InputBlockCallbackMap mInputBlockCallbacks;
 };
 
 }  // namespace layers

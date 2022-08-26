@@ -18,6 +18,7 @@ const {
 const { DevToolsServer } = require("devtools/server/devtools-server");
 const protocol = require("devtools/shared/protocol");
 const { rootSpec } = require("devtools/shared/specs/root");
+const Resources = require("devtools/server/actors/resources/index");
 
 loader.lazyRequireGetter(
   this,
@@ -101,7 +102,7 @@ loader.lazyRequireGetter(
  * iteration: alliterative lazy live lists.
  */
 exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
-  initialize: function(conn, parameters) {
+  initialize(conn, parameters) {
     protocol.Actor.prototype.initialize.call(this, conn);
 
     this._parameters = parameters;
@@ -112,14 +113,28 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
       this
     );
     this._onProcessListChanged = this.onProcessListChanged.bind(this);
+    this.notifyResourceAvailable = this.notifyResourceAvailable.bind(this);
+    this.notifyResourceDestroyed = this.notifyResourceDestroyed.bind(this);
+
     this._extraActors = {};
 
     this._globalActorPool = new LazyPool(this.conn);
 
     this.applicationType = "browser";
 
+    // Compute the list of all supported Root Resources
+    const supportedResources = {};
+    for (const resourceType in Resources.RootResources) {
+      supportedResources[resourceType] = true;
+    }
+
     this.traits = {
+      // @backward-compat { version 104 } clearMessagesCacheAsync was added in 104
+      hasWebConsoleClearMessagesCacheAsync: true,
       networkMonitor: true,
+      resources: supportedResources,
+      // @backward-compat { version 105 } isSwitchingMode not supported by old servers
+      supportsSwitchingMode: true,
       // @backward-compat { version 84 } Expose the pref value to the client.
       // Services.prefs is undefined in xpcshell tests.
       workerConsoleApiMessagesDispatchedToMainThread: Services.prefs
@@ -127,16 +142,13 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
             "dom.worker.console.dispatch_events_to_main_thread"
           )
         : true,
-      // @backward-compat { version 86 } ThreadActor.attach no longer pauses the thread,
-      //                                 so that we no longer have to resume.
-      noPauseOnThreadActorAttach: true,
     };
   },
 
   /**
    * Return a 'hello' packet as specified by the Remote Debugging Protocol.
    */
-  sayHello: function() {
+  sayHello() {
     return {
       from: this.actorID,
       applicationType: this.applicationType,
@@ -146,7 +158,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     };
   },
 
-  forwardingCancelled: function(prefix) {
+  forwardingCancelled(prefix) {
     return {
       from: this.actorID,
       type: "forwardingCancelled",
@@ -157,7 +169,9 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
   /**
    * Destroys the actor from the browser window.
    */
-  destroy: function() {
+  destroy() {
+    Resources.unwatchAllResources(this);
+
     protocol.Actor.prototype.destroy.call(this);
 
     /* Tell the live lists we aren't watching any more. */
@@ -213,7 +227,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
    * Gets the "root" form, which lists all the global actors that affect the entire
    * browser.
    */
-  getRoot: function() {
+  getRoot() {
     // Create global actors
     if (!this._globalActorPool) {
       this._globalActorPool = new LazyPool(this.conn);
@@ -233,7 +247,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
    * Handles the listTabs request. The actors will survive until at least
    * the next listTabs request.
    */
-  listTabs: async function() {
+  async listTabs() {
     const tabList = this._parameters.tabList;
     if (!tabList) {
       throw {
@@ -267,7 +281,13 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     return tabDescriptorActors;
   },
 
-  getTab: async function({ outerWindowID, tabId }) {
+  /**
+   * Return the tab descriptor actor for the tab identified by one of the IDs
+   * passed as argument.
+   *
+   * See BrowserTabList.prototype.getTab for the definition of these IDs.
+   */
+  async getTab({ browserId }) {
     const tabList = this._parameters.tabList;
     if (!tabList) {
       throw {
@@ -284,7 +304,9 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
 
     let descriptorActor;
     try {
-      descriptorActor = await tabList.getTab({ outerWindowID, tabId });
+      descriptorActor = await tabList.getTab({
+        browserId,
+      });
     } catch (error) {
       if (error.error) {
         // Pipe expected errors as-is to the client
@@ -302,7 +324,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     return descriptorActor;
   },
 
-  onTabListChanged: function() {
+  onTabListChanged() {
     this.conn.send({ from: this.actorID, type: "tabListChanged" });
     /* It's a one-shot notification; no need to watch any more. */
     this._parameters.tabList.onListChanged = null;
@@ -318,7 +340,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
    *            retrieving addons from a remote device, because the raw iconURL might not
    *            be accessible on the client.
    */
-  listAddons: async function(option) {
+  async listAddons(option) {
     const addonList = this._parameters.addonList;
     if (!addonList) {
       throw {
@@ -348,12 +370,12 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     return addonTargetActors;
   },
 
-  onAddonListChanged: function() {
+  onAddonListChanged() {
     this.conn.send({ from: this.actorID, type: "addonListChanged" });
     this._parameters.addonList.onListChanged = null;
   },
 
-  listWorkers: function() {
+  listWorkers() {
     const workerList = this._parameters.workerList;
     if (!workerList) {
       throw {
@@ -385,12 +407,12 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     });
   },
 
-  onWorkerListChanged: function() {
+  onWorkerListChanged() {
     this.conn.send({ from: this.actorID, type: "workerListChanged" });
     this._parameters.workerList.onListChanged = null;
   },
 
-  listServiceWorkerRegistrations: function() {
+  listServiceWorkerRegistrations() {
     const registrationList = this._parameters.serviceWorkerRegistrationList;
     if (!registrationList) {
       throw {
@@ -419,7 +441,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     });
   },
 
-  onServiceWorkerRegistrationListChanged: function() {
+  onServiceWorkerRegistrationListChanged() {
     this.conn.send({
       from: this.actorID,
       type: "serviceWorkerRegistrationListChanged",
@@ -427,7 +449,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     this._parameters.serviceWorkerRegistrationList.onListChanged = null;
   },
 
-  listProcesses: function() {
+  listProcesses() {
     const { processList } = this._parameters;
     if (!processList) {
       throw {
@@ -457,7 +479,7 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     return [...this._processDescriptorActorPool.poolChildren()];
   },
 
-  onProcessListChanged: function() {
+  onProcessListChanged() {
     this.conn.send({ from: this.actorID, type: "processListChanged" });
     this._parameters.processList.onListChanged = null;
   },
@@ -505,38 +527,11 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
     return null;
   },
 
-  _getParentProcessDescriptor() {
-    if (!this._processDescriptorActorPool) {
-      this._processDescriptorActorPool = new Pool(
-        this.conn,
-        "process-descriptors"
-      );
-      const options = { id: 0, parent: true };
-      const descriptor = new ProcessDescriptorActor(this.conn, options);
-      this._processDescriptorActorPool.manage(descriptor);
-      return descriptor;
-    }
-    for (const descriptor of this._processDescriptorActorPool.poolChildren()) {
-      if (descriptor.isParent) {
-        return descriptor;
-      }
-    }
-    return null;
-  },
-
-  _isParentBrowsingContext(id) {
-    // TODO: We may stop making the parent process codepath so special
-    const window = Services.wm.getMostRecentWindow(
-      DevToolsServer.chromeWindowType
-    );
-    return id == window.docShell.browsingContext.id;
-  },
-
   /**
    * Remove the extra actor (added by ActorRegistry.addGlobalActor or
    * ActorRegistry.addTargetScopedActor) name |name|.
    */
-  removeActorByName: function(name) {
+  removeActorByName(name) {
     if (name in this._extraActors) {
       const actor = this._extraActors[name];
       if (this._globalActorPool.has(actor.actorID)) {
@@ -551,6 +546,59 @@ exports.RootActor = protocol.ActorClassWithSpec(rootSpec, {
       }
       delete this._extraActors[name];
     }
+  },
+
+  /**
+   * Start watching for a list of resource types.
+   *
+   * See WatcherActor.watchResources.
+   */
+  async watchResources(resourceTypes) {
+    await Resources.watchResources(this, resourceTypes);
+  },
+
+  /**
+   * Stop watching for a list of resource types.
+   *
+   * See WatcherActor.unwatchResources.
+   */
+  unwatchResources(resourceTypes) {
+    Resources.unwatchResources(this, resourceTypes);
+  },
+
+  /**
+   * Clear resources of a list of resource types.
+   *
+   * See WatcherActor.clearResources.
+   */
+  clearResources(resourceTypes) {
+    Resources.clearResources(this, resourceTypes);
+  },
+
+  /**
+   * Called by Resource Watchers, when new resources are available.
+   *
+   * @param Array<json> resources
+   *        List of all available resources. A resource is a JSON object piped over to the client.
+   *        It may contain actor IDs, actor forms, to be manually marshalled by the client.
+   */
+  notifyResourceAvailable(resources) {
+    this._emitResourcesForm("resource-available-form", resources);
+  },
+
+  notifyResourceDestroyed(resources) {
+    this._emitResourcesForm("resource-destroyed-form", resources);
+  },
+
+  /**
+   * Wrapper around emit for resource forms.
+   */
+  _emitResourcesForm(name, resources) {
+    if (resources.length === 0) {
+      // Don't try to emit if the resources array is empty.
+      return;
+    }
+    this.emit(name, resources);
   },
 });
 

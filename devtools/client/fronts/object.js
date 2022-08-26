@@ -54,25 +54,6 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
   }
 
   /**
-   * Request the names of a function's formal parameters.
-   */
-  getParameterNames() {
-    if (this._grip.class !== "Function") {
-      console.error("getParameterNames is only valid for function grips.");
-      return null;
-    }
-    return super.parameterNames();
-  }
-
-  /**
-   * Request the names of the properties defined on the object and not its
-   * prototype.
-   */
-  getOwnPropertyNames() {
-    return super.ownPropertyNames();
-  }
-
-  /**
    * Request the prototype and own properties of the object.
    */
   async getPrototypeAndProperties() {
@@ -160,9 +141,15 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
    */
   enumEntries() {
     if (
-      !["Map", "WeakMap", "Set", "WeakSet", "Storage"].includes(
-        this._grip.class
-      )
+      ![
+        "Headers",
+        "Map",
+        "WeakMap",
+        "Set",
+        "WeakSet",
+        "Storage",
+        "URLSearchParams",
+      ].includes(this._grip.class)
     ) {
       console.error(
         "enumEntries is only valid for Map/Set/Storage-like grips."
@@ -230,13 +217,6 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
     result.prototype = getAdHocFrontOrPrimitiveGrip(result.prototype, this);
 
     return result;
-  }
-
-  /**
-   * Request the display string of the object.
-   */
-  getDisplayString() {
-    return super.displayString();
   }
 
   /**

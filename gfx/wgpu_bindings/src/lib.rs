@@ -14,6 +14,8 @@ pub use wgc::device::trace::Command as CommandEncoderAction;
 
 use std::{borrow::Cow, mem, slice};
 
+use nsstring::nsACString;
+
 type RawString = *const std::os::raw::c_char;
 
 //TODO: figure out why 'a and 'b have to be different here
@@ -25,6 +27,11 @@ fn cow_label<'a, 'b>(raw: &'a RawString) -> Option<Cow<'b, str>> {
         let cstr = unsafe { std::ffi::CStr::from_ptr(*raw) };
         cstr.to_str().ok().map(Cow::Borrowed)
     }
+}
+
+// Hides the repeated boilerplate of turning a `Option<&nsACString>` into a `Option<Cow<str>`.
+pub fn wgpu_string(gecko_string: Option<&nsACString>) -> Option<Cow<str>> {
+    gecko_string.map(|s| s.to_utf8())
 }
 
 #[repr(C)]
@@ -75,7 +82,6 @@ struct ImplicitLayout<'a> {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 enum DeviceAction<'a> {
-    CreateBuffer(id::BufferId, wgc::resource::BufferDescriptor<'a>),
     CreateTexture(id::TextureId, wgc::resource::TextureDescriptor<'a>),
     CreateSampler(id::SamplerId, wgc::resource::SamplerDescriptor<'a>),
     CreateBindGroupLayout(
@@ -111,6 +117,7 @@ enum DeviceAction<'a> {
         id::CommandEncoderId,
         wgt::CommandEncoderDescriptor<wgc::Label<'a>>,
     ),
+    Error(String),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

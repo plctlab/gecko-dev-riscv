@@ -11,23 +11,32 @@
  * relevant telemetry histograms.
  */
 
-const { ComponentUtils } = ChromeUtils.import(
-  "resource://gre/modules/ComponentUtils.jsm"
-);
+const lazy = {};
 
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
+
 ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
+  lazy,
+  "PromiseUtils",
+  "resource://gre/modules/PromiseUtils.jsm"
 );
 
-function nsTerminatorTelemetry() {}
+function nsTerminatorTelemetry() {
+  this._wasNotified = false;
+  this._deferred = lazy.PromiseUtils.defer();
+
+  IOUtils.sendTelemetry.addBlocker(
+    "TerminatoryTelemetry: Waiting to submit telemetry",
+    this._deferred.promise,
+    () => ({
+      wasNotified: this._wasNotified,
+    })
+  );
+}
 
 var HISTOGRAMS = {
   "quit-application": "SHUTDOWN_PHASE_DURATION_TICKS_QUIT_APPLICATION",
@@ -46,10 +55,6 @@ var HISTOGRAMS = {
 nsTerminatorTelemetry.prototype = {
   classID: Components.ID("{3f78ada1-cba2-442a-82dd-d5fb300ddea7}"),
 
-  _xpcom_factory: ComponentUtils.generateSingletonFactory(
-    nsTerminatorTelemetry
-  ),
-
   // nsISupports
 
   QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
@@ -57,54 +62,59 @@ nsTerminatorTelemetry.prototype = {
   // nsIObserver
 
   observe: function DS_observe(aSubject, aTopic, aData) {
-    (async function() {
-      //
-      // This data is hardly critical, reading it can wait for a few seconds.
-      //
-      await new Promise(resolve => setTimeout(resolve, 3000));
+    this._wasNotified = true;
 
-      let PATH = OS.Path.join(
-        OS.Constants.Path.localProfileDir,
-        "ShutdownDuration.json"
-      );
-      let raw;
+    (async () => {
       try {
-        raw = await OS.File.read(PATH, { encoding: "utf-8" });
-      } catch (ex) {
-        if (!ex.becauseNoSuchFile) {
+        //
+        // This data is hardly critical, reading it can wait for a few seconds.
+        //
+        await new Promise(resolve => lazy.setTimeout(resolve, 3000));
+
+        let PATH = PathUtils.join(
+          Services.dirsvc.get("ProfLD", Ci.nsIFile).path,
+          "ShutdownDuration.json"
+        );
+        let data;
+        try {
+          data = await IOUtils.readJSON(PATH);
+        } catch (ex) {
+          if (DOMException.isInstance(ex) && ex.name == "NotFoundError") {
+            return;
+          }
+          // Let other errors be reported by Promise's error-reporting.
           throw ex;
         }
-        return;
-      }
-      // Let other errors be reported by Promise's error-reporting.
 
-      // Clean up
-      OS.File.remove(PATH);
-      OS.File.remove(PATH + ".tmp");
+        // Clean up
+        await IOUtils.remove(PATH);
+        await IOUtils.remove(PATH + ".tmp");
 
-      let data = JSON.parse(raw);
-      for (let k of Object.keys(data)) {
-        let id = HISTOGRAMS[k];
-        try {
-          let histogram = Services.telemetry.getHistogramById(id);
-          if (!histogram) {
-            throw new Error("Unknown histogram " + id);
+        for (let k of Object.keys(data)) {
+          let id = HISTOGRAMS[k];
+          try {
+            let histogram = Services.telemetry.getHistogramById(id);
+            if (!histogram) {
+              throw new Error("Unknown histogram " + id);
+            }
+
+            histogram.add(Number.parseInt(data[k]));
+          } catch (ex) {
+            // Make sure that the error is reported and causes test failures,
+            // but otherwise, ignore it.
+            Promise.reject(ex);
+            continue;
           }
-
-          histogram.add(Number.parseInt(data[k]));
-        } catch (ex) {
-          // Make sure that the error is reported and causes test failures,
-          // but otherwise, ignore it.
-          Promise.reject(ex);
-          continue;
         }
-      }
 
-      // Inform observers that we are done.
-      Services.obs.notifyObservers(
-        null,
-        "shutdown-terminator-telemetry-updated"
-      );
+        // Inform observers that we are done.
+        Services.obs.notifyObservers(
+          null,
+          "shutdown-terminator-telemetry-updated"
+        );
+      } finally {
+        this._deferred.resolve();
+      }
     })();
   },
 };

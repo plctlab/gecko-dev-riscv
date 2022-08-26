@@ -4,10 +4,7 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
@@ -81,7 +78,7 @@ window.onload = function() {
 
   initTreeView();
 
-  errorTryAgainButton.focus({ preventFocusRing: true });
+  errorTryAgainButton.focus({ focusVisible: false });
 };
 
 function isTreeViewVisible() {

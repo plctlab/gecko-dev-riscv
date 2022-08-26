@@ -704,7 +704,8 @@ class ScriptMixin(PlatformMixin):
         t.extractall(path=extract_to)
 
     def download_unpack(self, url, extract_to=".", extract_dirs="*", verbose=False):
-        """Generic method to download and extract a compressed file without writing it to disk first.
+        """Generic method to download and extract a compressed file without writing it
+        to disk first.
 
         Args:
             url (str): URL where the file to be downloaded is located.
@@ -801,7 +802,7 @@ class ScriptMixin(PlatformMixin):
             self.exception(level=FATAL)
 
     def load_json_url(self, url, error_level=None, *args, **kwargs):
-        """ Returns a json object from a url (it retries). """
+        """Returns a json object from a url (it retries)."""
         contents = self._retry_download(
             url=url, error_level=error_level, *args, **kwargs
         )
@@ -1543,7 +1544,7 @@ class ScriptMixin(PlatformMixin):
                 return -1
             self.info("Running command: %s in %s" % (command, cwd))
         else:
-            self.info("Running command: %s" % command)
+            self.info("Running command: %s" % (command,))
         if isinstance(command, list) or isinstance(command, tuple):
             self.info("Copy/paste: %s" % subprocess.list2cmdline(command))
         shell = True
@@ -1662,7 +1663,7 @@ class ScriptMixin(PlatformMixin):
             if _fail:
                 self.return_code = fatal_exit_code
                 self.fatal(
-                    "Halting on failure while running %s" % command,
+                    "Halting on failure while running %s" % (command,),
                     exit_code=fatal_exit_code,
                 )
         if return_type == "num_errors":

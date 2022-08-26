@@ -57,7 +57,7 @@ extern const char* ToString(IndexType indexType);
 // We represent byte lengths using the native word size, as it is assumed that
 // consumers of this API will only need byte lengths once it is time to
 // allocate memory, at which point the pages will be checked against the
-// implementation limits `MaxMemory32Pages()` and will then be guaranteed to
+// implementation limits `MaxMemoryPages()` and will then be guaranteed to
 // fit in a native word.
 struct Pages {
  private:
@@ -119,11 +119,19 @@ struct Pages {
   bool operator>(Pages other) const { return value_ > other.value_; }
 };
 
-extern Pages MaxMemoryPages();
+// The largest number of pages the application can request.
+extern Pages MaxMemoryPages(IndexType t);
 
-extern size_t MaxMemoryBoundsCheckLimit();
+// The byte value of MaxMemoryPages(t).
+static inline size_t MaxMemoryBytes(IndexType t) {
+  return MaxMemoryPages(t).byteLength();
+}
 
-static inline size_t MaxMemoryBytes() { return MaxMemoryPages().byteLength(); }
+// A value at least as large as MaxMemoryBytes(t) representing the largest valid
+// bounds check limit on the system.  (It can be larger than MaxMemoryBytes()
+// because bounds check limits are rounded up to fit formal requirements on some
+// platforms.  Also see ComputeMappedSize().)
+extern size_t MaxMemoryBoundsCheckLimit(IndexType t);
 
 static inline uint64_t MaxMemoryLimitField(IndexType indexType) {
   return indexType == IndexType::I32 ? MaxMemory32LimitField
@@ -132,13 +140,13 @@ static inline uint64_t MaxMemoryLimitField(IndexType indexType) {
 
 // Compute the 'clamped' maximum size of a memory. See
 // 'WASM Linear Memory structure' in ArrayBufferObject.cpp for background.
-extern Pages ClampedMaxPages(Pages initialPages,
+extern Pages ClampedMaxPages(IndexType t, Pages initialPages,
                              const mozilla::Maybe<Pages>& sourceMaxPages,
                              bool useHugeMemory);
 
 // For a given WebAssembly/asm.js 'clamped' max pages, return the number of
 // bytes to map which will necessarily be a multiple of the system page size and
-// greater than maxPages in bytes.  See "Wasm Linear Memory Structure" in
+// greater than clampedMaxPages in bytes.  See "Wasm Linear Memory Structure" in
 // vm/ArrayBufferObject.cpp.
 extern size_t ComputeMappedSize(Pages clampedMaxPages);
 
@@ -161,15 +169,28 @@ extern uint64_t RoundUpToNextValidARMImmediate(uint64_t i);
 // On WASM_SUPPORTS_HUGE_MEMORY platforms, every asm.js or WebAssembly 32-bit
 // memory unconditionally allocates a huge region of virtual memory of size
 // wasm::HugeMappedSize. This allows all memory resizing to work without
-// reallocation and provides enough guard space for all offsets to be folded
+// reallocation and provides enough guard space for most offsets to be folded
 // into memory accesses.  See "Linear memory addresses and bounds checking" in
 // wasm/WasmMemory.cpp for more information.
 
+// Reserve 4GiB to support any i32 index.
 static const uint64_t HugeIndexRange = uint64_t(UINT32_MAX) + 1;
-static const uint64_t HugeOffsetGuardLimit = uint64_t(INT32_MAX) + 1;
+// Reserve 32MiB to support most offset immediates. Any immediate that is over
+// this will require a bounds check to be emitted. 32MiB was chosen to
+// generously cover the max offset immediate, 20MiB, found in a corpus of wasm
+// modules.
+static const uint64_t HugeOffsetGuardLimit = 1 << 25;
+// Reserve a wasm page (64KiB) to support slop on unaligned accesses.
 static const uint64_t HugeUnalignedGuardPage = PageSize;
+
+// Compute the total memory reservation.
 static const uint64_t HugeMappedSize =
     HugeIndexRange + HugeOffsetGuardLimit + HugeUnalignedGuardPage;
+
+// Try to keep the memory reservation aligned to the wasm page size. This
+// ensures that it's aligned to the system page size.
+static_assert(HugeMappedSize % PageSize == 0);
+
 #endif
 
 // The size of the guard page for non huge-memories.

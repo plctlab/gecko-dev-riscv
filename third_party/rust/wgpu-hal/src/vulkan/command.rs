@@ -194,38 +194,6 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         );
     }
 
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &super::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    ) {
-        self.device.raw.cmd_clear_color_image(
-            self.active,
-            texture.raw,
-            DST_IMAGE_LAYOUT,
-            &vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 0.0],
-            },
-            &[conv::map_subresource_range(
-                subresource_range,
-                texture.aspects,
-            )],
-        );
-
-        // The Vulkan api could easily support depth/stencil formats for clearing as well.
-        // But in other APIs this is more challenging which is why clear_texture excludes support for these formats.
-        // self.device.raw.cmd_clear_depth_stencil_image(
-        //     self.active,
-        //     texture.raw,
-        //     DST_IMAGE_LAYOUT,
-        //     &vk::ClearDepthStencilValue {
-        //         depth: 0.0,
-        //         stencil: 0,
-        //     },
-        //     &[range],
-        // );
-    }
-
     unsafe fn copy_buffer_to_buffer<T>(
         &mut self,
         src: &super::Buffer,
@@ -394,22 +362,36 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         let caps = &self.device.private_caps;
 
         for cat in desc.color_attachments {
-            vk_clear_values.push(vk::ClearValue {
-                color: cat.make_vk_clear_color(),
-            });
-            vk_image_views.push(cat.target.view.raw);
-            rp_key.colors.push(super::ColorAttachmentKey {
-                base: cat.target.make_attachment_key(cat.ops, caps),
-                resolve: cat
-                    .resolve_target
-                    .as_ref()
-                    .map(|target| target.make_attachment_key(crate::AttachmentOps::STORE, caps)),
-            });
-            fb_key.attachments.push(cat.target.view.attachment.clone());
-            if let Some(ref at) = cat.resolve_target {
-                vk_clear_values.push(mem::zeroed());
-                vk_image_views.push(at.view.raw);
-                fb_key.attachments.push(at.view.attachment.clone());
+            if let Some(cat) = cat.as_ref() {
+                vk_clear_values.push(vk::ClearValue {
+                    color: cat.make_vk_clear_color(),
+                });
+                vk_image_views.push(cat.target.view.raw);
+                let color = super::ColorAttachmentKey {
+                    base: cat.target.make_attachment_key(cat.ops, caps),
+                    resolve: cat.resolve_target.as_ref().map(|target| {
+                        target.make_attachment_key(crate::AttachmentOps::STORE, caps)
+                    }),
+                };
+
+                rp_key.colors.push(Some(color));
+                fb_key.attachments.push(cat.target.view.attachment.clone());
+                if let Some(ref at) = cat.resolve_target {
+                    vk_clear_values.push(mem::zeroed());
+                    vk_image_views.push(at.view.raw);
+                    fb_key.attachments.push(at.view.attachment.clone());
+                }
+
+                // Assert this attachment is valid for the detected multiview, as a sanity check
+                // The driver crash for this is really bad on AMD, so the check is worth it
+                if let Some(multiview) = desc.multiview {
+                    assert_eq!(cat.target.view.layers, multiview);
+                    if let Some(ref resolve_target) = cat.resolve_target {
+                        assert_eq!(resolve_target.view.layers, multiview);
+                    }
+                }
+            } else {
+                rp_key.colors.push(None);
             }
         }
         if let Some(ref ds) = desc.depth_stencil_attachment {
@@ -425,8 +407,15 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
                 stencil_ops: ds.stencil_ops,
             });
             fb_key.attachments.push(ds.target.view.attachment.clone());
+
+            // Assert this attachment is valid for the detected multiview, as a sanity check
+            // The driver crash for this is really bad on AMD, so the check is worth it
+            if let Some(multiview) = desc.multiview {
+                assert_eq!(ds.target.view.layers, multiview);
+            }
         }
         rp_key.sample_count = fb_key.sample_count;
+        rp_key.multiview = desc.multiview;
 
         let render_area = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
@@ -447,25 +436,29 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             min_depth: 0.0,
             max_depth: 1.0,
         }];
-        let vk_scissors = [render_area];
 
         let raw_pass = self.device.make_render_pass(rp_key).unwrap();
-
         let raw_framebuffer = self
             .device
             .make_framebuffer(fb_key, raw_pass, desc.label)
             .unwrap();
 
-        let mut vk_attachment_info = vk::RenderPassAttachmentBeginInfo::builder()
-            .attachments(&vk_image_views)
-            .build();
         let mut vk_info = vk::RenderPassBeginInfo::builder()
             .render_pass(raw_pass)
             .render_area(render_area)
             .clear_values(&vk_clear_values)
             .framebuffer(raw_framebuffer);
-        if caps.imageless_framebuffers {
-            vk_info = vk_info.push_next(&mut vk_attachment_info);
+        let mut vk_attachment_info = if caps.imageless_framebuffers {
+            Some(
+                vk::RenderPassAttachmentBeginInfo::builder()
+                    .attachments(&vk_image_views)
+                    .build(),
+            )
+        } else {
+            None
+        };
+        if let Some(attachment_info) = vk_attachment_info.as_mut() {
+            vk_info = vk_info.push_next(attachment_info);
         }
 
         if let Some(label) = desc.label {
@@ -478,7 +471,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             .cmd_set_viewport(self.active, 0, &vk_viewports);
         self.device
             .raw
-            .cmd_set_scissor(self.active, 0, &vk_scissors);
+            .cmd_set_scissor(self.active, 0, &[render_area]);
         self.device
             .raw
             .cmd_begin_render_pass(self.active, &vk_info, vk::SubpassContents::INLINE);
@@ -610,9 +603,11 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             .cmd_set_scissor(self.active, 0, &vk_scissors);
     }
     unsafe fn set_stencil_reference(&mut self, value: u32) {
-        self.device
-            .raw
-            .cmd_set_stencil_reference(self.active, vk::StencilFaceFlags::all(), value);
+        self.device.raw.cmd_set_stencil_reference(
+            self.active,
+            vk::StencilFaceFlags::FRONT_AND_BACK,
+            value,
+        );
     }
     unsafe fn set_blend_constants(&mut self, color: &[f32; 4]) {
         self.device.raw.cmd_set_blend_constants(self.active, color);

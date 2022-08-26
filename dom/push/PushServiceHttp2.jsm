@@ -8,10 +8,9 @@ const { PushDB } = ChromeUtils.import("resource://gre/modules/PushDB.jsm");
 const { PushRecord } = ChromeUtils.import(
   "resource://gre/modules/PushRecord.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
 const { clearTimeout, setTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
@@ -23,7 +22,9 @@ const { PushCrypto } = ChromeUtils.import(
 
 var EXPORTED_SYMBOLS = ["PushServiceHttp2"];
 
-XPCOMUtils.defineLazyGetter(this, "console", () => {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "console", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     maxLogLevelPref: "dom.push.loglevel",
@@ -46,7 +47,7 @@ const kPUSHHTTP2DB_STORE_NAME = "pushHttp2";
  * It's easier to stop listening than to have checks at specific points.
  */
 var PushSubscriptionListener = function(pushService, uri) {
-  console.debug("PushSubscriptionListener()");
+  lazy.console.debug("PushSubscriptionListener()");
   this._pushService = pushService;
   this.uri = uri;
 };
@@ -62,12 +63,12 @@ PushSubscriptionListener.prototype = {
   },
 
   onStartRequest(aRequest) {
-    console.debug("PushSubscriptionListener: onStartRequest()");
+    lazy.console.debug("PushSubscriptionListener: onStartRequest()");
     // We do not do anything here.
   },
 
   onDataAvailable(aRequest, aStream, aOffset, aCount) {
-    console.debug("PushSubscriptionListener: onDataAvailable()");
+    lazy.console.debug("PushSubscriptionListener: onDataAvailable()");
     // Nobody should send data, but just to be sure, otherwise necko will
     // complain.
     if (aCount === 0) {
@@ -83,7 +84,7 @@ PushSubscriptionListener.prototype = {
   },
 
   onStopRequest(aRequest, aStatusCode) {
-    console.debug("PushSubscriptionListener: onStopRequest()");
+    lazy.console.debug("PushSubscriptionListener: onStopRequest()");
     if (!this._pushService) {
       return;
     }
@@ -96,7 +97,7 @@ PushSubscriptionListener.prototype = {
   },
 
   onPush(associatedChannel, pushChannel) {
-    console.debug("PushSubscriptionListener: onPush()");
+    lazy.console.debug("PushSubscriptionListener: onPush()");
     var pushChannelListener = new PushChannelListener(this);
     pushChannel.asyncOpen(pushChannelListener);
   },
@@ -111,7 +112,7 @@ PushSubscriptionListener.prototype = {
  * OnDataAvailable and send to the app in OnStopRequest.
  */
 var PushChannelListener = function(pushSubscriptionListener) {
-  console.debug("PushChannelListener()");
+  lazy.console.debug("PushChannelListener()");
   this._mainListener = pushSubscriptionListener;
   this._message = [];
   this._ackUri = null;
@@ -123,7 +124,7 @@ PushChannelListener.prototype = {
   },
 
   onDataAvailable(aRequest, aStream, aOffset, aCount) {
-    console.debug("PushChannelListener: onDataAvailable()");
+    lazy.console.debug("PushChannelListener: onDataAvailable()");
 
     if (aCount === 0) {
       return;
@@ -140,7 +141,7 @@ PushChannelListener.prototype = {
   },
 
   onStopRequest(aRequest, aStatusCode) {
-    console.debug(
+    lazy.console.debug(
       "PushChannelListener: onStopRequest()",
       "status code",
       aStatusCode
@@ -216,7 +217,7 @@ var SubscriptionListener = function(
   aServerURI,
   aPushServiceHttp2
 ) {
-  console.debug("SubscriptionListener()");
+  lazy.console.debug("SubscriptionListener()");
   this._subInfo = aSubInfo;
   this._resolve = aResolve;
   this._reject = aReject;
@@ -232,7 +233,7 @@ SubscriptionListener.prototype = {
   onDataAvailable(aRequest, aStream, aOffset, aCount) {},
 
   onStopRequest(aRequest, aStatus) {
-    console.debug("SubscriptionListener: onStopRequest()");
+    lazy.console.debug("SubscriptionListener: onStopRequest()");
 
     // Check if pushService is still active.
     if (!this._service.hasmainPushService()) {
@@ -277,7 +278,7 @@ SubscriptionListener.prototype = {
       return;
     }
 
-    console.debug("onStopRequest: subscriptionUri", subscriptionUri);
+    lazy.console.debug("onStopRequest: subscriptionUri", subscriptionUri);
 
     var linkList;
     try {
@@ -302,7 +303,10 @@ SubscriptionListener.prototype = {
     try {
       Services.io.newURI(subscriptionUri);
     } catch (e) {
-      console.error("onStopRequest: Invalid subscription URI", subscriptionUri);
+      lazy.console.error(
+        "onStopRequest: Invalid subscription URI",
+        subscriptionUri
+      );
       this._reject(
         new Error("Invalid subscription endpoint: " + subscriptionUri)
       );
@@ -328,7 +332,7 @@ SubscriptionListener.prototype = {
       clearTimeout(this._retryTimeoutID);
       this._retryTimeoutID = null;
     } else {
-      console.debug(
+      lazy.console.debug(
         "SubscriptionListener.abortRetry: aborting non-existent retry?"
       );
     }
@@ -377,8 +381,8 @@ function linkParser(linkHeader, serverURI) {
     }
   });
 
-  console.debug("linkParser: pushEndpoint", pushEndpoint);
-  console.debug("linkParser: pushReceiptEndpoint", pushReceiptEndpoint);
+  lazy.console.debug("linkParser: pushEndpoint", pushEndpoint);
+  lazy.console.debug("linkParser: pushReceiptEndpoint", pushReceiptEndpoint);
   // Missing pushReceiptEndpoint is allowed.
   if (!pushEndpoint) {
     throw new Error("Missing push endpoint");
@@ -458,7 +462,7 @@ var PushServiceHttp2 = {
    * Subscribe new resource.
    */
   register(aRecord) {
-    console.debug("subscribeResource()");
+    lazy.console.debug("subscribeResource()");
 
     return this._subscribeResourceInternal({
       record: aRecord,
@@ -482,7 +486,7 @@ var PushServiceHttp2 = {
   },
 
   _subscribeResourceInternal(aSubInfo) {
-    console.debug("subscribeResourceInternal()");
+    lazy.console.debug("subscribeResourceInternal()");
 
     return new Promise((resolve, reject) => {
       var listener = new SubscriptionListener(
@@ -517,7 +521,7 @@ var PushServiceHttp2 = {
    * We can't do anything about it if it fails, so we don't listen for response.
    */
   _unsubscribeResource(aSubscriptionUri) {
-    console.debug("unsubscribeResource()");
+    lazy.console.debug("unsubscribeResource()");
 
     return this._deleteResource(aSubscriptionUri);
   },
@@ -526,9 +530,9 @@ var PushServiceHttp2 = {
    * Start listening for messages.
    */
   _listenForMsgs(aSubscriptionUri) {
-    console.debug("listenForMsgs()", aSubscriptionUri);
+    lazy.console.debug("listenForMsgs()", aSubscriptionUri);
     if (!this._conns[aSubscriptionUri]) {
-      console.warn(
+      lazy.console.warn(
         "listenForMsgs: We do not have this subscription",
         aSubscriptionUri
       );
@@ -546,7 +550,7 @@ var PushServiceHttp2 = {
     try {
       chan.asyncOpen(listener);
     } catch (e) {
-      console.error(
+      lazy.console.error(
         "listenForMsgs: Error connecting to push server.",
         "asyncOpen failed",
         e
@@ -563,12 +567,12 @@ var PushServiceHttp2 = {
   },
 
   _ackMsgRecv(aAckUri) {
-    console.debug("ackMsgRecv()", aAckUri);
+    lazy.console.debug("ackMsgRecv()", aAckUri);
     return this._deleteResource(aAckUri);
   },
 
   init(aOptions, aMainPushService, aServerURL) {
-    console.debug("init()");
+    lazy.console.debug("init()");
     this._mainPushService = aMainPushService;
     this._serverURI = aServerURL;
 
@@ -576,7 +580,7 @@ var PushServiceHttp2 = {
   },
 
   _retryAfterBackoff(aSubscriptionUri, retryAfter) {
-    console.debug("retryAfterBackoff()");
+    lazy.console.debug("retryAfterBackoff()");
 
     var resetRetryCount = prefs.getIntPref("http2.reset_retry_count_after_ms");
     // If it was running for some time, reset retry counter.
@@ -616,12 +620,12 @@ var PushServiceHttp2 = {
       retryAfter
     );
 
-    console.debug("retryAfterBackoff: Retry in", retryAfter);
+    lazy.console.debug("retryAfterBackoff: Retry in", retryAfter);
   },
 
   // Close connections.
   _shutdownConnections(deleteInfo) {
-    console.debug("shutdownConnections()");
+    lazy.console.debug("shutdownConnections()");
 
     for (let subscriptionUri in this._conns) {
       if (this._conns[subscriptionUri]) {
@@ -650,7 +654,7 @@ var PushServiceHttp2 = {
 
   // Start listening if subscriptions present.
   startConnections(aSubscriptions) {
-    console.debug("startConnections()", aSubscriptions.length);
+    lazy.console.debug("startConnections()", aSubscriptions.length);
 
     for (let i = 0; i < aSubscriptions.length; i++) {
       let record = aSubscriptions[i];
@@ -659,7 +663,7 @@ var PushServiceHttp2 = {
           this._startSingleConnection(record);
         },
         error => {
-          console.error(
+          lazy.console.error(
             "startConnections: Error updating record",
             record.keyID,
             error
@@ -670,7 +674,7 @@ var PushServiceHttp2 = {
   },
 
   _startSingleConnection(record) {
-    console.debug("_startSingleConnection()");
+    lazy.console.debug("_startSingleConnection()");
     if (typeof this._conns[record.subscriptionUri] != "object") {
       this._conns[record.subscriptionUri] = {
         channel: null,
@@ -686,7 +690,7 @@ var PushServiceHttp2 = {
 
   // Close connection and notify apps that subscription are gone.
   _shutdownSubscription(aSubscriptionUri) {
-    console.debug("shutdownSubscriptions()");
+    lazy.console.debug("shutdownSubscriptions()");
 
     if (typeof this._conns[aSubscriptionUri] == "object") {
       if (this._conns[aSubscriptionUri].listener) {
@@ -703,7 +707,7 @@ var PushServiceHttp2 = {
   },
 
   uninit() {
-    console.debug("uninit()");
+    lazy.console.debug("uninit()");
     this._abortPendingSubscriptionRetries();
     this._shutdownConnections(true);
     this._mainPushService = null;
@@ -720,7 +724,7 @@ var PushServiceHttp2 = {
   },
 
   reportDeliveryError(messageID, reason) {
-    console.warn(
+    lazy.console.warn(
       "reportDeliveryError: Ignoring message delivery error",
       messageID,
       reason
@@ -755,7 +759,7 @@ var PushServiceHttp2 = {
   },
 
   connOnStop(aRequest, aSuccess, aSubscriptionUri) {
-    console.debug("connOnStop() succeeded", aSuccess);
+    lazy.console.debug("connOnStop() succeeded", aSuccess);
 
     var conn = this._conns[aSubscriptionUri];
     if (!conn) {
@@ -790,12 +794,12 @@ var PushServiceHttp2 = {
 
   removeListenerPendingRetry(aListener) {
     if (!this._listenersPendingRetry.remove(aListener)) {
-      console.debug("removeListenerPendingRetry: listener not in list?");
+      lazy.console.debug("removeListenerPendingRetry: listener not in list?");
     }
   },
 
   _pushChannelOnStop(aUri, aAckUri, aHeaders, aMessage) {
-    console.debug("pushChannelOnStop()");
+    lazy.console.debug("pushChannelOnStop()");
 
     this._mainPushService
       .receivedPushMessage(aUri, "", aHeaders, aMessage, record => {
@@ -804,7 +808,7 @@ var PushServiceHttp2 = {
       })
       .then(_ => this._ackMsgRecv(aAckUri))
       .catch(err => {
-        console.error("pushChannelOnStop: Error receiving message", err);
+        lazy.console.error("pushChannelOnStop: Error receiving message", err);
       });
   },
 };

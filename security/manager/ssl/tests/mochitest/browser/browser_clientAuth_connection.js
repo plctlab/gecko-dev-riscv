@@ -123,7 +123,7 @@ const gClientAuthDialogs = {
   QueryInterface: ChromeUtils.generateQI(["nsIClientAuthDialogs"]),
 };
 
-add_task(async function setup() {
+add_setup(async function() {
   let clientAuthDialogsCID = MockRegistrar.register(
     "@mozilla.org/nsClientAuthDialogs;1",
     gClientAuthDialogs
@@ -307,12 +307,10 @@ add_task(async function testClearPrivateBrowsingState() {
 // Test that 3rd party certificates are taken into account when filtering client
 // certificates based on the acceptible CA list sent by the server.
 add_task(async function testCertFilteringWithIntermediate() {
-  let intermediateBytes = await OS.File.read(
+  let intermediateBytes = await IOUtils.readUTF8(
     getTestFilePath("intermediate.pem")
   ).then(
-    data => {
-      let decoder = new TextDecoder();
-      let pem = decoder.decode(data);
+    pem => {
       let base64 = pemToBase64(pem);
       let bin = atob(base64);
       let bytes = [];

@@ -8,10 +8,10 @@
 
 #include "DBSchema.h"
 #include "mozilla/dom/InternalResponse.h"
-#include "mozilla/dom/QMResultInlines.h"
 #include "mozilla/dom/quota/FileStreams.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/dom/quota/QuotaObject.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/SnappyCompressOutputStream.h"
 #include "mozilla/Unused.h"
@@ -24,8 +24,11 @@
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
+#include "snappy/snappy.h"
 
 namespace mozilla::dom::cache {
+
+static_assert(SNAPPY_VERSION == 0x010109);
 
 using mozilla::dom::quota::Client;
 using mozilla::dom::quota::CloneFileAndAppend;
@@ -66,8 +69,7 @@ nsresult DirectoryPaddingWrite(nsIFile& aBaseDir,
 const auto kMorgueDirectory = u"morgue"_ns;
 
 bool IsFileNotFoundError(const nsresult aRv) {
-  return aRv == NS_ERROR_FILE_NOT_FOUND ||
-         aRv == NS_ERROR_FILE_TARGET_DOES_NOT_EXIST;
+  return aRv == NS_ERROR_FILE_NOT_FOUND;
 }
 
 Result<NotNull<nsCOMPtr<nsIFile>>, nsresult> BodyGetCacheDir(nsIFile& aBaseDir,
@@ -86,7 +88,7 @@ Result<NotNull<nsCOMPtr<nsIFile>>, nsresult> BodyGetCacheDir(nsIFile& aBaseDir,
   // reports.
   QM_TRY(QM_OR_ELSE_LOG_VERBOSE_IF(
       // Expression.
-      ToResult(cacheDir->Create(nsIFile::DIRECTORY_TYPE, 0755)),
+      MOZ_TO_RESULT(cacheDir->Create(nsIFile::DIRECTORY_TYPE, 0755)),
       // Predicate.
       IsSpecificError<NS_ERROR_FILE_ALREADY_EXISTS>,
       // Fallback.
@@ -107,7 +109,7 @@ nsresult BodyCreateDir(nsIFile& aBaseDir) {
   // reports.
   QM_TRY(QM_OR_ELSE_LOG_VERBOSE_IF(
       // Expression.
-      ToResult(bodyDir->Create(nsIFile::DIRECTORY_TYPE, 0755)),
+      MOZ_TO_RESULT(bodyDir->Create(nsIFile::DIRECTORY_TYPE, 0755)),
       // Predicate.
       IsSpecificError<NS_ERROR_FILE_ALREADY_EXISTS>,
       // Fallback.
@@ -116,24 +118,26 @@ nsresult BodyCreateDir(nsIFile& aBaseDir) {
   return NS_OK;
 }
 
-nsresult BodyDeleteDir(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir) {
+nsresult BodyDeleteDir(const CacheDirectoryMetadata& aDirectoryMetadata,
+                       nsIFile& aBaseDir) {
   QM_TRY_INSPECT(const auto& bodyDir,
                  CloneFileAndAppend(aBaseDir, kMorgueDirectory));
 
-  QM_TRY(MOZ_TO_RESULT(RemoveNsIFileRecursively(aQuotaInfo, *bodyDir)));
+  QM_TRY(MOZ_TO_RESULT(RemoveNsIFileRecursively(aDirectoryMetadata, *bodyDir)));
 
   return NS_OK;
 }
 
 Result<std::pair<nsID, nsCOMPtr<nsISupports>>, nsresult> BodyStartWriteStream(
-    const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir, nsIInputStream& aSource,
-    void* aClosure, nsAsyncCopyCallbackFun aCallback) {
+    const CacheDirectoryMetadata& aDirectoryMetadata, nsIFile& aBaseDir,
+    nsIInputStream& aSource, void* aClosure, nsAsyncCopyCallbackFun aCallback) {
   MOZ_DIAGNOSTIC_ASSERT(aClosure);
   MOZ_DIAGNOSTIC_ASSERT(aCallback);
 
-  QM_TRY_INSPECT(const auto& idGen, ToResultGet<nsCOMPtr<nsIUUIDGenerator>>(
-                                        MOZ_SELECT_OVERLOAD(do_GetService),
-                                        "@mozilla.org/uuid-generator;1"));
+  QM_TRY_INSPECT(const auto& idGen,
+                 MOZ_TO_RESULT_GET_TYPED(nsCOMPtr<nsIUUIDGenerator>,
+                                         MOZ_SELECT_OVERLOAD(do_GetService),
+                                         "@mozilla.org/uuid-generator;1"));
 
   nsID id;
   QM_TRY(MOZ_TO_RESULT(idGen->GenerateUUIDInPlace(&id)));
@@ -143,7 +147,7 @@ Result<std::pair<nsID, nsCOMPtr<nsISupports>>, nsresult> BodyStartWriteStream(
 
   {
     QM_TRY_INSPECT(const bool& exists,
-                   MOZ_TO_RESULT_INVOKE(*finalFile, Exists));
+                   MOZ_TO_RESULT_INVOKE_MEMBER(*finalFile, Exists));
 
     QM_TRY(OkIf(!exists), Err(NS_ERROR_FILE_ALREADY_EXISTS));
   }
@@ -151,9 +155,10 @@ Result<std::pair<nsID, nsCOMPtr<nsISupports>>, nsresult> BodyStartWriteStream(
   QM_TRY_INSPECT(const auto& tmpFile,
                  BodyIdToFile(aBaseDir, id, BODY_FILE_TMP));
 
-  QM_TRY_INSPECT(const auto& fileStream,
-                 CreateFileOutputStream(PERSISTENCE_TYPE_DEFAULT, aQuotaInfo,
-                                        Client::DOMCACHE, tmpFile.get()));
+  QM_TRY_INSPECT(
+      const auto& fileStream,
+      CreateFileOutputStream(PERSISTENCE_TYPE_DEFAULT, aDirectoryMetadata,
+                             Client::DOMCACHE, tmpFile.get()));
 
   const auto compressed =
       MakeRefPtr<SnappyCompressOutputStream>(fileStream.get());
@@ -198,22 +203,22 @@ nsresult BodyFinalizeWrite(nsIFile& aBaseDir, const nsID& aId) {
 }
 
 Result<NotNull<nsCOMPtr<nsIInputStream>>, nsresult> BodyOpen(
-    const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir, const nsID& aId) {
+    const CacheDirectoryMetadata& aDirectoryMetadata, nsIFile& aBaseDir,
+    const nsID& aId) {
   QM_TRY_INSPECT(const auto& finalFile,
                  BodyIdToFile(aBaseDir, aId, BODY_FILE_FINAL));
 
-  QM_TRY_RETURN(CreateFileInputStream(PERSISTENCE_TYPE_DEFAULT, aQuotaInfo,
-                                      Client::DOMCACHE, finalFile.get())
-                    .map([](NotNull<RefPtr<FileInputStream>>&& stream) {
-                      return WrapNotNullUnchecked(
-                          nsCOMPtr<nsIInputStream>{stream.get()});
-                    }));
+  QM_TRY_RETURN(
+      CreateFileInputStream(PERSISTENCE_TYPE_DEFAULT, aDirectoryMetadata,
+                            Client::DOMCACHE, finalFile.get())
+          .map([](NotNull<RefPtr<FileInputStream>>&& stream) {
+            return WrapNotNullUnchecked(nsCOMPtr<nsIInputStream>{stream.get()});
+          }));
 }
 
-nsresult BodyMaybeUpdatePaddingSize(const QuotaInfo& aQuotaInfo,
-                                    nsIFile& aBaseDir, const nsID& aId,
-                                    const uint32_t aPaddingInfo,
-                                    int64_t* aPaddingSizeInOut) {
+nsresult BodyMaybeUpdatePaddingSize(
+    const CacheDirectoryMetadata& aDirectoryMetadata, nsIFile& aBaseDir,
+    const nsID& aId, const uint32_t aPaddingInfo, int64_t* aPaddingSizeInOut) {
   MOZ_DIAGNOSTIC_ASSERT(aPaddingSizeInOut);
 
   QM_TRY_INSPECT(const auto& bodyFile,
@@ -224,8 +229,8 @@ nsresult BodyMaybeUpdatePaddingSize(const QuotaInfo& aQuotaInfo,
 
   int64_t fileSize = 0;
   RefPtr<QuotaObject> quotaObject = quotaManager->GetQuotaObject(
-      PERSISTENCE_TYPE_DEFAULT, aQuotaInfo, Client::DOMCACHE, bodyFile.get(),
-      -1, &fileSize);
+      PERSISTENCE_TYPE_DEFAULT, aDirectoryMetadata, Client::DOMCACHE,
+      bodyFile.get(), -1, &fileSize);
   MOZ_DIAGNOSTIC_ASSERT(quotaObject);
   MOZ_DIAGNOSTIC_ASSERT(fileSize >= 0);
   // XXXtt: bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1422815
@@ -246,35 +251,36 @@ nsresult BodyMaybeUpdatePaddingSize(const QuotaInfo& aQuotaInfo,
   return NS_OK;
 }
 
-nsresult BodyDeleteFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
-                         const nsTArray<nsID>& aIdList) {
+nsresult BodyDeleteFiles(const CacheDirectoryMetadata& aDirectoryMetadata,
+                         nsIFile& aBaseDir, const nsTArray<nsID>& aIdList) {
   for (const auto id : aIdList) {
     QM_TRY_INSPECT(const auto& bodyDir, BodyGetCacheDir(aBaseDir, id));
 
     const auto removeFileForId =
-        [&aQuotaInfo, &id](
+        [&aDirectoryMetadata, &id](
             nsIFile& bodyFile,
             const nsACString& leafName) -> Result<bool, nsresult> {
       nsID fileId;
       QM_TRY(OkIf(fileId.Parse(leafName.BeginReading())), true,
-             ([&aQuotaInfo, &bodyFile](const auto) {
-               DebugOnly<nsresult> result =
-                   RemoveNsIFile(aQuotaInfo, bodyFile, /* aTrackQuota */ false);
+             ([&aDirectoryMetadata, &bodyFile](const auto) {
+               DebugOnly<nsresult> result = RemoveNsIFile(
+                   aDirectoryMetadata, bodyFile, /* aTrackQuota */ false);
                MOZ_ASSERT(NS_SUCCEEDED(result));
              }));
 
       if (id.Equals(fileId)) {
-        DebugOnly<nsresult> result = RemoveNsIFile(aQuotaInfo, bodyFile);
+        DebugOnly<nsresult> result =
+            RemoveNsIFile(aDirectoryMetadata, bodyFile);
         MOZ_ASSERT(NS_SUCCEEDED(result));
         return true;
       }
 
       return false;
     };
-    QM_TRY(
-        MOZ_TO_RESULT(BodyTraverseFiles(aQuotaInfo, *bodyDir, removeFileForId,
-                                        /* aCanRemoveFiles */ false,
-                                        /* aTrackQuota */ true)));
+    QM_TRY(MOZ_TO_RESULT(BodyTraverseFiles(aDirectoryMetadata, *bodyDir,
+                                           removeFileForId,
+                                           /* aCanRemoveFiles */ false,
+                                           /* aTrackQuota */ true)));
   }
 
   return NS_OK;
@@ -343,8 +349,9 @@ nsresult DirectoryPaddingWrite(nsIFile& aBaseDir,
 
 }  // namespace
 
-nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
-                                 const nsTArray<nsID>& aKnownBodyIdList) {
+nsresult BodyDeleteOrphanedFiles(
+    const CacheDirectoryMetadata& aDirectoryMetadata, nsIFile& aBaseDir,
+    const nsTArray<nsID>& aKnownBodyIdList) {
   // body files are stored in a directory structure like:
   //
   //  /morgue/01/{01fdddb2-884d-4c3d-95ba-0c8062f6c325}.final
@@ -356,21 +363,21 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
   // Iterate over all the intermediate morgue subdirs
   QM_TRY(quota::CollectEachFile(
       *dir,
-      [&aQuotaInfo, &aKnownBodyIdList](
+      [&aDirectoryMetadata, &aKnownBodyIdList](
           const nsCOMPtr<nsIFile>& subdir) -> Result<Ok, nsresult> {
         QM_TRY_INSPECT(const auto& dirEntryKind, GetDirEntryKind(*subdir));
 
         switch (dirEntryKind) {
           case nsIFileKind::ExistsAsDirectory: {
             const auto removeOrphanedFiles =
-                [&aQuotaInfo, &aKnownBodyIdList](
+                [&aDirectoryMetadata, &aKnownBodyIdList](
                     nsIFile& bodyFile,
                     const nsACString& leafName) -> Result<bool, nsresult> {
               // Finally, parse the uuid out of the name.  If it fails to parse,
               // then ignore the file.
-              auto cleanup = MakeScopeExit([&aQuotaInfo, &bodyFile] {
+              auto cleanup = MakeScopeExit([&aDirectoryMetadata, &bodyFile] {
                 DebugOnly<nsresult> result =
-                    RemoveNsIFile(aQuotaInfo, bodyFile);
+                    RemoveNsIFile(aDirectoryMetadata, bodyFile);
                 MOZ_ASSERT(NS_SUCCEEDED(result));
               });
 
@@ -391,10 +398,10 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
             // a warning in the reports is not desired).
             QM_TRY(QM_OR_ELSE_LOG_VERBOSE_IF(
                 // Expression.
-                ToResult(BodyTraverseFiles(aQuotaInfo, *subdir,
-                                           removeOrphanedFiles,
-                                           /* aCanRemoveFiles */ true,
-                                           /* aTrackQuota */ true)),
+                MOZ_TO_RESULT(BodyTraverseFiles(aDirectoryMetadata, *subdir,
+                                                removeOrphanedFiles,
+                                                /* aCanRemoveFiles */ true,
+                                                /* aTrackQuota */ true)),
                 // Predicate.
                 IsSpecificError<NS_ERROR_FILE_FS_CORRUPTED>,
                 // Fallback. We treat NS_ERROR_FILE_FS_CORRUPTED as if the
@@ -406,7 +413,8 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
           case nsIFileKind::ExistsAsFile: {
             // If a file got in here somehow, try to remove it and move on
             DebugOnly<nsresult> result =
-                RemoveNsIFile(aQuotaInfo, *subdir, /* aTrackQuota */ false);
+                RemoveNsIFile(aDirectoryMetadata, *subdir,
+                              /* aTrackQuota */ false);
             MOZ_ASSERT(NS_SUCCEEDED(result));
             break;
           }
@@ -425,8 +433,9 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBaseDir,
 namespace {
 
 Result<nsCOMPtr<nsIFile>, nsresult> GetMarkerFileHandle(
-    const QuotaInfo& aQuotaInfo) {
-  QM_TRY_UNWRAP(auto marker, CloneFileAndAppend(*aQuotaInfo.mDir, u"cache"_ns));
+    const CacheDirectoryMetadata& aDirectoryMetadata) {
+  QM_TRY_UNWRAP(auto marker,
+                CloneFileAndAppend(*aDirectoryMetadata.mDir, u"cache"_ns));
 
   QM_TRY(MOZ_TO_RESULT(marker->Append(u"context_open.marker"_ns)));
 
@@ -435,8 +444,8 @@ Result<nsCOMPtr<nsIFile>, nsresult> GetMarkerFileHandle(
 
 }  // namespace
 
-nsresult CreateMarkerFile(const QuotaInfo& aQuotaInfo) {
-  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aQuotaInfo));
+nsresult CreateMarkerFile(const CacheDirectoryMetadata& aDirectoryMetadata) {
+  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aDirectoryMetadata));
 
   // Callers call this function without checking if the file already exists
   // (idempotent usage). QM_OR_ELSE_WARN_IF is not used here since we just want
@@ -454,7 +463,7 @@ nsresult CreateMarkerFile(const QuotaInfo& aQuotaInfo) {
   // QM_OR_ELSE_LOG_VERBOSE_IF to QM_OR_ELSE_WARN_IF in the end.
   QM_TRY(QM_OR_ELSE_LOG_VERBOSE_IF(
       // Expression.
-      ToResult(marker->Create(nsIFile::NORMAL_FILE_TYPE, 0644)),
+      MOZ_TO_RESULT(marker->Create(nsIFile::NORMAL_FILE_TYPE, 0644)),
       // Predicate.
       IsSpecificError<NS_ERROR_FILE_ALREADY_EXISTS>,
       // Fallback.
@@ -469,11 +478,11 @@ nsresult CreateMarkerFile(const QuotaInfo& aQuotaInfo) {
   return NS_OK;
 }
 
-nsresult DeleteMarkerFile(const QuotaInfo& aQuotaInfo) {
-  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aQuotaInfo));
+nsresult DeleteMarkerFile(const CacheDirectoryMetadata& aDirectoryMetadata) {
+  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aDirectoryMetadata));
 
   DebugOnly<nsresult> result =
-      RemoveNsIFile(aQuotaInfo, *marker, /* aTrackQuota */ false);
+      RemoveNsIFile(aDirectoryMetadata, *marker, /* aTrackQuota */ false);
   MOZ_ASSERT(NS_SUCCEEDED(result));
 
   // Again, no fsync is necessary.  If the OS crashes before the file
@@ -484,14 +493,20 @@ nsresult DeleteMarkerFile(const QuotaInfo& aQuotaInfo) {
   return NS_OK;
 }
 
-bool MarkerFileExists(const QuotaInfo& aQuotaInfo) {
-  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aQuotaInfo), false);
+bool MarkerFileExists(const CacheDirectoryMetadata& aDirectoryMetadata) {
+  QM_TRY_INSPECT(const auto& marker, GetMarkerFileHandle(aDirectoryMetadata),
+                 false);
 
-  QM_TRY_RETURN(MOZ_TO_RESULT_INVOKE(marker, Exists), false);
+  QM_TRY_RETURN(MOZ_TO_RESULT_INVOKE_MEMBER(marker, Exists), false);
 }
 
-nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
-                                  const bool aTrackQuota) {
+nsresult RemoveNsIFileRecursively(
+    const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata, nsIFile& aFile,
+    const bool aTrackQuota) {
+  // XXX This assertion proves that we can remove aTrackQuota and just check
+  // aClientMetadata
+  MOZ_DIAGNOSTIC_ASSERT_IF(aTrackQuota, aDirectoryMetadata);
+
   QM_TRY_INSPECT(const auto& dirEntryKind, GetDirEntryKind(aFile));
 
   switch (dirEntryKind) {
@@ -501,10 +516,10 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
       // one to update their usages to the QuotaManager.
       QM_TRY(quota::CollectEachFile(
           aFile,
-          [&aQuotaInfo, &aTrackQuota](
+          [&aDirectoryMetadata, &aTrackQuota](
               const nsCOMPtr<nsIFile>& file) -> Result<Ok, nsresult> {
-            QM_TRY(MOZ_TO_RESULT(
-                RemoveNsIFileRecursively(aQuotaInfo, *file, aTrackQuota)));
+            QM_TRY(MOZ_TO_RESULT(RemoveNsIFileRecursively(aDirectoryMetadata,
+                                                          *file, aTrackQuota)));
 
             return Ok{};
           }));
@@ -515,7 +530,7 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
       break;
 
     case nsIFileKind::ExistsAsFile:
-      return RemoveNsIFile(aQuotaInfo, aFile, aTrackQuota);
+      return RemoveNsIFile(aDirectoryMetadata, aFile, aTrackQuota);
 
     case nsIFileKind::DoesNotExist:
       // Ignore files that got removed externally while iterating.
@@ -525,15 +540,19 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
   return NS_OK;
 }
 
-nsresult RemoveNsIFile(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
-                       const bool aTrackQuota) {
+nsresult RemoveNsIFile(const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata,
+                       nsIFile& aFile, const bool aTrackQuota) {
+  // XXX This assertion proves that we can remove aTrackQuota and just check
+  // aClientMetadata
+  MOZ_DIAGNOSTIC_ASSERT_IF(aTrackQuota, aDirectoryMetadata);
+
   int64_t fileSize = 0;
   if (aTrackQuota) {
     QM_TRY_INSPECT(
         const auto& maybeFileSize,
         QM_OR_ELSE_WARN_IF(
             // Expression.
-            MOZ_TO_RESULT_INVOKE(aFile, GetFileSize).map(Some<int64_t>),
+            MOZ_TO_RESULT_INVOKE_MEMBER(aFile, GetFileSize).map(Some<int64_t>),
             // Predicate.
             IsFileNotFoundError,
             // Fallback.
@@ -548,7 +567,7 @@ nsresult RemoveNsIFile(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
 
   QM_TRY(QM_OR_ELSE_WARN_IF(
       // Expression.
-      ToResult(aFile.Remove(/* recursive */ false)),
+      MOZ_TO_RESULT(aFile.Remove(/* recursive */ false)),
       // Predicate.
       IsFileNotFoundError,
       // Fallback.
@@ -556,21 +575,23 @@ nsresult RemoveNsIFile(const QuotaInfo& aQuotaInfo, nsIFile& aFile,
 
   if (fileSize > 0) {
     MOZ_ASSERT(aTrackQuota);
-    DecreaseUsageForQuotaInfo(aQuotaInfo, fileSize);
+    DecreaseUsageForDirectoryMetadata(*aDirectoryMetadata, fileSize);
   }
 
   return NS_OK;
 }
 
-void DecreaseUsageForQuotaInfo(const QuotaInfo& aQuotaInfo,
-                               const int64_t aUpdatingSize) {
+void DecreaseUsageForDirectoryMetadata(
+    const CacheDirectoryMetadata& aDirectoryMetadata,
+    const int64_t aUpdatingSize) {
   MOZ_DIAGNOSTIC_ASSERT(aUpdatingSize > 0);
 
   QuotaManager* quotaManager = QuotaManager::Get();
   MOZ_DIAGNOSTIC_ASSERT(quotaManager);
 
   quotaManager->DecreaseUsageForClient(
-      quota::ClientMetadata{aQuotaInfo, Client::DOMCACHE}, aUpdatingSize);
+      quota::ClientMetadata{aDirectoryMetadata, Client::DOMCACHE},
+      aUpdatingSize);
 }
 
 bool DirectoryPaddingFileExists(nsIFile& aBaseDir,
@@ -582,7 +603,7 @@ bool DirectoryPaddingFileExists(nsIFile& aBaseDir,
                                        : nsLiteralString(PADDING_FILE_NAME)),
       false);
 
-  QM_TRY_RETURN(MOZ_TO_RESULT_INVOKE(file, Exists), false);
+  QM_TRY_RETURN(MOZ_TO_RESULT_INVOKE_MEMBER(file, Exists), false);
 }
 
 Result<int64_t, nsresult> DirectoryPaddingGet(nsIFile& aBaseDir) {
@@ -601,10 +622,8 @@ Result<int64_t, nsresult> DirectoryPaddingGet(nsIFile& aBaseDir) {
   const nsCOMPtr<nsIObjectInputStream> objectStream =
       NS_NewObjectInputStream(bufferedStream);
 
-  QM_TRY_RETURN(
-      MOZ_TO_RESULT_INVOKE(objectStream, Read64).map([](const uint64_t val) {
-        return int64_t(val);
-      }));
+  QM_TRY_RETURN(MOZ_TO_RESULT_INVOKE_MEMBER(objectStream, Read64)
+                    .map([](const uint64_t val) { return int64_t(val); }));
 }
 
 nsresult DirectoryPaddingInit(nsIFile& aBaseDir) {
@@ -752,7 +771,7 @@ nsresult DirectoryPaddingDeleteFile(nsIFile& aBaseDir,
 
   QM_TRY(QM_OR_ELSE_WARN_IF(
       // Expression.
-      ToResult(file->Remove(/* recursive */ false)),
+      MOZ_TO_RESULT(file->Remove(/* recursive */ false)),
       // Predicate.
       IsFileNotFoundError,
       // Fallback.

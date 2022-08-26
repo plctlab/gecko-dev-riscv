@@ -150,6 +150,8 @@ class String final {
     // Copy the already normalized prefix.
     if (spanLength > 0) {
       PodCopy(aBuffer.data(), aString.data(), spanLength);
+
+      aBuffer.written(spanLength);
     }
 
     MOZ_TRY(FillBufferWithICUCall(
@@ -219,10 +221,9 @@ class String final {
     const unsigned MAX_DECOMP_LENGTH = 4;
     UErrorCode error = U_ZERO_ERROR;
     UChar decompUtf16[MAX_DECOMP_LENGTH];
-    int32_t len = unorm2_getRawDecomposition(normalizer,
-                                             static_cast<UChar32>(ab),
-                                             decompUtf16, MAX_DECOMP_LENGTH,
-                                             &error);
+    int32_t len =
+        unorm2_getRawDecomposition(normalizer, static_cast<UChar32>(ab),
+                                   decompUtf16, MAX_DECOMP_LENGTH, &error);
     if (U_FAILURE(error) || len < 0) {
       return 0;
     }
@@ -243,6 +244,11 @@ class String final {
     utext_close(&text);
     return len;
   }
+
+  /**
+   * Return the Unicode version, for example "13.0".
+   */
+  static Span<const char> GetUnicodeVersion();
 };
 
 }  // namespace mozilla::intl

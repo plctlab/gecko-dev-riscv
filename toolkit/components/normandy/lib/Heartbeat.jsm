@@ -7,7 +7,6 @@
 const { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryController } = ChromeUtils.import(
   "resource://gre/modules/TelemetryController.jsm"
 );
@@ -23,11 +22,6 @@ const { EventEmitter } = ChromeUtils.import(
 const { LogManager } = ChromeUtils.import(
   "resource://normandy/lib/LogManager.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]); /* globals URL */
 
 var EXPORTED_SYMBOLS = ["Heartbeat"];
 
@@ -222,16 +216,7 @@ var Heartbeat = class {
         this.ratingContainer.appendChild(ratingElement);
       }
 
-      if (Services.prefs.getBoolPref("browser.proton.enabled")) {
-        // This will append if there aren't any .text-link elements.
-        this.notice.buttonContainer.append(this.ratingContainer);
-      } else {
-        this.notice.messageText.flex = 0;
-        this.notice.messageDetails.insertBefore(
-          this.ratingContainer,
-          this.notice.spacer
-        );
-      }
+      this.notice.buttonContainer.append(this.ratingContainer);
     }
 
     // Let the consumer know the notification was shown.

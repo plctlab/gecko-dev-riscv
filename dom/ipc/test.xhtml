@@ -215,7 +215,9 @@
       messageManager.loadFrameScript("data:,addEventListener('MozAfterPaint', function(e) { sendAsyncMessage('MozAfterPaint'); },true);", false);
     }
 
-   Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+   const { XPCOMUtils } = ChromeUtils.importESModule(
+     "resource://gre/modules/XPCOMUtils.sys.mjs"
+   );
   </script>
 
   <toolbar id="controls">

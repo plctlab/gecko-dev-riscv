@@ -203,7 +203,7 @@ class alignas(ArenaSize) Arena {
   /*
    * True until the arena is swept for the first time.
    */
-  size_t isNewlyCreated : 1;
+  size_t isNewlyCreated_ : 1;
 
   /*
    * When recursive marking uses too much stack we delay marking of arenas and
@@ -366,6 +366,8 @@ class alignas(ArenaSize) Arena {
     return tailOffset % thingSize == 0;
   }
 
+  bool isNewlyCreated() const { return isNewlyCreated_; }
+
   bool onDelayedMarkingList() const { return onDelayedMarkingList_; }
 
   Arena* getNextDelayedMarking() const {
@@ -423,7 +425,7 @@ class alignas(ArenaSize) Arena {
   inline size_t& atomBitmapStart();
 
   template <typename T>
-  size_t finalize(JSFreeOp* fop, AllocKind thingKind, size_t thingSize);
+  size_t finalize(JS::GCContext* gcx, AllocKind thingKind, size_t thingSize);
 
   static void staticAsserts();
   static void checkLookupTables();
@@ -613,7 +615,8 @@ class TenuredChunk : public TenuredChunkBase {
     return offset >= offsetof(TenuredChunk, arenas) && offset < ChunkSize;
   }
 
-  static size_t arenaIndex(uintptr_t addr) {
+  static size_t arenaIndex(const Arena* arena) {
+    uintptr_t addr = arena->address();
     MOZ_ASSERT(!TenuredChunk::fromAddress(addr)->isNurseryChunk());
     MOZ_ASSERT(withinValidRange(addr));
     uintptr_t offset = addr & ChunkMask;
@@ -650,36 +653,27 @@ class TenuredChunk : public TenuredChunkBase {
   void decommitFreeArenasWithoutUnlocking(const AutoLockGC& lock);
 
   static TenuredChunk* allocate(GCRuntime* gc);
-  void init(GCRuntime* gc);
+  void init(GCRuntime* gc, bool allMemoryCommitted);
 
   /* Unlink and return the freeArenasHead. */
   Arena* fetchNextFreeArena(GCRuntime* gc);
 
 #ifdef DEBUG
   void verify() const;
+#else
+  void verify() const {}
 #endif
 
  private:
-  /* Search for a decommitted page to allocate. */
-  unsigned findDecommittedPageOffset();
   void commitOnePage(GCRuntime* gc);
-
-  void addArenaToFreeList(GCRuntime* gc, Arena* arena);
-
-  // Add Arenas located in the page of pageIndex to the free list.
-  void addArenasInPageToFreeList(GCRuntime* gc, size_t pageIndex);
-  // Mark areans located in the same page of arena as decommitted.
-  void markArenasInPageDecommitted(size_t pageIndex);
 
   void updateChunkListAfterAlloc(GCRuntime* gc, const AutoLockGC& lock);
   void updateChunkListAfterFree(GCRuntime* gc, size_t numArenasFree,
                                 const AutoLockGC& lock);
 
-  // Rebuild info.freeArenasHead by ascending order of arenas' address.
-  void rebuildFreeArenasList();
+  // Check if all arenas in a page are free.
+  bool canDecommitPage(size_t pageIndex) const;
 
-  // Check if the page is free.
-  bool isPageFree(size_t pageIndex) const;
   // Check the arena from freeArenasList is located in a free page.
   // Unlike the isPageFree(size_t) version, this isPageFree(Arena*) will see the
   // following arenas from the freeArenasHead are also located in the same page,
@@ -689,7 +683,7 @@ class TenuredChunk : public TenuredChunkBase {
 
   // Get the page index of the arena.
   size_t pageIndex(const Arena* arena) const {
-    return pageIndex(arenaIndex(arena->address()));
+    return pageIndex(arenaIndex(arena));
   }
   size_t pageIndex(size_t arenaIndex) const {
     return arenaIndex / ArenasPerPage;

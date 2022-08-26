@@ -877,6 +877,11 @@ s! {
         pub c_ispeed: ::speed_t,
         pub c_ospeed: ::speed_t,
     }
+
+    pub struct in6_pktinfo {
+        pub ipi6_addr: ::in6_addr,
+        pub ipi6_ifindex: ::c_uint,
+    }
 }
 
 s_no_extra_traits! {
@@ -1313,6 +1318,7 @@ pub const SIG_DFL: sighandler_t = 0 as sighandler_t;
 pub const SIG_IGN: sighandler_t = 1 as sighandler_t;
 pub const SIG_ERR: sighandler_t = !0 as sighandler_t;
 
+pub const DT_UNKNOWN: u8 = 0;
 pub const DT_FIFO: u8 = 1;
 pub const DT_CHR: u8 = 2;
 pub const DT_DIR: u8 = 4;
@@ -1787,6 +1793,9 @@ pub const IPV6_MULTICAST_LOOP: ::c_int = 19;
 pub const IPV6_ADD_MEMBERSHIP: ::c_int = 20;
 pub const IPV6_DROP_MEMBERSHIP: ::c_int = 21;
 pub const IPV6_V6ONLY: ::c_int = 26;
+pub const IPV6_RECVPKTINFO: ::c_int = 49;
+pub const IPV6_RECVTCLASS: ::c_int = 66;
+pub const IPV6_TCLASS: ::c_int = 67;
 
 pub const TCP_NODELAY: ::c_int = 1;
 pub const TCP_MAXSEG: ::c_int = 2;
@@ -2668,6 +2677,9 @@ pub const PT_GNU_EH_FRAME: u32 = 0x6474e550;
 pub const PT_GNU_STACK: u32 = 0x6474e551;
 pub const PT_GNU_RELRO: u32 = 0x6474e552;
 
+// Ethernet protocol IDs.
+pub const ETH_P_IP: ::c_int = 0x0800;
+
 pub const SFD_CLOEXEC: ::c_int = 0x080000;
 
 pub const NCCS: usize = 32;
@@ -3158,7 +3170,7 @@ f! {
         return
     }
 
-    pub fn FD_ISSET(fd: ::c_int, set: *mut fd_set) -> bool {
+    pub fn FD_ISSET(fd: ::c_int, set: *const fd_set) -> bool {
         let fd = fd as usize;
         let size = ::mem::size_of_val(&(*set).fds_bits[0]) * 8;
         return ((*set).fds_bits[fd / size] & (1 << (fd % size))) != 0
@@ -3392,6 +3404,7 @@ extern "C" {
     pub fn perror(s: *const c_char);
     pub fn atoi(s: *const c_char) -> c_int;
     pub fn strtod(s: *const c_char, endp: *mut *mut c_char) -> c_double;
+    pub fn strtof(s: *const c_char, endp: *mut *mut c_char) -> c_float;
     pub fn strtol(s: *const c_char, endp: *mut *mut c_char, base: c_int) -> c_long;
     pub fn strtoul(s: *const c_char, endp: *mut *mut c_char, base: c_int) -> c_ulong;
     pub fn calloc(nobj: size_t, size: size_t) -> *mut c_void;

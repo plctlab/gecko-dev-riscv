@@ -8,6 +8,7 @@
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include "nsMathMLmmultiscriptsFrame.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/MathMLElement.h"
 #include <algorithm>
 #include "gfxContext.h"
@@ -451,7 +452,7 @@ nsresult nsMathMLmunderoverFrame::Place(DrawTarget* aDrawTarget,
 
   nscoord xHeight = fm->XHeight();
   nscoord oneDevPixel = fm->AppUnitsPerDevPixel();
-  gfxFont* mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont = fm->GetThebesFontGroup()->GetFirstMathFont();
 
   nscoord ruleThickness;
   GetRuleThickness(aDrawTarget, fm, ruleThickness);

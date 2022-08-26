@@ -18,8 +18,7 @@
 
 class nsDNSPrefetch;
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 class HttpTransactionShell;
 class nsHttpHandler;
@@ -82,8 +81,13 @@ class TRRServiceChannel : public HttpBaseChannel,
   NS_IMETHOD SetClassFlags(uint32_t inFlags) override;
   NS_IMETHOD AddClassFlags(uint32_t inFlags) override;
   NS_IMETHOD ClearClassFlags(uint32_t inFlags) override;
+  NS_IMETHOD SetIncremental(bool inFlag) override;
+  NS_IMETHOD SetClassOfService(ClassOfService cos) override;
   // nsIResumableChannel
   NS_IMETHOD ResumeAt(uint64_t startPos, const nsACString& entityID) override;
+  NS_IMETHOD SetEarlyHintObserver(nsIEarlyHintObserver* aObserver) override {
+    return NS_OK;
+  }
 
   [[nodiscard]] nsresult OnPush(uint32_t aPushedStreamId,
                                 const nsACString& aUrl,
@@ -133,7 +137,10 @@ class TRRServiceChannel : public HttpBaseChannel,
   [[nodiscard]] virtual nsresult SetupReplacementChannel(
       nsIURI* aNewURI, nsIChannel* aNewChannel, bool aPreserveMethod,
       uint32_t aRedirectFlags) override;
-
+  // Skip this check for TRRServiceChannel.
+  virtual bool ShouldTaintReplacementChannelOrigin(nsIURI* aNewURI) override {
+    return false;
+  }
   virtual bool SameOriginWithOriginalUri(nsIURI* aURI) override;
   bool DispatchRelease();
 
@@ -155,7 +162,6 @@ class TRRServiceChannel : public HttpBaseChannel,
 
 NS_DEFINE_STATIC_IID_ACCESSOR(TRRServiceChannel, NS_TRRSERVICECHANNEL_IID)
 
-}  // namespace net
-}  // namespace mozilla
+}  // namespace mozilla::net
 
 #endif  // mozilla_net_TRRServiceChannel_h

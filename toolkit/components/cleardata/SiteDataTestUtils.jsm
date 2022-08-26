@@ -6,22 +6,21 @@
 
 var EXPORTED_SYMBOLS = ["SiteDataTestUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { BrowserTestUtils } = ChromeUtils.import(
   "resource://testing-common/BrowserTestUtils.jsm"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "swm",
   "@mozilla.org/serviceworkers/manager;1",
   "nsIServiceWorkerManager"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["indexedDB", "Blob"]);
 
 /**
  * This module assists with tasks around testing functionality that shows
@@ -211,10 +210,21 @@ var SiteDataTestUtils = {
     });
   },
 
-  hasCookies(origin, testEntries) {
+  hasCookies(origin, testEntries = null, testPBMCookies = false) {
     let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
       origin
     );
+
+    let cookies;
+    if (testPBMCookies) {
+      // This needs to be updated when adding support for multiple PBM contexts.
+      let originAttributes = { privateBrowsingId: 1 };
+      cookies = Services.cookies.getCookiesWithOriginAttributes(
+        JSON.stringify(originAttributes)
+      );
+    } else {
+      cookies = Services.cookies.cookies;
+    }
 
     let filterFn = cookie => {
       return (
@@ -227,11 +237,11 @@ var SiteDataTestUtils = {
 
     // Return on first cookie found for principal.
     if (!testEntries) {
-      return Services.cookies.cookies.some(filterFn);
+      return cookies.some(filterFn);
     }
 
     // Collect all cookies that match the principal
-    let cookies = Services.cookies.cookies.filter(filterFn);
+    cookies = cookies.filter(filterFn);
 
     if (cookies.length < testEntries.length) {
       return false;
@@ -310,7 +320,7 @@ var SiteDataTestUtils = {
    * @returns {Boolean} whether or not the site has ServiceWorkers.
    */
   hasServiceWorkers(origin) {
-    let serviceWorkers = swm.getAllRegistrations();
+    let serviceWorkers = lazy.swm.getAllRegistrations();
     for (let i = 0; i < serviceWorkers.length; i++) {
       let sw = serviceWorkers.queryElementAt(
         i,
@@ -342,11 +352,11 @@ var SiteDataTestUtils = {
           if (registration.principal.host != url.host) {
             return;
           }
-          swm.removeListener(listener);
+          lazy.swm.removeListener(listener);
           resolve(registration);
         },
       };
-      swm.addListener(listener);
+      lazy.swm.addListener(listener);
     });
   },
 
@@ -369,11 +379,11 @@ var SiteDataTestUtils = {
           if (registration.principal.host != url.host) {
             return;
           }
-          swm.removeListener(listener);
+          lazy.swm.removeListener(listener);
           resolve(registration);
         },
       };
-      swm.addListener(listener);
+      lazy.swm.addListener(listener);
     });
   },
 
@@ -405,7 +415,7 @@ var SiteDataTestUtils = {
           Ci.nsIClearDataService.CLEAR_MEDIA_DEVICES |
           Ci.nsIClearDataService.CLEAR_DOM_STORAGES |
           Ci.nsIClearDataService.CLEAR_PREDICTOR_NETWORK_DATA |
-          Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS |
+          Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE |
           Ci.nsIClearDataService.CLEAR_EME |
           Ci.nsIClearDataService.CLEAR_STORAGE_ACCESS,
         resolve

@@ -6,21 +6,24 @@
 
 const EXPORTED_SYMBOLS = ["browser", "Context", "WindowState"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AppInfo: "chrome://remote/content/marionette/appinfo.js",
   error: "chrome://remote/content/shared/webdriver/Errors.jsm",
+  EventPromise: "chrome://remote/content/shared/Sync.jsm",
   MessageManagerDestroyedPromise: "chrome://remote/content/marionette/sync.js",
-  waitForEvent: "chrome://remote/content/marionette/sync.js",
+  TabManager: "chrome://remote/content/shared/TabManager.jsm",
   WebElementEventTarget: "chrome://remote/content/marionette/dom.js",
   windowManager: "chrome://remote/content/shared/WindowManager.jsm",
 });
 
 /** @namespace */
-this.browser = {};
+const browser = {};
 
 /**
  * Variations of Marionette contexts.
@@ -59,92 +62,6 @@ class Context {
 }
 Context.Chrome = "chrome";
 Context.Content = "content";
-this.Context = Context;
-
-// GeckoView shim for Desktop's gBrowser
-class MobileTabBrowser {
-  constructor(window) {
-    this.window = window;
-  }
-
-  get tabs() {
-    return [this.window.tab];
-  }
-
-  get selectedTab() {
-    return this.window.tab;
-  }
-
-  set selectedTab(tab) {
-    if (tab != this.selectedTab) {
-      throw new Error("GeckoView only supports a single tab");
-    }
-
-    // Synthesize a custom TabSelect event to indicate that a tab has been
-    // selected even when we don't change it.
-    const event = this.window.CustomEvent("TabSelect", {
-      bubbles: true,
-      cancelable: false,
-      detail: {
-        previousTab: this.selectedTab,
-      },
-    });
-    this.window.document.dispatchEvent(event);
-  }
-
-  get selectedBrowser() {
-    return this.selectedTab.linkedBrowser;
-  }
-
-  addEventListener() {
-    this.window.addEventListener(...arguments);
-  }
-
-  removeEventListener() {
-    this.window.removeEventListener(...arguments);
-  }
-}
-
-/**
- * Get the <code>&lt;xul:browser&gt;</code> for the specified tab.
- *
- * @param {Tab} tab
- *     The tab whose browser needs to be returned.
- *
- * @return {Browser}
- *     The linked browser for the tab or null if no browser can be found.
- */
-browser.getBrowserForTab = function(tab) {
-  if (tab && "linkedBrowser" in tab) {
-    return tab.linkedBrowser;
-  }
-
-  return null;
-};
-
-/**
- * Return the tab browser for the specified chrome window.
- *
- * @param {ChromeWindow} win
- *     Window whose <code>tabbrowser</code> needs to be accessed.
- *
- * @return {Tab}
- *     Tab browser or null if it's not a browser window.
- */
-browser.getTabBrowser = function(window) {
-  // GeckoView
-  if (AppInfo.isAndroid) {
-    return new MobileTabBrowser(window);
-    // Firefox
-  } else if ("gBrowser" in window) {
-    return window.gBrowser;
-    // Thunderbird
-  } else if (window.document.getElementById("tabmail")) {
-    return window.document.getElementById("tabmail");
-  }
-
-  return null;
-};
 
 /**
  * Creates a browsing context wrapper.
@@ -165,7 +82,7 @@ browser.Context = class {
 
     // In Firefox this is <xul:tabbrowser> (not <xul:browser>!)
     // and MobileTabBrowser in GeckoView.
-    this.tabBrowser = browser.getTabBrowser(this.window);
+    this.tabBrowser = lazy.TabManager.getTabBrowser(this.window);
 
     // Used to set curFrameId upon new session
     this.newSession = true;
@@ -186,7 +103,7 @@ browser.Context = class {
    */
   get contentBrowser() {
     if (this.tab) {
-      return browser.getBrowserForTab(this.tab);
+      return lazy.TabManager.getBrowserForTab(this.tab);
     } else if (
       this.tabBrowser &&
       this.driver.isReftestBrowser(this.tabBrowser)
@@ -258,7 +175,7 @@ browser.Context = class {
    *     A promise which is resolved when the current window has been closed.
    */
   async closeWindow() {
-    return windowManager.closeWindow(this.window);
+    return lazy.windowManager.closeWindow(this.window);
   }
 
   /**
@@ -268,7 +185,7 @@ browser.Context = class {
    *     A promise which is resolved when the current window has been focused.
    */
   async focusWindow() {
-    return windowManager.focusWindow(this.window);
+    return lazy.windowManager.focusWindow(this.window);
   }
 
   /**
@@ -277,8 +194,12 @@ browser.Context = class {
    * @return {Promise}
    *     A promise resolving to the newly created chrome window.
    */
-  async openBrowserWindow(focus = false, isPrivate = false) {
-    return windowManager.openBrowserWindow(this.window, focus, isPrivate);
+  openBrowserWindow(focus = false, isPrivate = false) {
+    return lazy.windowManager.openBrowserWindow({
+      openerWindow: this.window,
+      focus,
+      isPrivate,
+    });
   }
 
   /**
@@ -302,18 +223,20 @@ browser.Context = class {
       return this.closeWindow();
     }
 
-    let destroyed = new MessageManagerDestroyedPromise(this.messageManager);
+    let destroyed = new lazy.MessageManagerDestroyedPromise(
+      this.messageManager
+    );
     let tabClosed;
 
-    switch (AppInfo.name) {
+    switch (lazy.AppInfo.name) {
       case "Firefox":
-        tabClosed = waitForEvent(this.tab, "TabClose");
+        tabClosed = new lazy.EventPromise(this.tab, "TabClose");
         this.tabBrowser.removeTab(this.tab);
         break;
 
       default:
-        throw new error.UnsupportedOperationError(
-          `closeTab() not supported in ${AppInfo.name}`
+        throw new lazy.error.UnsupportedOperationError(
+          `closeTab() not supported in ${lazy.AppInfo.name}`
         );
     }
 
@@ -326,9 +249,9 @@ browser.Context = class {
   async openTab(focus = false) {
     let tab = null;
 
-    switch (AppInfo.name) {
+    switch (lazy.AppInfo.name) {
       case "Firefox":
-        const opened = waitForEvent(this.window, "TabOpen");
+        const opened = new lazy.EventPromise(this.window, "TabOpen");
         this.window.BrowserOpenTab();
         await opened;
 
@@ -343,8 +266,8 @@ browser.Context = class {
         break;
 
       default:
-        throw new error.UnsupportedOperationError(
-          `openTab() not supported in ${AppInfo.name}`
+        throw new lazy.error.UnsupportedOperationError(
+          `openTab() not supported in ${lazy.AppInfo.name}`
         );
     }
 
@@ -370,11 +293,9 @@ browser.Context = class {
    *     If tab handling for the current application isn't supported.
    */
   async switchToTab(index, window = undefined, focus = true) {
-    let currentTab = this.tabBrowser.selectedTab;
-
     if (window) {
       this.window = window;
-      this.tabBrowser = browser.getTabBrowser(this.window);
+      this.tabBrowser = lazy.TabManager.getTabBrowser(this.window);
     }
 
     if (!this.tabBrowser) {
@@ -387,15 +308,13 @@ browser.Context = class {
       this.tab = this.tabBrowser.tabs[index];
     }
 
-    if (focus && this.tab != currentTab) {
-      const tabSelected = waitForEvent(this.window, "TabSelect");
-      this.tabBrowser.selectedTab = this.tab;
-      await tabSelected;
+    if (focus) {
+      await lazy.TabManager.selectTab(this.tab);
     }
 
     // TODO(ato): Currently tied to curBrowser, but should be moved to
-    // WebElement when introduced by https://bugzil.la/1400256.
-    this.eventObserver = new WebElementEventTarget(this.messageManager);
+    // WebReference when introduced by https://bugzil.la/1400256.
+    this.eventObserver = new lazy.WebElementEventTarget(this.messageManager);
 
     return this.tab;
   }
@@ -463,4 +382,3 @@ const WindowState = {
     }
   },
 };
-this.WindowState = WindowState;

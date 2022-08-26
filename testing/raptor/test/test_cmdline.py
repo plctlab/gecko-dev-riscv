@@ -27,10 +27,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=False,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     parser = ArgumentParser()
 
@@ -51,10 +55,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=False,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     verify_options(parser, args)  # assert no exception
 
@@ -69,10 +77,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=False,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     verify_options(parser, args)  # assert no exception
 
@@ -87,10 +99,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=False,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     verify_options(parser, args)  # assert no exception
 
@@ -105,10 +121,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=True,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     verify_options(parser, args)  # assert no exception
 
@@ -123,10 +143,14 @@ def test_verify_options(filedir):
         power_test=False,
         cpu_test=False,
         memory_test=False,
-        enable_webrender=False,
         chimera=False,
         browsertime_video=False,
         browsertime_visualmetrics=False,
+        fission=True,
+        fission_mobile=False,
+        test_bytecode_cache=False,
+        webext=False,
+        extra_prefs=[],
     )
     parser = ArgumentParser()
 

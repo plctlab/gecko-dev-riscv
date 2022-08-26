@@ -21,9 +21,13 @@ from . import data_review as mod_data_review
 from . import lint
 from . import translate as mod_translate
 from . import validate_ping
+from . import translation_options
 
 
-@click.command()
+CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
+
+
+@click.command(context_settings=CONTEXT_SETTINGS)
 @click.argument(
     "input",
     type=click.Path(exists=False, dir_okay=False, file_okay=True, readable=True),
@@ -45,10 +49,13 @@ from . import validate_ping
 @click.option(
     "--option",
     "-s",
-    help="backend-specific option. Must be of the form key=value",
+    help="Backend-specific option. Must be of the form key=value.\
+ Pass 'help' for valid options",
     type=str,
     multiple=True,
     required=False,
+    is_eager=True,
+    callback=translation_options.translate_options,
 )
 @click.option(
     "--allow-reserved",
@@ -63,7 +70,27 @@ from . import validate_ping
     is_flag=True,
     help=("Do not treat missing input files as an error."),
 )
-def translate(input, format, output, option, allow_reserved, allow_missing_files):
+@click.option(
+    "--require-tags",
+    is_flag=True,
+    help=("Require tags to be specified for metrics and pings."),
+)
+@click.option(
+    "--expire-by-version",
+    help="Expire metrics by version, with the provided major version.",
+    type=click.INT,
+    required=False,
+)
+def translate(
+    input,
+    format,
+    output,
+    option,
+    allow_reserved,
+    allow_missing_files,
+    require_tags,
+    expire_by_version,
+):
     """
     Translate metrics.yaml and pings.yaml files to other formats.
     """
@@ -81,6 +108,8 @@ def translate(input, format, output, option, allow_reserved, allow_missing_files
             {
                 "allow_reserved": allow_reserved,
                 "allow_missing_files": allow_missing_files,
+                "require_tags": require_tags,
+                "expire_by_version": expire_by_version,
             },
         )
     )
@@ -130,7 +159,12 @@ def check(schema):
     is_flag=True,
     help=("Do not treat missing input files as an error."),
 )
-def glinter(input, allow_reserved, allow_missing_files):
+@click.option(
+    "--require-tags",
+    is_flag=True,
+    help=("Require tags to be specified for metrics and pings."),
+)
+def glinter(input, allow_reserved, allow_missing_files, require_tags):
     """
     Runs a linter over the metrics.
     """
@@ -140,6 +174,7 @@ def glinter(input, allow_reserved, allow_missing_files):
             {
                 "allow_reserved": allow_reserved,
                 "allow_missing_files": allow_missing_files,
+                "require_tags": require_tags,
             },
         )
     )

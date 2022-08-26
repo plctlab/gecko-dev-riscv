@@ -38,9 +38,11 @@
 #include "mozilla/dom/Directory.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/FileList.h"
+#include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/OSFileSystem.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/Unused.h"
 #include "nsComponentManagerUtils.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
@@ -437,7 +439,7 @@ already_AddRefed<nsINode> DataTransfer::GetMozSourceNode() {
 }
 
 already_AddRefed<DOMStringList> DataTransfer::MozTypesAt(
-    uint32_t aIndex, CallerType aCallerType, ErrorResult& aRv) const {
+    uint32_t aIndex, ErrorResult& aRv) const {
   // Only the first item is valid for clipboard events
   if (aIndex > 0 && (mEventMessage == eCut || mEventMessage == eCopy ||
                      mEventMessage == ePaste)) {
@@ -453,10 +455,6 @@ already_AddRefed<DOMStringList> DataTransfer::MozTypesAt(
 
     bool addFile = false;
     for (uint32_t i = 0; i < items.Length(); i++) {
-      if (items[i]->ChromeOnly() && aCallerType != CallerType::System) {
-        continue;
-      }
-
       // NOTE: The reason why we get the internal type here is because we want
       // kFileMime to appear in the types list for backwards compatibility
       // reasons.
@@ -538,10 +536,9 @@ nsresult DataTransfer::GetDataAtInternal(const nsAString& aFormat,
 void DataTransfer::MozGetDataAt(JSContext* aCx, const nsAString& aFormat,
                                 uint32_t aIndex,
                                 JS::MutableHandle<JS::Value> aRetval,
-                                nsIPrincipal& aSubjectPrincipal,
                                 mozilla::ErrorResult& aRv) {
   nsCOMPtr<nsIVariant> data;
-  aRv = GetDataAtInternal(aFormat, aIndex, &aSubjectPrincipal,
+  aRv = GetDataAtInternal(aFormat, aIndex, nsContentUtils::GetSystemPrincipal(),
                           getter_AddRefs(data));
   if (aRv.Failed()) {
     return;
@@ -570,21 +567,17 @@ bool DataTransfer::PrincipalMaySetData(const nsAString& aType,
       return false;
     }
 
-    if (aType.EqualsASCII(kFileMime) || aType.EqualsASCII(kFilePromiseMime)) {
-      NS_WARNING(
-          "Disallowing adding x-moz-file or x-moz-file-promize types to "
-          "DataTransfer");
-      return false;
-    }
-
-    // Disallow content from creating x-moz-place flavors, so that it cannot
-    // create fake Places smart queries exposing user data, but give a free
-    // pass to WebExtensions.
-    auto principal = BasePrincipal::Cast(aPrincipal);
-    if (!principal->AddonPolicy() &&
-        StringBeginsWith(aType, u"text/x-moz-place"_ns)) {
-      NS_WARNING("Disallowing adding moz-place types to DataTransfer");
-      return false;
+    // Don't allow adding internal types of the form */x-moz-*, but
+    // special-case the url types as they are simple variations of urls.
+    // In addition, allow x-moz-place flavors to be added by WebExtensions.
+    if (FindInReadable(kInternal_Mimetype_Prefix, aType) &&
+        !StringBeginsWith(aType, u"text/x-moz-url"_ns)) {
+      auto principal = BasePrincipal::Cast(aPrincipal);
+      if (!principal->AddonPolicy() ||
+          !StringBeginsWith(aType, u"text/x-moz-place"_ns)) {
+        NS_WARNING("Disallowing adding this type to DataTransfer");
+        return false;
+      }
     }
   }
 
@@ -612,6 +605,12 @@ already_AddRefed<DataTransfer> DataTransfer::MozCloneForEvent(
   }
   return dt.forget();
 }
+
+// The order of the types matters. `kFileMime` needs to be one of the first two
+// types.
+static const char* kNonPlainTextExternalFormats[] = {
+    kCustomTypesMime, kFileMime,    kHTMLMime,    kRTFMime,
+    kURLMime,         kURLDataMime, kUnicodeMime, kPNGImageMime};
 
 /* static */
 void DataTransfer::GetExternalClipboardFormats(const int32_t& aWhichClipboard,
@@ -642,18 +641,16 @@ void DataTransfer::GetExternalClipboardFormats(const int32_t& aWhichClipboard,
   }
 
   // If not plain text only, then instead check all the other types
-  static const char* formats[] = {kCustomTypesMime, kFileMime,    kHTMLMime,
-                                  kRTFMime,         kURLMime,     kURLDataMime,
-                                  kUnicodeMime,     kPNGImageMime};
-
-  for (uint32_t f = 0; f < mozilla::ArrayLength(formats); ++f) {
+  for (uint32_t f = 0; f < mozilla::ArrayLength(kNonPlainTextExternalFormats);
+       ++f) {
     bool hasType;
-    AutoTArray<nsCString, 1> format = {nsDependentCString(formats[f])};
+    AutoTArray<nsCString, 1> format = {
+        nsDependentCString(kNonPlainTextExternalFormats[f])};
     nsresult rv =
         clipboard->HasDataMatchingFlavors(format, aWhichClipboard, &hasType);
     NS_SUCCEEDED(rv);
     if (hasType) {
-      aResult->AppendElement(formats[f]);
+      aResult->AppendElement(kNonPlainTextExternalFormats[f]);
     }
   }
 }
@@ -683,11 +680,7 @@ void DataTransfer::GetExternalTransferableFormats(
   }
 
   // If not plain text only, then instead check all the other types
-  static const char* formats[] = {kCustomTypesMime, kFileMime,    kHTMLMime,
-                                  kRTFMime,         kURLMime,     kURLDataMime,
-                                  kUnicodeMime,     kPNGImageMime};
-
-  for (const char* format : formats) {
+  for (const char* format : kNonPlainTextExternalFormats) {
     auto index = flavors.IndexOf(nsCString(format));
     if (index != flavors.NoIndex) {
       aResult->AppendElement(nsCString(format));
@@ -732,18 +725,17 @@ nsresult DataTransfer::SetDataAtInternal(const nsAString& aFormat,
 
 void DataTransfer::MozSetDataAt(JSContext* aCx, const nsAString& aFormat,
                                 JS::Handle<JS::Value> aData, uint32_t aIndex,
-                                nsIPrincipal& aSubjectPrincipal,
                                 ErrorResult& aRv) {
   nsCOMPtr<nsIVariant> data;
   aRv = nsContentUtils::XPConnect()->JSValToVariant(aCx, aData,
                                                     getter_AddRefs(data));
   if (!aRv.Failed()) {
-    aRv = SetDataAtInternal(aFormat, data, aIndex, &aSubjectPrincipal);
+    aRv = SetDataAtInternal(aFormat, data, aIndex,
+                            nsContentUtils::GetSystemPrincipal());
   }
 }
 
 void DataTransfer::MozClearDataAt(const nsAString& aFormat, uint32_t aIndex,
-                                  nsIPrincipal& aSubjectPrincipal,
                                   ErrorResult& aRv) {
   if (IsReadOnly()) {
     aRv.Throw(NS_ERROR_DOM_NO_MODIFICATION_ALLOWED_ERR);
@@ -762,7 +754,8 @@ void DataTransfer::MozClearDataAt(const nsAString& aFormat, uint32_t aIndex,
     return;
   }
 
-  MozClearDataAtHelper(aFormat, aIndex, aSubjectPrincipal, aRv);
+  MozClearDataAtHelper(aFormat, aIndex, *nsContentUtils::GetSystemPrincipal(),
+                       aRv);
 
   // If we just cleared the 0-th index, and there are still more than 1 indexes
   // remaining, MozClearDataAt should cause the 1st index to become the 0th
@@ -809,48 +802,6 @@ void DataTransfer::UpdateDragImage(Element& aImage, int32_t aX, int32_t aY) {
   if (dragSession) {
     dragSession->UpdateDragImage(&aImage, aX, aY);
   }
-}
-
-already_AddRefed<Promise> DataTransfer::GetFilesAndDirectories(
-    nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
-  nsCOMPtr<nsINode> parentNode = do_QueryInterface(mParent);
-  if (!parentNode) {
-    aRv.Throw(NS_ERROR_FAILURE);
-    return nullptr;
-  }
-
-  nsCOMPtr<nsIGlobalObject> global = parentNode->OwnerDoc()->GetScopeObject();
-  MOZ_ASSERT(global);
-  if (!global) {
-    aRv.Throw(NS_ERROR_FAILURE);
-    return nullptr;
-  }
-
-  RefPtr<Promise> p = Promise::Create(global, aRv);
-  if (NS_WARN_IF(aRv.Failed())) {
-    return nullptr;
-  }
-
-  RefPtr<FileList> files = mItems->Files(&aSubjectPrincipal);
-  if (NS_WARN_IF(!files)) {
-    return nullptr;
-  }
-
-  Sequence<RefPtr<File>> filesSeq;
-  files->ToSequence(filesSeq, aRv);
-  if (NS_WARN_IF(aRv.Failed())) {
-    return nullptr;
-  }
-
-  p->MaybeResolve(filesSeq);
-
-  return p.forget();
-}
-
-already_AddRefed<Promise> DataTransfer::GetFiles(
-    bool aRecursiveFlag, nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
-  // Currently we don't support directories.
-  return GetFilesAndDirectories(aSubjectPrincipal, aRv);
 }
 
 void DataTransfer::AddElement(Element& aElement, ErrorResult& aRv) {
@@ -1349,8 +1300,9 @@ void DataTransfer::CacheExternalDragFormats() {
   // all platforms, so just check for the types that can actually be imported
   // XXXndeakin there are some other formats but those are platform specific.
   // NOTE: kFileMime must have index 0
-  const char* formats[] = {kFileMime,    kHTMLMime,    kURLMime,
-                           kURLDataMime, kUnicodeMime, kPNGImageMime};
+  // TODO: should this be `kNonPlainTextExternalFormats` instead?
+  static const char* formats[] = {kFileMime,    kHTMLMime,    kURLMime,
+                                  kURLDataMime, kUnicodeMime, kPNGImageMime};
 
   uint32_t count;
   dragSession->GetNumDropItems(&count);

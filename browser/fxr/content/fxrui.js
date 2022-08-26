@@ -31,15 +31,14 @@ let forwardButton = null;
 let refreshButton = null;
 let stopButton = null;
 
-let { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { PrivateBrowsingUtils } = ChromeUtils.import(
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 // Note: FxR UI uses a fork of browser-fullScreenAndPointerLock.js which removes
@@ -141,13 +140,6 @@ function setupBrowser() {
     // WebExtensions, since this FxR UI doesn't participate in typical
     // startup activities
     Services.obs.notifyObservers(window, "extensions-late-startup");
-
-    // Load this script in the content process to start and allow scripts for
-    // WebExtensions that run in the content process
-    browser.messageManager.loadFrameScript(
-      "chrome://fxr/content/fxr-content.js",
-      true // allowDelayedLoad
-    );
   }
 }
 

@@ -102,8 +102,6 @@ void nsMeterFrame::Reflow(nsPresContext* aPresContext,
   FinishAndStoreOverflow(&aDesiredSize);
 
   aStatus.Reset();  // This type of frame can't be split.
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsMeterFrame::ReflowBarFrame(nsIFrame* aBarFrame,
@@ -120,17 +118,8 @@ void nsMeterFrame::ReflowBarFrame(nsIFrame* aBarFrame,
   nscoord xoffset = aReflowInput.ComputedPhysicalBorderPadding().left;
   nscoord yoffset = aReflowInput.ComputedPhysicalBorderPadding().top;
 
-  // NOTE: Introduce a new function getPosition in the content part ?
-  HTMLMeterElement* meterElement = static_cast<HTMLMeterElement*>(GetContent());
-
-  double max = meterElement->Max();
-  double min = meterElement->Min();
-  double value = meterElement->Value();
-
-  double position = max - min;
-  position = position != 0 ? (value - min) / position : 1;
-
-  size = NSToCoordRound(size * position);
+  auto* meterElement = static_cast<HTMLMeterElement*>(GetContent());
+  size = NSToCoordRound(size * meterElement->Position());
 
   if (!vertical && wm.IsPhysicalRTL()) {
     xoffset += aReflowInput.ComputedWidth() - size;

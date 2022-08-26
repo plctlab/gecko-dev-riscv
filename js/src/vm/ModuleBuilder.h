@@ -86,7 +86,7 @@ class MOZ_STACK_CLASS ModuleBuilder {
   frontend::StencilModuleEntry* importEntryFor(
       frontend::TaggedParserAtomIndex localName) const;
 
-  bool processExportBinding(frontend::ParseNode* pn);
+  bool processExportBinding(frontend::ParseNode* binding);
   bool processExportArrayBinding(frontend::ListNode* array);
   bool processExportObjectBinding(frontend::ListNode* obj);
 
@@ -95,9 +95,17 @@ class MOZ_STACK_CLASS ModuleBuilder {
                          frontend::ParseNode* node = nullptr);
 
   bool maybeAppendRequestedModule(frontend::TaggedParserAtomIndex specifier,
-                                  frontend::ParseNode* node);
+                                  frontend::ParseNode* node,
+                                  frontend::ListNode* assertionList);
 
   void markUsedByStencil(frontend::TaggedParserAtomIndex name);
+
+  [[nodiscard]] bool processAssertions(frontend::StencilModuleEntry& entry,
+                                       frontend::ListNode* assertionList);
+
+  [[nodiscard]] bool isAssertionSupported(
+      JS::ImportAssertion supportedAssertion,
+      frontend::TaggedParserAtomIndex key);
 };
 
 template <typename T>

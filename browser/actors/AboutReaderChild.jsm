@@ -6,21 +6,26 @@
 
 var EXPORTED_SYMBOLS = ["AboutReaderChild"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AboutReader",
   "resource://gre/modules/AboutReader.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ReaderMode",
   "resource://gre/modules/ReaderMode.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Readerable",
   "resource://gre/modules/Readerable.jsm"
 );
+
+var gUrlsToDocContentType = new Map();
+var gUrlsToDocTitle = new Map();
 
 class AboutReaderChild extends JSWindowActorChild {
   constructor() {
@@ -47,17 +52,21 @@ class AboutReaderChild extends JSWindowActorChild {
     switch (message.name) {
       case "Reader:ToggleReaderMode":
         if (!this.isAboutReader) {
-          this._articlePromise = ReaderMode.parseDocument(this.document).catch(
-            Cu.reportError
+          gUrlsToDocContentType.set(
+            this.document.URL,
+            this.document.contentType
           );
+          gUrlsToDocTitle.set(this.document.URL, this.document.title);
+          this._articlePromise = lazy.ReaderMode.parseDocument(
+            this.document
+          ).catch(Cu.reportError);
 
           // Get the article data and cache it in the parent process. The reader mode
           // page will retrieve it when it has loaded.
           let article = await this._articlePromise;
           this.sendAsyncMessage("Reader:EnterReaderMode", article);
         } else {
-          this._isLeavingReaderableReaderMode = this.isReaderableAboutReader;
-          this.sendAsyncMessage("Reader:LeaveReaderMode", {});
+          this.closeReaderMode();
         }
         break;
 
@@ -65,11 +74,11 @@ class AboutReaderChild extends JSWindowActorChild {
         this.updateReaderButton(!!(message.data && message.data.isArticle));
         break;
       case "Reader:EnterReaderMode": {
-        ReaderMode.enterReaderMode(this.docShell, this.contentWindow);
+        lazy.ReaderMode.enterReaderMode(this.docShell, this.contentWindow);
         break;
       }
       case "Reader:LeaveReaderMode": {
-        ReaderMode.leaveReaderMode(this.docShell, this.contentWindow);
+        lazy.ReaderMode.leaveReaderMode(this.docShell, this.contentWindow);
         break;
       }
     }
@@ -104,17 +113,27 @@ class AboutReaderChild extends JSWindowActorChild {
         }
 
         if (this.document.body) {
+          let url = this.document.documentURI;
           if (!this._articlePromise) {
-            let url = this.document.documentURI;
             url = decodeURIComponent(url.substr("about:reader?url=".length));
             this._articlePromise = this.sendQuery("Reader:GetCachedArticle", {
               url,
             });
           }
-
           // Update the toolbar icon to show the "reader active" icon.
           this.sendAsyncMessage("Reader:UpdateReaderButton");
-          this._reader = new AboutReader(this, this._articlePromise);
+          let docContentType =
+            gUrlsToDocContentType.get(url) === "text/plain"
+              ? "text/plain"
+              : "document";
+
+          let docTitle = gUrlsToDocTitle.get(url);
+          this._reader = new lazy.AboutReader(
+            this,
+            this._articlePromise,
+            docContentType,
+            docTitle
+          );
           this._articlePromise = null;
         }
         break;
@@ -156,11 +175,11 @@ class AboutReaderChild extends JSWindowActorChild {
 
   canDoReadabilityCheck() {
     return (
-      Readerable.isEnabledForParseOnLoad &&
+      lazy.Readerable.isEnabledForParseOnLoad &&
       !this.isAboutReader &&
       this.contentWindow &&
       this.contentWindow.windowRoot &&
-      this.document instanceof this.contentWindow.HTMLDocument &&
+      this.contentWindow.HTMLDocument.isInstance(this.document) &&
       !this.document.mozSyntheticDocument
     );
   }
@@ -224,8 +243,8 @@ class AboutReaderChild extends JSWindowActorChild {
     // Only send updates when there are articles; there's no point updating with
     // |false| all the time.
     if (
-      Readerable.shouldCheckUri(document.baseURIObject, true) &&
-      Readerable.isProbablyReaderable(document)
+      lazy.Readerable.shouldCheckUri(document.baseURIObject, true) &&
+      lazy.Readerable.isProbablyReaderable(document)
     ) {
       this.sendAsyncMessage("Reader:UpdateReaderButton", {
         isArticle: true,
@@ -234,6 +253,13 @@ class AboutReaderChild extends JSWindowActorChild {
       this.sendAsyncMessage("Reader:UpdateReaderButton", {
         isArticle: false,
       });
+    }
+  }
+
+  closeReaderMode() {
+    if (this.isAboutReader) {
+      this._isLeavingReaderableReaderMode = this.isReaderableAboutReader;
+      this.sendAsyncMessage("Reader:LeaveReaderMode", {});
     }
   }
 }

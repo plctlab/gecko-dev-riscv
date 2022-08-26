@@ -86,7 +86,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(HeapSnapshot)
 NS_INTERFACE_MAP_END
 
 /* virtual */
-JSObject* HeapSnapshot::WrapObject(JSContext* aCx, HandleObject aGivenProto) {
+JSObject* HeapSnapshot::WrapObject(JSContext* aCx,
+                                   JS::Handle<JSObject*> aGivenProto) {
   return HeapSnapshot_Binding::Wrap(aCx, this, aGivenProto);
 }
 
@@ -430,8 +431,9 @@ bool HeapSnapshot::init(JSContext* cx, const uint8_t* buffer, uint32_t size) {
 
 /*** Heap Snapshot Analyses ***************************************************/
 
-void HeapSnapshot::TakeCensus(JSContext* cx, JS::HandleObject options,
-                              JS::MutableHandleValue rval, ErrorResult& rv) {
+void HeapSnapshot::TakeCensus(JSContext* cx, JS::Handle<JSObject*> options,
+                              JS::MutableHandle<JS::Value> rval,
+                              ErrorResult& rv) {
   JS::ubi::Census census(cx);
 
   JS::ubi::CountTypePtr rootType;
@@ -471,11 +473,12 @@ void HeapSnapshot::TakeCensus(JSContext* cx, JS::HandleObject options,
   }
 }
 
-void HeapSnapshot::DescribeNode(JSContext* cx, JS::HandleObject breakdown,
-                                uint64_t nodeId, JS::MutableHandleValue rval,
+void HeapSnapshot::DescribeNode(JSContext* cx, JS::Handle<JSObject*> breakdown,
+                                uint64_t nodeId,
+                                JS::MutableHandle<JS::Value> rval,
                                 ErrorResult& rv) {
   MOZ_ASSERT(breakdown);
-  JS::RootedValue breakdownVal(cx, JS::ObjectValue(*breakdown));
+  JS::Rooted<JS::Value> breakdownVal(cx, JS::ObjectValue(*breakdown));
   JS::ubi::CountTypePtr rootType = JS::ubi::ParseBreakdown(cx, breakdownVal);
   if (NS_WARN_IF(!rootType)) {
     rv.Throw(NS_ERROR_UNEXPECTED);
@@ -530,7 +533,7 @@ already_AddRefed<DominatorTree> HeapSnapshot::ComputeDominatorTree(
 void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
                                         const Sequence<uint64_t>& targets,
                                         uint64_t maxNumPaths,
-                                        JS::MutableHandleObject results,
+                                        JS::MutableHandle<JSObject*> results,
                                         ErrorResult& rv) {
   // First ensure that our inputs are valid.
 
@@ -587,35 +590,36 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
   // Convert the results into a Map object mapping target node IDs to arrays of
   // paths found.
 
-  RootedObject resultsMap(cx, JS::NewMapObject(cx));
+  JS::Rooted<JSObject*> resultsMap(cx, JS::NewMapObject(cx));
   if (NS_WARN_IF(!resultsMap)) {
     rv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return;
   }
 
   for (auto iter = shortestPaths.targetIter(); !iter.done(); iter.next()) {
-    JS::RootedValue key(cx, JS::NumberValue(iter.get().identifier()));
-    JS::RootedValueVector paths(cx);
+    JS::Rooted<JS::Value> key(cx, JS::NumberValue(iter.get().identifier()));
+    JS::RootedVector<JS::Value> paths(cx);
 
     bool ok = shortestPaths.forEachPath(iter.get(), [&](JS::ubi::Path& path) {
-      JS::RootedValueVector pathValues(cx);
+      JS::RootedVector<JS::Value> pathValues(cx);
 
       for (JS::ubi::BackEdge* edge : path) {
-        JS::RootedObject pathPart(cx, JS_NewPlainObject(cx));
+        JS::Rooted<JSObject*> pathPart(cx, JS_NewPlainObject(cx));
         if (!pathPart) {
           return false;
         }
 
-        JS::RootedValue predecessor(
+        JS::Rooted<JS::Value> predecessor(
             cx, NumberValue(edge->predecessor().identifier()));
         if (!JS_DefineProperty(cx, pathPart, "predecessor", predecessor,
                                JSPROP_ENUMERATE)) {
           return false;
         }
 
-        RootedValue edgeNameVal(cx, NullValue());
+        JS::Rooted<JS::Value> edgeNameVal(cx, NullValue());
         if (edge->name()) {
-          RootedString edgeName(cx, JS_AtomizeUCString(cx, edge->name().get()));
+          JS::Rooted<JSString*> edgeName(
+              cx, JS_AtomizeUCString(cx, edge->name().get()));
           if (!edgeName) {
             return false;
           }
@@ -632,7 +636,7 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
         }
       }
 
-      RootedObject pathObj(cx, JS::NewArrayObject(cx, pathValues));
+      JS::Rooted<JSObject*> pathObj(cx, JS::NewArrayObject(cx, pathValues));
       return pathObj && paths.append(ObjectValue(*pathObj));
     });
 
@@ -641,13 +645,13 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
       return;
     }
 
-    JS::RootedObject pathsArray(cx, JS::NewArrayObject(cx, paths));
+    JS::Rooted<JSObject*> pathsArray(cx, JS::NewArrayObject(cx, paths));
     if (NS_WARN_IF(!pathsArray)) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return;
     }
 
-    JS::RootedValue pathsVal(cx, ObjectValue(*pathsArray));
+    JS::Rooted<JS::Value> pathsVal(cx, ObjectValue(*pathsArray));
     if (NS_WARN_IF(!JS::MapSet(cx, resultsMap, key, pathsVal))) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return;
@@ -662,8 +666,8 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
 // If we are only taking a snapshot of the heap affected by the given set of
 // globals, find the set of compartments the globals are allocated
 // within. Returns false on OOM failure.
-static bool PopulateCompartmentsWithGlobals(CompartmentSet& compartments,
-                                            HandleObjectVector globals) {
+static bool PopulateCompartmentsWithGlobals(
+    CompartmentSet& compartments, JS::HandleVector<JSObject*> globals) {
   unsigned length = globals.length();
   for (unsigned i = 0; i < length; i++) {
     if (!compartments.put(JS::GetCompartment(globals[i]))) return false;
@@ -674,7 +678,7 @@ static bool PopulateCompartmentsWithGlobals(CompartmentSet& compartments,
 
 // Add the given set of globals as explicit roots in the given roots
 // list. Returns false on OOM failure.
-static bool AddGlobalsAsRoots(HandleObjectVector globals,
+static bool AddGlobalsAsRoots(JS::HandleVector<JSObject*> globals,
                               ubi::RootList& roots) {
   unsigned length = globals.length();
   for (unsigned i = 0; i < length; i++) {
@@ -695,10 +699,13 @@ static bool AddGlobalsAsRoots(HandleObjectVector globals,
 // If `boundaries` is incoherent, or we encounter an error while trying to
 // handle it, or we run out of memory, set `rv` appropriately and return
 // `false`.
-static bool EstablishBoundaries(JSContext* cx, ErrorResult& rv,
-                                const HeapSnapshotBoundaries& boundaries,
-                                ubi::RootList& roots,
-                                CompartmentSet& compartments) {
+//
+// Return value is a pair of the status and an AutoCheckCannotGC token,
+// forwarded from ubi::RootList::init(), to ensure that the caller does
+// not GC while the RootList is live and initialized.
+static std::pair<bool, AutoCheckCannotGC> EstablishBoundaries(
+    JSContext* cx, ErrorResult& rv, const HeapSnapshotBoundaries& boundaries,
+    ubi::RootList& roots, CompartmentSet& compartments) {
   MOZ_ASSERT(!roots.initialized());
   MOZ_ASSERT(compartments.empty());
 
@@ -709,77 +716,79 @@ static bool EstablishBoundaries(JSContext* cx, ErrorResult& rv,
 
     if (!boundaries.mRuntime.Value()) {
       rv.Throw(NS_ERROR_INVALID_ARG);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
 
-    if (!roots.init()) {
+    auto [ok, nogc] = roots.init();
+    if (!ok) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return false;
+      return {false, nogc};
     }
   }
 
   if (boundaries.mDebugger.WasPassed()) {
     if (foundBoundaryProperty) {
       rv.Throw(NS_ERROR_INVALID_ARG);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
     foundBoundaryProperty = true;
 
     JSObject* dbgObj = boundaries.mDebugger.Value();
     if (!dbgObj || !dbg::IsDebugger(*dbgObj)) {
       rv.Throw(NS_ERROR_INVALID_ARG);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
 
-    RootedObjectVector globals(cx);
+    JS::RootedVector<JSObject*> globals(cx);
     if (!dbg::GetDebuggeeGlobals(cx, *dbgObj, &globals) ||
         !PopulateCompartmentsWithGlobals(compartments, globals) ||
-        !roots.init(compartments) || !AddGlobalsAsRoots(globals, roots)) {
+        !roots.init(compartments).first || !AddGlobalsAsRoots(globals, roots)) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
   }
 
   if (boundaries.mGlobals.WasPassed()) {
     if (foundBoundaryProperty) {
       rv.Throw(NS_ERROR_INVALID_ARG);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
     foundBoundaryProperty = true;
 
     uint32_t length = boundaries.mGlobals.Value().Length();
     if (length == 0) {
       rv.Throw(NS_ERROR_INVALID_ARG);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
 
-    RootedObjectVector globals(cx);
+    JS::RootedVector<JSObject*> globals(cx);
     for (uint32_t i = 0; i < length; i++) {
       JSObject* global = boundaries.mGlobals.Value().ElementAt(i);
       if (!JS_IsGlobalObject(global)) {
         rv.Throw(NS_ERROR_INVALID_ARG);
-        return false;
+        return {false, AutoCheckCannotGC(cx)};
       }
       if (!globals.append(global)) {
         rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-        return false;
+        return {false, AutoCheckCannotGC(cx)};
       }
     }
 
     if (!PopulateCompartmentsWithGlobals(compartments, globals) ||
-        !roots.init(compartments) || !AddGlobalsAsRoots(globals, roots)) {
+        !roots.init(compartments).first || !AddGlobalsAsRoots(globals, roots)) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return false;
+      return {false, AutoCheckCannotGC(cx)};
     }
   }
+  AutoCheckCannotGC nogc(cx);
 
   if (!foundBoundaryProperty) {
     rv.Throw(NS_ERROR_INVALID_ARG);
-    return false;
+    return {false, nogc};
   }
 
   MOZ_ASSERT(roots.initialized());
-  return true;
+  return {true, nogc};
 }
 
 // A variant covering all the various two-byte strings that we can get from the
@@ -1473,15 +1482,16 @@ void ChromeUtils::SaveHeapSnapshotShared(
   JSContext* cx = global.Context();
 
   {
-    Maybe<AutoCheckCannotGC> maybeNoGC;
-    ubi::RootList rootList(cx, maybeNoGC, wantNames);
-    if (!EstablishBoundaries(cx, rv, boundaries, rootList, compartments))
+    ubi::RootList rootList(cx, wantNames);
+    auto [ok, nogc] =
+        EstablishBoundaries(cx, rv, boundaries, rootList, compartments);
+    if (!ok) {
       return;
+    }
 
     StreamWriter writer(cx, gzipStream, wantNames,
                         !compartments.empty() ? &compartments : nullptr);
 
-    MOZ_ASSERT(maybeNoGC.isSome());
     ubi::Node roots(&rootList);
 
     // Serialize the initial heap snapshot metadata to the core dump.
@@ -1489,8 +1499,8 @@ void ChromeUtils::SaveHeapSnapshotShared(
         // Serialize the heap graph to the core dump, starting from our list of
         // roots.
         !WriteHeapGraph(cx, roots, writer, wantNames,
-                        !compartments.empty() ? &compartments : nullptr,
-                        maybeNoGC.ref(), nodeCount, edgeCount)) {
+                        !compartments.empty() ? &compartments : nullptr, nogc,
+                        nodeCount, edgeCount)) {
       rv.Throw(zeroCopyStream.failed() ? zeroCopyStream.result()
                                        : NS_ERROR_UNEXPECTED);
       return;
@@ -1507,8 +1517,8 @@ void ChromeUtils::SaveHeapSnapshotShared(
 
 /* static */
 uint64_t ChromeUtils::GetObjectNodeId(GlobalObject& global,
-                                      JS::HandleObject val) {
-  JS::RootedObject obj(global.Context(), val);
+                                      JS::Handle<JSObject*> val) {
+  JS::Rooted<JSObject*> obj(global.Context(), val);
 
   JS::ubi::Node node(obj);
   return node.identifier();

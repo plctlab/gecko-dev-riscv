@@ -11,27 +11,39 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "jstypes.h"
 
-#include "frontend/AbstractScopePtr.h"    // ScopeIndex
 #include "frontend/FunctionSyntaxKind.h"  // FunctionSyntaxKind
-#include "frontend/ParseNode.h"
-#include "frontend/ParserAtom.h"       // TaggedParserAtomIndex
-#include "frontend/ScriptIndex.h"      // ScriptIndex
-#include "js/WasmModule.h"             // JS::WasmModule
+#include "frontend/ParserAtom.h"          // TaggedParserAtomIndex
+#include "frontend/ScopeIndex.h"          // ScopeIndex
+#include "frontend/ScriptIndex.h"         // ScriptIndex
+#include "vm/ErrorContext.h"
 #include "vm/FunctionFlags.h"          // js::FunctionFlags
 #include "vm/GeneratorAndAsyncKind.h"  // js::GeneratorKind, js::FunctionAsyncKind
-#include "vm/JSFunction.h"
-#include "vm/JSScript.h"
 #include "vm/Scope.h"
+#include "vm/ScopeKind.h"
 #include "vm/SharedStencil.h"
+#include "vm/StencilEnums.h"
+
+struct JS_PUBLIC_API JSContext;
+
+namespace JS {
+class ReadOnlyCompileOptions;
+struct WasmModule;
+}  // namespace JS
 
 namespace js {
 namespace frontend {
 
 struct CompilationState;
+class FunctionBox;
+class FunctionNode;
 class ParseContext;
 class ScriptStencil;
+class ScriptStencilExtra;
 struct ScopeContext;
 
 enum class StatementKind : uint8_t {
@@ -128,6 +140,7 @@ class SuspendableContext;
 class SharedContext {
  public:
   JSContext* const cx_;
+  ErrorContext* const ec_;
 
  protected:
   // See: BaseScript::immutableFlags_
@@ -187,7 +200,7 @@ class SharedContext {
   }
 
  public:
-  SharedContext(JSContext* cx, Kind kind,
+  SharedContext(JSContext* cx, ErrorContext* ec, Kind kind,
                 const JS::ReadOnlyCompileOptions& options,
                 Directives directives, SourceExtent extent);
 
@@ -269,7 +282,7 @@ class MOZ_STACK_CLASS GlobalSharedContext : public SharedContext {
  public:
   GlobalScope::ParserData* bindings;
 
-  GlobalSharedContext(JSContext* cx, ScopeKind scopeKind,
+  GlobalSharedContext(JSContext* cx, ErrorContext* ec, ScopeKind scopeKind,
                       const JS::ReadOnlyCompileOptions& options,
                       Directives directives, SourceExtent extent);
 
@@ -285,8 +298,8 @@ class MOZ_STACK_CLASS EvalSharedContext : public SharedContext {
  public:
   EvalScope::ParserData* bindings;
 
-  EvalSharedContext(JSContext* cx, CompilationState& compilationState,
-                    SourceExtent extent);
+  EvalSharedContext(JSContext* cx, ErrorContext* ec,
+                    CompilationState& compilationState, SourceExtent extent);
 };
 
 inline EvalSharedContext* SharedContext::asEvalContext() {
@@ -298,7 +311,7 @@ enum class HasHeritage { No, Yes };
 
 class SuspendableContext : public SharedContext {
  public:
-  SuspendableContext(JSContext* cx, Kind kind,
+  SuspendableContext(JSContext* cx, ErrorContext* ec, Kind kind,
                      const JS::ReadOnlyCompileOptions& options,
                      Directives directives, SourceExtent extent,
                      bool isGenerator, bool isAsync);
@@ -412,7 +425,7 @@ class FunctionBox : public SuspendableContext {
 
   // End of fields.
 
-  FunctionBox(JSContext* cx, SourceExtent extent,
+  FunctionBox(JSContext* cx, ErrorContext* ec, SourceExtent extent,
               CompilationState& compilationState, Directives directives,
               GeneratorKind generatorKind, FunctionAsyncKind asyncKind,
               bool isInitialCompilation, TaggedParserAtomIndex atom,
@@ -443,21 +456,17 @@ class FunctionBox : public SuspendableContext {
   }
 
   void initFromLazyFunction(const ScriptStencilExtra& extra,
-                            ScopeContext& scopeContext, FunctionFlags flags,
+                            ScopeContext& scopeContext,
                             FunctionSyntaxKind kind);
-  void initFromLazyFunctionToSkip(JSFunction* fun);
   void initFromScriptStencilExtra(const ScriptStencilExtra& extra);
-  void initStandalone(ScopeContext& scopeContext, FunctionFlags flags,
-                      FunctionSyntaxKind kind);
+  void initStandalone(ScopeContext& scopeContext, FunctionSyntaxKind kind);
 
  private:
-  void initFromLazyFunctionShared(JSFunction* fun);
-  void initStandaloneOrLazy(ScopeContext& scopeContext, FunctionFlags flags,
+  void initStandaloneOrLazy(ScopeContext& scopeContext,
                             FunctionSyntaxKind kind);
 
  public:
   void initWithEnclosingParseContext(ParseContext* enclosing,
-                                     FunctionFlags flags,
                                      FunctionSyntaxKind kind);
 
   void setEnclosingScopeForInnerLazyFunction(ScopeIndex scopeIndex);
@@ -482,6 +491,8 @@ class FunctionBox : public SuspendableContext {
   IMMUTABLE_FLAG_GETTER_SETTER(isGenerator, IsGenerator)
   IMMUTABLE_FLAG_GETTER_SETTER(funHasExtensibleScope, FunHasExtensibleScope)
   IMMUTABLE_FLAG_GETTER_SETTER(functionHasThisBinding, FunctionHasThisBinding)
+  IMMUTABLE_FLAG_GETTER_SETTER(functionHasNewTargetBinding,
+                               FunctionHasNewTargetBinding)
   // NeedsHomeObject: custom logic below.
   // IsDerivedClassConstructor: custom logic below.
   // IsFieldInitializer: custom logic below.
@@ -580,6 +591,7 @@ class FunctionBox : public SuspendableContext {
   void setNeedsHomeObject() {
     MOZ_ASSERT(flags_.allowSuperProperty());
     setFlag(ImmutableFlags::NeedsHomeObject);
+    flags_.setIsExtended();
   }
 
   bool isDerivedClassConstructor() const {

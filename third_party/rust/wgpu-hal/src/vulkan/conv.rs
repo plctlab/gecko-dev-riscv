@@ -5,6 +5,7 @@ impl super::PrivateCapabilities {
     pub fn map_texture_format(&self, format: wgt::TextureFormat) -> vk::Format {
         use ash::vk::Format as F;
         use wgt::TextureFormat as Tf;
+        use wgt::{AstcBlock, AstcChannel};
         match format {
             Tf::R8Unorm => F::R8_UNORM,
             Tf::R8Snorm => F::R8_SNORM,
@@ -12,11 +13,15 @@ impl super::PrivateCapabilities {
             Tf::R8Sint => F::R8_SINT,
             Tf::R16Uint => F::R16_UINT,
             Tf::R16Sint => F::R16_SINT,
+            Tf::R16Unorm => F::R16_UNORM,
+            Tf::R16Snorm => F::R16_SNORM,
             Tf::R16Float => F::R16_SFLOAT,
             Tf::Rg8Unorm => F::R8G8_UNORM,
             Tf::Rg8Snorm => F::R8G8_SNORM,
             Tf::Rg8Uint => F::R8G8_UINT,
             Tf::Rg8Sint => F::R8G8_SINT,
+            Tf::Rg16Unorm => F::R16G16_UNORM,
+            Tf::Rg16Snorm => F::R16G16_SNORM,
             Tf::R32Uint => F::R32_UINT,
             Tf::R32Sint => F::R32_SINT,
             Tf::R32Float => F::R32_SFLOAT,
@@ -37,11 +42,14 @@ impl super::PrivateCapabilities {
             Tf::Rg32Float => F::R32G32_SFLOAT,
             Tf::Rgba16Uint => F::R16G16B16A16_UINT,
             Tf::Rgba16Sint => F::R16G16B16A16_SINT,
+            Tf::Rgba16Unorm => F::R16G16B16A16_UNORM,
+            Tf::Rgba16Snorm => F::R16G16B16A16_SNORM,
             Tf::Rgba16Float => F::R16G16B16A16_SFLOAT,
             Tf::Rgba32Uint => F::R32G32B32A32_UINT,
             Tf::Rgba32Sint => F::R32G32B32A32_SINT,
             Tf::Rgba32Float => F::R32G32B32A32_SFLOAT,
             Tf::Depth32Float => F::D32_SFLOAT,
+            Tf::Depth32FloatStencil8 => F::D32_SFLOAT_S8_UINT,
             Tf::Depth24Plus => {
                 if self.texture_d24 {
                     F::X8_D24_UNORM_PACK32
@@ -56,6 +64,7 @@ impl super::PrivateCapabilities {
                     F::D32_SFLOAT_S8_UINT
                 }
             }
+            Tf::Depth24UnormStencil8 => F::D24_UNORM_S8_UINT,
             Tf::Rgb9e5Ufloat => F::E5B9G9R9_UFLOAT_PACK32,
             Tf::Bc1RgbaUnorm => F::BC1_RGBA_UNORM_BLOCK,
             Tf::Bc1RgbaUnormSrgb => F::BC1_RGBA_SRGB_BLOCK,
@@ -71,42 +80,66 @@ impl super::PrivateCapabilities {
             Tf::Bc6hRgbSfloat => F::BC6H_SFLOAT_BLOCK,
             Tf::Bc7RgbaUnorm => F::BC7_UNORM_BLOCK,
             Tf::Bc7RgbaUnormSrgb => F::BC7_SRGB_BLOCK,
-            Tf::Etc2RgbUnorm => F::ETC2_R8G8B8_UNORM_BLOCK,
-            Tf::Etc2RgbUnormSrgb => F::ETC2_R8G8B8_SRGB_BLOCK,
-            Tf::Etc2RgbA1Unorm => F::ETC2_R8G8B8A1_UNORM_BLOCK,
-            Tf::Etc2RgbA1UnormSrgb => F::ETC2_R8G8B8A1_SRGB_BLOCK,
-            Tf::EacRUnorm => F::EAC_R11_UNORM_BLOCK,
-            Tf::EacRSnorm => F::EAC_R11_SNORM_BLOCK,
-            Tf::EacRgUnorm => F::EAC_R11G11_UNORM_BLOCK,
-            Tf::EacRgSnorm => F::EAC_R11G11_SNORM_BLOCK,
-            Tf::Astc4x4RgbaUnorm => F::ASTC_4X4_UNORM_BLOCK,
-            Tf::Astc4x4RgbaUnormSrgb => F::ASTC_4X4_SRGB_BLOCK,
-            Tf::Astc5x4RgbaUnorm => F::ASTC_5X4_UNORM_BLOCK,
-            Tf::Astc5x4RgbaUnormSrgb => F::ASTC_5X4_SRGB_BLOCK,
-            Tf::Astc5x5RgbaUnorm => F::ASTC_5X5_UNORM_BLOCK,
-            Tf::Astc5x5RgbaUnormSrgb => F::ASTC_5X5_SRGB_BLOCK,
-            Tf::Astc6x5RgbaUnorm => F::ASTC_6X5_UNORM_BLOCK,
-            Tf::Astc6x5RgbaUnormSrgb => F::ASTC_6X5_SRGB_BLOCK,
-            Tf::Astc6x6RgbaUnorm => F::ASTC_6X6_UNORM_BLOCK,
-            Tf::Astc6x6RgbaUnormSrgb => F::ASTC_6X6_SRGB_BLOCK,
-            Tf::Astc8x5RgbaUnorm => F::ASTC_8X5_UNORM_BLOCK,
-            Tf::Astc8x5RgbaUnormSrgb => F::ASTC_8X5_SRGB_BLOCK,
-            Tf::Astc8x6RgbaUnorm => F::ASTC_8X6_UNORM_BLOCK,
-            Tf::Astc8x6RgbaUnormSrgb => F::ASTC_8X6_SRGB_BLOCK,
-            Tf::Astc10x5RgbaUnorm => F::ASTC_8X8_UNORM_BLOCK,
-            Tf::Astc10x5RgbaUnormSrgb => F::ASTC_8X8_SRGB_BLOCK,
-            Tf::Astc10x6RgbaUnorm => F::ASTC_10X5_UNORM_BLOCK,
-            Tf::Astc10x6RgbaUnormSrgb => F::ASTC_10X5_SRGB_BLOCK,
-            Tf::Astc8x8RgbaUnorm => F::ASTC_10X6_UNORM_BLOCK,
-            Tf::Astc8x8RgbaUnormSrgb => F::ASTC_10X6_SRGB_BLOCK,
-            Tf::Astc10x8RgbaUnorm => F::ASTC_10X8_UNORM_BLOCK,
-            Tf::Astc10x8RgbaUnormSrgb => F::ASTC_10X8_SRGB_BLOCK,
-            Tf::Astc10x10RgbaUnorm => F::ASTC_10X10_UNORM_BLOCK,
-            Tf::Astc10x10RgbaUnormSrgb => F::ASTC_10X10_SRGB_BLOCK,
-            Tf::Astc12x10RgbaUnorm => F::ASTC_12X10_UNORM_BLOCK,
-            Tf::Astc12x10RgbaUnormSrgb => F::ASTC_12X10_SRGB_BLOCK,
-            Tf::Astc12x12RgbaUnorm => F::ASTC_12X12_UNORM_BLOCK,
-            Tf::Astc12x12RgbaUnormSrgb => F::ASTC_12X12_SRGB_BLOCK,
+            Tf::Etc2Rgb8Unorm => F::ETC2_R8G8B8_UNORM_BLOCK,
+            Tf::Etc2Rgb8UnormSrgb => F::ETC2_R8G8B8_SRGB_BLOCK,
+            Tf::Etc2Rgb8A1Unorm => F::ETC2_R8G8B8A1_UNORM_BLOCK,
+            Tf::Etc2Rgb8A1UnormSrgb => F::ETC2_R8G8B8A1_SRGB_BLOCK,
+            Tf::Etc2Rgba8Unorm => F::ETC2_R8G8B8A8_UNORM_BLOCK,
+            Tf::Etc2Rgba8UnormSrgb => F::ETC2_R8G8B8A8_SRGB_BLOCK,
+            Tf::EacR11Unorm => F::EAC_R11_UNORM_BLOCK,
+            Tf::EacR11Snorm => F::EAC_R11_SNORM_BLOCK,
+            Tf::EacRg11Unorm => F::EAC_R11G11_UNORM_BLOCK,
+            Tf::EacRg11Snorm => F::EAC_R11G11_SNORM_BLOCK,
+            Tf::Astc { block, channel } => match channel {
+                AstcChannel::Unorm => match block {
+                    AstcBlock::B4x4 => F::ASTC_4X4_UNORM_BLOCK,
+                    AstcBlock::B5x4 => F::ASTC_5X4_UNORM_BLOCK,
+                    AstcBlock::B5x5 => F::ASTC_5X5_UNORM_BLOCK,
+                    AstcBlock::B6x5 => F::ASTC_6X5_UNORM_BLOCK,
+                    AstcBlock::B6x6 => F::ASTC_6X6_UNORM_BLOCK,
+                    AstcBlock::B8x5 => F::ASTC_8X5_UNORM_BLOCK,
+                    AstcBlock::B8x6 => F::ASTC_8X6_UNORM_BLOCK,
+                    AstcBlock::B8x8 => F::ASTC_8X8_UNORM_BLOCK,
+                    AstcBlock::B10x5 => F::ASTC_10X5_UNORM_BLOCK,
+                    AstcBlock::B10x6 => F::ASTC_10X6_UNORM_BLOCK,
+                    AstcBlock::B10x8 => F::ASTC_10X8_UNORM_BLOCK,
+                    AstcBlock::B10x10 => F::ASTC_10X10_UNORM_BLOCK,
+                    AstcBlock::B12x10 => F::ASTC_12X10_UNORM_BLOCK,
+                    AstcBlock::B12x12 => F::ASTC_12X12_UNORM_BLOCK,
+                },
+                AstcChannel::UnormSrgb => match block {
+                    AstcBlock::B4x4 => F::ASTC_4X4_SRGB_BLOCK,
+                    AstcBlock::B5x4 => F::ASTC_5X4_SRGB_BLOCK,
+                    AstcBlock::B5x5 => F::ASTC_5X5_SRGB_BLOCK,
+                    AstcBlock::B6x5 => F::ASTC_6X5_SRGB_BLOCK,
+                    AstcBlock::B6x6 => F::ASTC_6X6_SRGB_BLOCK,
+                    AstcBlock::B8x5 => F::ASTC_8X5_SRGB_BLOCK,
+                    AstcBlock::B8x6 => F::ASTC_8X6_SRGB_BLOCK,
+                    AstcBlock::B8x8 => F::ASTC_8X8_SRGB_BLOCK,
+                    AstcBlock::B10x5 => F::ASTC_10X5_SRGB_BLOCK,
+                    AstcBlock::B10x6 => F::ASTC_10X6_SRGB_BLOCK,
+                    AstcBlock::B10x8 => F::ASTC_10X8_SRGB_BLOCK,
+                    AstcBlock::B10x10 => F::ASTC_10X10_SRGB_BLOCK,
+                    AstcBlock::B12x10 => F::ASTC_12X10_SRGB_BLOCK,
+                    AstcBlock::B12x12 => F::ASTC_12X12_SRGB_BLOCK,
+                },
+                AstcChannel::Hdr => match block {
+                    AstcBlock::B4x4 => F::ASTC_4X4_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B5x4 => F::ASTC_5X4_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B5x5 => F::ASTC_5X5_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B6x5 => F::ASTC_6X5_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B6x6 => F::ASTC_6X6_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B8x5 => F::ASTC_8X5_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B8x6 => F::ASTC_8X6_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B8x8 => F::ASTC_8X8_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B10x5 => F::ASTC_10X5_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B10x6 => F::ASTC_10X6_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B10x8 => F::ASTC_10X8_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B10x10 => F::ASTC_10X10_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B12x10 => F::ASTC_12X10_SFLOAT_BLOCK_EXT,
+                    AstcBlock::B12x12 => F::ASTC_12X12_SFLOAT_BLOCK_EXT,
+                },
+            },
         }
     }
 }
@@ -168,7 +201,7 @@ pub fn derive_image_layout(
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         }
         _ => {
-            if usage.is_empty() {
+            if usage == crate::TextureUses::PRESENT {
                 vk::ImageLayout::PRESENT_SRC_KHR
             } else if is_color {
                 vk::ImageLayout::GENERAL
@@ -198,7 +231,7 @@ pub fn map_texture_usage(usage: crate::TextureUses) -> vk::ImageUsageFlags {
     ) {
         flags |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
     }
-    if usage.intersects(crate::TextureUses::STORAGE_READ | crate::TextureUses::STORAGE_WRITE) {
+    if usage.intersects(crate::TextureUses::STORAGE_READ | crate::TextureUses::STORAGE_READ_WRITE) {
         flags |= vk::ImageUsageFlags::STORAGE;
     }
     flags
@@ -244,12 +277,12 @@ pub fn map_texture_usage_to_barrier(
         stages |= shader_stages;
         access |= vk::AccessFlags::SHADER_READ;
     }
-    if usage.contains(crate::TextureUses::STORAGE_WRITE) {
+    if usage.contains(crate::TextureUses::STORAGE_READ_WRITE) {
         stages |= shader_stages;
-        access |= vk::AccessFlags::SHADER_WRITE;
+        access |= vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
     }
 
-    if usage == crate::TextureUses::UNINITIALIZED || usage.is_empty() {
+    if usage == crate::TextureUses::UNINITIALIZED || usage == crate::TextureUses::PRESENT {
         (
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::AccessFlags::empty(),
@@ -277,7 +310,7 @@ pub fn map_vk_image_usage(usage: vk::ImageUsageFlags) -> crate::TextureUses {
         bits |= crate::TextureUses::DEPTH_STENCIL_READ | crate::TextureUses::DEPTH_STENCIL_WRITE;
     }
     if usage.contains(vk::ImageUsageFlags::STORAGE) {
-        bits |= crate::TextureUses::STORAGE_READ | crate::TextureUses::STORAGE_WRITE;
+        bits |= crate::TextureUses::STORAGE_READ | crate::TextureUses::STORAGE_READ_WRITE;
     }
     bits
 }
@@ -425,7 +458,7 @@ pub fn map_buffer_usage(usage: crate::BufferUses) -> vk::BufferUsageFlags {
     if usage.contains(crate::BufferUses::UNIFORM) {
         flags |= vk::BufferUsageFlags::UNIFORM_BUFFER;
     }
-    if usage.intersects(crate::BufferUses::STORAGE_READ | crate::BufferUses::STORAGE_WRITE) {
+    if usage.intersects(crate::BufferUses::STORAGE_READ | crate::BufferUses::STORAGE_READ_WRITE) {
         flags |= vk::BufferUsageFlags::STORAGE_BUFFER;
     }
     if usage.contains(crate::BufferUses::INDEX) {
@@ -473,9 +506,9 @@ pub fn map_buffer_usage_to_barrier(
         stages |= shader_stages;
         access |= vk::AccessFlags::SHADER_READ;
     }
-    if usage.intersects(crate::BufferUses::STORAGE_WRITE) {
+    if usage.intersects(crate::BufferUses::STORAGE_READ_WRITE) {
         stages |= shader_stages;
-        access |= vk::AccessFlags::SHADER_WRITE;
+        access |= vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE;
     }
     if usage.contains(crate::BufferUses::INDEX) {
         stages |= vk::PipelineStageFlags::VERTEX_INPUT;
@@ -581,13 +614,15 @@ pub fn map_address_mode(mode: wgt::AddressMode) -> vk::SamplerAddressMode {
         wgt::AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
         wgt::AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
         wgt::AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
-        //wgt::AddressMode::MirrorClamp => vk::SamplerAddressMode::MIRROR_CLAMP_TO_EDGE,
+        // wgt::AddressMode::MirrorClamp => vk::SamplerAddressMode::MIRROR_CLAMP_TO_EDGE,
     }
 }
 
 pub fn map_border_color(border_color: wgt::SamplerBorderColor) -> vk::BorderColor {
     match border_color {
-        wgt::SamplerBorderColor::TransparentBlack => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
+        wgt::SamplerBorderColor::TransparentBlack | wgt::SamplerBorderColor::Zero => {
+            vk::BorderColor::FLOAT_TRANSPARENT_BLACK
+        }
         wgt::SamplerBorderColor::OpaqueBlack => vk::BorderColor::FLOAT_OPAQUE_BLACK,
         wgt::SamplerBorderColor::OpaqueWhite => vk::BorderColor::FLOAT_OPAQUE_WHITE,
     }
@@ -690,14 +725,18 @@ pub fn map_stencil_op(op: wgt::StencilOperation) -> vk::StencilOp {
     }
 }
 
-pub fn map_stencil_face(face: &wgt::StencilFaceState) -> vk::StencilOpState {
+pub fn map_stencil_face(
+    face: &wgt::StencilFaceState,
+    compare_mask: u32,
+    write_mask: u32,
+) -> vk::StencilOpState {
     vk::StencilOpState {
         fail_op: map_stencil_op(face.fail_op),
         pass_op: map_stencil_op(face.pass_op),
         depth_fail_op: map_stencil_op(face.depth_fail_op),
         compare_op: map_comparison(face.compare),
-        compare_mask: !0,
-        write_mask: !0,
+        compare_mask,
+        write_mask,
         reference: 0,
     }
 }

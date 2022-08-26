@@ -32,7 +32,7 @@ void IdleSchedulerChild::Init(IdlePeriodState* aIdlePeriodState) {
   auto resolve =
       [&](Tuple<mozilla::Maybe<SharedMemoryHandle>, uint32_t>&& aResult) {
         if (Get<0>(aResult)) {
-          mActiveCounter.SetHandle(*Get<0>(aResult), false);
+          mActiveCounter.SetHandle(std::move(*Get<0>(aResult)), false);
           mActiveCounter.Map(sizeof(int32_t));
           mChildId = Get<1>(aResult);
           if (mChildId && mIdlePeriodState && mIdlePeriodState->IsActive()) {
@@ -113,14 +113,18 @@ void IdleSchedulerChild::StartedGC() {
   mIsRequestingGC = false;
 
   if (!mIsDoingGC) {
-    SendStartedGC();
+    if (CanSend()) {
+      SendStartedGC();
+    }
     mIsDoingGC = true;
   }
 }
 
 void IdleSchedulerChild::DoneGC() {
   if (mIsDoingGC) {
-    SendDoneGC();
+    if (CanSend()) {
+      SendDoneGC();
+    }
     mIsDoingGC = false;
   }
 }

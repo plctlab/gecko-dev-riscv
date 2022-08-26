@@ -57,21 +57,12 @@
 
 var EXPORTED_SYMBOLS = ["PropertyListUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser", "File", "FileReader"]);
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ctypes",
   "resource://gre/modules/ctypes.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
 );
 
 var PropertyListUtils = Object.freeze({
@@ -88,7 +79,7 @@ var PropertyListUtils = Object.freeze({
    *        The reaon for failure is reported to the Error Console.
    */
   read: function PLU_read(aFile, aCallback) {
-    if (!(aFile instanceof Ci.nsIFile || aFile instanceof File)) {
+    if (!(aFile instanceof Ci.nsIFile || File.isInstance(aFile))) {
       throw new Error("aFile is not a file object");
     }
     if (typeof aCallback != "function") {
@@ -261,9 +252,9 @@ function BinaryPropertyListReader(aBuffer) {
   this._dataView = new DataView(aBuffer);
 
   const JS_MAX_INT = Math.pow(2, 53);
-  this._JS_MAX_INT_SIGNED = ctypes.Int64(JS_MAX_INT);
-  this._JS_MAX_INT_UNSIGNED = ctypes.UInt64(JS_MAX_INT);
-  this._JS_MIN_INT = ctypes.Int64(-JS_MAX_INT);
+  this._JS_MAX_INT_SIGNED = lazy.ctypes.Int64(JS_MAX_INT);
+  this._JS_MAX_INT_UNSIGNED = lazy.ctypes.UInt64(JS_MAX_INT);
+  this._JS_MIN_INT = lazy.ctypes.Int64(-JS_MAX_INT);
 
   try {
     this._readTrailerInfo();
@@ -317,10 +308,10 @@ BinaryPropertyListReader.prototype = {
   _readSignedInt64: function BPLR__readSignedInt64(aByteOffset) {
     let lo = this._dataView.getUint32(aByteOffset + 4);
     let hi = this._dataView.getInt32(aByteOffset);
-    let int64 = ctypes.Int64.join(hi, lo);
+    let int64 = lazy.ctypes.Int64.join(hi, lo);
     if (
-      ctypes.Int64.compare(int64, this._JS_MAX_INT_SIGNED) == 1 ||
-      ctypes.Int64.compare(int64, this._JS_MIN_INT) == -1
+      lazy.ctypes.Int64.compare(int64, this._JS_MAX_INT_SIGNED) == 1 ||
+      lazy.ctypes.Int64.compare(int64, this._JS_MIN_INT) == -1
     ) {
       return PropertyListUtils.wrapInt64(int64.toString());
     }
@@ -467,8 +458,10 @@ BinaryPropertyListReader.prototype = {
       } else if (aIntSize == 8) {
         let lo = this._dataView.getUint32(offset + 4);
         let hi = this._dataView.getUint32(offset);
-        let uint64 = ctypes.UInt64.join(hi, lo);
-        if (ctypes.UInt64.compare(uint64, this._JS_MAX_INT_UNSIGNED) == 1) {
+        let uint64 = lazy.ctypes.UInt64.join(hi, lo);
+        if (
+          lazy.ctypes.UInt64.compare(uint64, this._JS_MAX_INT_UNSIGNED) == 1
+        ) {
           if (aBigIntAllowed === true) {
             uints.push(PropertyListUtils.wrapInt64(uint64.toString()));
           } else {

@@ -16,6 +16,13 @@ use crate::stylist::RuleInclusion;
 use crate::traversal_flags::TraversalFlags;
 use selectors::NthIndexCache;
 use smallvec::SmallVec;
+use std::collections::HashMap;
+
+/// A cache from element reference to known-valid computed style.
+pub type UndisplayedStyleCache = HashMap<
+    selectors::OpaqueElement,
+    servo_arc::Arc<crate::properties::ComputedValues>,
+>;
 
 /// A per-traversal-level chunk of data. This is sent down by the traversal, and
 /// currently only holds the dom depth for the bloom filter.
@@ -261,26 +268,6 @@ pub trait DomTraversal<E: TElement>: Sync {
         false
     }
 
-    /// Returns true if we want to cull this subtree from the travesal.
-    fn should_cull_subtree(
-        &self,
-        context: &mut StyleContext<E>,
-        parent: E,
-        parent_data: &ElementData,
-    ) -> bool {
-        debug_assert!(
-            parent.has_current_styles_for_traversal(parent_data, context.shared.traversal_flags)
-        );
-
-        // If the parent computed display:none, we don't style the subtree.
-        if parent_data.styles.is_display_none() {
-            debug!("Parent {:?} is display:none, culling traversal", parent);
-            return true;
-        }
-
-        return false;
-    }
-
     /// Return the shared style context common to all worker threads.
     fn shared_context(&self) -> &SharedStyleContext;
 }
@@ -294,6 +281,7 @@ pub fn resolve_style<E>(
     element: E,
     rule_inclusion: RuleInclusion,
     pseudo: Option<&PseudoElement>,
+    mut undisplayed_style_cache: Option<&mut UndisplayedStyleCache>,
 ) -> ElementStyles
 where
     E: TElement,
@@ -304,6 +292,11 @@ where
             element.borrow_data().map_or(true, |d| !d.has_styles()),
         "Why are we here?"
     );
+    debug_assert!(
+        rule_inclusion == RuleInclusion::All || undisplayed_style_cache.is_none(),
+        "can't use the cache for default styles only"
+    );
+
     let mut ancestors_requiring_style_resolution = SmallVec::<[E; 16]>::new();
 
     // Clear the bloom filter, just in case the caller is reusing TLS.
@@ -318,6 +311,12 @@ where
                     style = Some(ancestor_style.clone());
                     break;
                 }
+            }
+        }
+        if let Some(ref mut cache) = undisplayed_style_cache {
+            if let Some(s) = cache.get(&current.opaque()) {
+                style = Some(s.clone());
+                break;
             }
         }
         ancestors_requiring_style_resolution.push(current);
@@ -337,7 +336,9 @@ where
         }
 
         ancestor = ancestor.unwrap().traversal_parent();
-        layout_parent_style = ancestor.map(|a| a.borrow_data().unwrap().styles.primary().clone());
+        layout_parent_style = ancestor.and_then(|a| {
+            a.borrow_data().map(|data| data.styles.primary().clone())
+        });
     }
 
     for ancestor in ancestors_requiring_style_resolution.iter().rev() {
@@ -360,25 +361,34 @@ where
             layout_parent_style = style.clone();
         }
 
+        if let Some(ref mut cache) = undisplayed_style_cache {
+            cache.insert(ancestor.opaque(), style.clone().unwrap());
+        }
         context.thread_local.bloom_filter.push(*ancestor);
     }
 
     context.thread_local.bloom_filter.assert_complete(element);
-    StyleResolverForElement::new(
+    let styles: ElementStyles = StyleResolverForElement::new(
         element,
         context,
         rule_inclusion,
         PseudoElementResolution::Force,
     )
     .resolve_style(style.as_deref(), layout_parent_style.as_deref())
-    .into()
+    .into();
+
+    if let Some(ref mut cache) = undisplayed_style_cache {
+        cache.insert(element.opaque(), styles.primary().clone());
+    }
+
+    styles
 }
 
 /// Calculates the style for a single node.
 #[inline]
 #[allow(unsafe_code)]
 pub fn recalc_style_at<E, D, F>(
-    traversal: &D,
+    _traversal: &D,
     traversal_data: &PerLevelTraversalData,
     context: &mut StyleContext<E>,
     element: E,
@@ -490,16 +500,14 @@ pub fn recalc_style_at<E, D, F>(
     //  * We can't skip the cascade.
     //  * This is a servo non-incremental traversal.
     //
-    // Additionally, there are a few scenarios where we avoid traversing the
-    // subtree even if descendant styles are out of date. These cases are
-    // enumerated in should_cull_subtree().
+    // We only do this if we're not a display: none root, since in that case
+    // it's useless to style children.
     let mut traverse_children = has_dirty_descendants_for_this_restyle ||
         !propagated_hint.is_empty() ||
         !child_cascade_requirement.can_skip_cascade() ||
         is_servo_nonincremental_layout();
 
-    traverse_children =
-        traverse_children && !traversal.should_cull_subtree(context, element, &data);
+    traverse_children = traverse_children && !data.styles.is_display_none();
 
     // Examine our children, and enqueue the appropriate ones for traversal.
     if traverse_children {

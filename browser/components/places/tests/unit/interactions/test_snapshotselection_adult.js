@@ -18,7 +18,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 
 async function addSnapshotAndFilter(url) {
   await PlacesTestUtils.addVisits(url);
-  await Snapshots.add({ url, userPersisted: true });
+  await Snapshots.add({ url, userPersisted: Snapshots.USER_PERSISTED.MANUAL });
 
   FilterAdult.addDomainToList(url);
 }
@@ -33,15 +33,18 @@ add_task(async function setup() {
 });
 
 add_task(async function test_interactions_adult_basic() {
-  let anySelector = new SnapshotSelector(2, false);
-  let adultFilterSelector = new SnapshotSelector(2, true);
+  let anySelector = new SnapshotSelector({ count: 2, filterAdult: false });
+  let adultFilterSelector = new SnapshotSelector({
+    count: 2,
+    filterAdult: true,
+  });
 
   let snapshotPromise = anySelector.once("snapshots-updated");
   anySelector.rebuild();
   let snapshots = await snapshotPromise;
 
   await assertSnapshotList(snapshots, [
-    { url: TEST_URL2, userPersisted: true },
+    { url: TEST_URL2, userPersisted: Snapshots.USER_PERSISTED.MANUAL },
     { url: TEST_URL1 },
   ]);
 
@@ -64,7 +67,10 @@ add_task(async function test_interactions_adult_filter_multiple() {
   await addInteractions([{ url: TEST_URL5, created_at: Date.now() - 2000 }]);
   await Snapshots.add({ url: TEST_URL5 });
 
-  let adultFilterSelector = new SnapshotSelector(2, true);
+  let adultFilterSelector = new SnapshotSelector({
+    count: 2,
+    filterAdult: true,
+  });
 
   let snapshotPromise = adultFilterSelector.once("snapshots-updated");
   adultFilterSelector.rebuild();

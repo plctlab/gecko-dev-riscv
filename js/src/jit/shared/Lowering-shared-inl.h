@@ -494,14 +494,16 @@ LAllocation LIRGeneratorShared::useAnyOrInt32Constant(MDefinition* mir) {
 }
 
 LAllocation LIRGeneratorShared::useRegisterOrZero(MDefinition* mir) {
-  if (mir->isConstant() && mir->toConstant()->isInt32(0)) {
+  if (mir->isConstant() &&
+      (mir->toConstant()->isInt32(0) || mir->toConstant()->isInt64(0))) {
     return LAllocation();
   }
   return useRegister(mir);
 }
 
 LAllocation LIRGeneratorShared::useRegisterOrZeroAtStart(MDefinition* mir) {
-  if (mir->isConstant() && mir->toConstant()->isInt32(0)) {
+  if (mir->isConstant() &&
+      (mir->toConstant()->isInt32(0) || mir->toConstant()->isInt64(0))) {
     return LAllocation();
   }
   return useRegisterAtStart(mir);
@@ -516,7 +518,8 @@ LAllocation LIRGeneratorShared::useRegisterOrNonDoubleConstant(
   return useRegister(mir);
 }
 
-#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64)
+#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64) || \
+    defined(JS_CODEGEN_LOONG64) || defined(JS_CODEGEN_MIPS64) || defined(JS_CODEGEN_RISCV64)
 LAllocation LIRGeneratorShared::useAnyOrConstant(MDefinition* mir) {
   return useRegisterOrConstant(mir);
 }

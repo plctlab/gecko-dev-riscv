@@ -18,8 +18,10 @@
 #include "mozilla/layers/LayersTypes.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/Range.h"
+#include "mozilla/ScrollGeneration.h"
 #include "mozilla/TypeTraits.h"
 #include "Units.h"
+#include "nsIWidgetListener.h"
 
 namespace mozilla {
 
@@ -58,6 +60,14 @@ struct ExternalImageKeyPair {
 
 /* Generate a brand new window id and return it. */
 WindowId NewWindowId();
+
+inline bool WindowSizeSanityCheck(int32_t aWidth, int32_t aHeight) {
+  if (aWidth < 0 || aWidth > wr::MAX_RENDER_TASK_SIZE || aHeight < 0 ||
+      aHeight > wr::MAX_RENDER_TASK_SIZE) {
+    return false;
+  }
+  return true;
+}
 
 inline DebugFlags NewDebugFlags(uint32_t aFlags) { return {aFlags}; }
 
@@ -103,10 +113,10 @@ inline gfx::SurfaceFormat ImageFormatToSurfaceFormat(ImageFormat aFormat) {
 }
 
 // This extra piece of data is used to differentiate when spatial nodes that are
-// created by Gecko that have the same mFrame and PerFrameKey. This currently only
-// occurs with sticky display list items that are also zoomable, which results in
-// Gecko creating both a sticky spatial node, and then a property animated reference
-// frame for APZ
+// created by Gecko that have the same mFrame and PerFrameKey. This currently
+// only occurs with sticky display list items that are also zoomable, which
+// results in Gecko creating both a sticky spatial node, and then a property
+// animated reference frame for APZ
 enum class SpatialKeyKind : uint32_t {
   Transform,
   Perspective,
@@ -116,9 +126,10 @@ enum class SpatialKeyKind : uint32_t {
   APZ,
 };
 
-// Construct a unique, persistent spatial key based on the frame tree pointer, per-frame key
-// and a spatial key kind. For now, this covers all the ways Gecko creates spatial nodes.
-// In future, we may need to be more clever with the SpatialKeyKind.
+// Construct a unique, persistent spatial key based on the frame tree pointer,
+// per-frame key and a spatial key kind. For now, this covers all the ways Gecko
+// creates spatial nodes. In future, we may need to be more clever with the
+// SpatialKeyKind.
 inline wr::SpatialTreeItemKey SpatialKey(uint64_t aFrame, uint32_t aPerFrameKey,
                                          SpatialKeyKind aKind) {
   return wr::SpatialTreeItemKey{
@@ -138,7 +149,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
 
   ImageDescriptor(const gfx::IntSize& aSize, gfx::SurfaceFormat aFormat,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = 0;
@@ -150,7 +161,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
   ImageDescriptor(const gfx::IntSize& aSize, uint32_t aByteStride,
                   gfx::SurfaceFormat aFormat,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = aByteStride;
@@ -162,7 +173,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
   ImageDescriptor(const gfx::IntSize& aSize, uint32_t aByteStride,
                   gfx::SurfaceFormat aFormat, OpacityType aOpacity,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = aByteStride;
@@ -288,6 +299,8 @@ static inline MixBlendMode ToMixBlendMode(gfx::CompositionOp compositionOp) {
       return MixBlendMode::Color;
     case gfx::CompositionOp::OP_LUMINOSITY:
       return MixBlendMode::Luminosity;
+    case gfx::CompositionOp::OP_ADD:
+      return MixBlendMode::PlusLighter;
     default:
       return MixBlendMode::Normal;
   }
@@ -869,6 +882,33 @@ static inline wr::SyntheticItalics DegreesToSyntheticItalics(float aDegrees) {
   synthetic_italics.angle =
       int16_t(std::min(std::max(aDegrees, -89.0f), 89.0f) * 256.0f);
   return synthetic_italics;
+}
+
+static inline wr::WindowSizeMode ToWrWindowSizeMode(nsSizeMode aSizeMode) {
+  switch (aSizeMode) {
+    case nsSizeMode_Normal:
+      return wr::WindowSizeMode::Normal;
+    case nsSizeMode_Minimized:
+      return wr::WindowSizeMode::Minimized;
+    case nsSizeMode_Maximized:
+      return wr::WindowSizeMode::Maximized;
+    case nsSizeMode_Fullscreen:
+      return wr::WindowSizeMode::Fullscreen;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Tried to convert invalid size mode.");
+      return wr::WindowSizeMode::Invalid;
+  }
+}
+
+static inline wr::APZScrollGeneration ToWrAPZScrollGeneration(
+    const mozilla::APZScrollGeneration& aGeneration) {
+  return wr::APZScrollGeneration(aGeneration.Raw());
+}
+
+static inline wr::HasScrollLinkedEffect ToWrHasScrollLinkedEffect(
+    bool aHasScrollLinkedEffect) {
+  return aHasScrollLinkedEffect ? wr::HasScrollLinkedEffect::Yes
+                                : wr::HasScrollLinkedEffect::No;
 }
 
 }  // namespace wr

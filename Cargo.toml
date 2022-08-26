@@ -7,10 +7,11 @@
 members = [
   "js/src/frontend/smoosh",
   "js/src/rust",
-  "js/src/wasm/cranelift",
   "netwerk/test/http3server",
+  "security/manager/ssl/ipcclientcerts",
   "security/manager/ssl/osclientcerts",
   "testing/geckodriver",
+  "toolkit/components/uniffi-bindgen-gecko-js",
   "toolkit/crashreporter/rust_minidump_writer_linux",
   "toolkit/crashreporter/mozwer-rust",
   "toolkit/library/gtest/rust",
@@ -40,6 +41,8 @@ exclude = [
   "xpcom/rust/gkrust_utils",
   "tools/lint/test/files/clippy",
   "tools/fuzzing/rust",
+  "dom/base/rust",
+  "dom/origin-trials/ffi",
 ]
 
 # Use the new dependency resolver to reduce some of the platform-specific dependencies.
@@ -78,35 +81,103 @@ opt-level = 2
 opt-level = 2
 
 [patch.crates-io]
-chardetng = { git = "https://github.com/hsivonen/chardetng", rev="302c995f91f44cf26e77dc4758ad56c3ff0153ad" }
-chardetng_c = { git = "https://github.com/hsivonen/chardetng_c", rev="ed8a4c6f900a90d4dbc1d64b856e61490a1c3570" }
-libudev-sys = { path = "dom/webauthn/libudev-sys" }
-packed_simd = { git = "https://github.com/hsivonen/packed_simd", rev="8b4bd7d8229660a749dbe419a57ea01df9de5453" }
-minidump_writer_linux = { git = "https://github.com/msirringhaus/minidump_writer_linux.git", rev = "029ac0d54b237f27dc7d8d4e51bc0fb076e5e852" }
-# The following overrides point to dummy projects, as a temporary measure until this is resolved:
-# https://github.com/rust-lang/cargo/issues/6179
-js-sys = { git = "https://github.com/kvark/dummy-web" }
-slotmap = { git = "https://github.com/kvark/dummy-web" }
-wasm-bindgen = { git = "https://github.com/kvark/dummy-web" }
-web-sys = { git = "https://github.com/kvark/dummy-web" }
+# The build system doesn't want those to be used, but they are pulled anyways (because
+# dependencies can't be disabled based on features), but remain unused. We ensure they
+# stay unused by overriding them with crates that contain enough to build the current
+# code and will fail the build in unwanted cases.
+cmake = { path = "build/rust/cmake" }
+vcpkg = { path = "build/rust/vcpkg" }
 
-[patch.crates-io.cranelift-codegen]
-git = "https://github.com/bytecodealliance/wasmtime"
-rev = "824fa69756523f2b6d49029fe25de94130b1f144"
+# Helper crate for integration in the gecko build system.
+mozbuild = { path = "build/rust/mozbuild" }
 
-[patch.crates-io.cranelift-wasm]
-git = "https://github.com/bytecodealliance/wasmtime"
-rev = "824fa69756523f2b6d49029fe25de94130b1f144"
+# Patch bindgen 0.56 to 0.59.
+bindgen = { path = "build/rust/bindgen" }
+
+# Patch cfg-if 0.1 to 1.0
+cfg-if = { path = "build/rust/cfg-if" }
+
+# Patch redox_users to an empty crate
+redox_users = { path = "build/rust/redox_users" }
+
+# Patch memmap2 0.2 to 0.3
+memmap2 = { path = "build/rust/memmap2" }
+
+# Patch getrandom 0.7 to 0.8
+rand = { path = "build/rust/rand" }
+
+# Patch tokio-util 0.6 to 0.7
+tokio-util = { path = "build/rust/tokio-util" }
+
+# Patch env_logger 0.8 to 0.9
+env_logger = { path = "build/rust/env_logger" }
+
+# Patch toml 0.4 to 0.5
+toml = { path = "build/rust/toml" }
+
+# Patch parking_lot 0.12 down to 0.11, which is compatible for most crates that use it, to avoid
+# dependencies on windows-sys.
+parking_lot = { path = "build/rust/parking_lot" }
+
+# Override tinyvec with smallvec
+tinyvec = { path = "build/rust/tinyvec" }
+
+# Patch wasi 0.10 to 0.11
+wasi = { path = "build/rust/wasi" }
+
+# Patch hashbrown 0.11 to 0.12
+hashbrown = { path = "build/rust/hashbrown" }
 
 # Patch autocfg to hide rustc output. Workaround for https://github.com/cuviper/autocfg/issues/30
-[patch.crates-io.autocfg]
-path = "third_party/rust/autocfg"
+autocfg = { path = "third_party/rust/autocfg" }
 
+# The following overrides point to dummy projects, as a temporary measure until this is resolved:
+# https://github.com/rust-lang/cargo/issues/6179
+js-sys = { path = "build/rust/dummy-web/js-sys" }
+slotmap = { path = "build/rust/dummy-web/slotmap" }
+wasm-bindgen = { path = "build/rust/dummy-web/wasm-bindgen" }
+web-sys = { path = "build/rust/dummy-web/web-sys" }
+
+# Overrides to allow easier use of common internal crates.
+moz_asserts = { path = "mozglue/static/rust/moz_asserts" }
+
+# Other overrides
+async-task = { git = "https://github.com/smol-rs/async-task", rev="f6488e35beccb26eb6e85847b02aa78a42cd3d0e" }
+chardetng = { git = "https://github.com/hsivonen/chardetng", rev="3484d3e3ebdc8931493aa5df4d7ee9360a90e76b" }
+chardetng_c = { git = "https://github.com/hsivonen/chardetng_c", rev="ed8a4c6f900a90d4dbc1d64b856e61490a1c3570" }
+coremidi = { git = "https://github.com/chris-zen/coremidi.git", rev="fc68464b5445caf111e41f643a2e69ccce0b4f83" }
+fog = { path = "toolkit/components/glean/api" }
+libudev-sys = { path = "dom/webauthn/libudev-sys" }
+packed_simd = { package = "packed_simd_2", git = "https://github.com/hsivonen/packed_simd", rev="412f9a0aa556611de021bde89dee8fefe6e0fbbd" }
+midir = { git = "https://github.com/mozilla/midir.git", rev = "e1b4dcb767f9e69afe95a860374aaa9635d81e3d" }
+minidump_writer_linux = { git = "https://github.com/rust-minidump/minidump-writer.git", rev = "75ada456c92a429704691a85e1cb42fef8cafc0d" }
+
+# application-services overrides to make updating them all simpler.
+interrupt-support = { git = "https://github.com/mozilla/application-services", rev = "2689788cecf24c385e6b7440e3aa1a89c511f14a" }
+sql-support = { git = "https://github.com/mozilla/application-services", rev = "2689788cecf24c385e6b7440e3aa1a89c511f14a" }
+sync15-traits = { git = "https://github.com/mozilla/application-services", rev = "2689788cecf24c385e6b7440e3aa1a89c511f14a" }
+viaduct = { git = "https://github.com/mozilla/application-services", rev = "2689788cecf24c385e6b7440e3aa1a89c511f14a" }
+webext-storage = { git = "https://github.com/mozilla/application-services", rev = "2689788cecf24c385e6b7440e3aa1a89c511f14a" }
 
 # Patch mio 0.6 to use winapi 0.3 and miow 0.3, getting rid of winapi 0.2.
 # There is not going to be new version of mio 0.6, mio now being >= 0.7.11.
 [patch.crates-io.mio]
-path = "third_party/rust/mio"
+path = "third_party/rust/mio-0.6.23"
 
-[patch.crates-io.prost-derive]
-path = "third_party/rust/prost-derive"
+# Patch neqo 0.5.7 to be compatible with newer versions of the log crate.
+# https://github.com/mozilla/neqo/pull/1350
+[patch."https://github.com/mozilla/neqo"]
+neqo-common = { path = "third_party/rust/neqo-common" }
+
+# These are used to test UniFFI functionality.  We haven't figured out how we
+# want to publish these yet, so they are only accessible via git.  This works
+# okay, but it means that their dependencies on UniFFI crates will normally
+# also be the git versions.  Patch them to use the published versions to avoid
+# duplicate crates.
+
+[patch."https://github.com/mozilla/uniffi-rs.git"]
+uniffi = "0.19.3"
+uniffi_bindgen = "0.19.3"
+uniffi_build = "0.19.3"
+uniffi_macros = "0.19.3"
+weedle2 = "3.0.0"

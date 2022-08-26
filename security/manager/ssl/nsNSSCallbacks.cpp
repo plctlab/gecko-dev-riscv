@@ -13,6 +13,7 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Casting.h"
+#include "mozilla/Logging.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Span.h"
 #include "mozilla/Telemetry.h"
@@ -103,7 +104,7 @@ class OCSPRequest final : public nsIStreamLoaderObserver, public nsIRunnable {
   // cancelled. This is how we know the closure in OnTimeout is valid. If the
   // timer fires before OnStreamComplete runs, it should be safe to not cancel
   // the request because necko has a strong reference to it.
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
   bool mNotifiedDone;
   nsCOMPtr<nsIStreamLoader> mLoader;
   const nsCString mAIALocation;
@@ -700,31 +701,24 @@ nsCString getSignatureName(uint32_t aSignatureScheme) {
 // call with shutdown prevention lock held
 static void PreliminaryHandshakeDone(PRFileDesc* fd) {
   nsNSSSocketInfo* infoObject = (nsNSSSocketInfo*)fd->higher->secret;
-  if (!infoObject) return;
-
-  SSLChannelInfo channelInfo;
-  if (SSL_GetChannelInfo(fd, &channelInfo, sizeof(channelInfo)) == SECSuccess) {
-    infoObject->SetSSLVersionUsed(channelInfo.protocolVersion);
-    infoObject->SetEarlyDataAccepted(channelInfo.earlyDataAccepted);
-    infoObject->SetResumed(channelInfo.resumed);
-
-    SSLCipherSuiteInfo cipherInfo;
-    if (SSL_GetCipherSuiteInfo(channelInfo.cipherSuite, &cipherInfo,
-                               sizeof cipherInfo) == SECSuccess) {
-      /* Set the Status information */
-      infoObject->mHaveCipherSuiteAndProtocol = true;
-      infoObject->mCipherSuite = channelInfo.cipherSuite;
-      infoObject->mProtocolVersion = channelInfo.protocolVersion & 0xFF;
-      infoObject->mKeaGroup.Assign(getKeaGroupName(channelInfo.keaGroup));
-      infoObject->mSignatureSchemeName.Assign(
-          getSignatureName(channelInfo.signatureScheme));
-      infoObject->SetKEAUsed(channelInfo.keaType);
-      infoObject->SetKEAKeyBits(channelInfo.keaKeyBits);
-      infoObject->SetMACAlgorithmUsed(cipherInfo.macAlgorithm);
-      infoObject->mIsDelegatedCredential = channelInfo.peerDelegCred;
-      infoObject->mIsAcceptedEch = channelInfo.echAccepted;
-    }
+  if (!infoObject) {
+    return;
   }
+  SSLChannelInfo channelInfo;
+  if (SSL_GetChannelInfo(fd, &channelInfo, sizeof(channelInfo)) != SECSuccess) {
+    return;
+  }
+  SSLCipherSuiteInfo cipherInfo;
+  if (SSL_GetCipherSuiteInfo(channelInfo.cipherSuite, &cipherInfo,
+                             sizeof(cipherInfo)) != SECSuccess) {
+    return;
+  }
+  infoObject->SetPreliminaryHandshakeInfo(channelInfo, cipherInfo);
+  infoObject->SetSSLVersionUsed(channelInfo.protocolVersion);
+  infoObject->SetEarlyDataAccepted(channelInfo.earlyDataAccepted);
+  infoObject->SetKEAUsed(channelInfo.keaType);
+  infoObject->SetKEAKeyBits(channelInfo.keaKeyBits);
+  infoObject->SetMACAlgorithmUsed(cipherInfo.macAlgorithm);
 
   // Don't update NPN details on renegotiation.
   if (infoObject->IsPreliminaryHandshakeDone()) {
@@ -1104,7 +1098,6 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
       &evStatus,
       nullptr,  // OCSP stapling telemetry
       nullptr,  // key size telemetry
-      nullptr,  // SHA-1 telemetry
       nullptr,  // pinning telemetry
       &certificateTransparencyInfo, &isBuiltCertChainRootBuiltInRoot);
 
@@ -1113,15 +1106,15 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
             ("HandshakeCallback: couldn't rebuild verified certificate info"));
   }
 
-  RefPtr<nsNSSCertificate> nssc(nsNSSCertificate::Create(cert.get()));
+  nsCOMPtr<nsIX509Cert> x509Cert(new nsNSSCertificate(cert.get()));
   if (rv == Success && evStatus == EVStatus::EV) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-            ("HandshakeCallback using NEW cert %p (is EV)", nssc.get()));
-    infoObject->SetServerCert(nssc, EVStatus::EV);
+            ("HandshakeCallback using NEW cert (is EV)"));
+    infoObject->SetServerCert(x509Cert, EVStatus::EV);
   } else {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-            ("HandshakeCallback using NEW cert %p (is not EV)", nssc.get()));
-    infoObject->SetServerCert(nssc, EVStatus::NotEV);
+            ("HandshakeCallback using NEW cert (is not EV)"));
+    infoObject->SetServerCert(x509Cert, EVStatus::NotEV);
   }
 
   if (rv == Success) {
@@ -1304,7 +1297,7 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
     msg.AppendLiteral(" : server does not support RFC 5746, see CVE-2009-3555");
 
     nsContentUtils::LogSimpleConsoleError(
-        msg, "SSL", !!infoObject->GetOriginAttributes().mPrivateBrowsingId,
+        msg, "SSL"_ns, !!infoObject->GetOriginAttributes().mPrivateBrowsingId,
         true /* from chrome context */);
   }
 

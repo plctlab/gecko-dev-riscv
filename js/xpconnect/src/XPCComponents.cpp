@@ -12,7 +12,7 @@
 #include "XPCJSWeakReference.h"
 #include "WrapperFactory.h"
 #include "nsJSUtils.h"
-#include "mozJSComponentLoader.h"
+#include "mozJSModuleLoader.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollector.h"
 #include "jsfriendapi.h"
@@ -49,6 +49,7 @@
 #include "nsGlobalWindow.h"
 #include "nsScriptError.h"
 #include "GeckoProfiler.h"
+#include "ProfilerControl.h"
 #include "mozilla/EditorSpellCheck.h"
 #include "nsCommandLine.h"
 #include "nsCommandParams.h"
@@ -215,11 +216,11 @@ nsXPCComponents_Interfaces::Resolve(nsIXPConnectWrappedNative* wrapper,
   RootedObject obj(cx, objArg);
   RootedId id(cx, idArg);
 
-  if (!JSID_IS_STRING(id)) {
+  if (!id.isString()) {
     return NS_OK;
   }
 
-  RootedString str(cx, JSID_TO_STRING(id));
+  RootedString str(cx, id.toString());
   JS::UniqueChars name = JS_EncodeStringToLatin1(cx, str);
 
   // we only allow interfaces by name here
@@ -369,8 +370,7 @@ nsXPCComponents_Classes::Resolve(nsIXPConnectWrappedNative* wrapper,
   RootedObject obj(cx, objArg);
 
   RootedValue cidv(cx);
-  if (JSID_IS_STRING(id) &&
-      xpc::ContractID2JSValue(cx, JSID_TO_STRING(id), &cidv)) {
+  if (id.isString() && xpc::ContractID2JSValue(cx, id.toString(), &cidv)) {
     *resolvedp = true;
     *_retval = JS_DefinePropertyById(cx, obj, id, cidv,
                                      JSPROP_ENUMERATE | JSPROP_READONLY |
@@ -498,11 +498,11 @@ nsXPCComponents_Results::Resolve(nsIXPConnectWrappedNative* wrapper,
                                  bool* resolvedp, bool* _retval) {
   RootedObject obj(cx, objArg);
   RootedId id(cx, idArg);
-  if (!JSID_IS_STRING(id)) {
+  if (!id.isString()) {
     return NS_OK;
   }
 
-  JS::UniqueChars name = JS_EncodeStringToLatin1(cx, JSID_TO_STRING(id));
+  JS::UniqueChars name = JS_EncodeStringToLatin1(cx, id.toString());
   if (name) {
     const char* rv_name;
     const void* iter = nullptr;
@@ -1550,7 +1550,7 @@ NS_IMETHODIMP
 nsXPCComponents_Utils::Import(const nsACString& registryLocation,
                               HandleValue targetObj, JSContext* cx,
                               uint8_t optionalArgc, MutableHandleValue retval) {
-  RefPtr<mozJSComponentLoader> moduleloader = mozJSComponentLoader::Get();
+  RefPtr moduleloader = mozJSModuleLoader::Get();
   MOZ_ASSERT(moduleloader);
 
   AUTO_PROFILER_LABEL_DYNAMIC_NSCSTRING("nsXPCComponents_Utils::Import", OTHER,
@@ -1561,16 +1561,32 @@ nsXPCComponents_Utils::Import(const nsACString& registryLocation,
 }
 
 NS_IMETHODIMP
-nsXPCComponents_Utils::IsModuleLoaded(const nsACString& registryLocation,
+nsXPCComponents_Utils::IsModuleLoaded(const nsACString& aResourceURI,
                                       bool* retval) {
-  RefPtr<mozJSComponentLoader> moduleloader = mozJSComponentLoader::Get();
+  RefPtr moduleloader = mozJSModuleLoader::Get();
   MOZ_ASSERT(moduleloader);
-  return moduleloader->IsModuleLoaded(registryLocation, retval);
+  return moduleloader->IsModuleLoaded(aResourceURI, retval);
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::IsJSModuleLoaded(const nsACString& aResourceURI,
+                                        bool* retval) {
+  RefPtr moduleloader = mozJSModuleLoader::Get();
+  MOZ_ASSERT(moduleloader);
+  return moduleloader->IsJSModuleLoaded(aResourceURI, retval);
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::IsESModuleLoaded(const nsACString& aResourceURI,
+                                        bool* retval) {
+  RefPtr moduleloader = mozJSModuleLoader::Get();
+  MOZ_ASSERT(moduleloader);
+  return moduleloader->IsESModuleLoaded(aResourceURI, retval);
 }
 
 NS_IMETHODIMP
 nsXPCComponents_Utils::Unload(const nsACString& registryLocation) {
-  RefPtr<mozJSComponentLoader> moduleloader = mozJSComponentLoader::Get();
+  RefPtr moduleloader = mozJSModuleLoader::Get();
   MOZ_ASSERT(moduleloader);
   return moduleloader->Unload(registryLocation);
 }
@@ -1631,7 +1647,7 @@ nsXPCComponents_Utils::ForceGC(JSContext* aCx) {
 
 NS_IMETHODIMP
 nsXPCComponents_Utils::ForceCC(nsICycleCollectorListener* listener) {
-  nsJSContext::CycleCollectNow(listener);
+  nsJSContext::CycleCollectNow(CCReason::API, listener);
   return NS_OK;
 }
 
@@ -1683,7 +1699,7 @@ class PreciseGCRunnable : public Runnable {
 
   NS_IMETHOD Run() override {
     nsJSContext::GarbageCollectNow(
-        GCReason::COMPONENT_UTILS, nsJSContext::NonIncrementalGC,
+        GCReason::COMPONENT_UTILS,
         mShrinking ? nsJSContext::ShrinkingGC : nsJSContext::NonShrinkingGC);
 
     mCallback->Callback();
@@ -2442,15 +2458,28 @@ nsXPCComponents_Utils::CreateSpellChecker(nsIEditorSpellCheck** aSpellChecker) {
 }
 
 NS_IMETHODIMP
-nsXPCComponents_Utils::CreateCommandLine(nsIFile* aWorkingDir,
+nsXPCComponents_Utils::CreateCommandLine(const nsTArray<nsCString>& aArgs,
+                                         nsIFile* aWorkingDir, uint32_t aState,
                                          nsISupports** aCommandLine) {
+  NS_ENSURE_ARG_MAX(aState, nsICommandLine::STATE_REMOTE_EXPLICIT);
   NS_ENSURE_ARG_POINTER(aCommandLine);
+
   nsCOMPtr<nsISupports> commandLine = new nsCommandLine();
-  if (aWorkingDir) {
-    nsCOMPtr<nsICommandLineRunner> runner = do_QueryInterface(commandLine);
-    char* argv[] = {nullptr};
-    runner->Init(0, argv, aWorkingDir, nsICommandLine::STATE_REMOTE_EXPLICIT);
+  nsCOMPtr<nsICommandLineRunner> runner = do_QueryInterface(commandLine);
+
+  nsTArray<const char*> fakeArgv(aArgs.Length() + 2);
+
+  // Prepend a dummy argument for the program name, which will be ignored.
+  fakeArgv.AppendElement(nullptr);
+  for (const nsCString& arg : aArgs) {
+    fakeArgv.AppendElement(arg.get());
   }
+  // Append a null terminator.
+  fakeArgv.AppendElement(nullptr);
+
+  nsresult rv = runner->Init(fakeArgv.Length() - 1, fakeArgv.Elements(),
+                             aWorkingDir, aState);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   commandLine.forget(aCommandLine);
   return NS_OK;
@@ -2509,27 +2538,26 @@ nsXPCComponents_Utils::CreateHTMLCopyEncoder(
 
 NS_IMETHODIMP
 nsXPCComponents_Utils::GetLoadedModules(nsTArray<nsCString>& aLoadedModules) {
-  mozJSComponentLoader::Get()->GetLoadedModules(aLoadedModules);
+  return mozJSModuleLoader::Get()->GetLoadedJSAndESModules(aLoadedModules);
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::GetLoadedJSModules(
+    nsTArray<nsCString>& aLoadedJSModules) {
+  mozJSModuleLoader::Get()->GetLoadedModules(aLoadedJSModules);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsXPCComponents_Utils::GetLoadedComponents(
-    nsTArray<nsCString>& aLoadedComponents) {
-  mozJSComponentLoader::Get()->GetLoadedComponents(aLoadedComponents);
-  return NS_OK;
+nsXPCComponents_Utils::GetLoadedESModules(
+    nsTArray<nsCString>& aLoadedESModules) {
+  return mozJSModuleLoader::Get()->GetLoadedESModules(aLoadedESModules);
 }
 
 NS_IMETHODIMP
 nsXPCComponents_Utils::GetModuleImportStack(const nsACString& aLocation,
                                             nsACString& aRetval) {
-  return mozJSComponentLoader::Get()->GetModuleImportStack(aLocation, aRetval);
-}
-
-NS_IMETHODIMP
-nsXPCComponents_Utils::GetComponentLoadStack(const nsACString& aLocation,
-                                             nsACString& aRetval) {
-  return mozJSComponentLoader::Get()->GetComponentLoadStack(aLocation, aRetval);
+  return mozJSModuleLoader::Get()->GetModuleImportStack(aLocation, aRetval);
 }
 
 /***************************************************************************/

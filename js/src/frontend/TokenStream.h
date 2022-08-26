@@ -185,10 +185,8 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Casting.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryChecking.h"
-#include "mozilla/PodOperations.h"
 #include "mozilla/Span.h"
 #include "mozilla/TextUtils.h"
 #include "mozilla/Utf8.h"
@@ -212,11 +210,9 @@
 #include "js/RegExpFlags.h"           // JS::RegExpFlags
 #include "js/UniquePtr.h"
 #include "js/Vector.h"
-#include "util/Text.h"
 #include "util/Unicode.h"
+#include "vm/ErrorContext.h"
 #include "vm/ErrorReporting.h"
-#include "vm/JSAtom.h"
-#include "vm/StringType.h"
 
 struct JS_PUBLIC_API JSContext;
 struct KeywordInfo;
@@ -567,6 +563,8 @@ class TokenStreamAnyChars : public TokenStreamShared {
 
   JSContext* const cx;
 
+  ErrorContext* const ec;
+
   /** Options used for parsing/tokenizing. */
   const JS::ReadOnlyCompileOptions& options_;
 
@@ -724,7 +722,8 @@ class TokenStreamAnyChars : public TokenStreamShared {
   // End of fields.
 
  public:
-  TokenStreamAnyChars(JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+  TokenStreamAnyChars(JSContext* cx, ErrorContext* ec,
+                      const JS::ReadOnlyCompileOptions& options,
                       StrictModeGetter* smg);
 
   template <typename Unit, class AnyCharsAccess>
@@ -877,7 +876,8 @@ class TokenStreamAnyChars : public TokenStreamShared {
 
   char16_t* sourceMapURL() { return sourceMapURL_.get(); }
 
-  JSContext* context() const { return cx; }
+  ErrorContext* context() const { return ec; }
+  JSContext* jsContext() const { return cx; }
 
   using LineToken = SourceCoords::LineToken;
 
@@ -1568,6 +1568,7 @@ using CharBuffer = Vector<char16_t, 32>;
 class TokenStreamCharsShared {
  protected:
   JSContext* cx;
+  ErrorContext* ec;
 
   /**
    * Buffer transiently used to store sequences of identifier or string code
@@ -1580,8 +1581,9 @@ class TokenStreamCharsShared {
   ParserAtomsTable* parserAtoms;
 
  protected:
-  explicit TokenStreamCharsShared(JSContext* cx, ParserAtomsTable* parserAtoms)
-      : cx(cx), charBuffer(cx), parserAtoms(parserAtoms) {}
+  explicit TokenStreamCharsShared(JSContext* cx, ErrorContext* ec,
+                                  ParserAtomsTable* parserAtoms)
+      : cx(cx), ec(ec), charBuffer(cx), parserAtoms(parserAtoms) {}
 
   [[nodiscard]] bool copyCharBufferTo(
       JSContext* cx, UniquePtr<char16_t[], JS::FreePolicy>* destination);
@@ -1598,7 +1600,7 @@ class TokenStreamCharsShared {
 
   TaggedParserAtomIndex drainCharBufferIntoAtom() {
     // Add to parser atoms table.
-    auto atom = this->parserAtoms->internChar16(cx, charBuffer.begin(),
+    auto atom = this->parserAtoms->internChar16(ec, charBuffer.begin(),
                                                 charBuffer.length());
     charBuffer.clear();
     return atom;
@@ -1627,8 +1629,9 @@ class TokenStreamCharsBase : public TokenStreamCharsShared {
   // End of fields.
 
  protected:
-  TokenStreamCharsBase(JSContext* cx, ParserAtomsTable* parserAtoms,
-                       const Unit* units, size_t length, size_t startOffset);
+  TokenStreamCharsBase(JSContext* cx, ErrorContext* ec,
+                       ParserAtomsTable* parserAtoms, const Unit* units,
+                       size_t length, size_t startOffset);
 
   /**
    * Convert a non-EOF code unit returned by |getCodeUnit()| or
@@ -1726,14 +1729,14 @@ template <>
 MOZ_ALWAYS_INLINE TaggedParserAtomIndex
 TokenStreamCharsBase<char16_t>::atomizeSourceChars(
     mozilla::Span<const char16_t> units) {
-  return this->parserAtoms->internChar16(cx, units.data(), units.size());
+  return this->parserAtoms->internChar16(ec, units.data(), units.size());
 }
 
 template <>
 /* static */ MOZ_ALWAYS_INLINE TaggedParserAtomIndex
 TokenStreamCharsBase<mozilla::Utf8Unit>::atomizeSourceChars(
     mozilla::Span<const mozilla::Utf8Unit> units) {
-  return this->parserAtoms->internUtf8(cx, units.data(), units.size());
+  return this->parserAtoms->internUtf8(ec, units.data(), units.size());
 }
 
 template <typename Unit>
@@ -2491,7 +2494,8 @@ class MOZ_STACK_CLASS TokenStreamSpecific
   friend class TokenStreamPosition;
 
  public:
-  TokenStreamSpecific(JSContext* cx, ParserAtomsTable* parserAtoms,
+  TokenStreamSpecific(JSContext* cx, ErrorContext* ec,
+                      ParserAtomsTable* parserAtoms,
                       const JS::ReadOnlyCompileOptions& options,
                       const Unit* units, size_t length);
 
@@ -2552,7 +2556,9 @@ class MOZ_STACK_CLASS TokenStreamSpecific
  private:
   // Implement ErrorReportMixin.
 
-  JSContext* getContext() const override { return anyCharsAccess().cx; }
+  ErrorContext* getContext() const override {
+    return anyCharsAccess().context();
+  }
 
   [[nodiscard]] bool strictMode() const override {
     return anyCharsAccess().strictMode();
@@ -2609,32 +2615,24 @@ class MOZ_STACK_CLASS TokenStreamSpecific
    * |unit| must be one of these values:
    *
    *   1. The first decimal digit in the integral part of a decimal number
-   *      not starting with '0' or '.', e.g. '1' for "17", '3' for "3.14", or
+   *      not starting with '.', e.g. '1' for "17", '0' for "0.14", or
    *      '8' for "8.675309e6".
    *
    *   In this case, the next |getCodeUnit()| must return the code unit after
    *   |unit| in the overall number.
    *
-   *   2. The '.' in a "."/"0."-prefixed decimal number or the 'e'/'E' in a
-   *      "0e"/"0E"-prefixed decimal number, e.g. ".17", "0.42", or "0.1e3".
+   *   2. The '.' in a "."-prefixed decimal number, e.g. ".17" or ".1e3".
    *
    *   In this case, the next |getCodeUnit()| must return the code unit
-   *   *after* the first decimal digit *after* the '.'.  So the next code
-   *   unit would be '7' in ".17", '2' in "0.42", 'e' in "0.4e+8", or '/' in
-   *   "0.5/2" (three separate tokens).
+   *   *after* the '.'.
    *
-   *   3. The code unit after the '0' where "0" is the entire number token.
-   *
-   *   In this case, the next |getCodeUnit()| would return the code unit
-   *   after |unit|, but this function will never perform such call.
-   *
-   *   4. (Non-strict mode code only)  The first '8' or '9' in a "noctal"
-   *      number that begins with a '0' but contains a non-octal digit in its
-   *      integer part so is interpreted as decimal, e.g. '9' in "09.28" or
-   *      '8' in "0386" or '9' in "09+7" (three separate tokens").
+   *   3. (Non-strict mode code only)  The first non-ASCII-digit unit for a
+   *      "noctal" number that begins with a '0' but contains a non-octal digit
+   *      in its integer part so is interpreted as decimal, e.g. '.' in "09.28"
+   *      or EOF for "0386" or '+' in "09+7" (three separate tokens).
    *
    *   In this case, the next |getCodeUnit()| returns the code unit after
-   *   |unit|: '.', '6', or '+' in the examples above.
+   *   |unit|: '2', 'EOF', or '7' in the examples above.
    *
    * This interface is super-hairy and horribly stateful.  Unfortunately, its
    * hair merely reflects the intricacy of ECMAScript numeric literal syntax.
@@ -2851,8 +2849,6 @@ class MOZ_STACK_CLASS TokenStreamSpecific
     return this->sourceUnits.codeUnitPtrAt(offset);
   }
 
-  const Unit* rawLimit() const { return this->sourceUnits.limit(); }
-
   [[nodiscard]] bool identifierName(TokenStart start, const Unit* identStart,
                                     IdentifierEscapes escaping,
                                     Modifier modifier,
@@ -2941,18 +2937,19 @@ class MOZ_STACK_CLASS TokenStream
   using Unit = char16_t;
 
  public:
-  TokenStream(JSContext* cx, ParserAtomsTable* parserAtoms,
+  TokenStream(JSContext* cx, ErrorContext* ec, ParserAtomsTable* parserAtoms,
               const JS::ReadOnlyCompileOptions& options, const Unit* units,
               size_t length, StrictModeGetter* smg)
-      : TokenStreamAnyChars(cx, options, smg),
+      : TokenStreamAnyChars(cx, ec, options, smg),
         TokenStreamSpecific<Unit, TokenStreamAnyCharsAccess>(
-            cx, parserAtoms, options, units, length) {}
+            cx, ec, parserAtoms, options, units, length) {}
 };
 
 class MOZ_STACK_CLASS DummyTokenStream final : public TokenStream {
  public:
-  DummyTokenStream(JSContext* cx, const JS::ReadOnlyCompileOptions& options)
-      : TokenStream(cx, nullptr, options, nullptr, 0, nullptr) {}
+  DummyTokenStream(JSContext* cx, ErrorContext* ec,
+                   const JS::ReadOnlyCompileOptions& options)
+      : TokenStream(cx, ec, nullptr, options, nullptr, 0, nullptr) {}
 };
 
 template <class TokenStreamSpecific>

@@ -5,42 +5,34 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Pocket",
   "chrome://pocket/content/Pocket.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CustomizableUI",
   "resource:///modules/CustomizableUI.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
-  "ReaderMode",
-  "resource://gre/modules/ReaderMode.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AboutReaderParent",
   "resource:///actors/AboutReaderParent.jsm"
 );
 
 var EXPORTED_SYMBOLS = ["SaveToPocket"];
 
-XPCOMUtils.defineLazyGetter(this, "gStrings", () => {
-  return Services.strings.createBundle(
-    "chrome://global/locale/aboutReader.properties"
-  );
-});
-
+const gStrings = Services.strings.createBundle(
+  "chrome://global/locale/aboutReader.properties"
+);
 var PocketCustomizableWidget = {
   init() {
-    CustomizableUI.createWidget({
+    lazy.CustomizableUI.createWidget({
       id: "save-to-pocket-button",
       l10nId: "save-to-pocket-button",
       type: "view",
@@ -57,6 +49,7 @@ var PocketCustomizableWidget = {
 
         frame.setAttribute("type", "content");
         frame.setAttribute("remote", true);
+        frame.setAttribute("autocompletepopup", "PopupAutoComplete");
         panelNode.appendChild(frame);
 
         SaveToPocket.onShownInToolbarPanel(panelNode, frame);
@@ -73,60 +66,16 @@ var PocketCustomizableWidget = {
     });
   },
   shutdown() {
-    CustomizableUI.destroyWidget("save-to-pocket-button");
-  },
-};
-
-// PocketContextMenu
-// When the context menu is opened check if we need to build and enable pocket UI.
-var PocketContextMenu = {
-  init() {
-    Services.obs.addObserver(this, "on-build-contextmenu");
-  },
-  shutdown() {
-    Services.obs.removeObserver(this, "on-build-contextmenu");
-  },
-  observe(aSubject, aTopic, aData) {
-    let subject = aSubject.wrappedJSObject;
-    let document = subject.menu.ownerDocument;
-    let pocketEnabled = SaveToPocket.prefEnabled;
-
-    let showSaveCurrentPageToPocket = !(
-      subject.onTextInput ||
-      subject.onLink ||
-      subject.isContentSelected ||
-      subject.onImage ||
-      subject.onCanvas ||
-      subject.onVideo ||
-      subject.onAudio
-    );
-    let targetUrl = subject.onLink ? subject.linkUrl : subject.pageUrl;
-    let targetURI = Services.io.newURI(targetUrl);
-    let canPocket =
-      pocketEnabled &&
-      (targetURI.schemeIs("http") ||
-        targetURI.schemeIs("https") ||
-        (targetURI.schemeIs("about") && ReaderMode.getOriginalUrl(targetUrl)));
-
-    let showSaveLinkToPocket =
-      canPocket && !showSaveCurrentPageToPocket && subject.onLink;
-
-    let menu = document.getElementById("context-pocket");
-    menu.hidden = !(canPocket && showSaveCurrentPageToPocket);
-
-    menu = document.getElementById("context-savelinktopocket");
-    menu.hidden = !showSaveLinkToPocket;
+    lazy.CustomizableUI.destroyWidget("save-to-pocket-button");
   },
 };
 
 var PocketOverlay = {
   startup() {
     PocketCustomizableWidget.init();
-    PocketContextMenu.init();
   },
   shutdown() {
     PocketCustomizableWidget.shutdown();
-    PocketContextMenu.shutdown();
   },
 };
 
@@ -161,8 +110,11 @@ var SaveToPocket = {
       this.updateElements(false);
       Services.obs.addObserver(this, "browser-delayed-startup-finished");
     }
-    AboutReaderParent.addMessageListener("Reader:OnSetup", this);
-    AboutReaderParent.addMessageListener("Reader:Clicked-pocket-button", this);
+    lazy.AboutReaderParent.addMessageListener("Reader:OnSetup", this);
+    lazy.AboutReaderParent.addMessageListener(
+      "Reader:Clicked-pocket-button",
+      this
+    );
   },
 
   observe(subject, topic, data) {
@@ -180,19 +132,17 @@ var SaveToPocket = {
       "Pocket",
     ]),
     image: "chrome://global/skin/icons/pocket.svg",
-    width: 16,
-    height: 16,
   },
 
   onPrefChange(pref, oldValue, newValue) {
     if (!newValue) {
-      AboutReaderParent.broadcastAsyncMessage("Reader:RemoveButton", {
+      lazy.AboutReaderParent.broadcastAsyncMessage("Reader:RemoveButton", {
         id: "pocket-button",
       });
       PocketOverlay.shutdown();
       Services.obs.addObserver(this, "browser-delayed-startup-finished");
     } else {
-      AboutReaderParent.broadcastAsyncMessage(
+      lazy.AboutReaderParent.broadcastAsyncMessage(
         "Reader:AddButton",
         this._readerButtonData
       );
@@ -246,7 +196,7 @@ var SaveToPocket = {
   onShownInToolbarPanel(panel, frame) {
     let window = panel.ownerGlobal;
     window.pktUI.setToolbarPanelFrame(frame);
-    Pocket._initPanelView(window);
+    lazy.Pocket._initPanelView(window);
   },
 
   // If an item is saved to Pocket, we cache the browser's inner window ID,
@@ -278,12 +228,6 @@ var SaveToPocket = {
     if (enabled) {
       win.document.documentElement.removeAttribute("pocketdisabled");
     } else {
-      // Hide the context menu items to ensure separator logic works.
-      let savePageMenu = win.document.getElementById("context-pocket");
-      let saveLinkMenu = win.document.getElementById(
-        "context-savelinktopocket"
-      );
-      savePageMenu.hidden = saveLinkMenu.hidden = true;
       win.document.documentElement.setAttribute("pocketdisabled", "true");
     }
   },
@@ -303,8 +247,15 @@ var SaveToPocket = {
         break;
       }
       case "Reader:Clicked-pocket-button": {
-        // Saves the currently viewed page.
-        Pocket.savePage(message.target);
+        let pocketPanel = message.target.ownerDocument.querySelector(
+          "#customizationui-widget-panel"
+        );
+        if (pocketPanel?.getAttribute("panelopen")) {
+          pocketPanel.hidePopup();
+        } else {
+          // Saves the currently viewed page.
+          lazy.Pocket.savePage(message.target);
+        }
         break;
       }
     }

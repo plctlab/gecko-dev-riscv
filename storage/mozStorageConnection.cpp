@@ -4,9 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdio.h>
-
-#include "nsError.h"
 #include "nsThreadUtils.h"
 #include "nsIFile.h"
 #include "nsIFileURL.h"
@@ -44,8 +41,6 @@
 #include "mozilla/ProfilerLabels.h"
 #include "nsProxyRelease.h"
 #include "nsURLHelper.h"
-
-#include <algorithm>
 
 #define MIN_AVAILABLE_BYTES_PER_CHUNKED_GROWTH 524288000  // 500 MiB
 
@@ -265,7 +260,7 @@ class UnlockNotification {
   }
 
  private:
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
   CondVar mCondVar;
   bool mSignaled;
 };
@@ -431,21 +426,23 @@ NS_IMPL_ISUPPORTS(CloseListener, mozIStorageCompletionCallback)
 
 Connection::Connection(Service* aService, int aFlags,
                        ConnectionOperation aSupportedOperations,
-                       bool aIgnoreLockingMode)
+                       bool aInterruptible, bool aIgnoreLockingMode)
     : sharedAsyncExecutionMutex("Connection::sharedAsyncExecutionMutex"),
       sharedDBMutex("Connection::sharedDBMutex"),
       threadOpenedOn(do_GetCurrentThread()),
       mDBConn(nullptr),
-      mAsyncExecutionThreadShuttingDown(false),
-      mConnectionClosed(false),
       mDefaultTransactionType(mozIStorageConnection::TRANSACTION_DEFERRED),
       mDestroying(false),
       mProgressHandler(nullptr),
-      mFlags(aFlags),
-      mIgnoreLockingMode(aIgnoreLockingMode),
       mStorageService(aService),
+      mFlags(aFlags),
+      mTransactionNestingLevel(0),
       mSupportedOperations(aSupportedOperations),
-      mTransactionNestingLevel(0) {
+      mInterruptible(aSupportedOperations == Connection::ASYNCHRONOUS ||
+                     aInterruptible),
+      mIgnoreLockingMode(aIgnoreLockingMode),
+      mAsyncExecutionThreadShuttingDown(false),
+      mConnectionClosed(false) {
   MOZ_ASSERT(!mIgnoreLockingMode || mFlags & SQLITE_OPEN_READONLY,
              "Can't ignore locking for a non-readonly connection!");
   mStorageService->registerConnection(this);
@@ -1423,7 +1420,9 @@ Connection::SpinningSynchronousClose() {
   RefPtr<CloseListener> listener = new CloseListener();
   rv = AsyncClose(listener);
   NS_ENSURE_SUCCESS(rv, rv);
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return listener->mClosed; }));
+  MOZ_ALWAYS_TRUE(
+      SpinEventLoopUntil("storage::Connection::SpinningSynchronousClose"_ns,
+                         [&]() { return listener->mClosed; }));
   MOZ_ASSERT(isClosed(), "The connection should be closed at this point");
 
   return rv;
@@ -1723,8 +1722,8 @@ Connection::Clone(bool aReadOnly, mozIStorageConnection** _connection) {
     flags = (~SQLITE_OPEN_CREATE & flags);
   }
 
-  RefPtr<Connection> clone =
-      new Connection(mStorageService, flags, mSupportedOperations);
+  RefPtr<Connection> clone = new Connection(
+      mStorageService, flags, mSupportedOperations, mInterruptible);
 
   rv = initializeClone(clone, aReadOnly);
   if (NS_FAILED(rv)) {
@@ -1737,16 +1736,32 @@ Connection::Clone(bool aReadOnly, mozIStorageConnection** _connection) {
 
 NS_IMETHODIMP
 Connection::Interrupt() {
-  MOZ_ASSERT(threadOpenedOn == NS_GetCurrentThread());
+  MOZ_ASSERT(mInterruptible, "Interrupt method not allowed");
+  MOZ_ASSERT_IF(SYNCHRONOUS == mSupportedOperations,
+                threadOpenedOn != NS_GetCurrentThread());
+  MOZ_ASSERT_IF(ASYNCHRONOUS == mSupportedOperations,
+                threadOpenedOn == NS_GetCurrentThread());
+
   if (!connectionReady()) {
     return NS_ERROR_NOT_INITIALIZED;
   }
-  if (operationSupported(SYNCHRONOUS) || !(mFlags & SQLITE_OPEN_READONLY)) {
-    // Interrupting a synchronous connection from the same thread doesn't make
-    // sense, and read-write connections aren't safe to interrupt.
-    return NS_ERROR_INVALID_ARG;
+
+  if (isClosing()) {  // Closing already in asynchronous case
+    return NS_OK;
   }
-  ::sqlite3_interrupt(mDBConn);
+
+  {
+    // As stated on https://www.sqlite.org/c3ref/interrupt.html,
+    // it is not safe to call sqlite3_interrupt() when
+    // database connection is closed or might close before
+    // sqlite3_interrupt() returns.
+    MutexAutoLock lockedScope(sharedAsyncExecutionMutex);
+    if (!isClosed(lockedScope)) {
+      MOZ_ASSERT(mDBConn);
+      ::sqlite3_interrupt(mDBConn);
+    }
+  }
+
   return NS_OK;
 }
 

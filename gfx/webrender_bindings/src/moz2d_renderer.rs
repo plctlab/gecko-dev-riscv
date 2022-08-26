@@ -25,13 +25,17 @@ use std::collections::hash_map::HashMap;
 use std::collections::Bound::Included;
 use std::i32;
 use std::mem;
-use std::os::raw::{c_char, c_void};
+use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
 
 #[cfg(target_os = "windows")]
 use dwrote;
 
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
+#[cfg(target_os = "macos")]
+use core_graphics::font::CGFont;
 #[cfg(target_os = "macos")]
 use foreign_types::ForeignType;
 
@@ -504,23 +508,19 @@ struct Moz2dBlobRasterizer {
 }
 
 struct GeckoProfilerMarker {
-    name: &'static [u8],
+    name: &'static str,
 }
 
 impl GeckoProfilerMarker {
-    pub fn new(name: &'static [u8]) -> GeckoProfilerMarker {
-        unsafe {
-            gecko_profiler_start_marker(name.as_ptr() as *const c_char);
-        }
+    pub fn new(name: &'static str) -> GeckoProfilerMarker {
+        gecko_profiler_start_marker(name);
         GeckoProfilerMarker { name }
     }
 }
 
 impl Drop for GeckoProfilerMarker {
     fn drop(&mut self) {
-        unsafe {
-            gecko_profiler_end_marker(self.name.as_ptr() as *const c_char);
-        }
+        gecko_profiler_end_marker(self.name);
     }
 }
 
@@ -531,7 +531,7 @@ impl AsyncBlobImageRasterizer for Moz2dBlobRasterizer {
         low_priority: bool,
     ) -> Vec<(BlobImageRequest, BlobImageResult)> {
         // All we do here is spin up our workers to callback into gecko to replay the drawing commands.
-        let _marker = GeckoProfilerMarker::new(b"BlobRasterization\0");
+        let _marker = GeckoProfilerMarker::new("BlobRasterization");
 
         let requests: Vec<Job> = requests
             .iter()
@@ -687,10 +687,10 @@ impl BlobImageHandler for Moz2dBlobImageHandler {
                     *visible_rect,
                 ));
                 command.visible_rect = *visible_rect;
-            }
+            },
             _ => {
                 panic!("missing image key");
-            }
+            },
         }
     }
 
@@ -786,7 +786,19 @@ impl Moz2dBlobImageHandler {
 
         #[cfg(target_os = "macos")]
         fn process_native_font_handle(key: FontKey, handle: &NativeFontHandle) {
-            unsafe { AddNativeFontHandle(key, handle.0.as_ptr() as *mut c_void, 0) };
+            let font = match CGFont::from_name(&CFString::new(&handle.name)) {
+                Ok(font) => font,
+                Err(_) => {
+                    // If for some reason we failed to load a font descriptor, then our
+                    // only options are to either abort or substitute a fallback font.
+                    // It is preferable to use a fallback font instead so that rendering
+                    // can at least still proceed in some fashion without erroring.
+                    // Lucida Grande is the fallback font in Gecko, so use that here.
+                    CGFont::from_name(&CFString::from_static_string("Lucida Grande"))
+                        .expect("Failed reading font descriptor and could not load fallback font")
+                },
+            };
+            unsafe { AddNativeFontHandle(key, font.as_ptr() as *mut c_void, 0) };
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -812,14 +824,14 @@ impl Moz2dBlobImageHandler {
                     if !unscaled_fonts.contains(&instance.font_key) {
                         unscaled_fonts.push(instance.font_key);
                         if !unsafe { HasFontData(instance.font_key) } {
-                            let template = resources.get_font_data(instance.font_key);
+                            let template = resources.get_font_data(instance.font_key).unwrap();
                             match template {
                                 FontTemplate::Raw(ref data, ref index) => unsafe {
                                     AddFontData(instance.font_key, data.as_ptr(), data.len(), *index, data);
                                 },
                                 FontTemplate::Native(ref handle) => {
                                     process_native_font_handle(instance.font_key, handle);
-                                }
+                                },
                             }
                         }
                     }

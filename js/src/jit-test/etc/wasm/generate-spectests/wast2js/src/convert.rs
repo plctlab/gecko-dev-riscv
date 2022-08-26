@@ -218,10 +218,7 @@ fn convert_directive(
                 escape_template_string(message)
             )?;
         }
-        AssertException {
-            span: _,
-            exec,
-        } => {
+        AssertException { span: _, exec } => {
             writeln!(
                 out,
                 "assert_exception(() => {});",
@@ -235,9 +232,20 @@ fn convert_directive(
 }
 
 fn escape_template_string(text: &str) -> String {
-    text.replace("$", "$$")
-        .replace("\\", "\\\\")
-        .replace("`", "\\`")
+    let mut escaped = String::new();
+    for c in text.chars() {
+        match c {
+            '$' => escaped.push_str("$$"),
+            '\\' => escaped.push_str("\\\\"),
+            '`' => escaped.push_str("\\`"),
+            c if c.is_ascii_control() && c != '\n' && c != '\t' => {
+                escaped.push_str(&format!("\\x{:02x}", c as u32))
+            }
+            c if !c.is_ascii() => escaped.push_str(&c.escape_unicode().to_string()),
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 fn span_to_offset(span: wast::Span, text: &str) -> Result<usize> {
@@ -468,7 +476,7 @@ fn assert_expression_to_js_value(v: &wast::AssertExpression<'_>) -> Result<Strin
         F32(x) => f32_pattern_to_js_value(x),
         F64(x) => f64_pattern_to_js_value(x),
         RefNull(x) => match x {
-            Some(wast::HeapType::Func) => format!("value('funcref', null)"),
+            Some(wast::HeapType::Func) => format!("value('anyfunc', null)"),
             Some(wast::HeapType::Extern) => format!("value('externref', null)"),
             other => bail!(
                 "couldn't convert ref.null {:?} to a js assertion value",

@@ -6,20 +6,24 @@
 
 var EXPORTED_SYMBOLS = ["Page"];
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const { Domain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/Domain.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   clearInterval: "resource://gre/modules/Timer.jsm",
   OS: "resource://gre/modules/osfile.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   SessionStore: "resource:///modules/sessionstore/SessionStore.jsm",
   setInterval: "resource://gre/modules/Timer.jsm",
 
   DialogHandler:
     "chrome://remote/content/cdp/domains/parent/page/DialogHandler.jsm",
-  Domain: "chrome://remote/content/cdp/domains/Domain.jsm",
   PollPromise: "chrome://remote/content/shared/Sync.jsm",
   streamRegistry: "chrome://remote/content/cdp/domains/parent/IO.jsm",
   TabManager: "chrome://remote/content/shared/TabManager.jsm",
@@ -100,12 +104,46 @@ class Page extends Domain {
     }
     const topFrameId = this.session.browsingContext.id.toString();
     if (frameId && frameId != topFrameId) {
-      throw new UnsupportedError("frameId not supported");
+      throw new lazy.UnsupportedError("frameId not supported");
     }
 
+    const hitsNetwork = ["https", "http"].includes(validURL.scheme);
+    let networkLessLoaderId;
+    if (!hitsNetwork) {
+      // This navigation will not hit the network, use a randomly generated id.
+      const uuid = Services.uuid.generateUUID().toString();
+      networkLessLoaderId = uuid.substring(1, uuid.length - 1);
+
+      // Update the content process map of loader ids.
+      await this.executeInChild("_updateLoaderId", {
+        frameId: this.session.browsingContext.id,
+        loaderId: networkLessLoaderId,
+      });
+    }
+
+    const currentURI = this.session.browsingContext.currentURI;
+
+    const isSameDocumentNavigation =
+      // The "host", "query" and "ref" getters can throw if the URLs are not
+      // http/https, so verify first that both currentURI and validURL are
+      // using http/https.
+      hitsNetwork &&
+      ["https", "http"].includes(currentURI.scheme) &&
+      currentURI.host === validURL.host &&
+      currentURI.query === validURL.query &&
+      !!validURL.ref;
+
     const requestDone = new Promise(resolve => {
-      if (!["https", "http"].includes(validURL.scheme)) {
+      if (isSameDocumentNavigation) {
+        // Per CDP documentation, same-document navigations should not emit any
+        // loader id (https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigate)
         resolve({});
+        return;
+      }
+
+      if (!hitsNetwork) {
+        // This navigation will not hit the network, use a randomly generated id.
+        resolve({ navigationRequestId: networkLessLoaderId });
         return;
       }
       let navigationRequestId, redirectedRequestId;
@@ -180,7 +218,7 @@ class Page extends Domain {
     const { clip, format = "png", quality = 80 } = options;
 
     if (options.fromSurface) {
-      throw new UnsupportedError("fromSurface not supported");
+      throw new lazy.UnsupportedError("fromSurface not supported");
     }
 
     let rect;
@@ -280,7 +318,7 @@ class Page extends Domain {
 
     const url = canvas.toDataURL(`image/${format}`, quality / 100);
     if (!url.startsWith(`data:image/${format}`)) {
-      throw new UnsupportedError(`Unsupported MIME type: image/${format}`);
+      throw new lazy.UnsupportedError(`Unsupported MIME type: image/${format}`);
     }
 
     // only return the base64 encoded data without the data URL prefix
@@ -297,7 +335,7 @@ class Page extends Domain {
     this.enabled = true;
 
     const { browser } = this.session.target;
-    this._dialogHandler = new DialogHandler(browser);
+    this._dialogHandler = new lazy.DialogHandler(browser);
     this._dialogHandler.on("dialog-loaded", this._onDialogLoaded);
     await this.executeInChild("enable");
   }
@@ -323,8 +361,8 @@ class Page extends Domain {
     const { tab, window } = this.session.target;
 
     // Focus the window, and select the corresponding tab
-    await windowManager.focusWindow(window);
-    TabManager.selectTab(tab);
+    await lazy.windowManager.focusWindow(window);
+    await lazy.TabManager.selectTab(tab);
   }
 
   /**
@@ -407,7 +445,7 @@ class Page extends Domain {
         });
       }
 
-      SessionStore.getSessionHistory(
+      lazy.SessionStore.getSessionHistory(
         window.gBrowser.selectedTab,
         updateSessionHistory
       );
@@ -456,7 +494,7 @@ class Page extends Domain {
     window.gBrowser.gotoIndex(index);
 
     // On some platforms the requested index isn't set immediately.
-    await PollPromise(
+    await lazy.PollPromise(
       async (resolve, reject) => {
         const currentIndex = await this._getCurrentHistoryIndex();
         if (currentIndex == index) {
@@ -561,22 +599,25 @@ class Page extends Domain {
     }
 
     // Create a unique filename for the temporary PDF file
-    const basePath = OS.Path.join(OS.Constants.Path.tmpDir, "remote-agent.pdf");
-    const { file, path: filePath } = await OS.File.openUnique(basePath);
+    const basePath = lazy.OS.Path.join(
+      lazy.OS.Constants.Path.tmpDir,
+      "remote-agent.pdf"
+    );
+    const { file, path: filePath } = await lazy.OS.File.openUnique(basePath);
     await file.close();
 
     const psService = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(
       Ci.nsIPrintSettingsService
     );
 
-    const printSettings = psService.newPrintSettings;
+    const printSettings = psService.createNewPrintSettings();
     printSettings.isInitializedFromPrinter = true;
     printSettings.isInitializedFromPrefs = true;
     printSettings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
     printSettings.printerName = "";
     printSettings.printSilent = true;
-    printSettings.printToFile = true;
-    printSettings.showPrintProgress = false;
+    printSettings.outputDestination =
+      Ci.nsIPrintSettings.kOutputDestinationFile;
     printSettings.toFileName = filePath;
 
     printSettings.paperSizeUnit = Ci.nsIPrintSettings.kPaperSizeInches;
@@ -616,21 +657,21 @@ class Page extends Domain {
       const DELAY_CHECK_FILE_COMPLETELY_WRITTEN = 100;
 
       let lastSize = 0;
-      const timerId = setInterval(async () => {
-        const fileInfo = await OS.File.stat(filePath);
+      const timerId = lazy.setInterval(async () => {
+        const fileInfo = await lazy.OS.File.stat(filePath);
         if (lastSize > 0 && fileInfo.size == lastSize) {
-          clearInterval(timerId);
+          lazy.clearInterval(timerId);
           resolve();
         }
         lastSize = fileInfo.size;
       }, DELAY_CHECK_FILE_COMPLETELY_WRITTEN);
     });
 
-    const fp = await OS.File.open(filePath);
+    const fp = await lazy.OS.File.open(filePath);
 
     const retval = { data: null, stream: null };
     if (transferMode == PDF_TRANSFER_MODES.stream) {
-      retval.stream = streamRegistry.add(fp);
+      retval.stream = lazy.streamRegistry.add(fp);
     } else {
       // return all data as a base64 encoded string
       let bytes;
@@ -638,7 +679,7 @@ class Page extends Domain {
         bytes = await fp.read();
       } finally {
         fp.close();
-        await OS.File.remove(filePath);
+        await lazy.OS.File.remove(filePath);
       }
 
       // Each UCS2 character has an upper byte of 0 and a lower byte matching
@@ -666,9 +707,12 @@ class Page extends Domain {
     const { window } = this.session.target;
 
     return new Promise(resolve => {
-      SessionStore.getSessionHistory(window.gBrowser.selectedTab, history => {
-        resolve(history.index);
-      });
+      lazy.SessionStore.getSessionHistory(
+        window.gBrowser.selectedTab,
+        history => {
+          resolve(history.index);
+        }
+      );
     });
   }
 
@@ -686,7 +730,7 @@ class Page extends Domain {
         resolve(null);
       }
 
-      SessionStore.getSessionHistory(
+      lazy.SessionStore.getSessionHistory(
         window.gBrowser.selectedTab,
         updateSessionHistory
       );

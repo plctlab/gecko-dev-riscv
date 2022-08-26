@@ -13,10 +13,9 @@
 #include "mozilla/Encoding.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/HoldDropJSObjects.h"
-#include "mozilla/JSONWriter.h"
+#include "mozilla/JSONStringWriteFuncs.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Components.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
@@ -31,7 +30,6 @@
 #include "mozilla/dom/ServiceWorkerGlobalScopeBinding.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
-#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "Navigator.h"
@@ -210,7 +208,7 @@ class NotificationPermissionRequest : public ContentPermissionRequestBase,
 
   // nsIContentPermissionRequest
   NS_IMETHOD Cancel(void) override;
-  NS_IMETHOD Allow(JS::HandleValue choices) override;
+  NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
   NotificationPermissionRequest(nsIPrincipal* aPrincipal,
                                 nsPIDOMWindowInner* aWindow, Promise* aPromise,
@@ -280,15 +278,17 @@ class FocusWindowRunnable final : public Runnable {
       const nsMainThreadPtrHandle<nsPIDOMWindowInner>& aWindow)
       : Runnable("FocusWindowRunnable"), mWindow(aWindow) {}
 
-  NS_IMETHOD
-  Run() override {
+  // MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
+  // bug 1535398.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override {
     AssertIsOnMainThread();
     if (!mWindow->IsCurrentInnerWindow()) {
       // Window has been closed, this observer is not valid anymore
       return NS_OK;
     }
 
-    nsFocusManager::FocusWindow(mWindow->GetOuterWindow(), CallerType::System);
+    nsCOMPtr<nsPIDOMWindowOuter> outerWindow = mWindow->GetOuterWindow();
+    nsFocusManager::FocusWindow(outerWindow, CallerType::System);
     return NS_OK;
   }
 };
@@ -364,8 +364,12 @@ class ReleaseNotificationRunnable final : public NotificationWorkerRunnable {
   }
 
   nsresult Cancel() override {
+    // We need to check first if cancel is called twice
+    nsresult rv = NotificationWorkerRunnable::Cancel();
+    NS_ENSURE_SUCCESS(rv, rv);
+
     mNotification->ReleaseObject();
-    return NotificationWorkerRunnable::Cancel();
+    return NS_OK;
   }
 };
 
@@ -552,7 +556,7 @@ NotificationPermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-NotificationPermissionRequest::Allow(JS::HandleValue aChoices) {
+NotificationPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(aChoices.isUndefined());
 
   mPermission = NotificationPermission::Granted;
@@ -1087,8 +1091,7 @@ NotificationObserver::Observe(nsISupports* aSubject, const char* aTopic,
     // Permissions can't be removed from the content process. Send a message
     // to the parent; `ContentParent::RecvDisableNotifications` will call
     // `RemovePermission`.
-    ContentChild::GetSingleton()->SendDisableNotifications(
-        IPC::Principal(mPrincipal));
+    ContentChild::GetSingleton()->SendDisableNotifications(mPrincipal);
     return NS_OK;
   } else if (!strcmp("alertsettingscallback", aTopic)) {
     if (XRE_IsParentProcess()) {
@@ -1096,8 +1099,7 @@ NotificationObserver::Observe(nsISupports* aSubject, const char* aTopic,
     }
     // `ContentParent::RecvOpenNotificationSettings` notifies observers in the
     // parent process.
-    ContentChild::GetSingleton()->SendOpenNotificationSettings(
-        IPC::Principal(mPrincipal));
+    ContentChild::GetSingleton()->SendOpenNotificationSettings(mPrincipal);
     return NS_OK;
   } else if (!strcmp("alertshow", aTopic) || !strcmp("alertfinished", aTopic)) {
     Unused << NS_WARN_IF(NS_FAILED(AdjustPushQuota(aTopic)));
@@ -1125,7 +1127,9 @@ nsresult NotificationObserver::AdjustPushQuota(const char* aTopic) {
   return pushQuotaManager->NotificationForOriginClosed(origin.get());
 }
 
-NS_IMETHODIMP
+// MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
+// bug 1539845.
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP
 MainThreadNotificationObserver::Observe(nsISupports* aSubject,
                                         const char* aTopic,
                                         const char16_t* aData) {
@@ -1142,7 +1146,8 @@ MainThreadNotificationObserver::Observe(nsISupports* aSubject,
 
     bool doDefaultAction = notification->DispatchClickEvent();
     if (doDefaultAction) {
-      nsFocusManager::FocusWindow(window->GetOuterWindow(), CallerType::System);
+      nsCOMPtr<nsPIDOMWindowOuter> outerWindow = window->GetOuterWindow();
+      nsFocusManager::FocusWindow(outerWindow, CallerType::System);
     }
   } else if (!strcmp("alertfinished", aTopic)) {
     notification->UnpersistNotification();
@@ -1310,17 +1315,6 @@ bool Notification::IsInPrivateBrowsing() {
   return false;
 }
 
-namespace {
-struct StringWriteFunc : public JSONWriteFunc {
-  nsAString& mBuffer;  // This struct must not outlive this buffer
-  explicit StringWriteFunc(nsAString& buffer) : mBuffer(buffer) {}
-
-  void Write(const Span<const char>& aStr) override {
-    mBuffer.Append(NS_ConvertUTF8toUTF16(aStr.data(), aStr.size()));
-  }
-};
-}  // namespace
-
 void Notification::ShowInternal() {
   AssertIsOnMainThread();
   MOZ_ASSERT(mTempRef,
@@ -1426,9 +1420,8 @@ void Notification::ShowInternal() {
   NS_ENSURE_SUCCESS_VOID(rv);
 
   if (isPersistent) {
-    nsAutoString persistentData;
-
-    JSONWriter w(MakeUnique<StringWriteFunc>(persistentData));
+    JSONStringWriteFunc<nsAutoCString> persistentData;
+    JSONWriter w(persistentData);
     w.Start();
 
     nsAutoString origin;
@@ -1443,8 +1436,9 @@ void Notification::ShowInternal() {
 
     w.End();
 
-    alertService->ShowPersistentNotification(persistentData, alert,
-                                             alertObserver);
+    alertService->ShowPersistentNotification(
+        NS_ConvertUTF8toUTF16(persistentData.StringCRef()), alert,
+        alertObserver);
   } else {
     alertService->ShowAlert(alert, alertObserver);
   }

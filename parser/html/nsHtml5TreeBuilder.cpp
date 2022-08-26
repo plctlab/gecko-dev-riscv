@@ -59,7 +59,6 @@
 #include "nsHtml5AttributeName.h"
 #include "nsHtml5ElementName.h"
 #include "nsHtml5Tokenizer.h"
-#include "nsHtml5MetaScanner.h"
 #include "nsHtml5StackNode.h"
 #include "nsHtml5UTF16Buffer.h"
 #include "nsHtml5StateSnapshot.h"
@@ -1348,9 +1347,6 @@ starttagloop:
               reconstructTheActiveFormattingElements();
               [[fallthrough]];
             }
-#ifdef ENABLE_VOID_MENUITEM
-            case MENUITEM:
-#endif
             case PARAM_OR_SOURCE_OR_TRACK: {
               appendVoidElementToCurrentMayFoster(elementName, attributes);
               selfClosing = false;
@@ -2839,9 +2835,6 @@ void nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName) {
           }
           case AREA_OR_WBR:
           case KEYGEN:
-#ifdef ENABLE_VOID_MENUITEM
-          case MENUITEM:
-#endif
           case PARAM_OR_SOURCE_OR_TRACK:
           case EMBED:
           case IMG:

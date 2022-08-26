@@ -25,6 +25,18 @@ enum PlacesEventType {
    */
   "bookmark-guid-changed",
   /**
+   * data: PlacesBookmarkTags. Fired whenever tags of bookmark changes.
+   */
+  "bookmark-tags-changed",
+  /**
+   * data: PlacesBookmarkTime.
+   * Fired whenever dateAdded or lastModified of a bookmark is explicitly changed
+   * through the Bookmarks API. This notification doesn't fire when a bookmark is
+   * created, or when a property of a bookmark (e.g. title) is changed, even if
+   * lastModified will be updated as a consequence of that change.
+   */
+  "bookmark-time-changed",
+  /**
    * data: PlacesBookmarkTitle. Fired whenever a bookmark title changes.
    */
   "bookmark-title-changed",
@@ -212,6 +224,7 @@ dictionary PlacesBookmarkRemovedInit {
   required long long parentId;
   required unsigned short itemType;
   required DOMString url;
+  required DOMString title;
   required ByteString guid;
   required ByteString parentGuid;
   required unsigned short source;
@@ -227,6 +240,11 @@ interface PlacesBookmarkRemoved : PlacesBookmark {
    * The item's index in the folder.
    */
   readonly attribute long index;
+
+  /**
+   * The title of the the removed item.
+   */
+  readonly attribute DOMString title;
 
   /**
    * The item is a descendant of an item whose notification has been sent out.
@@ -292,6 +310,51 @@ dictionary PlacesBookmarkGuidInit {
 [ChromeOnly, Exposed=Window]
 interface PlacesBookmarkGuid : PlacesBookmarkChanged {
   constructor(PlacesBookmarkGuidInit initDict);
+};
+
+dictionary PlacesBookmarkTagsInit {
+  required long long id;
+  required unsigned short itemType;
+  DOMString? url = null;
+  required ByteString guid;
+  required ByteString parentGuid;
+  required sequence<DOMString> tags;
+  required long long lastModified;
+  required unsigned short source;
+  required boolean isTagging;
+};
+
+[ChromeOnly, Exposed=Window]
+interface PlacesBookmarkTags : PlacesBookmarkChanged {
+  constructor(PlacesBookmarkTagsInit initDict);
+
+  /**
+   * Tags the bookmark has currently.
+   */
+  [Constant,Cached]
+  readonly attribute sequence<DOMString> tags;
+};
+
+dictionary PlacesBookmarkTimeInit {
+  required long long id;
+  required unsigned short itemType;
+  DOMString? url = null;
+  required ByteString guid;
+  required ByteString parentGuid;
+  required long long dateAdded;
+  required long long lastModified;
+  required unsigned short source;
+  required boolean isTagging;
+};
+
+[ChromeOnly, Exposed=Window]
+interface PlacesBookmarkTime : PlacesBookmarkChanged {
+  constructor(PlacesBookmarkTimeInit initDict);
+
+  /**
+   * The added date in milliseconds.
+   */
+  readonly attribute long long dateAdded;
 };
 
 dictionary PlacesBookmarkTitleInit {

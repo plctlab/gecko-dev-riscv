@@ -148,7 +148,7 @@ TEST(Escape, AppleNSURLEscapeHash)
 {
   nsCString toEscape("#");
   nsCString escaped;
-  bool isEscapedOK = NS_Escape(toEscape, escaped, url_AppleExtra);
+  bool isEscapedOK = NS_Escape(toEscape, escaped, url_NSURLRef);
   EXPECT_EQ(isEscapedOK, true);
   EXPECT_STREQ(escaped.BeginReading(), "%23");
 }
@@ -158,31 +158,81 @@ TEST(Escape, AppleNSURLEscapeNoDouble)
   // The '%' in "%23" shouldn't be encoded again.
   nsCString toEscape("%23");
   nsCString escaped;
-  bool isEscapedOK = NS_Escape(toEscape, escaped, url_AppleExtra);
+  bool isEscapedOK = NS_Escape(toEscape, escaped, url_NSURLRef);
   EXPECT_EQ(isEscapedOK, true);
   EXPECT_STREQ(escaped.BeginReading(), "%23");
 }
 
-// Test that a URL with a '#' within the URL ref component gets escaped
-// correctly when the url_AppleExtra encoding mode is used. Specifically,
-// ensure the second '#' is escaped.
-TEST(Escape, AppleNSURLEscapeURL)
+// Test escaping of URLs that shouldn't be changed by escaping.
+TEST(Escape, AppleNSURLEscapeLists)
 {
-  nsCString toEscape("https://chat.mozilla.org/#/room/#macdev:mozilla.org");
-  nsCString escaped;
-  nsresult rv = NS_GetSpecWithNSURLEncoding(escaped, toEscape);
-  EXPECT_EQ(rv, NS_OK);
-  EXPECT_STREQ(escaped.BeginReading(),
-               "https://chat.mozilla.org/#/room/%23macdev%3Amozilla.org");
+  // Pairs of URLs (un-encoded, encoded)
+  nsTArray<std::pair<nsCString, nsCString>> pairs{
+      {"https://chat.mozilla.org/#/room/#macdev:mozilla.org"_ns,
+       "https://chat.mozilla.org/#/room/%23macdev:mozilla.org"_ns},
+  };
+
+  for (std::pair<nsCString, nsCString>& pair : pairs) {
+    nsCString escaped;
+    nsresult rv = NS_GetSpecWithNSURLEncoding(escaped, pair.first);
+    EXPECT_EQ(rv, NS_OK);
+    EXPECT_STREQ(pair.second.BeginReading(), escaped.BeginReading());
+  }
+
+  // A list of URLs that should not be changed by encoding.
+  nsTArray<nsCString> unchangedURLs{
+      // '=' In the query
+      "https://bugzilla.mozilla.org/show_bug.cgi?id=1737854"_ns,
+      // Escaped character in the fragment
+      "https://html.spec.whatwg.org/multipage/dom.html#the-document%27s-address"_ns,
+      // Misc query
+      "https://www.google.com/search?q=firefox+web+browser&client=firefox-b-1-d&ei=abc&ved=abc&abc=5&oq=firefox+web+browser&gs_lcp=abc&sclient=gws-wiz"_ns,
+      // Check for double encoding. % encoded octals should not be re-encoded.
+      "https://chat.mozilla.org/#/room/%23macdev%3Amozilla.org"_ns,
+      "https://searchfox.org/mozilla-central/search?q=symbol%3AE_%3CT_mozilla%3A%3AWebGLExtensionID%3E_EXT_color_buffer_half_float&path="_ns,
+      // Other
+      "https://site.com/script?foo=bar#this_ref"_ns,
+  };
+
+  for (nsCString& toEscape : unchangedURLs) {
+    nsCString escaped;
+    nsresult rv = NS_GetSpecWithNSURLEncoding(escaped, toEscape);
+    EXPECT_EQ(rv, NS_OK);
+    EXPECT_STREQ(toEscape.BeginReading(), escaped.BeginReading());
+  }
 }
 
-// Test that '%' encoded characters are not double encoded when used in a URL.
-TEST(Escape, AppleNSURLEscapeURLDouble)
+// Test external handler URLs are properly escaped.
+TEST(Escape, EscapeURLExternalHandlerURLs)
 {
-  const nsCString toEscape(
-      "https://chat.mozilla.org/#/room/%23macdev%3Amozilla.org");
-  nsCString escaped;
-  nsresult rv = NS_GetSpecWithNSURLEncoding(escaped, toEscape);
-  EXPECT_EQ(rv, NS_OK);
-  EXPECT_STREQ(toEscape.BeginReading(), escaped.BeginReading());
+  const nsCString input[] = {
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ;/?:@&=+$,!'()*-._~#[]"_ns,
+      " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"_ns,
+      "custom_proto:Hello World"_ns,
+      "custom_proto:Hello%20World"_ns,
+      "myApp://\"foo\" 'bar' `foo`"_ns,
+      "translator://en-de?view=übersicht"_ns,
+      "foo:some\\path\\here"_ns,
+      "web+foo://user:1234@example.com:8080?foo=bar"_ns,
+      "ext+bar://id='myId'"_ns};
+
+  const nsCString expected[] = {
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ;/?:@&=+$,!'()*-._~#[]"_ns,
+      "%20!%22#$%&'()*+,-./0123456789:;%3C=%3E?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[%5C]%5E_%60abcdefghijklmnopqrstuvwxyz%7B%7C%7D~"_ns,
+      "custom_proto:Hello%20World"_ns,
+      "custom_proto:Hello%20World"_ns,
+      "myApp://%22foo%22%20'bar'%20%60foo%60"_ns,
+      "translator://en-de?view=%C3%BCbersicht"_ns,
+      "foo:some%5Cpath%5Chere"_ns,
+      "web+foo://user:1234@example.com:8080?foo=bar"_ns,
+      "ext+bar://id='myId'"_ns};
+
+  for (size_t i = 0; i < ArrayLength(input); i++) {
+    nsCString src(input[i]);
+    nsCString dst;
+    nsresult rv =
+        NS_EscapeURL(src, esc_ExtHandler | esc_AlwaysCopy, dst, fallible);
+    EXPECT_EQ(rv, NS_OK);
+    ASSERT_TRUE(dst.Equals(expected[i]));
+  }
 }

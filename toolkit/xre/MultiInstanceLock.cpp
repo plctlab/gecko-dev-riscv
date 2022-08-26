@@ -12,39 +12,89 @@
 #include "nsPromiseFlatString.h"
 #include "updatedefines.h"  // for NS_t* definitions
 
-#ifndef XP_WIN
+#ifdef XP_WIN
+#  include <shlwapi.h>
+#else
 #  include <fcntl.h>
 #  include <sys/stat.h>
 #  include <sys/types.h>
+#endif
+
+#ifdef XP_WIN
+#  include "WinUtils.h"
+#endif
+
+#ifdef MOZ_WIDGET_COCOA
+#  include "nsILocalFileMac.h"
 #endif
 
 namespace mozilla {
 
 static bool GetLockFileName(const char* nameToken, const char16_t* installPath,
                             nsCString& filePath) {
-  mozilla::UniquePtr<NS_tchar[]> pathHash;
-  if (!GetInstallHash(installPath, MOZ_APP_VENDOR, pathHash)) {
-    return false;
-  }
-
 #ifdef XP_WIN
   // On Windows, the lock file is placed at the path
-  // ProgramData\[vendor]\[nameToken]-[pathHash], so first we need to get the
-  // ProgramData path and then append our directory and the file name.
-  PWSTR programDataPath;
-  HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_CREATE,
-                                    nullptr, &programDataPath);
+  // [updateDirectory]\[nameToken]-[pathHash], so first we need to get the
+  // update directory path and then append the file name.
+
+  // Note: This will return something like
+  //   C:\ProgramData\Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38\updates\<hash>
+  // But we actually are going to want to return the root update directory,
+  // the grandparent of this directory, which will look something like this:
+  //   C:\ProgramData\Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38
+  mozilla::UniquePtr<wchar_t[]> updateDir;
+  HRESULT hr = GetCommonUpdateDirectory(
+      reinterpret_cast<const wchar_t*>(installPath), updateDir);
   if (FAILED(hr)) {
     return false;
   }
-  mozilla::UniquePtr<wchar_t, CoTaskMemFreeDeleter> programDataPathUnique(
-      programDataPath);
 
-  filePath = nsPrintfCString(
-      "%s\\%s\\%s-%s", NS_ConvertUTF16toUTF8(programDataPath).get(),
-      MOZ_APP_VENDOR, nameToken, NS_ConvertUTF16toUTF8(pathHash.get()).get());
+  // For the path manipulation that we are about to do, it is important that
+  // the update directory have no trailing slash.
+  size_t len = wcslen(updateDir.get());
+  if (len == 0) {
+    return false;
+  }
+  if (updateDir.get()[len - 1] == '/' || updateDir.get()[len - 1] == '\\') {
+    updateDir.get()[len - 1] = '\0';
+  }
+
+  wchar_t* hashPtr = PathFindFileNameW(updateDir.get());
+  // PathFindFileNameW returns a pointer to the beginning of the string on
+  // failure.
+  if (hashPtr == updateDir.get()) {
+    return false;
+  }
+
+  // We need to make a copy of the hash before we modify updateDir to get the
+  // root update dir.
+  size_t hashSize = wcslen(hashPtr) + 1;
+  mozilla::UniquePtr<wchar_t[]> hash = mozilla::MakeUnique<wchar_t[]>(hashSize);
+  errno_t error = wcscpy_s(hash.get(), hashSize, hashPtr);
+  if (error != 0) {
+    return false;
+  }
+
+  // Get the root update dir from the update dir.
+  BOOL success = PathRemoveFileSpecW(updateDir.get());
+  if (!success) {
+    return false;
+  }
+  success = PathRemoveFileSpecW(updateDir.get());
+  if (!success) {
+    return false;
+  }
+
+  filePath =
+      nsPrintfCString("%s\\%s-%s", NS_ConvertUTF16toUTF8(updateDir.get()).get(),
+                      nameToken, NS_ConvertUTF16toUTF8(hash.get()).get());
 
 #else
+  mozilla::UniquePtr<NS_tchar[]> pathHash;
+  if (!GetInstallHash(installPath, pathHash)) {
+    return false;
+  }
+
   // On POSIX platforms the base path is /tmp/[vendor][nameToken]-[pathHash].
   filePath = nsPrintfCString("/tmp/%s%s-%s", MOZ_APP_VENDOR, nameToken,
                              pathHash.get());
@@ -193,6 +243,53 @@ bool IsOtherInstanceRunning(MultiInstLockHandle lock, bool* aResult) {
   return true;
 
 #endif
+}
+
+already_AddRefed<nsIFile> GetNormalizedAppFile(nsIFile* aAppFile) {
+  // If we're given an app file, use it; otherwise, get it from the ambient
+  // directory service.
+  nsresult rv;
+  nsCOMPtr<nsIFile> appFile;
+  if (aAppFile) {
+    rv = aAppFile->Clone(getter_AddRefs(appFile));
+    NS_ENSURE_SUCCESS(rv, nullptr);
+  } else {
+    nsCOMPtr<nsIProperties> dirSvc =
+        do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID);
+    NS_ENSURE_TRUE(dirSvc, nullptr);
+
+    rv = dirSvc->Get(XRE_EXECUTABLE_FILE, NS_GET_IID(nsIFile),
+                     getter_AddRefs(appFile));
+    NS_ENSURE_SUCCESS(rv, nullptr);
+  }
+
+  // It is possible that the path we have is on a case insensitive
+  // filesystem in which case the path may vary depending on how the
+  // application is called. We want to normalize the case somehow.
+  // On Linux XRE_EXECUTABLE_FILE already seems to be set to the correct path.
+  //
+  // See similar nsXREDirProvider::GetInstallHash. The main difference here is
+  // to allow lookup to fail on OSX, because some tests use a nonexistent
+  // appFile.
+#ifdef XP_WIN
+  // Windows provides a way to get the correct case.
+  if (!mozilla::widget::WinUtils::ResolveJunctionPointsAndSymLinks(appFile)) {
+    NS_WARNING("Failed to resolve install directory.");
+  }
+#elif defined(MOZ_WIDGET_COCOA)
+  // On OSX roundtripping through an FSRef fixes the case.
+  FSRef ref;
+  nsCOMPtr<nsILocalFileMac> macFile = do_QueryInterface(appFile);
+  if (macFile && NS_SUCCEEDED(macFile->GetFSRef(&ref)) &&
+      NS_SUCCEEDED(
+          NS_NewLocalFileWithFSRef(&ref, true, getter_AddRefs(macFile)))) {
+    appFile = static_cast<nsIFile*>(macFile);
+  } else {
+    NS_WARNING("Failed to resolve install directory.");
+  }
+#endif
+
+  return appFile.forget();
 }
 
 };  // namespace mozilla

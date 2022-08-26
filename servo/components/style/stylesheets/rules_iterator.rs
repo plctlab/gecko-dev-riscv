@@ -70,6 +70,7 @@ where
             CssRule::Keyframes(_) |
             CssRule::ScrollTimeline(_) |
             CssRule::Page(_) |
+            CssRule::LayerStatement(_) |
             CssRule::FontFeatureValues(_) => None,
             CssRule::Import(ref import_rule) => {
                 let import_rule = import_rule.read_with(guard);
@@ -87,6 +88,10 @@ where
                 }
                 Some(doc_rule.rules.read_with(guard).0.iter())
             },
+            CssRule::Container(ref lock) => {
+                let container_rule = lock.read_with(guard);
+                Some(container_rule.rules.read_with(guard).0.iter())
+            },
             CssRule::Media(ref lock) => {
                 let media_rule = lock.read_with(guard);
                 if !C::process_media(guard, device, quirks_mode, media_rule) {
@@ -103,15 +108,10 @@ where
                 }
                 Some(supports_rule.rules.read_with(guard).0.iter())
             },
-            CssRule::Layer(ref lock) => {
-                use crate::stylesheets::layer_rule::LayerRuleKind;
-
+            CssRule::LayerBlock(ref lock) => {
                 let layer_rule = lock.read_with(guard);
-                match layer_rule.kind {
-                    LayerRuleKind::Block { ref rules, .. } => Some(rules.read_with(guard).0.iter()),
-                    LayerRuleKind::Statement { .. } => None,
-                }
-            }
+                Some(layer_rule.rules.read_with(guard).0.iter())
+            },
         }
     }
 }
@@ -323,7 +323,8 @@ impl<'a, 'b> EffectiveRulesIterator<'a, 'b> {
         guard: &'a SharedRwLockReadGuard<'b>,
         rule: &'a CssRule,
     ) -> Self {
-        let children = RulesIterator::<AllRules>::children(rule, device, quirks_mode, guard, &mut false);
+        let children =
+            RulesIterator::<AllRules>::children(rule, device, quirks_mode, guard, &mut false);
         EffectiveRulesIterator::new(device, quirks_mode, guard, children.unwrap_or([].iter()))
     }
 }

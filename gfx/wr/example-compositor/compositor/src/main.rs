@@ -206,8 +206,7 @@ impl RenderNotifier for Notifier {
     fn new_frame_ready(&self,
                        _: DocumentId,
                        _scrolled: bool,
-                       _composite_needed: bool,
-                       _render_time: Option<u64>) {
+                       _composite_needed: bool) {
         self.tx.send(()).ok();
     }
 }
@@ -240,6 +239,7 @@ fn push_rotated_rect(
         ReferenceFrameKind::Transform {
             is_2d_scale_translation: false,
             should_snap: false,
+            paired_with_perspective: false,
         },
         SpatialTreeItemKey::new(0, 0),
     );
@@ -279,8 +279,9 @@ fn build_display_list(
         scroll_id,
         LayoutRect::from_size(layout_size),
         LayoutRect::from_size(layout_size),
-        ScrollSensitivity::Script,
         LayoutVector2D::zero(),
+        APZScrollGeneration::default(),
+        HasScrollLinkedEffect::No,
         SpatialTreeItemKey::new(0, 1),
     );
 
@@ -429,12 +430,12 @@ fn main() {
             partial_present: None,
         }
     };
-    let opts = webrender::RendererOptions {
+    let opts = webrender::WebRenderOptions {
         clear_color: ColorF::new(1.0, 1.0, 1.0, 1.0),
         debug_flags,
         compositor_config,
         surface_origin_is_top_left: false,
-        ..webrender::RendererOptions::default()
+        ..webrender::WebRenderOptions::default()
     };
     let (tx, rx) = mpsc::channel();
     let notifier = Box::new(Notifier::new(tx));
@@ -487,7 +488,7 @@ fn main() {
         );
     }
 
-    txn.generate_frame(0);
+    txn.generate_frame(0, RenderReasons::empty());
     api.send_transaction(document_id, txn);
 
     // Tick the compositor (in this sample, we don't block on UI events)
@@ -526,15 +527,14 @@ fn main() {
                 }
                 Invalidations::Scrolling => {
                     let d = 0.5 - 0.5 * (2.0 * f32::consts::PI * 5.0 * time).cos();
-                    txn.scroll_node_with_id(
-                        LayoutPoint::new(0.0, (d * 100.0).round()),
+                    txn.set_scroll_offset(
                         scroll_id,
-                        ScrollClamping::NoClamping,
+                        LayoutPoint::new(0.0, (d * 100.0).round()),
                     );
                 }
             }
 
-            txn.generate_frame(0);
+            txn.generate_frame(0, RenderReasons::empty());
             api.send_transaction(document_id, txn);
             current_epoch.0 += 1;
             time += 0.001;

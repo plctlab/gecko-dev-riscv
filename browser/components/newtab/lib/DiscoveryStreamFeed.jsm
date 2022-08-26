@@ -3,40 +3,42 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NewTabUtils",
   "resource://gre/modules/NewTabUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "RemoteSettings",
   "resource://services-settings/remote-settings.js"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "pktApi",
+  "chrome://pocket/content/pktApi.jsm"
 );
 const { setTimeout, clearTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
 const { actionTypes: at, actionCreators: ac } = ChromeUtils.import(
   "resource://activity-stream/common/Actions.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Region",
   "resource://gre/modules/Region.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PersistentCache",
   "resource://activity-stream/lib/PersistentCache.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "ExperimentAPI",
+  "resource://nimbus/ExperimentAPI.jsm"
 );
 
 const CACHE_KEY = "discovery_stream";
@@ -65,22 +67,21 @@ const PREF_FLIGHT_BLOCKS = "discoverystream.flight.blocks";
 const PREF_REC_IMPRESSIONS = "discoverystream.rec.impressions";
 const PREF_COLLECTIONS_ENABLED =
   "discoverystream.sponsored-collections.enabled";
+const PREF_POCKET_BUTTON = "extensions.pocket.enabled";
 const PREF_COLLECTION_DISMISSIBLE = "discoverystream.isCollectionDismissible";
-const PREF_RECS_PERSONALIZED = "discoverystream.recs.personalized";
-const PREF_SPOCS_PERSONALIZED = "discoverystream.spocs.personalized";
 const PREF_PERSONALIZATION = "discoverystream.personalization.enabled";
 const PREF_PERSONALIZATION_OVERRIDE =
   "discoverystream.personalization.override";
 
 let getHardcodedLayout;
 
-this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
+class DiscoveryStreamFeed {
   constructor() {
     // Internal state for checking if we've intialized all our data
     this.loaded = false;
 
     // Persistent cache for remote endpoint data.
-    this.cache = new PersistentCache(CACHE_KEY, true);
+    this.cache = new lazy.PersistentCache(CACHE_KEY, true);
     this.locale = Services.locale.appLocaleAsBCP47;
     this._impressionId = this.getOrCreateImpressionId();
     // Internal in-memory cache for parsing json prefs.
@@ -148,7 +149,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
   }
 
   get region() {
-    return Region.home;
+    return lazy.Region.home;
   }
 
   get showSpocs() {
@@ -168,13 +169,14 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
   }
 
   get personalized() {
-    // If both spocs and recs are not personalized, we might as well return false here.
-    const spocsPersonalized = this.store.getState().Prefs.values[
-      PREF_SPOCS_PERSONALIZED
-    ];
-    const recsPersonalized = this.store.getState().Prefs.values[
-      PREF_RECS_PERSONALIZED
-    ];
+    // If stories are not displayed, no point in trying to personalize them.
+    if (!this.showStories) {
+      return false;
+    }
+    const spocsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.spocsPersonalized;
+    const recsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.recsPersonalized;
     const personalization = this.store.getState().Prefs.values[
       PREF_PERSONALIZATION
     ];
@@ -204,7 +206,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     return this._recommendationProvider;
   }
 
-  setupPrefs(isStartup = false) {
+  setupConfig(isStartup = false) {
     // Send the initial state of the pref on our reducer
     this.store.dispatch(
       ac.BroadcastToContent({
@@ -215,6 +217,60 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         },
       })
     );
+  }
+
+  setupPrefs(isStartup = false) {
+    const pocketNewtabExperiment = lazy.ExperimentAPI.getExperiment({
+      featureId: "pocketNewtab",
+    });
+
+    let utmSource = "pocket-newtab";
+    let utmCampaign = pocketNewtabExperiment?.slug;
+    let utmContent = pocketNewtabExperiment?.branch?.slug;
+
+    this.store.dispatch(
+      ac.BroadcastToContent({
+        type: at.DISCOVERY_STREAM_EXPERIMENT_DATA,
+        data: {
+          utmSource,
+          utmCampaign,
+          utmContent,
+        },
+        meta: {
+          isStartup,
+        },
+      })
+    );
+
+    const pocketButtonEnabled = Services.prefs.getBoolPref(PREF_POCKET_BUTTON);
+
+    const nimbusConfig = this.store.getState().Prefs.values?.pocketConfig || {};
+    // We don't BroadcastToContent for this, as the changes may
+    // shift around elements on an open newtab the user is currently reading.
+    // So instead we AlsoToPreloaded so the next tab is updated.
+    // This is because setupPrefs is called by the system and not a user interaction.
+    this.store.dispatch(
+      ac.AlsoToPreloaded({
+        type: at.DISCOVERY_STREAM_PREFS_SETUP,
+        data: {
+          recentSavesEnabled: nimbusConfig.recentSavesEnabled,
+          pocketButtonEnabled,
+          saveToPocketCard:
+            pocketButtonEnabled && nimbusConfig.saveToPocketCard,
+          hideDescriptions: nimbusConfig.hideDescriptions,
+          compactImages: nimbusConfig.compactImages,
+          imageGradient: nimbusConfig.imageGradient,
+          newSponsoredLabel: nimbusConfig.newSponsoredLabel,
+          titleLines: nimbusConfig.titleLines,
+          descLines: nimbusConfig.descLines,
+          readTime: nimbusConfig.readTime,
+        },
+        meta: {
+          isStartup,
+        },
+      })
+    );
+
     this.store.dispatch(
       ac.BroadcastToContent({
         type: at.DISCOVERY_STREAM_COLLECTION_DISMISSIBLE_TOGGLE,
@@ -228,6 +284,45 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         },
       })
     );
+  }
+
+  async setupPocketState(target) {
+    let dispatch = action =>
+      this.store.dispatch(ac.OnlyToOneContent(action, target));
+    const isUserLoggedIn = lazy.pktApi.isUserLoggedIn();
+    dispatch({
+      type: at.DISCOVERY_STREAM_POCKET_STATE_SET,
+      data: {
+        isUserLoggedIn,
+      },
+    });
+
+    // If we're not logged in, don't bother fetching recent saves, we're done.
+    if (isUserLoggedIn) {
+      let recentSaves = await lazy.pktApi.getRecentSavesCache();
+      if (recentSaves) {
+        // We have cache, so we can use those.
+        dispatch({
+          type: at.DISCOVERY_STREAM_RECENT_SAVES,
+          data: {
+            recentSaves,
+          },
+        });
+      } else {
+        // We don't have cache, so fetch fresh stories.
+        lazy.pktApi.getRecentSaves({
+          success(data) {
+            dispatch({
+              type: at.DISCOVERY_STREAM_RECENT_SAVES,
+              data: {
+                recentSaves: data,
+              },
+            });
+          },
+          error(error) {},
+        });
+      }
+    }
   }
 
   uninitPrefs() {
@@ -418,12 +513,12 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     return urlObject.toString();
   }
 
-  parseSpocPositions(csvPositions) {
-    let spocPositions;
+  parseGridPositions(csvPositions) {
+    let gridPositions;
 
     // Only accept parseable non-negative integers
     try {
-      spocPositions = csvPositions.map(index => {
+      gridPositions = csvPositions.map(index => {
         let parsedInt = parseInt(index, 10);
 
         if (!isNaN(parsedInt) && parsedInt >= 0) {
@@ -435,10 +530,10 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     } catch (e) {
       // Catch spoc positions that are not numbers or negative, and do nothing.
       // We have hard coded backup positions.
-      spocPositions = undefined;
+      gridPositions = undefined;
     }
 
-    return spocPositions;
+    return gridPositions;
   }
 
   async loadLayout(sendUpdate, isStartup) {
@@ -455,44 +550,42 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         this.store.getState().Prefs.values[PREF_HARDCODED_BASIC_LAYOUT] ||
         this.store.getState().Prefs.values[PREF_REGION_BASIC_LAYOUT];
 
-      let spocPositions = this.store
-        .getState()
-        .Prefs.values?.pocketConfig?.spocPositions?.split(`,`);
-
-      const loadMoreEnabled = this.store.getState().Prefs.values?.pocketConfig
-        ?.loadMore;
-
-      const lastCardMessageEnabled = this.store.getState().Prefs.values
-        ?.pocketConfig?.lastCardMessageEnabled;
-
-      const saveToPocketCard = this.store.getState().Prefs.values?.pocketConfig
-        ?.saveToPocketCard;
-
       const sponsoredCollectionsEnabled = this.store.getState().Prefs.values[
         PREF_COLLECTIONS_ENABLED
       ];
 
-      const compactLayout = this.store.getState().Prefs.values?.pocketConfig
-        ?.compactLayout;
+      const pocketConfig =
+        this.store.getState().Prefs.values?.pocketConfig || {};
+
       let items = isBasicLayout ? 3 : 21;
-      if (compactLayout) {
+      if (pocketConfig.fourCardLayout || pocketConfig.hybridLayout) {
         items = isBasicLayout ? 4 : 24;
       }
-
-      const newFooterSection = this.store.getState().Prefs.values?.pocketConfig
-        ?.newFooterSection;
 
       // Set a hardcoded layout if one is needed.
       // Changing values in this layout in memory object is unnecessary.
       layoutResp = getHardcodedLayout({
         items,
-        spocPositions: this.parseSpocPositions(spocPositions),
         sponsoredCollectionsEnabled,
-        compactLayout,
-        loadMoreEnabled,
-        lastCardMessageEnabled,
-        newFooterSection,
-        saveToPocketCard,
+        spocPositions: this.parseGridPositions(
+          pocketConfig.spocPositions?.split(`,`)
+        ),
+        widgetPositions: this.parseGridPositions(
+          pocketConfig.widgetPositions?.split(`,`)
+        ),
+        widgetData: [
+          ...(this.locale.startsWith("en-") ? [{ type: "TopicsWidget" }] : []),
+        ],
+        hybridLayout: pocketConfig.hybridLayout,
+        hideCardBackground: pocketConfig.hideCardBackground,
+        fourCardLayout: pocketConfig.fourCardLayout,
+        newFooterSection: pocketConfig.newFooterSection,
+        compactGrid: pocketConfig.compactGrid,
+        // For now essentialReadsHeader and editorsPicksHeader are English only.
+        essentialReadsHeader:
+          this.locale.startsWith("en-") && pocketConfig.essentialReadsHeader,
+        editorsPicksHeader:
+          this.locale.startsWith("en-") && pocketConfig.editorsPicksHeader,
       });
     }
 
@@ -999,6 +1092,13 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       case "idle-daily":
         this.updatePersonalizationScores();
         break;
+      case "nsPref:changed":
+        // If the Pocket button was turned on or off, we need to update the cards
+        // because cards show menu options for the Pocket button that need to be removed.
+        if (data === PREF_POCKET_BUTTON) {
+          this.configReset();
+        }
+        break;
     }
   }
 
@@ -1033,12 +1133,10 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
   }
 
   async scoreItems(items, type) {
-    const spocsPersonalized = this.store.getState().Prefs.values[
-      PREF_SPOCS_PERSONALIZED
-    ];
-    const recsPersonalized = this.store.getState().Prefs.values[
-      PREF_RECS_PERSONALIZED
-    ];
+    const spocsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.spocsPersonalized;
+    const recsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.recsPersonalized;
     const personalizedByType =
       type === "feed" ? recsPersonalized : spocsPersonalized;
 
@@ -1069,7 +1167,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       let flights = this.readDataPref(PREF_FLIGHT_BLOCKS);
       const filteredItems = data.filter(item => {
         const blocked =
-          NewTabUtils.blockedLinks.isBlocked({ url: item.url }) ||
+          lazy.NewTabUtils.blockedLinks.isBlocked({ url: item.url }) ||
           flights[item.flight_id];
         return !blocked;
       });
@@ -1263,12 +1361,10 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       options.isStartup
     );
 
-    const spocsPersonalized = this.store.getState().Prefs.values[
-      PREF_SPOCS_PERSONALIZED
-    ];
-    const recsPersonalized = this.store.getState().Prefs.values[
-      PREF_RECS_PERSONALIZED
-    ];
+    const spocsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.spocsPersonalized;
+    const recsPersonalized = this.store.getState().Prefs.values?.pocketConfig
+      ?.recsPersonalized;
 
     let expirationPerComponent = {};
     if (this.personalized) {
@@ -1481,6 +1577,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     this.store.dispatch(
       ac.BroadcastToContent({ type: at.DISCOVERY_STREAM_LAYOUT_RESET })
     );
+    this.setupPrefs(false /* isStartup */);
     this.store.dispatch(
       ac.BroadcastToContent({
         type: at.DISCOVERY_STREAM_COLLECTION_DISMISSIBLE_TOGGLE,
@@ -1653,11 +1750,13 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       case at.INIT:
         // During the initialization of Firefox:
         // 1. Set-up listeners and initialize the redux state for config;
+        this.setupConfig(true /* isStartup */);
         this.setupPrefs(true /* isStartup */);
         // 2. If config.enabled is true, start loading data.
         if (this.config.enabled) {
           await this.enable();
         }
+        Services.prefs.addObserver(PREF_POCKET_BUTTON, this);
         break;
       case at.DISCOVERY_STREAM_DEV_SYSTEM_TICK:
       case at.SYSTEM_TICK:
@@ -1674,7 +1773,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         Services.obs.notifyObservers(null, "idle-daily");
         break;
       case at.DISCOVERY_STREAM_DEV_SYNC_RS:
-        RemoteSettings.pollChanges();
+        lazy.RemoteSettings.pollChanges();
         break;
       case at.DISCOVERY_STREAM_DEV_EXPIRE_CACHE:
         // Personalization scores update at a slower interval than content, so in order to debug,
@@ -1694,7 +1793,9 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
           )
         );
         break;
-
+      case at.DISCOVERY_STREAM_POCKET_STATE_INIT:
+        this.setupPocketState(action.meta.fromTarget);
+        break;
       case at.DISCOVERY_STREAM_CONFIG_RESET:
         // This is a generic config reset likely related to an external feed pref.
         this.configReset();
@@ -1836,6 +1937,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         // When this feed is shutting down:
         this.uninitPrefs();
         this._recommendationProvider = null;
+        Services.prefs.removeObserver(PREF_POCKET_BUTTON, this);
         break;
       case at.BLOCK_URL: {
         // If we block a story that also has a flight_id
@@ -1852,35 +1954,43 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       case at.PREF_CHANGED:
         await this.onPrefChangedAction(action);
         if (action.data.name === "pocketConfig") {
-          await this.onPocketConfigChanged(action.data.value);
+          this.onPocketConfigChanged();
+          this.setupPrefs(false /* isStartup */);
         }
         break;
     }
   }
-};
+}
 
-// This function generates a hardcoded layout each call.
-// This is because modifying the original object would
-// persist across pref changes and system_tick updates.
-//
-// NOTE: There is some branching logic in the template.
-//   `items` How many items to include in the primary card grid.
-//   `spocPositions` Changes the position of spoc cards.
-//   `sponsoredCollectionsEnabled` Tuns on and off the sponsored collection section.
-//   `compactLayout` Changes cards to smaller more compact cards.
-//   `loadMoreEnabled` Hide half the Pocket stories behind a load more button.
-//   `lastCardMessageEnabled` Shows a message card at the end of the feed.
-//   `newFooterSection` Changes the layout of the topics section.
-//   `saveToPocketCard` Cards have a save to Pocket button over their thumbnail on hover.
+/* This function generates a hardcoded layout each call.
+   This is because modifying the original object would
+   persist across pref changes and system_tick updates.
+
+   NOTE: There is some branching logic in the template.
+     `items` How many items to include in the primary card grid.
+     `spocPositions` Changes the position of spoc cards.
+     `sponsoredCollectionsEnabled` Tuns on and off the sponsored collection section.
+     `hybridLayout` Changes cards to smaller more compact cards only for specific breakpoints.
+     `hideCardBackground` Removes Pocket card background and borders.
+     `fourCardLayout` Enable four Pocket cards per row.
+     `newFooterSection` Changes the layout of the topics section.
+     `compactGrid` Reduce the number of pixels between the Pocket cards.
+     `essentialReadsHeader` Updates the Pocket section header and title to say "Today’s Essential Reads", moves the "Recommended by Pocket" header to the right side.
+     `editorsPicksHeader` Updates the Pocket section header and title to say "Editor’s Picks", if used with essentialReadsHeader, creates a second section 2 rows down for editorsPicks.
+*/
 getHardcodedLayout = ({
   items = 21,
-  spocPositions = [2, 4, 11, 20],
+  spocPositions = [1, 5, 7, 11, 18, 20],
+  widgetPositions = [],
+  widgetData = [],
   sponsoredCollectionsEnabled = false,
-  compactLayout = false,
-  loadMoreEnabled = false,
-  lastCardMessageEnabled = false,
+  hybridLayout = false,
+  hideCardBackground = false,
+  fourCardLayout = false,
   newFooterSection = false,
-  saveToPocketCard = false,
+  compactGrid = false,
+  essentialReadsHeader = false,
+  editorsPicksHeader = false,
 }) => ({
   lastUpdate: Date.now(),
   spocs: {
@@ -1933,6 +2043,8 @@ getHardcodedLayout = ({
           : []),
         {
           type: "Message",
+          essentialReadsHeader,
+          editorsPicksHeader,
           header: {
             title: {
               id: "newtab-section-header-pocket",
@@ -1954,11 +2066,19 @@ getHardcodedLayout = ({
           type: "CardGrid",
           properties: {
             items,
-            compact: compactLayout,
+            hybridLayout,
+            hideCardBackground,
+            fourCardLayout,
+            compactGrid,
+            essentialReadsHeader,
+            editorsPicksHeader,
           },
-          loadMoreEnabled,
-          lastCardMessageEnabled,
-          saveToPocketCard,
+          widgets: {
+            positions: widgetPositions.map(position => {
+              return { index: position };
+            }),
+            data: widgetData,
+          },
           cta_variant: "link",
           header: {
             title: "",

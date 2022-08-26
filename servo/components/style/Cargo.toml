@@ -17,7 +17,7 @@ path = "lib.rs"
 doctest = false
 
 [features]
-gecko = ["nsstring", "serde", "style_traits/gecko", "fallible/known_system_malloc", "bindgen", "regex", "toml"]
+gecko = ["nsstring", "serde", "style_traits/gecko", "bindgen", "regex", "toml", "mozbuild"]
 servo = ["serde", "style_traits/servo", "servo_atoms", "servo_config", "html5ever",
          "cssparser/serde", "encoding_rs", "malloc_size_of/servo", "arrayvec/use_union",
          "servo_url", "string_cache", "to_shmem/servo", "servo_arc/servo"]
@@ -28,23 +28,21 @@ gecko_refcount_logging = []
 
 [dependencies]
 app_units = "0.7"
-arrayvec = "0.5"
+arrayvec = "0.7"
 atomic_refcell = "0.1"
 bitflags = "1.0"
 byteorder = "1.0"
 cssparser = "0.29"
-derive_more = "0.99"
+derive_more = { version = "0.99", default-features = false, features = ["add", "add_assign", "deref", "from"] }
+dom = { path = "../../../dom/base/rust" }
 new_debug_unreachable = "1.0"
 encoding_rs = {version = "0.8", optional = true}
 euclid = "0.22"
-fallible = { path = "../fallible" }
 fxhash = "0.2"
-hashbrown = "0.9"
-hashglobe = { path = "../hashglobe" }
 html5ever = {version = "0.24", optional = true}
 indexmap = {version = "1.0", features = ["std"]}
-itertools = "0.8"
-itoa = "0.4"
+itertools = "0.10"
+itoa = "1.0"
 lazy_static = "1"
 log = "0.4"
 malloc_size_of = { path = "../malloc_size_of" }
@@ -66,16 +64,16 @@ servo_atoms = {path = "../atoms", optional = true}
 servo_config = {path = "../config", optional = true}
 smallbitvec = "2.3.0"
 smallvec = "1.0"
+static_assertions = "1.1"
 static_prefs = { path = "../../../modules/libpref/init/static_prefs" }
 string_cache = { version = "0.8", optional = true }
 style_derive = {path = "../style_derive"}
 style_traits = {path = "../style_traits"}
 servo_url = {path = "../url", optional = true}
-thin-slice = "0.1.0"
 to_shmem = {path = "../to_shmem"}
 to_shmem_derive = {path = "../to_shmem_derive"}
 time = "0.1"
-uluru = "1.1"
+uluru = "3.0"
 unicode-bidi = "0.3"
 unicode-segmentation = "1.0"
 void = "1.0.2"
@@ -84,7 +82,8 @@ gecko-profiler = { path = "../../../tools/profiler/rust-api" }
 [build-dependencies]
 lazy_static = "1"
 log = { version = "0.4", features = ["std"] }
-bindgen = {version = "0.56", optional = true, default-features = false}
+bindgen = {version = "0.59", optional = true, default-features = false}
 regex = {version = "1.0", optional = true, default-features = false, features = ["perf", "std"]}
 walkdir = "2.1.4"
-toml = {version = "0.4.5", optional = true, default-features = false}
+toml = {version = "0.5", optional = true, default-features = false}
+mozbuild = {version = "0.1", optional = true}

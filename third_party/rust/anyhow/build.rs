@@ -1,3 +1,5 @@
+#![allow(clippy::option_if_let_else)]
+
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -53,31 +55,56 @@ fn main() {
         None => return,
     };
 
-    if rustc < 38 {
-        println!("cargo:rustc-cfg=anyhow_no_macro_reexport");
-    }
-
     if rustc < 51 {
         println!("cargo:rustc-cfg=anyhow_no_ptr_addr_of");
+    }
+
+    if rustc < 52 {
+        println!("cargo:rustc-cfg=anyhow_no_fmt_arguments_as_str");
     }
 }
 
 fn compile_probe() -> Option<ExitStatus> {
+    println!("cargo:rerun-if-env-changed=RUSTC_WRAPPER");
+
     let rustc = env::var_os("RUSTC")?;
     let out_dir = env::var_os("OUT_DIR")?;
     let probefile = Path::new(&out_dir).join("probe.rs");
     fs::write(&probefile, PROBE).ok()?;
-    Command::new(rustc)
-        .stderr(Stdio::null())
+
+    // Make sure to pick up Cargo rustc configuration.
+    let mut cmd = if let Some(wrapper) = env::var_os("RUSTC_WRAPPER") {
+        let mut cmd = Command::new(wrapper);
+        // The wrapper's first argument is supposed to be the path to rustc.
+        cmd.arg(rustc);
+        cmd
+    } else {
+        Command::new(rustc)
+    };
+
+    cmd.stderr(Stdio::null())
         .arg("--edition=2018")
         .arg("--crate-name=anyhow_build")
         .arg("--crate-type=lib")
         .arg("--emit=metadata")
         .arg("--out-dir")
         .arg(out_dir)
-        .arg(probefile)
-        .status()
-        .ok()
+        .arg(probefile);
+
+    if let Some(target) = env::var_os("TARGET") {
+        cmd.arg("--target").arg(target);
+    }
+
+    // If Cargo wants to set RUSTFLAGS, use that.
+    if let Ok(rustflags) = env::var("CARGO_ENCODED_RUSTFLAGS") {
+        if !rustflags.is_empty() {
+            for arg in rustflags.split('\x1f') {
+                cmd.arg(arg);
+            }
+        }
+    }
+
+    cmd.status().ok()
 }
 
 fn rustc_minor_version() -> Option<u32> {

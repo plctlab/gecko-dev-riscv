@@ -6,6 +6,7 @@
 #ifndef mozilla_EditorCommands_h
 #define mozilla_EditorCommands_h
 
+#include "mozilla/EditorForwards.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/StaticPtr.h"
@@ -25,9 +26,6 @@ class nsITransferable;
 class nsStaticAtom;
 
 namespace mozilla {
-
-class EditorBase;
-class HTMLEditor;
 
 /**
  * EditorCommandParamType tells you that EditorCommand subclasses refer
@@ -303,19 +301,6 @@ class EditorCommand : public nsIControllerCommand {
         return EditorCommandParamType::None;
       // IncreaseZIndexCommand
       case Command::FormatIncreaseZIndex:
-        return EditorCommandParamType::None;
-
-      // nsClipboardGetContentsCommand
-      // XXX nsClipboardGetContentsCommand is implemented by
-      //     nsGlobalWindowCommands.cpp but cmd_getContents command is not
-      //     used internally, but it's accessible from JS with
-      //     queryCommandValue(), etc.  So, this class is out of scope of
-      //     editor module for now but we should return None for making
-      //     Document code simpler.  We should reimplement the command class
-      //     in editor later for making Document's related methods possible
-      //     to access directly.  Anyway, it does not support `DoCommand()`
-      //     nor `DoCommandParams()` so that let's return `None` here.
-      case Command::GetHTML:
         return EditorCommandParamType::None;
 
       default:

@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2022-06-14
+
+- Add `struct_names` option to `PrettyConfig` ([#329](https://github.com/ron-rs/ron/pull/329))
+- Fix newtype variant unwrapping around enum, seq and map ([#331](https://github.com/ron-rs/ron/pull/331))
+- Implement `unwrap_newtypes` extension during serialization ([#333](https://github.com/ron-rs/ron/pull/333))
+- Implement `unwrap_variant_newtypes` extension during serialization ([#336](https://github.com/ron-rs/ron/pull/336))
+- Fix issue [#338](https://github.com/ron-rs/ron/issues/338) value map roundtrip ([#341](https://github.com/ron-rs/ron/pull/341))
+- Fix issue [#289](https://github.com/ron-rs/ron/issues/289) enumerate_arrays comments ([#344](https://github.com/ron-rs/ron/pull/344))
+- Report struct name in expected struct error ([#342](https://github.com/ron-rs/ron/pull/342))
+- Add `Options` builder to configure the RON serde roundtrip ([#343](https://github.com/ron-rs/ron/pull/343))
+- Fix issue [#359](https://github.com/ron-rs/ron/issues/359) with `DeserializeSeed` support ([#360](https://github.com/ron-rs/ron/pull/360))
+- Fix issue [#370](https://github.com/ron-rs/ron/issues/370) with `FromStr`-equivalent float EBNF and `Error::FloatUnderscore` ([#371](https://github.com/ron-rs/ron/pull/371))
+- Fix issue [#374](https://github.com/ron-rs/ron/issues/374) extraneous .0 for small floats ([#372](https://github.com/ron-rs/ron/pull/372))
+- Deprecate `Serializer::new` ([#382](https://github.com/ron-rs/ron/issues/382))
+
+## [0.7.0] - 2021-10-22
+
+- Add `unwrap_variant_newtypes` extension ([#319](https://github.com/ron-rs/ron/pull/319))
+- Change MSRV to 1.36
+
+## [0.6.6] - 2021-10-21
+
+- Fix serialization of raw identifiers ([#323](https://github.com/ron-rs/ron/pull/323))
+
 ## [0.6.5] - 2021-09-09
 - support serde renames that start with a digit
 
@@ -11,16 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - bump `base64` dependency to 0.13
 
 ## [0.6.2] - 2020-09-09
+
 - Added `decimal_floats` PrettyConfig option, which always includes decimals in floats (`1.0` vs `1`) ([#237](https://github.com/ron-rs/ron/pull/237))
 - Fixed EBNF grammar for raw strings ([#236](https://github.com/ron-rs/ron/pull/236), unsigned integers ([#248](https://github.com/ron-rs/ron/pull/248)), and nested comments ([#272](https://github.com/ron-rs/ron/pull/272))
 - Added `ser::to_writer_pretty` ([#269](https://github.com/ron-rs/ron/pull/269))
 - Sped up parsing using table predicates ([#276](https://github.com/ron-rs/ron/pull/276))
 
 ## [0.6.1] - 2020-07-14
+
 ### Fixes
+
 - Fix array formatting regression ([#260](https://github.com/ron-rs/ron/pull/260))
 
 ## [0.6.0] - 2020-05-21
+
 ### Additions
 - Implement integer support in Numbers ([#210](https://github.com/ron-rs/ron/pull/210))
 - Port `ser::Serializer` to `io::Write` ([#206](https://github.com/ron-rs/ron/pull/206))

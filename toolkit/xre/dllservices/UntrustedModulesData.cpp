@@ -220,13 +220,25 @@ ProcessedModuleLoadEvent::ProcessedModuleLoadEvent(
     return;
   }
 
-  // Sanitize the requested DLL name. It is not a critical failure if we
-  // cannot do so; we simply do not provide that field to Telemetry.
-  nsAutoString strRequested(
-      aModLoadInfo.mNtLoadInfo.mRequestedDllName.AsString());
-  if (!strRequested.IsEmpty() &&
-      widget::WinUtils::PreparePathForTelemetry(strRequested)) {
-    mRequestedDllName = strRequested;
+  mRequestedDllName = aModLoadInfo.mNtLoadInfo.mRequestedDllName.AsString();
+
+  // If we're in the main process, sanitize the requested DLL name here.
+  // If not, we cannot use PreparePathForTelemetry because it may try to
+  // delayload shlwapi.dll and could fail if the process is sandboxed.
+  // We leave mRequestedDllName unsanitized here and sanitize it when
+  // transferring it to the main process.
+  // (See ParamTraits<mozilla::UntrustedModulesData>::ReadEvent)
+  if (XRE_IsParentProcess()) {
+    SanitizeRequestedDllName();
+  }
+}
+
+void ProcessedModuleLoadEvent::SanitizeRequestedDllName() {
+  if (!mRequestedDllName.IsEmpty() &&
+      !widget::WinUtils::PreparePathForTelemetry(mRequestedDllName)) {
+    // If we cannot sanitize a path, we simply do not provide that field to
+    // Telemetry.
+    mRequestedDllName.Truncate();
   }
 }
 
@@ -308,10 +320,9 @@ bool ProcessedModuleLoadEvent::IsTrusted() const {
 }
 
 void UntrustedModulesData::AddNewLoads(
-    const ModulesMap& aModules, Vector<ProcessedModuleLoadEvent>&& aEvents,
+    const ModulesMap& aModules, UntrustedModuleLoadingEvents&& aEvents,
     Vector<Telemetry::ProcessedStack>&& aStacks) {
   MOZ_ASSERT(aEvents.length() == aStacks.length());
-
   for (const auto& entry : aModules) {
     if (entry.GetData()->IsTrusted()) {
       // Filter out trusted module records
@@ -323,17 +334,27 @@ void UntrustedModulesData::AddNewLoads(
 
   MOZ_ASSERT(mEvents.length() <= kMaxEvents);
 
-  if (mEvents.empty()) {
-    mEvents = std::move(aEvents);
-  } else {
-    Unused << mEvents.reserve(mEvents.length() + aEvents.length());
-    for (auto&& event : aEvents) {
-      Unused << mEvents.emplaceBack(std::move(event));
-    }
-  }
-
+  mNumEvents += aStacks.length();
+  mEvents.extendBack(std::move(aEvents));
   for (auto&& stack : aStacks) {
     mStacks.AddStack(stack);
+  }
+}
+
+void UntrustedModulesData::MergeModules(UntrustedModulesData& aNewData) {
+  for (auto item : aNewData.mEvents) {
+    mModules.WithEntryHandle(item->mEvent.mModule->mResolvedNtName,
+                             [&](auto&& addPtr) {
+                               if (addPtr) {
+                                 // Even though the path of a ModuleRecord
+                                 // matches, the object of ModuleRecord can be
+                                 // different. Make sure the event's mModule
+                                 // points to an object in mModules.
+                                 item->mEvent.mModule = addPtr.Data();
+                               } else {
+                                 addPtr.Insert(item->mEvent.mModule);
+                               }
+                             });
   }
 }
 
@@ -344,32 +365,51 @@ void UntrustedModulesData::Merge(UntrustedModulesData&& aNewData) {
 
   UntrustedModulesData newData(std::move(aNewData));
 
-  if (mEvents.empty()) {
+  if (!mNumEvents) {
+    mNumEvents = newData.mNumEvents;
     mModules = std::move(newData.mModules);
     mEvents = std::move(newData.mEvents);
     mStacks = std::move(newData.mStacks);
     return;
   }
 
-  Unused << mEvents.reserve(mEvents.length() + newData.mEvents.length());
-  for (auto&& event : newData.mEvents) {
-    mModules.WithEntryHandle(event.mModule->mResolvedNtName,
-                             [&](auto&& addPtr) {
-                               if (addPtr) {
-                                 // Even though the path of a ModuleRecord
-                                 // matches, the object of ModuleRecord can be
-                                 // different. Make sure the event's mModule
-                                 // points to an object in mModules.
-                                 event.mModule = addPtr.Data();
-                               } else {
-                                 addPtr.Insert(event.mModule);
-                               }
-                             });
+  MergeModules(newData);
+  mNumEvents += newData.mNumEvents;
+  mEvents.extendBack(std::move(newData.mEvents));
+  mStacks.AddStacks(newData.mStacks);
+}
 
-    Unused << mEvents.emplaceBack(std::move(event));
+void UntrustedModulesData::Truncate() {
+  mStacks.Clear();
+
+  if (mNumEvents <= kMaxEvents) {
+    return;
   }
 
-  mStacks.AddStacks(newData.mStacks);
+  UntrustedModuleLoadingEvents events;
+  events.splice(0, mEvents, mNumEvents - kMaxEvents, kMaxEvents);
+  std::swap(events, mEvents);
+  mNumEvents = kMaxEvents;
+}
+
+void UntrustedModulesData::MergeWithoutStacks(UntrustedModulesData&& aNewData) {
+  // Don't merge loading events of a different process
+  MOZ_ASSERT((mProcessType == aNewData.mProcessType) &&
+             (mPid == aNewData.mPid));
+  MOZ_ASSERT(!mStacks.GetStackCount());
+
+  UntrustedModulesData newData(std::move(aNewData));
+
+  if (mNumEvents > 0) {
+    MergeModules(newData);
+  } else {
+    mModules = std::move(newData.mModules);
+  }
+
+  mNumEvents += newData.mNumEvents;
+  mEvents.extendBack(std::move(newData.mEvents));
+
+  Truncate();
 }
 
 void UntrustedModulesData::Swap(UntrustedModulesData& aOther) {
@@ -386,7 +426,8 @@ void UntrustedModulesData::Swap(UntrustedModulesData& aOther) {
   aOther.mElapsed = tmpElapsed;
 
   mModules.SwapElements(aOther.mModules);
-  mEvents.swap(aOther.mEvents);
+  std::swap(mNumEvents, aOther.mNumEvents);
+  std::swap(mEvents, aOther.mEvents);
   mStacks.Swap(aOther.mStacks);
 
   Maybe<double> tmpXULLoadDurationMS = mXULLoadDurationMS;

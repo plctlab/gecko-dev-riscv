@@ -13,6 +13,7 @@ module.exports = {
     Cu: true,
     AppConstants: true,
     ExtensionAPI: true,
+    ExtensionAPIPersistent: true,
     ExtensionCommon: true,
     ExtensionUtils: true,
     extensions: true,
@@ -27,6 +28,10 @@ module.exports = {
     "mozilla/balanced-listeners": "error",
     "mozilla/no-aArgs": "error",
     "mozilla/var-only-at-top-level": "error",
+    // Disable reject-importGlobalProperties because we don't want to include
+    // these in the sandbox directly as that would potentially mean the
+    // imported properties would be instatiated up-front rather than lazily.
+    "mozilla/reject-importGlobalProperties": "off",
 
     "valid-jsdoc": [
       "error",

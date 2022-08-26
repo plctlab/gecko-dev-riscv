@@ -34,9 +34,12 @@
 #include "nsINode.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsError.h"
+#include "nsStringFlags.h"
+#include "nsStyleUtil.h"
 #include "nsIFrame.h"
 #include <algorithm>
 #include "nsTextNode.h"
+#include "nsDocShell.h"
 #include "mozilla/dom/Comment.h"
 #include "mozilla/dom/ProcessingInstruction.h"
 
@@ -47,7 +50,8 @@ using namespace mozilla::dom;
   NS_ASSERTION(mCurrentNode, "mCurrentNode is nullptr"); \
   if (!mCurrentNode) return NS_ERROR_UNEXPECTED
 
-txMozillaXMLOutput::txMozillaXMLOutput(txOutputFormat* aFormat,
+txMozillaXMLOutput::txMozillaXMLOutput(Document* aSourceDocument,
+                                       txOutputFormat* aFormat,
                                        nsITransformObserver* aObserver)
     : mTreeDepth(0),
       mBadChildLevel(0),
@@ -58,7 +62,7 @@ txMozillaXMLOutput::txMozillaXMLOutput(txOutputFormat* aFormat,
       mNoFixup(false) {
   MOZ_COUNT_CTOR(txMozillaXMLOutput);
   if (aObserver) {
-    mNotifier = new txTransformNotifier();
+    mNotifier = new txTransformNotifier(aSourceDocument);
     if (mNotifier) {
       mNotifier->Init(aObserver);
     }
@@ -214,18 +218,6 @@ nsresult txMozillaXMLOutput::endDocument(nsresult aResult) {
     }
   }
 
-  if (!mRefreshString.IsEmpty()) {
-    nsPIDOMWindowOuter* win = mDocument->GetWindow();
-    if (win) {
-      nsCOMPtr<nsIRefreshURI> refURI = do_QueryInterface(win->GetDocShell());
-      if (refURI) {
-        refURI->SetupRefreshURIFromHeader(
-            mDocument->GetDocBaseURI(), mDocument->NodePrincipal(),
-            mDocument->InnerWindowID(), mRefreshString);
-      }
-    }
-  }
-
   if (mNotifier) {
     mNotifier->OnTransformEnd();
   }
@@ -256,8 +248,7 @@ nsresult txMozillaXMLOutput::endElement() {
   // Handle html-elements
   if (!mNoFixup) {
     if (element->IsHTMLElement()) {
-      rv = endHTMLElement(element);
-      NS_ENSURE_SUCCESS(rv, rv);
+      endHTMLElement(element);
     }
 
     // Handle elements that are different when parser-created
@@ -273,8 +264,7 @@ nsresult txMozillaXMLOutput::endElement() {
         // If the act of insertion evaluated the script, we're fine.
         // Else, add this script element to the array of loading scripts.
         if (block) {
-          rv = mNotifier->AddScriptElement(sele);
-          NS_ENSURE_SUCCESS(rv, rv);
+          mNotifier->AddScriptElement(sele);
         }
       } else {
         MOZ_ASSERT(nsNameSpaceManager::GetInstance()->mSVGDisabled,
@@ -302,11 +292,11 @@ nsresult txMozillaXMLOutput::endElement() {
 
   // Add the element to the tree if it wasn't added before and take one step
   // up the tree
-  uint32_t last = mCurrentNodeStack.Count() - 1;
-  NS_ASSERTION(last != (uint32_t)-1, "empty stack");
-
-  nsCOMPtr<nsINode> parent = mCurrentNodeStack.SafeObjectAt(last);
-  mCurrentNodeStack.RemoveObjectAt(last);
+  MOZ_ASSERT(!mCurrentNodeStack.IsEmpty(), "empty stack");
+  nsCOMPtr<nsINode> parent;
+  if (!mCurrentNodeStack.IsEmpty()) {
+    parent = mCurrentNodeStack.PopLastElement();
+  }
 
   if (mCurrentNode == mNonAddedNode) {
     if (parent == mDocument) {
@@ -471,12 +461,9 @@ nsresult txMozillaXMLOutput::startElementInternal(nsAtom* aPrefix,
 
   ++mTreeDepth;
 
-  rv = mTableStateStack.push(NS_INT32_TO_PTR(mTableState));
-  NS_ENSURE_SUCCESS(rv, rv);
+  mTableStateStack.push(NS_INT32_TO_PTR(mTableState));
 
-  if (!mCurrentNodeStack.AppendObject(mCurrentNode)) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  mCurrentNodeStack.AppendElement(mCurrentNode);
 
   mTableState = NORMAL;
   mOpenedElementIsHTML = false;
@@ -571,7 +558,7 @@ nsresult txMozillaXMLOutput::createTxWrapper() {
                "creating wrapper when document isn't parent");
 
   int32_t namespaceID;
-  nsresult rv = nsContentUtils::NameSpaceManager()->RegisterNameSpace(
+  nsresult rv = nsNameSpaceManager::GetInstance()->RegisterNameSpace(
       nsLiteralString(kTXNameSpaceURI), namespaceID);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -613,9 +600,7 @@ nsresult txMozillaXMLOutput::createTxWrapper() {
     }
   }
 
-  if (!mCurrentNodeStack.AppendObject(wrapper)) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  mCurrentNodeStack.AppendElement(wrapper);
   mCurrentNode = wrapper;
   mRootContentCreated = true;
   NS_ASSERTION(rootLocation == mDocument->GetChildCount(),
@@ -631,11 +616,12 @@ nsresult txMozillaXMLOutput::startHTMLElement(nsIContent* aElement,
 
   if ((!aElement->IsHTMLElement(nsGkAtoms::tr) || !aIsHTML) &&
       NS_PTR_TO_INT32(mTableStateStack.peek()) == ADDED_TBODY) {
-    uint32_t last = mCurrentNodeStack.Count() - 1;
-    NS_ASSERTION(last != (uint32_t)-1, "empty stack");
-
-    mCurrentNode = mCurrentNodeStack.SafeObjectAt(last);
-    mCurrentNodeStack.RemoveObjectAt(last);
+    MOZ_ASSERT(!mCurrentNodeStack.IsEmpty(), "empty stack");
+    if (mCurrentNodeStack.IsEmpty()) {
+      mCurrentNode = nullptr;
+    } else {
+      mCurrentNode = mCurrentNodeStack.PopLastElement();
+    }
     mTableStateStack.pop();
   }
 
@@ -653,13 +639,9 @@ nsresult txMozillaXMLOutput::startHTMLElement(nsIContent* aElement,
       return error.StealNSResult();
     }
 
-    rv = mTableStateStack.push(NS_INT32_TO_PTR(ADDED_TBODY));
-    NS_ENSURE_SUCCESS(rv, rv);
+    mTableStateStack.push(NS_INT32_TO_PTR(ADDED_TBODY));
 
-    if (!mCurrentNodeStack.AppendObject(tbody)) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
-
+    mCurrentNodeStack.AppendElement(tbody);
     mCurrentNode = tbody;
   } else if (aElement->IsHTMLElement(nsGkAtoms::head) &&
              mOutputFormat.mMethod == eHTMLOutput) {
@@ -674,7 +656,7 @@ nsresult txMozillaXMLOutput::startHTMLElement(nsIContent* aElement,
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsAutoString metacontent;
-    metacontent.Append(mOutputFormat.mMediaType);
+    CopyUTF8toUTF16(mOutputFormat.mMediaType, metacontent);
     metacontent.AppendLiteral("; charset=");
     metacontent.Append(mOutputFormat.mEncoding);
     rv = meta->SetAttr(kNameSpaceID_None, nsGkAtoms::content, metacontent,
@@ -693,45 +675,19 @@ nsresult txMozillaXMLOutput::startHTMLElement(nsIContent* aElement,
   return NS_OK;
 }
 
-nsresult txMozillaXMLOutput::endHTMLElement(nsIContent* aElement) {
+void txMozillaXMLOutput::endHTMLElement(nsIContent* aElement) {
   if (mTableState == ADDED_TBODY) {
     NS_ASSERTION(aElement->IsHTMLElement(nsGkAtoms::tbody),
                  "Element flagged as added tbody isn't a tbody");
-    uint32_t last = mCurrentNodeStack.Count() - 1;
-    NS_ASSERTION(last != (uint32_t)-1, "empty stack");
-
-    mCurrentNode = mCurrentNodeStack.SafeObjectAt(last);
-    mCurrentNodeStack.RemoveObjectAt(last);
+    MOZ_ASSERT(!mCurrentNodeStack.IsEmpty(), "empty stack");
+    if (mCurrentNodeStack.IsEmpty()) {
+      mCurrentNode = nullptr;
+    } else {
+      mCurrentNode = mCurrentNodeStack.PopLastElement();
+    }
     mTableState =
         static_cast<TableState>(NS_PTR_TO_INT32(mTableStateStack.pop()));
-
-    return NS_OK;
-  } else if (mCreatingNewDocument && aElement->IsHTMLElement(nsGkAtoms::meta)) {
-    // handle HTTP-EQUIV data
-    nsAutoString httpEquiv;
-    aElement->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv,
-                                   httpEquiv);
-    if (!httpEquiv.IsEmpty()) {
-      nsAutoString value;
-      aElement->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::content,
-                                     value);
-      if (!value.IsEmpty()) {
-        nsContentUtils::ASCIIToLower(httpEquiv);
-        RefPtr<nsAtom> header = NS_Atomize(httpEquiv);
-        processHTTPEquiv(header, value);
-      }
-    }
   }
-
-  return NS_OK;
-}
-
-void txMozillaXMLOutput::processHTTPEquiv(nsAtom* aHeader,
-                                          const nsString& aValue) {
-  // For now we only handle "refresh". There's a longer list in
-  // HTMLContentSink::ProcessHeaderData
-  if (aHeader == nsGkAtoms::refresh)
-    LossyCopyUTF16toASCII(aValue, mRefreshString);
 }
 
 nsresult txMozillaXMLOutput::createResultDocument(const nsAString& aName,
@@ -786,9 +742,9 @@ nsresult txMozillaXMLOutput::createResultDocument(const nsAString& aName,
   if (!mOutputFormat.mMediaType.IsEmpty()) {
     mDocument->SetContentType(mOutputFormat.mMediaType);
   } else if (mOutputFormat.mMethod == eHTMLOutput) {
-    mDocument->SetContentType(u"text/html"_ns);
+    mDocument->SetContentType("text/html"_ns);
   } else {
-    mDocument->SetContentType(u"application/xml"_ns);
+    mDocument->SetContentType("application/xml"_ns);
   }
 
   if (mOutputFormat.mMethod == eXMLOutput &&
@@ -820,6 +776,9 @@ nsresult txMozillaXMLOutput::createResultDocument(const nsAString& aName,
 
   if (mNotifier) {
     rv = mNotifier->SetOutputDocument(mDocument);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    rv = mDocument->InitFeaturePolicy(mDocument->GetChannel());
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -880,8 +839,10 @@ nsresult txMozillaXMLOutput::createHTMLElement(nsAtom* aName,
   return rv;
 }
 
-txTransformNotifier::txTransformNotifier()
-    : mPendingStylesheetCount(0), mInTransform(false) {}
+txTransformNotifier::txTransformNotifier(Document* aSourceDocument)
+    : mSourceDocument(aSourceDocument),
+      mPendingStylesheetCount(0),
+      mInTransform(false) {}
 
 txTransformNotifier::~txTransformNotifier() = default;
 
@@ -893,7 +854,7 @@ txTransformNotifier::ScriptAvailable(nsresult aResult,
                                      nsIScriptElement* aElement,
                                      bool aIsInlineClassicScript, nsIURI* aURI,
                                      int32_t aLineNo) {
-  if (NS_FAILED(aResult) && mScriptElements.RemoveObject(aElement)) {
+  if (NS_FAILED(aResult) && mScriptElements.RemoveElement(aElement)) {
     SignalTransformEnd();
   }
 
@@ -904,7 +865,7 @@ NS_IMETHODIMP
 txTransformNotifier::ScriptEvaluated(nsresult aResult,
                                      nsIScriptElement* aElement,
                                      bool aIsInline) {
-  if (mScriptElements.RemoveObject(aElement)) {
+  if (mScriptElements.RemoveElement(aElement)) {
     SignalTransformEnd();
   }
 
@@ -934,9 +895,8 @@ void txTransformNotifier::Init(nsITransformObserver* aObserver) {
   mObserver = aObserver;
 }
 
-nsresult txTransformNotifier::AddScriptElement(nsIScriptElement* aElement) {
-  return mScriptElements.AppendObject(aElement) ? NS_OK
-                                                : NS_ERROR_OUT_OF_MEMORY;
+void txTransformNotifier::AddScriptElement(nsIScriptElement* aElement) {
+  mScriptElements.AppendElement(aElement);
 }
 
 void txTransformNotifier::AddPendingStylesheet() { ++mPendingStylesheetCount; }
@@ -952,13 +912,13 @@ nsresult txTransformNotifier::SetOutputDocument(Document* aDocument) {
   mDocument = aDocument;
 
   // Notify the contentsink that the document is created
-  return mObserver->OnDocumentCreated(mDocument);
+  return mObserver->OnDocumentCreated(mSourceDocument, mDocument);
 }
 
 void txTransformNotifier::SignalTransformEnd(nsresult aResult) {
   if (mInTransform ||
       (NS_SUCCEEDED(aResult) &&
-       (mScriptElements.Count() > 0 || mPendingStylesheetCount > 0))) {
+       (!mScriptElements.IsEmpty() || mPendingStylesheetCount > 0))) {
     return;
   }
 
@@ -983,6 +943,6 @@ void txTransformNotifier::SignalTransformEnd(nsresult aResult) {
   }
 
   if (NS_SUCCEEDED(aResult)) {
-    mObserver->OnTransformDone(aResult, mDocument);
+    mObserver->OnTransformDone(mSourceDocument, aResult, mDocument);
   }
 }

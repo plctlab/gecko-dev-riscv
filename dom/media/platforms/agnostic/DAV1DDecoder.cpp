@@ -8,6 +8,7 @@
 
 #include "gfxUtils.h"
 #include "ImageContainer.h"
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "nsThreadUtils.h"
@@ -20,11 +21,48 @@
 
 namespace mozilla {
 
+static int GetDecodingThreadCount(uint32_t aCodedHeight) {
+  /**
+   * Based on the result we print out from the dav1decoder [1], the
+   * following information shows the number of tiles for AV1 videos served on
+   * Youtube. Each Tile can be decoded in parallel, so we would like to make
+   * sure we at least use enough threads to match the number of tiles.
+   *
+   * ----------------------------
+   * | resolution row col total |
+   * |    480p      2  1     2  |
+   * |    720p      2  2     4  |
+   * |   1080p      4  2     8  |
+   * |   1440p      4  2     8  |
+   * |   2160p      8  4    32  |
+   * ----------------------------
+   *
+   * Besides the tile thread count, the frame thread count also needs to be
+   * considered. As we didn't find anything about what the best number is for
+   * the count of frame thread, just simply use 2 for parallel jobs, which
+   * is similar with Chromium's implementation. They uses 3 frame threads for
+   * 720p+ but less tile threads, so we will still use more total threads. In
+   * addition, their data is measured on 2019, our data should be closer to the
+   * current real world situation.
+   * [1]
+   * https://searchfox.org/mozilla-central/rev/2f5ed7b7244172d46f538051250b14fb4d8f1a5f/third_party/dav1d/src/decode.c#2940
+   */
+  int tileThreads = 2, frameThreads = 2;
+  if (aCodedHeight >= 2160) {
+    tileThreads = 32;
+  } else if (aCodedHeight >= 1080) {
+    tileThreads = 8;
+  } else if (aCodedHeight >= 720) {
+    tileThreads = 4;
+  }
+  return tileThreads * frameThreads;
+}
+
 DAV1DDecoder::DAV1DDecoder(const CreateDecoderParams& aParams)
     : mInfo(aParams.VideoConfig()),
-      mTaskQueue(
-          new TaskQueue(GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
-                        "Dav1dDecoder")),
+      mTaskQueue(TaskQueue::Create(
+          GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
+          "Dav1dDecoder")),
       mImageContainer(aParams.mImageContainer),
       mImageAllocator(aParams.mKnowsCompositor) {}
 
@@ -37,13 +75,16 @@ RefPtr<MediaDataDecoder::InitPromise> DAV1DDecoder::Init() {
   } else if (mInfo.mDisplay.width >= 1024) {
     decoder_threads = 4;
   }
-  settings.n_frame_threads =
+  if (StaticPrefs::media_av1_new_thread_count_strategy()) {
+    decoder_threads = GetDecodingThreadCount(mInfo.mImage.Height());
+  }
+  // Still need to consider the amount of physical cores in order to achieve
+  // best performance.
+  settings.n_threads =
       static_cast<int>(std::min(decoder_threads, GetNumberOfProcessors()));
-  // There is not much improvement with more than 2 tile threads at least with
-  // the content being currently served. The ideal number of tile thread would
-  // much the tile count of the content. Maybe dav1d can help to do that in the
-  // future.
-  settings.n_tile_threads = 2;
+  if (int32_t count = StaticPrefs::media_av1_force_thread_count(); count > 0) {
+    settings.n_threads = count;
+  }
 
   int res = dav1d_open(&mContext, &settings);
   if (res < 0) {
@@ -241,6 +282,12 @@ already_AddRefed<VideoData> DAV1DDecoder::ConstructImage(
 
   b.mPlanes[2].mHeight = (aPicture.p.h + ss_ver) >> ss_ver;
   b.mPlanes[2].mWidth = (aPicture.p.w + ss_hor) >> ss_hor;
+
+  if (ss_ver) {
+    b.mChromaSubsampling = gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT;
+  } else if (ss_hor) {
+    b.mChromaSubsampling = gfx::ChromaSubsampling::HALF_WIDTH;
+  }
 
   // Timestamp, duration and offset used here are wrong.
   // We need to take those values from the decoder. Latest

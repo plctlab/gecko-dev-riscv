@@ -1,5 +1,7 @@
+/* eslint-env mozilla/chrome-script */
+
+const timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
 addMessageListener("setTimeout", msg => {
-  let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
   timer.init(
     _ => {
       sendAsyncMessage("timeout");

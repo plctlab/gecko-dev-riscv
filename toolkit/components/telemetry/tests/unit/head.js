@@ -1,17 +1,18 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   TelemetryScheduler: "resource://gre/modules/TelemetryScheduler.jsm",
   TelemetryController: "resource://gre/modules/TelemetryController.jsm",
   TelemetryUtils: "resource://gre/modules/TelemetryUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   AddonTestUtils: "resource://testing-common/AddonTestUtils.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   Log: "resource://gre/modules/Log.jsm",
   HttpServer: "resource://testing-common/httpd.js",
@@ -50,6 +51,10 @@ const PingServer = {
 
   get port() {
     return this._httpServer.identity.primaryPort;
+  },
+
+  get host() {
+    return this._httpServer.identity.primaryHost;
   },
 
   get started() {

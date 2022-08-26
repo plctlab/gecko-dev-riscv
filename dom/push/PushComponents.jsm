@@ -9,16 +9,17 @@
  * interact with the Push service.
  */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 var isParent =
   Services.appinfo.processType === Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT;
 
+const lazy = {};
+
 // The default Push service implementation.
-XPCOMUtils.defineLazyGetter(this, "PushService", function() {
+XPCOMUtils.defineLazyGetter(lazy, "PushService", function() {
   if (Services.prefs.getBoolPref("dom.push.enabled")) {
     const { PushService } = ChromeUtils.import(
       "resource://gre/modules/PushService.jsm"
@@ -328,7 +329,7 @@ Object.assign(PushServiceParent.prototype, {
 // Used to replace the implementation with a mock.
 Object.defineProperty(PushServiceParent.prototype, "service", {
   get() {
-    return this._service || PushService;
+    return this._service || lazy.PushService;
   },
   set(impl) {
     this._service = impl;

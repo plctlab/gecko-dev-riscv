@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsString.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/StaticPrefs_content.h"
@@ -17,6 +18,7 @@
 #include "nsError.h"
 #include "nsContentUtils.h"
 #include "nsNetUtil.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsMimeTypes.h"
@@ -40,6 +42,7 @@
 #include "nsISupportsImpl.h"
 #include "nsHttpChannel.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/ExpandedPrincipal.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/NullPrincipal.h"
 #include "nsIHttpHeaderVisitor.h"
@@ -47,6 +50,8 @@
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/nsHTTPSOnlyUtils.h"
+#include "mozilla/dom/ReferrerInfo.h"
+#include "mozilla/dom/RequestBinding.h"
 #include <algorithm>
 
 using namespace mozilla;
@@ -55,6 +60,15 @@ using namespace mozilla::net;
 #define PREFLIGHT_CACHE_SIZE 100
 // 5 seconds is chosen to be compatible with Chromium.
 #define PREFLIGHT_DEFAULT_EXPIRY_SECONDS 5
+
+static inline nsAutoString GetStatusCodeAsString(nsIHttpChannel* aHttp) {
+  nsAutoString result;
+  uint32_t code;
+  if (NS_SUCCEEDED(aHttp->GetResponseStatus(&code))) {
+    result.AppendInt(code);
+  }
+  return result;
+}
 
 static void LogBlockedRequest(nsIRequest* aRequest, const char* aProperty,
                               const char16_t* aParam, uint32_t aBlockingReason,
@@ -144,7 +158,8 @@ class nsPreflightCache {
   };
 
   struct CacheEntry : public LinkedListElement<CacheEntry> {
-    explicit CacheEntry(nsCString& aKey) : mKey(aKey) {
+    explicit CacheEntry(nsCString& aKey, bool aPrivateBrowsing)
+        : mKey(aKey), mPrivateBrowsing(aPrivateBrowsing) {
       MOZ_COUNT_CTOR(nsPreflightCache::CacheEntry);
     }
 
@@ -155,6 +170,7 @@ class nsPreflightCache {
                       const nsTArray<nsCString>& aHeaders);
 
     nsCString mKey;
+    bool mPrivateBrowsing{false};
     nsTArray<TokenTime> mMethods;
     nsTArray<TokenTime> mHeaders;
   };
@@ -173,6 +189,7 @@ class nsPreflightCache {
                        const OriginAttributes& aOriginAttributes, bool aCreate);
   void RemoveEntries(nsIURI* aURI, nsIPrincipal* aPrincipal,
                      const OriginAttributes& aOriginAttributes);
+  void PurgePrivateBrowsingEntries();
 
   void Clear();
 
@@ -195,6 +212,17 @@ static bool EnsurePreflightCache() {
   }
 
   return false;
+}
+
+void nsPreflightCache::PurgePrivateBrowsingEntries() {
+  for (auto iter = mTable.Iter(); !iter.Done(); iter.Next()) {
+    auto* entry = iter.UserData();
+    if (entry->mPrivateBrowsing) {
+      // last private browsing window closed, remove preflight cache entries
+      entry->removeFrom(sPreflightCache->mList);
+      iter.Remove();
+    }
+  }
 }
 
 void nsPreflightCache::CacheEntry::PurgeExpired(TimeStamp now) {
@@ -272,7 +300,8 @@ nsPreflightCache::CacheEntry* nsPreflightCache::GetEntry(
 
   // This is a new entry, allocate and insert into the table now so that any
   // failures don't cause items to be removed from a full cache.
-  auto newEntry = MakeUnique<CacheEntry>(key);
+  auto newEntry =
+      MakeUnique<CacheEntry>(key, aOriginAttributes.mPrivateBrowsingId != 0);
 
   NS_ASSERTION(mTable.Count() <= PREFLIGHT_CACHE_SIZE,
                "Something is borked, too many entries in the cache!");
@@ -358,12 +387,39 @@ void nsCORSListenerProxy::ClearCache() {
   sPreflightCache->Clear();
 }
 
+// static
+void nsCORSListenerProxy::ClearPrivateBrowsingCache() {
+  if (!sPreflightCache) {
+    return;
+  }
+  sPreflightCache->PurgePrivateBrowsingEntries();
+}
+
+// Usually, when using an expanded principal, there's no particularly good
+// origin to do the request with. However if the expanded principal only wraps
+// one principal, we can use that one instead.
+//
+// This is needed so that DevTools can still do CORS-enabled requests (since
+// DevTools uses a triggering principal expanding the node principal to bypass
+// CSP checks, see Element::CreateDevToolsPrincipal(), bug 1604562, and bug
+// 1391994).
+static nsIPrincipal* GetOriginHeaderPrincipal(nsIPrincipal* aPrincipal) {
+  while (aPrincipal && aPrincipal->GetIsExpandedPrincipal()) {
+    auto* ep = BasePrincipal::Cast(aPrincipal)->As<ExpandedPrincipal>();
+    if (ep->AllowList().Length() != 1) {
+      break;
+    }
+    aPrincipal = ep->AllowList()[0];
+  }
+  return aPrincipal;
+}
+
 nsCORSListenerProxy::nsCORSListenerProxy(nsIStreamListener* aOuter,
                                          nsIPrincipal* aRequestingPrincipal,
                                          bool aWithCredentials)
     : mOuterListener(aOuter),
       mRequestingPrincipal(aRequestingPrincipal),
-      mOriginHeaderPrincipal(aRequestingPrincipal),
+      mOriginHeaderPrincipal(GetOriginHeaderPrincipal(aRequestingPrincipal)),
       mWithCredentials(aWithCredentials),
       mRequestApproved(false),
       mHasBeenCrossSite(false),
@@ -497,7 +553,7 @@ nsresult nsCORSListenerProxy::CheckRequestApproved(nsIRequest* aRequest) {
   nsresult status;
   nsresult rv = aRequest->GetStatus(&status);
   if (NS_FAILED(rv)) {
-    LogBlockedRequest(aRequest, "CORSDidNotSucceed", nullptr,
+    LogBlockedRequest(aRequest, "CORSDidNotSucceed2", nullptr,
                       nsILoadInfo::BLOCKING_REASON_CORSDIDNOTSUCCEED,
                       topChannel);
     return rv;
@@ -506,7 +562,7 @@ nsresult nsCORSListenerProxy::CheckRequestApproved(nsIRequest* aRequest) {
   if (NS_FAILED(status)) {
     if (NS_BINDING_ABORTED != status) {
       // Don't want to log mere cancellation as an error.
-      LogBlockedRequest(aRequest, "CORSDidNotSucceed", nullptr,
+      LogBlockedRequest(aRequest, "CORSDidNotSucceed2", nullptr,
                         nsILoadInfo::BLOCKING_REASON_CORSDIDNOTSUCCEED,
                         topChannel);
     }
@@ -556,7 +612,8 @@ nsresult nsCORSListenerProxy::CheckRequestApproved(nsIRequest* aRequest) {
   rv = http->GetResponseHeader("Access-Control-Allow-Origin"_ns,
                                allowedOriginHeader);
   if (NS_FAILED(rv)) {
-    LogBlockedRequest(aRequest, "CORSMissingAllowOrigin", nullptr,
+    auto statusCode = GetStatusCodeAsString(http);
+    LogBlockedRequest(aRequest, "CORSMissingAllowOrigin2", statusCode.get(),
                       nsILoadInfo::BLOCKING_REASON_CORSMISSINGALLOWORIGIN,
                       topChannel);
     return rv;
@@ -578,7 +635,7 @@ nsresult nsCORSListenerProxy::CheckRequestApproved(nsIRequest* aRequest) {
   }
 
   if (mWithCredentials || !allowedOriginHeader.EqualsLiteral("*")) {
-    MOZ_ASSERT(!nsContentUtils::IsExpandedPrincipal(mOriginHeaderPrincipal));
+    MOZ_ASSERT(!mOriginHeaderPrincipal->GetIsExpandedPrincipal());
     nsAutoCString origin;
     mOriginHeaderPrincipal->GetAsciiOrigin(origin);
 
@@ -739,19 +796,15 @@ nsCORSListenerProxy::AsyncOnChannelRedirect(
         rv = NS_ERROR_OUT_OF_MEMORY;
       }
 
-      if (NS_SUCCEEDED(rv)) {
-        bool equal;
-        rv = oldChannelPrincipal->Equals(newChannelPrincipal, &equal);
-        if (NS_SUCCEEDED(rv) && !equal) {
-          // Spec says to set our source origin to a unique origin.
-          mOriginHeaderPrincipal =
-              NullPrincipal::CreateWithInheritedAttributes(oldChannelPrincipal);
-        }
-      }
-
       if (NS_FAILED(rv)) {
         aOldChannel->Cancel(rv);
         return rv;
+      }
+
+      if (!oldChannelPrincipal->Equals(newChannelPrincipal)) {
+        // Spec says to set our source origin to a unique origin.
+        mOriginHeaderPrincipal =
+            NullPrincipal::CreateWithInheritedAttributes(oldChannelPrincipal);
       }
     }
 
@@ -876,7 +929,7 @@ nsresult nsCORSListenerProxy::UpdateChannel(nsIChannel* aChannel,
   // can't return early on failure.
   nsCOMPtr<nsIHttpChannelInternal> internal = do_QueryInterface(aChannel);
   if (internal) {
-    rv = internal->SetCorsMode(nsIHttpChannelInternal::CORS_MODE_CORS);
+    rv = internal->SetRequestMode(dom::RequestMode::Cors);
     NS_ENSURE_SUCCESS(rv, rv);
     rv = internal->SetCorsIncludeCredentials(mWithCredentials);
     NS_ENSURE_SUCCESS(rv, rv);
@@ -1054,7 +1107,8 @@ nsresult nsCORSListenerProxy::CheckPreflightNeeded(nsIChannel* aChannel,
 
   nsCOMPtr<nsIHttpChannelInternal> internal = do_QueryInterface(http);
   if (!internal) {
-    LogBlockedRequest(aChannel, "CORSDidNotSucceed", nullptr,
+    auto statusCode = GetStatusCodeAsString(http);
+    LogBlockedRequest(aChannel, "CORSDidNotSucceed2", statusCode.get(),
                       nsILoadInfo::BLOCKING_REASON_CORSDIDNOTSUCCEED,
                       mHttpChannel);
     return NS_ERROR_DOM_BAD_URI;
@@ -1297,7 +1351,8 @@ nsresult nsCORSPreflightListener::CheckPreflightRequestApproved(
   bool succeedded;
   rv = http->GetRequestSucceeded(&succeedded);
   if (NS_FAILED(rv) || !succeedded) {
-    LogBlockedRequest(aRequest, "CORSPreflightDidNotSucceed2", nullptr,
+    auto statusCode = GetStatusCodeAsString(http);
+    LogBlockedRequest(aRequest, "CORSPreflightDidNotSucceed3", statusCode.get(),
                       nsILoadInfo::BLOCKING_REASON_CORSPREFLIGHTDIDNOTSUCCEED,
                       parentHttpChannel);
     return NS_ERROR_DOM_BAD_URI;
@@ -1605,13 +1660,12 @@ void nsCORSListenerProxy::LogBlockedCORSRequest(uint64_t aInnerWindowID,
                                               nsIScriptError::errorFlag,
                                               aCategory, aInnerWindowID);
   } else {
-    nsCString category = PromiseFlatCString(aCategory);
     rv = scriptError->Init(aMessage,
                            u""_ns,  // sourceName
                            u""_ns,  // sourceLine
                            0,       // lineNumber
                            0,       // columnNumber
-                           nsIScriptError::errorFlag, category.get(),
+                           nsIScriptError::errorFlag, aCategory,
                            aPrivateBrowsing,
                            aFromChromeContext);  // From chrome context
   }

@@ -8,8 +8,8 @@
 #define mozilla_dom_HTMLButtonElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "nsGenericHTMLElement.h"
-#include "nsIConstraintValidation.h"
 
 namespace mozilla {
 class EventChainPostVisitor;
@@ -18,9 +18,9 @@ namespace dom {
 class FormData;
 
 class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
-                                public nsIConstraintValidation {
+                                public ConstraintValidation {
  public:
-  using nsIConstraintValidation::GetValidationMessage;
+  using ConstraintValidation::GetValidationMessage;
 
   explicit HTMLButtonElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -66,7 +66,7 @@ class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
 
   void UpdateBarredFromConstraintValidation();
   // Element
-  EventStates IntrinsicState() const override;
+  ElementState IntrinsicState() const override;
   /**
    * Called when an attribute is about to be changed
    */

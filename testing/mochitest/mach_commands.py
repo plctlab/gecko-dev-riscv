@@ -174,6 +174,11 @@ class MochitestRunner(MozbuildObject):
             options.e10s = False
             print("using e10s=False for non-geckoview app")
 
+        # Disable fission until geckoview supports fission by default.
+        setattr(options, "disable_fission", True)
+        if "fission.autostart=true" in options.extraPrefs:
+            setattr(options, "disable_fission", False)
+
         return runtestsremote.run_test_harness(parser, options)
 
     def run_geckoview_junit_test(self, context, **kwargs):
@@ -184,6 +189,12 @@ class MochitestRunner(MozbuildObject):
         import runjunit
 
         options = Namespace(**kwargs)
+
+        # Disable fission until geckoview supports fission by default.
+        setattr(options, "disable_fission", True)
+        if "fission.autostart=true" in options.extra_prefs:
+            setattr(options, "disable_fission", False)
+
         return runjunit.run_test_harness(parser, options)
 
 
@@ -459,9 +470,10 @@ def run_mochitest_general(
 
         app = kwargs.get("app")
         if not app:
-            app = "org.mozilla.geckoview.test"
+            app = "org.mozilla.geckoview.test_runner"
         device_serial = kwargs.get("deviceSerial")
         install = InstallIntent.NO if kwargs.get("no_install") else InstallIntent.YES
+        aab = kwargs.get("aab")
 
         # verify installation
         verify_android_device(
@@ -470,6 +482,7 @@ def run_mochitest_general(
             xre=False,
             network=True,
             app=app,
+            aab=aab,
             device_serial=device_serial,
         )
 

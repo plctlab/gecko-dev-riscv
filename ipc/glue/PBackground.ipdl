@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include protocol PBackgroundDataBridge;
+include protocol PBackgroundFileSystem;
 include protocol PBackgroundIDBFactory;
 include protocol PBackgroundIndexedDBUtils;
 include protocol PBackgroundSDBConnection;
@@ -12,6 +13,7 @@ include protocol PBackgroundLSRequest;
 include protocol PBackgroundLSSimpleRequest;
 include protocol PBackgroundLocalStorageCache;
 include protocol PBackgroundSessionStorageManager;
+include protocol PBackgroundSessionStorageService;
 include protocol PBackgroundStorage;
 include protocol PBackgroundTest;
 include protocol PBroadcastChannel;
@@ -20,13 +22,12 @@ include protocol PCacheStorage;
 include protocol PCacheStreamControl;
 include protocol PClientManager;
 include protocol PEndpointForReport;
-include protocol PFileDescriptorSet;
 include protocol PFileSystemRequest;
 include protocol PGamepadEventChannel;
 include protocol PGamepadTestChannel;
 include protocol PHttpBackgroundChannel;
+include protocol PIPCClientCerts;
 include protocol PIdleScheduler;
-include protocol PRemoteLazyInputStream;
 include protocol PMediaTransport;
 include protocol PRemoteWorker;
 include protocol PRemoteWorkerController;
@@ -36,11 +37,11 @@ include protocol PTemporaryIPCBlob;
 include protocol PFileCreator;
 include protocol PMessagePort;
 include protocol PCameras;
+include protocol PLockManager;
 include protocol PMIDIManager;
 include protocol PMIDIPort;
 include protocol PQuota;
-include protocol PChildToParentStream;
-include protocol PParentToChildStream;
+include protocol PSelectTLSClientAuthCert;
 include protocol PServiceWorker;
 include protocol PServiceWorkerContainer;
 include protocol PServiceWorkerManager;
@@ -78,9 +79,11 @@ using class mozilla::dom::SSCacheCopy from "mozilla/dom/PBackgroundSessionStorag
 namespace mozilla {
 namespace ipc {
 
-[RefCounted] sync protocol PBackground
+[NeedsOtherPid, ChildImpl=virtual, ParentImpl=virtual]
+sync protocol PBackground
 {
   manages PBackgroundDataBridge;
+  manages PBackgroundFileSystem;
   manages PBackgroundIDBFactory;
   manages PBackgroundIndexedDBUtils;
   manages PBackgroundSDBConnection;
@@ -90,6 +93,7 @@ namespace ipc {
   manages PBackgroundLSSimpleRequest;
   manages PBackgroundLocalStorageCache;
   manages PBackgroundSessionStorageManager;
+  manages PBackgroundSessionStorageService;
   manages PBackgroundStorage;
   manages PBackgroundTest;
   manages PBroadcastChannel;
@@ -98,13 +102,13 @@ namespace ipc {
   manages PCacheStreamControl;
   manages PClientManager;
   manages PEndpointForReport;
-  manages PFileDescriptorSet;
   manages PFileSystemRequest;
   manages PGamepadEventChannel;
   manages PGamepadTestChannel;
   manages PHttpBackgroundChannel;
+  manages PIPCClientCerts;
   manages PIdleScheduler;
-  manages PRemoteLazyInputStream;
+  manages PLockManager;
   manages PMediaTransport;
   manages PRemoteWorker;
   manages PRemoteWorkerController;
@@ -117,8 +121,7 @@ namespace ipc {
   manages PMIDIManager;
   manages PMIDIPort;
   manages PQuota;
-  manages PChildToParentStream;
-  manages PParentToChildStream;
+  manages PSelectTLSClientAuthCert;
   manages PServiceWorker;
   manages PServiceWorkerContainer;
   manages PServiceWorkerManager;
@@ -132,6 +135,8 @@ namespace ipc {
 parent:
   // Only called at startup during mochitests to check the basic infrastructure.
   async PBackgroundTest(nsCString testArg);
+
+  async PBackgroundFileSystem(PrincipalInfo principalInfo);
 
   async PBackgroundDataBridge(uint64_t channelID);
 
@@ -181,6 +186,8 @@ parent:
 
   async PBackgroundSessionStorageManager(uint64_t aTopContextId);
 
+  async PBackgroundSessionStorageService();
+
   async PBackgroundStorage(nsString profilePath, uint32_t privateBrowsingId);
 
   async PVsync();
@@ -197,8 +204,6 @@ parent:
   async PCacheStorage(Namespace aNamespace, PrincipalInfo aPrincipalInfo);
 
   async PMessagePort(nsID uuid, nsID destinationUuid, uint32_t sequenceId);
-
-  async PChildToParentStream();
 
   async MessagePortForceClose(nsID uuid, nsID destinationUuid, uint32_t sequenceId);
 
@@ -266,8 +271,15 @@ parent:
 
   async PMediaTransport();
 
-  async PVerifySSLServerCert(ByteArray aServerCert,
-                             ByteArray[] aPeerCertChain,
+  async PSelectTLSClientAuthCert(nsCString aHostName,
+                                 OriginAttributes aOriginAttributes,
+                                 int32_t aPort,
+                                 uint32_t aProviderFlags,
+                                 uint32_t aProviderTlsFlags,
+                                 ByteArray aServerCertBytes,
+                                 ByteArray[] aCANames);
+
+  async PVerifySSLServerCert(ByteArray[] aPeerCertChain,
                              nsCString aHostName,
                              int32_t aPort,
                              OriginAttributes aOriginAttributes,
@@ -280,22 +292,20 @@ parent:
   async EnsureRDDProcessAndCreateBridge()
       returns (nsresult rv, Endpoint<PRemoteDecoderManagerChild> aEndpoint);
 
+  async EnsureUtilityProcessAndCreateBridge()
+      returns (nsresult rv, Endpoint<PRemoteDecoderManagerChild> aEndpoint);
+
   async PWebSocketConnection(uint32_t aListenerId);
+
+  async PLockManager(ContentPrincipalInfo aPrincipalInfo, nsID aClientId);
+
+  async PIPCClientCerts();
 
 child:
   async PCache();
   async PCacheStreamControl();
 
-  async PParentToChildStream();
-
   async PRemoteWorker(RemoteWorkerData data);
-
-both:
-  // PRemoteLazyInputStream is created on the parent side only if the child
-  // starts a migration.
-  async PRemoteLazyInputStream(nsID aID, uint64_t aSize);
-
-  async PFileDescriptorSet(FileDescriptor fd);
 };
 
 } // namespace ipc

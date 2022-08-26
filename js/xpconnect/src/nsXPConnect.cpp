@@ -19,18 +19,22 @@
 #include "js/Object.h"             // JS::GetClass
 #include "js/ProfilingStack.h"
 #include "GeckoProfiler.h"
+#include "mozJSModuleLoader.h"
 #include "nsJSEnvironment.h"
 #include "nsThreadUtils.h"
 #include "nsDOMJSUtils.h"
 
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
+#include "JSServices.h"
 
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/glean/bindings/Glean.h"
+#include "mozilla/glean/bindings/GleanPings.h"
 #include "mozilla/ScriptPreloader.h"
 
 #include "nsDOMMutationObserver.h"
@@ -88,7 +92,7 @@ void nsXPConnect::InitJSContext() {
   gSelf->mContext = xpccx;
   gSelf->mRuntime = xpccx->Runtime();
 
-  mozJSComponentLoader::InitStatics();
+  mozJSModuleLoader::InitStatics();
 
   // Initialize the script preloader cache.
   Unused << mozilla::ScriptPreloader::GetSingleton();
@@ -109,7 +113,11 @@ nsXPConnect::~nsXPConnect() {
   // XPConnect, to clean the stuff we forcibly disconnected. The forced
   // shutdown code defaults to leaking in a number of situations, so we can't
   // get by with only the second GC. :-(
-  mRuntime->GarbageCollect(JS::GCReason::XPCONNECT_SHUTDOWN);
+  //
+  // Bug 1650075: These should really pass GCOptions::Shutdown but doing that
+  // seems to cause crashes.
+  mRuntime->GarbageCollect(JS::GCOptions::Normal,
+                           JS::GCReason::XPCONNECT_SHUTDOWN);
 
   XPCWrappedNativeScope::SystemIsBeingShutDown();
   mRuntime->SystemIsBeingShutDown();
@@ -118,7 +126,8 @@ nsXPConnect::~nsXPConnect() {
   // after which point we need to GC to clean everything up. We need to do
   // this before deleting the XPCJSContext, because doing so destroys the
   // maps that our finalize callback depends on.
-  mRuntime->GarbageCollect(JS::GCReason::XPCONNECT_SHUTDOWN);
+  mRuntime->GarbageCollect(JS::GCOptions::Normal,
+                           JS::GCReason::XPCONNECT_SHUTDOWN);
 
   NS_RELEASE(gSystemPrincipal);
   gScriptSecurityManager = nullptr;
@@ -164,7 +173,7 @@ void nsXPConnect::ReleaseXPConnectSingleton() {
     NS_RELEASE2(xpc, cnt);
   }
 
-  mozJSComponentLoader::Shutdown();
+  mozJSModuleLoader::Shutdown();
 }
 
 // static
@@ -504,6 +513,10 @@ bool InitGlobalObject(JSContext* aJSContext, JS::Handle<JSObject*> aGlobal,
         !XPCNativeWrapper::AttachNewConstructorObject(aJSContext, aGlobal)) {
       return UnexpectedFailure(false);
     }
+
+    if (!mozJSModuleLoader::Get()->DefineJSServices(aJSContext, aGlobal)) {
+      return UnexpectedFailure(false);
+    }
   }
 
   if (!(aFlags & xpc::DONT_FIRE_ONNEWGLOBALHOOK)) {
@@ -550,6 +563,12 @@ nsresult InitClassesWithNewWrappedGlobal(JSContext* aJSContext,
     JSAutoRealm ar(aJSContext, global);
     if (!JS_DefineProfilingFunctions(aJSContext, global)) {
       return UnexpectedFailure(NS_ERROR_OUT_OF_MEMORY);
+    }
+    if (aPrincipal->IsSystemPrincipal()) {
+      if (!glean::Glean::DefineGlean(aJSContext, global) ||
+          !glean::GleanPings::DefineGleanPings(aJSContext, global)) {
+        return UnexpectedFailure(NS_ERROR_FAILURE);
+      }
     }
   }
 
@@ -947,7 +966,7 @@ MOZ_EXPORT void DumpCompleteHeap() {
     return;
   }
 
-  nsJSContext::CycleCollectNow(alltracesListener);
+  nsJSContext::CycleCollectNow(CCReason::DUMP_HEAP, alltracesListener);
 }
 
 }  // extern "C"

@@ -679,6 +679,18 @@ void MacroAssembler::popcnt64(Register64 src, Register64 dest, Register tmp) {
 // ===============================================================
 // Condition functions
 
+void MacroAssembler::cmp64Set(Condition cond, Address lhs, Imm64 rhs,
+                              Register dest) {
+  Label success, done;
+
+  branch64(cond, lhs, rhs, &success);
+  move32(Imm32(0), dest);
+  jump(&done);
+  bind(&success);
+  move32(Imm32(1), dest);
+  bind(&done);
+}
+
 template <typename T1, typename T2>
 void MacroAssembler::cmpPtrSet(Condition cond, T1 lhs, T2 rhs, Register dest) {
   cmpPtr(lhs, rhs);
@@ -950,6 +962,12 @@ void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister src,
   j(Assembler::Overflow, fail);
 }
 
+void MacroAssembler::branchAdd64(Condition cond, Imm64 imm, Register64 dest,
+                                 Label* label) {
+  add64(imm, dest);
+  j(cond, label);
+}
+
 void MacroAssembler::branchTest32(Condition cond, const AbsoluteAddress& lhs,
                                   Imm32 rhs, Label* label) {
   test32(Operand(lhs), rhs);
@@ -1126,15 +1144,6 @@ void MacroAssembler::spectreBoundsCheckPtr(Register index,
 // ========================================================================
 // SIMD
 
-void MacroAssembler::anyTrueSimd128(FloatRegister src, Register dest) {
-  Label done;
-  movl(Imm32(1), dest);
-  vptest(src, src);  // SSE4.1
-  j(NonZero, &done);
-  movl(Imm32(0), dest);
-  bind(&done);
-}
-
 void MacroAssembler::extractLaneInt64x2(uint32_t lane, FloatRegister src,
                                         Register64 dest) {
   if (lane == 0) {
@@ -1151,9 +1160,16 @@ void MacroAssembler::replaceLaneInt64x2(unsigned lane, Register64 rhs,
   vpinsrd(2 * lane + 1, rhs.high, lhsDest, lhsDest);
 }
 
+void MacroAssembler::replaceLaneInt64x2(unsigned lane, FloatRegister lhs,
+                                        Register64 rhs, FloatRegister dest) {
+  vpinsrd(2 * lane, rhs.low, lhs, dest);
+  vpinsrd(2 * lane + 1, rhs.high, dest, dest);
+}
+
 void MacroAssembler::splatX2(Register64 src, FloatRegister dest) {
-  replaceLaneInt64x2(0, src, dest);
-  replaceLaneInt64x2(1, src, dest);
+  vmovd(src.low, dest);
+  vpinsrd(1, src.high, dest, dest);
+  vpunpcklqdq(dest, dest, dest);
 }
 
 // ========================================================================

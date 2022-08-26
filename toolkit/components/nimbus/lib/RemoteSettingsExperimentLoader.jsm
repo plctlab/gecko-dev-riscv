@@ -7,23 +7,25 @@
 const EXPORTED_SYMBOLS = [
   "_RemoteSettingsExperimentLoader",
   "RemoteSettingsExperimentLoader",
-  "RemoteDefaultsLoader",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ASRouterTargeting: "resource://activity-stream/lib/ASRouterTargeting.jsm",
   TargetingContext: "resource://messaging-system/targeting/Targeting.jsm",
   ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
   RemoteSettings: "resource://services-settings/remote-settings.js",
   CleanupManager: "resource://normandy/lib/CleanupManager.jsm",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
+  JsonSchema: "resource://gre/modules/JsonSchema.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   const { Logger } = ChromeUtils.import(
     "resource://messaging-system/lib/Logger.jsm"
   );
@@ -31,7 +33,7 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "timerManager",
   "@mozilla.org/updates/timer-manager;1",
   "nsIUpdateTimerManager"
@@ -39,136 +41,46 @@ XPCOMUtils.defineLazyServiceGetter(
 
 const COLLECTION_ID_PREF = "messaging-system.rsexperimentloader.collection_id";
 const COLLECTION_ID_FALLBACK = "nimbus-desktop-experiments";
-const COLLECTION_REMOTE_DEFAULTS = "nimbus-desktop-defaults";
 const ENABLED_PREF = "messaging-system.rsexperimentloader.enabled";
-const STUDIES_OPT_OUT_PREF = "app.shield.optoutstudies.enabled";
 
 const TIMER_NAME = "rs-experiment-loader-timer";
 const TIMER_LAST_UPDATE_PREF = `app.update.lastUpdateTime.${TIMER_NAME}`;
 // Use the same update interval as normandy
 const RUN_INTERVAL_PREF = "app.normandy.run_interval_seconds";
 const NIMBUS_DEBUG_PREF = "nimbus.debug";
+const NIMBUS_VALIDATION_PREF = "nimbus.validation.enabled";
+const NIMBUS_APPID_PREF = "nimbus.appId";
+
+const STUDIES_ENABLED_CHANGED = "nimbus:studies-enabled-changed";
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "COLLECTION_ID",
   COLLECTION_ID_PREF,
   COLLECTION_ID_FALLBACK
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "NIMBUS_DEBUG",
   NIMBUS_DEBUG_PREF,
   false
 );
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "APP_ID",
+  NIMBUS_APPID_PREF,
+  "firefox-desktop"
+);
 
-/**
- * Responsible for pre-fetching remotely defined configurations from
- * Remote Settings.
- */
-const RemoteDefaultsLoader = {
-  async syncRemoteDefaults(reason) {
-    log.debug("Fetching remote defaults for NimbusFeatures.");
-    try {
-      await this._onUpdatesReady(
-        await this._remoteSettingsClient.get(),
-        reason
-      );
-    } catch (e) {
-      Cu.reportError(e);
-    }
-    log.debug("Finished fetching remote defaults.");
-  },
-
-  async _onUpdatesReady(remoteDefaults = [], reason = "unknown") {
-    const matches = [];
-    const existingConfigIds = ExperimentManager.store.getAllExistingRemoteConfigIds();
-
-    if (remoteDefaults.length) {
-      await ExperimentManager.store.ready();
-
-      // Iterate over remote defaults: at most 1 per feature
-      for (let remoteDefault of remoteDefaults) {
-        if (!remoteDefault.configurations) {
-          continue;
-        }
-        // Iterate over feature configurations and apply first which matches targeting
-        for (let configuration of remoteDefault.configurations) {
-          let result;
-          if (
-            configuration.bucketConfig &&
-            !(await ExperimentManager.isInBucketAllocation(
-              configuration.bucketConfig
-            ))
-          ) {
-            log.debug(
-              "Remote Configuration was not applied because of the bucket sampling"
-            );
-            continue;
-          }
-          try {
-            result = await RemoteSettingsExperimentLoader.evaluateJexl(
-              configuration.targeting,
-              { activeRemoteDefaults: existingConfigIds }
-            );
-          } catch (e) {
-            Cu.reportError(e);
-          }
-          if (result) {
-            log.debug(
-              `Setting remote defaults for feature: ${
-                remoteDefault.id
-              }: ${JSON.stringify(configuration)}`
-            );
-
-            matches.push(remoteDefault.id);
-
-            const existing = ExperimentManager.store.getRemoteConfig(
-              remoteDefault.id
-            );
-
-            ExperimentManager.store.updateRemoteConfigs(
-              remoteDefault.id,
-              configuration
-            );
-
-            // Update Telemetry environment. Note that we should always update during initialization,
-            // but after that we don't need to.
-            if (
-              reason === "init" ||
-              !existing ||
-              existing.slug !== configuration.slug
-            ) {
-              ExperimentManager.setRemoteDefaultActive(
-                remoteDefault.id,
-                configuration.slug
-              );
-            }
-            break;
-          } else {
-            log.debug(
-              `Remote default config ${configuration.slug} for ${remoteDefault.id} did not match due to targeting`
-            );
-          }
-        }
-      }
-    }
-
-    // Remove any pre-existing configurations that weren't found
-    for (const id of existingConfigIds) {
-      if (!matches.includes(id)) {
-        ExperimentManager.setRemoteDefaultInactive(id);
-      }
-    }
-
-    // Do final cleanup
-    ExperimentManager.store.finalizeRemoteConfigs(matches);
+const SCHEMAS = {
+  get NimbusExperiment() {
+    return fetch("resource://nimbus/schemas/NimbusExperiment.schema.json", {
+      credentials: "omit",
+    })
+      .then(rsp => rsp.json())
+      .then(json => json.definitions.NimbusExperiment);
   },
 };
-
-XPCOMUtils.defineLazyGetter(RemoteDefaultsLoader, "_remoteSettingsClient", () =>
-  RemoteSettings(COLLECTION_REMOTE_DEFAULTS)
-);
 
 class _RemoteSettingsExperimentLoader {
   constructor() {
@@ -178,11 +90,13 @@ class _RemoteSettingsExperimentLoader {
     this._updating = false;
 
     // Make it possible to override for testing
-    this.manager = ExperimentManager;
+    this.manager = lazy.ExperimentManager;
 
     XPCOMUtils.defineLazyGetter(this, "remoteSettingsClient", () => {
-      return RemoteSettings(COLLECTION_ID);
+      return lazy.RemoteSettings(lazy.COLLECTION_ID);
     });
+
+    Services.obs.addObserver(this, STUDIES_ENABLED_CHANGED);
 
     XPCOMUtils.defineLazyPreferenceGetter(
       this,
@@ -194,72 +108,74 @@ class _RemoteSettingsExperimentLoader {
 
     XPCOMUtils.defineLazyPreferenceGetter(
       this,
-      "studiesEnabled",
-      STUDIES_OPT_OUT_PREF,
-      false,
-      this.onEnabledPrefChange.bind(this)
-    );
-
-    XPCOMUtils.defineLazyPreferenceGetter(
-      this,
       "intervalInSeconds",
       RUN_INTERVAL_PREF,
       21600,
       () => this.setTimer()
     );
+
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "validationEnabled",
+      NIMBUS_VALIDATION_PREF,
+      true
+    );
+  }
+
+  get studiesEnabled() {
+    return this.manager.studiesEnabled;
   }
 
   async init() {
     if (this._initialized || !this.enabled || !this.studiesEnabled) {
-      // Resolves any Promise waiting for Remote Settings data
-      ExperimentManager.store.finalizeRemoteConfigs([]);
       return;
     }
 
     this.setTimer();
-    CleanupManager.addCleanupHandler(() => this.uninit());
+    lazy.CleanupManager.addCleanupHandler(() => this.uninit());
     this._initialized = true;
 
-    await Promise.all([
-      this.updateRecipes(),
-      RemoteDefaultsLoader.syncRemoteDefaults("init"),
-    ]);
+    await this.updateRecipes();
   }
 
   uninit() {
     if (!this._initialized) {
       return;
     }
-    timerManager.unregisterTimer(TIMER_NAME);
+    lazy.timerManager.unregisterTimer(TIMER_NAME);
     this._initialized = false;
     this._updating = false;
   }
 
   async evaluateJexl(jexlString, customContext) {
-    if (
-      customContext &&
-      !customContext.experiment &&
-      !customContext.activeRemoteDefaults
-    ) {
+    if (customContext && !customContext.experiment) {
       throw new Error(
-        "Expected an .experiment or .activeRemoteDefaults property in second param of this function"
+        "Expected an .experiment property in second param of this function"
       );
     }
 
-    const context = TargetingContext.combineContexts(
+    if (!customContext.source) {
+      throw new Error(
+        "Expected a .source property that identifies which targeting expression is being evaluated."
+      );
+    }
+
+    const context = lazy.TargetingContext.combineContexts(
       customContext,
       this.manager.createTargetingContext(),
-      ASRouterTargeting.Environment
+      lazy.ASRouterTargeting.Environment
     );
 
-    log.debug("Testing targeting expression:", jexlString);
-    const targetingContext = new TargetingContext(context);
+    lazy.log.debug("Testing targeting expression:", jexlString);
+    const targetingContext = new lazy.TargetingContext(context, {
+      source: customContext.source,
+    });
 
     let result = null;
     try {
       result = await targetingContext.evalWithDefault(jexlString);
     } catch (e) {
-      log.debug("Targeting failed because of an error");
+      lazy.log.debug("Targeting failed because of an error", e);
       Cu.reportError(e);
     }
     return result;
@@ -273,12 +189,13 @@ class _RemoteSettingsExperimentLoader {
    */
   async checkTargeting(recipe) {
     if (!recipe.targeting) {
-      log.debug("No targeting for recipe, so it matches automatically");
+      lazy.log.debug("No targeting for recipe, so it matches automatically");
       return true;
     }
 
     const result = await this.evaluateJexl(recipe.targeting, {
       experiment: recipe,
+      source: recipe.slug,
     });
 
     return Boolean(result);
@@ -292,36 +209,132 @@ class _RemoteSettingsExperimentLoader {
     if (this._updating || !this._initialized) {
       return;
     }
+
+    // Since this method is async, the enabled pref could change between await
+    // points. We don't want to half validate experiments, so we cache this to
+    // keep it consistent throughout updating.
+    const validationEnabled = this.validationEnabled;
+
     this._updating = true;
 
-    log.debug("Updating recipes" + (trigger ? ` with trigger ${trigger}` : ""));
+    lazy.log.debug(
+      "Updating recipes" + (trigger ? ` with trigger ${trigger}` : "")
+    );
 
     let recipes;
     let loadingError = false;
 
     try {
-      recipes = await this.remoteSettingsClient.get();
-      log.debug(`Got ${recipes.length} recipes from Remote Settings`);
+      recipes = await this.remoteSettingsClient.get({
+        // Throw instead of returning an empty list.
+        emptyListFallback: false,
+      });
+      lazy.log.debug(`Got ${recipes.length} recipes from Remote Settings`);
     } catch (e) {
-      log.debug("Error getting recipes from remote settings.");
+      lazy.log.debug("Error getting recipes from remote settings.");
       loadingError = true;
       Cu.reportError(e);
     }
 
+    let recipeValidator;
+
+    if (validationEnabled) {
+      recipeValidator = new lazy.JsonSchema.Validator(
+        await SCHEMAS.NimbusExperiment
+      );
+    }
+
     let matches = 0;
+    let recipeMismatches = [];
+    let invalidRecipes = [];
+    let invalidBranches = new Map();
+    let invalidFeatures = new Map();
+    let validatorCache = {};
+
     if (recipes && !loadingError) {
       for (const r of recipes) {
+        if (validationEnabled) {
+          let validation = recipeValidator.validate(r);
+          if (!validation.valid) {
+            Cu.reportError(
+              `Could not validate experiment recipe ${r.id}: ${JSON.stringify(
+                validation.errors,
+                undefined,
+                2
+              )}`
+            );
+            if (r.slug) {
+              invalidRecipes.push(r.slug);
+            }
+            continue;
+          }
+        }
+
+        const featureIds =
+          r.featureIds ??
+          r.branches
+            .flatMap(branch => branch.features ?? [branch.feature])
+            .map(featureDef => featureDef.featureId);
+
+        let haveAllFeatures = true;
+
+        for (const featureId of featureIds) {
+          const feature = lazy.NimbusFeatures[featureId];
+
+          // If validation is enabled, we want to catch this later in
+          // _validateBranches to collect the correct stats for telemetry.
+          if (!feature) {
+            continue;
+          }
+
+          if (!feature.applications.includes(lazy.APP_ID)) {
+            lazy.log.debug(
+              `${r.id} uses feature ${featureId} which is not enabled for this application (${lazy.APP_ID}) -- skipping`
+            );
+            haveAllFeatures = false;
+            break;
+          }
+        }
+        if (!haveAllFeatures) {
+          continue;
+        }
+
+        let type = r.isRollout ? "rollout" : "experiment";
+
+        if (validationEnabled) {
+          const result = await this._validateBranches(r, validatorCache);
+          if (!result.valid) {
+            if (result.invalidBranchSlugs.length) {
+              invalidBranches.set(r.slug, result.invalidBranchSlugs);
+            }
+            if (result.invalidFeatureIds.length) {
+              invalidFeatures.set(r.slug, result.invalidFeatureIds);
+            }
+            lazy.log.debug(`${r.id} did not validate`);
+            continue;
+          }
+        }
+
         if (await this.checkTargeting(r)) {
           matches++;
-          log.debug(`${r.id} matched`);
+          lazy.log.debug(`[${type}] ${r.id} matched`);
           await this.manager.onRecipe(r, "rs-loader");
         } else {
-          log.debug(`${r.id} did not match due to targeting`);
+          lazy.log.debug(`${r.id} did not match due to targeting`);
+          recipeMismatches.push(r.slug);
         }
       }
 
-      log.debug(`${matches} recipes matched. Finalizing ExperimentManager.`);
-      this.manager.onFinalize("rs-loader");
+      lazy.log.debug(
+        `${matches} recipes matched. Finalizing ExperimentManager.`
+      );
+      this.manager.onFinalize("rs-loader", {
+        recipeMismatches,
+        invalidRecipes,
+        invalidBranches,
+        invalidFeatures,
+        validationEnabled,
+      });
     }
 
     if (trigger !== "timer") {
@@ -333,19 +346,31 @@ class _RemoteSettingsExperimentLoader {
   }
 
   async optInToExperiment({ slug, branch: branchSlug, collection }) {
-    log.debug(`Attempting force enrollment with ${slug} / ${branchSlug}`);
+    lazy.log.debug(`Attempting force enrollment with ${slug} / ${branchSlug}`);
 
-    if (!NIMBUS_DEBUG) {
-      log.debug(
+    if (!lazy.NIMBUS_DEBUG) {
+      lazy.log.debug(
         `Force enrollment only works when '${NIMBUS_DEBUG_PREF}' is enabled.`
       );
       // More generic error if no debug preference is on.
       throw new Error("Could not opt in.");
     }
 
+    if (!this.studiesEnabled) {
+      lazy.log.debug(
+        "Force enrollment does not work when studies are disabled."
+      );
+      throw new Error("Could not opt in: studies are disabled.");
+    }
+
     let recipes;
     try {
-      recipes = await RemoteSettings(collection || COLLECTION_ID).get();
+      recipes = await lazy
+        .RemoteSettings(collection || lazy.COLLECTION_ID)
+        .get({
+          // Throw instead of returning an empty list.
+          emptyListFallback: false,
+        });
     } catch (e) {
       Cu.reportError(e);
       throw new Error("Error getting recipes from remote settings.");
@@ -356,7 +381,7 @@ class _RemoteSettingsExperimentLoader {
     if (!recipe) {
       throw new Error(
         `Could not find experiment slug ${slug} in collection ${collection ||
-          COLLECTION_ID}.`
+          lazy.COLLECTION_ID}.`
       );
     }
 
@@ -365,7 +390,7 @@ class _RemoteSettingsExperimentLoader {
       throw new Error(`Could not find branch slug ${branchSlug} in ${slug}.`);
     }
 
-    return ExperimentManager.forceEnroll(recipe, branch);
+    return lazy.ExperimentManager.forceEnroll(recipe, branch);
   }
 
   /**
@@ -373,14 +398,20 @@ class _RemoteSettingsExperimentLoader {
    * Changing any of them to false will turn off any recipe fetching and
    * processing.
    */
-  onEnabledPrefChange(prefName, oldValue, newValue) {
-    if (this._initialized && !newValue) {
+  onEnabledPrefChange() {
+    if (this._initialized && !(this.enabled && this.studiesEnabled)) {
       this.uninit();
-    } else if (!this._initialized && newValue && this.enabled) {
+    } else if (!this._initialized && this.enabled && this.studiesEnabled) {
       // If the feature pref is turned on then turn on recipe processing.
       // If the opt in pref is turned on then turn on recipe processing only if
       // the feature pref is also enabled.
       this.init();
+    }
+  }
+
+  observe(aSubect, aTopic, aData) {
+    if (aTopic === STUDIES_ENABLED_CHANGED) {
+      this.onEnabledPrefChange();
     }
   }
 
@@ -393,15 +424,132 @@ class _RemoteSettingsExperimentLoader {
       return;
     }
     // The callbacks will be called soon after the timer is registered
-    timerManager.registerTimer(
+    lazy.timerManager.registerTimer(
       TIMER_NAME,
-      () => {
-        this.updateRecipes("timer");
-        RemoteDefaultsLoader.syncRemoteDefaults("timer");
-      },
+      () => this.updateRecipes("timer"),
       this.intervalInSeconds
     );
-    log.debug("Registered update timer");
+    lazy.log.debug("Registered update timer");
+  }
+
+  /**
+   * Validate the branches of an experiment using schemas
+   *
+   * @param {object} recipe The recipe object.
+   * @param {object} validatorCache A cache of JSON Schema validators keyed by feature
+   *                                ID.
+   *
+   * @returns {object} The lists of invalid branch slugs and invalid feature
+   *                   IDs.
+   */
+  async _validateBranches({ id, branches }, validatorCache = {}) {
+    const invalidBranchSlugs = [];
+    const invalidFeatureIds = new Set();
+
+    for (const [branchIdx, branch] of branches.entries()) {
+      const features = branch.features ?? [branch.feature];
+      for (const feature of features) {
+        const { featureId, value } = feature;
+        if (!lazy.NimbusFeatures[featureId]) {
+          Cu.reportError(
+            `Experiment ${id} has unknown featureId: ${featureId}`
+          );
+
+          invalidFeatureIds.add(featureId);
+          continue;
+        }
+
+        let validator;
+        if (validatorCache[featureId]) {
+          validator = validatorCache[featureId];
+        } else if (lazy.NimbusFeatures[featureId].manifest.schema?.uri) {
+          const uri = lazy.NimbusFeatures[featureId].manifest.schema.uri;
+          try {
+            const schema = await fetch(uri, { credentials: "omit" }).then(rsp =>
+              rsp.json()
+            );
+            validator = validatorCache[
+              featureId
+            ] = new lazy.JsonSchema.Validator(schema);
+          } catch (e) {
+            throw new Error(
+              `Could not fetch schema for feature ${featureId} at "${uri}": ${e}`
+            );
+          }
+        } else {
+          const schema = this._generateVariablesOnlySchema(
+            featureId,
+            lazy.NimbusFeatures[featureId].manifest
+          );
+          validator = validatorCache[featureId] = new lazy.JsonSchema.Validator(
+            schema
+          );
+        }
+
+        const result = validator.validate(value);
+        if (!result.valid) {
+          Cu.reportError(
+            `Experiment ${id} branch ${branchIdx} feature ${featureId} does not validate: ${JSON.stringify(
+              result.errors,
+              undefined,
+              2
+            )}`
+          );
+          invalidBranchSlugs.push(branch.slug);
+        }
+      }
+    }
+
+    return {
+      invalidBranchSlugs,
+      invalidFeatureIds: Array.from(invalidFeatureIds),
+      valid: invalidBranchSlugs.length === 0 && invalidFeatureIds.size === 0,
+    };
+  }
+
+  _generateVariablesOnlySchema(featureId, manifest) {
+    // See-also: https://github.com/mozilla/experimenter/blob/main/app/experimenter/features/__init__.py#L21-L64
+    const schema = {
+      $schema: "https://json-schema.org/draft/2019-09/schema",
+      title: featureId,
+      description: manifest.description,
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    };
+
+    for (const [varName, desc] of Object.entries(manifest.variables)) {
+      const prop = {};
+      switch (desc.type) {
+        case "boolean":
+        case "string":
+          prop.type = desc.type;
+          break;
+
+        case "int":
+          prop.type = "integer";
+          break;
+
+        case "json":
+          // NB: Don't set a type of json fields, since they can be of any type.
+          break;
+
+        default:
+          // NB: Experimenter doesn't outright reject invalid types either.
+          Cu.reportError(
+            `Feature ID ${featureId} has variable ${varName} with invalid FML type: ${prop.type}`
+          );
+          break;
+      }
+
+      if (prop.type === "string" && !!desc.enum) {
+        prop.enum = [...desc.enum];
+      }
+
+      schema.properties[varName] = prop;
+    }
+
+    return schema;
   }
 }
 

@@ -17,6 +17,7 @@ XPIDL_SOURCES += [
 XPIDL_MODULE = "gfx"
 
 EXPORTS += [
+    "COLRFonts.h",
     "DrawMode.h",
     "gfx2DGlue.h",
     "gfxAlphaRecovery.h",
@@ -47,6 +48,7 @@ EXPORTS += [
     "gfxPattern.h",
     "gfxPlatform.h",
     "gfxPlatformFontList.h",
+    "gfxPlatformWorker.h",
     "gfxPoint.h",
     "gfxQuad.h",
     "gfxQuaternion.h",
@@ -94,6 +96,7 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
     ]
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     EXPORTS += [
+        "gfxMacUtils.h",
         "gfxPlatformMac.h",
         "gfxQuartzNativeDrawing.h",
         "gfxQuartzSurface.h",
@@ -104,6 +107,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     SOURCES += [
         "gfxCoreTextShaper.cpp",
         "gfxMacFont.cpp",
+        "gfxMacUtils.cpp",
         "gfxPlatformMac.cpp",
         "gfxQuartzNativeDrawing.cpp",
         "gfxQuartzSurface.cpp",
@@ -116,7 +120,6 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
     ]
     EXPORTS.mozilla.gfx += [
         "PrintTargetPDF.h",
-        "PrintTargetPS.h",
     ]
     SOURCES += [
         "gfxFcPlatformFontList.cpp",
@@ -124,7 +127,6 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
         "gfxFT2Utils.cpp",
         "gfxPlatformGtk.cpp",
         "PrintTargetPDF.cpp",
-        "PrintTargetPS.cpp",
     ]
 
     if CONFIG["MOZ_X11"]:
@@ -142,6 +144,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     REQUIRES_UNIFIED_BUILD = True
     EXPORTS += [
+        "gfxDWriteCommon.h",
         "gfxDWriteFonts.h",
         "gfxGDIFont.h",
         "gfxGDIFontList.h",
@@ -193,6 +196,7 @@ SOURCES += [
 
 UNIFIED_SOURCES += [
     "CJKCompatSVS.cpp",
+    "COLRFonts.cpp",
     "gfxAlphaRecovery.cpp",
     "gfxBaseSharedMemorySurface.cpp",
     "gfxBlur.cpp",
@@ -212,6 +216,7 @@ UNIFIED_SOURCES += [
     "gfxMathTable.cpp",
     "gfxPattern.cpp",
     "gfxPlatformFontList.cpp",
+    "gfxPlatformWorker.cpp",
     "gfxScriptItemizer.cpp",
     "gfxSkipChars.cpp",
     "gfxSVGGlyphs.cpp",
@@ -257,10 +262,12 @@ include("/ipc/chromium/chromium-config.mozbuild")
 FINAL_LIBRARY = "xul"
 
 LOCAL_INCLUDES += [
+    "!/security/rlbox",
     "/dom/base",
     "/dom/media/platforms/apple",
     "/dom/xml",
     "/gfx/cairo/cairo/src",
+    "/widget/gtk",
 ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
@@ -271,13 +278,12 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
         if CONFIG[var]:
             DEFINES[var] = True
 
-CXXFLAGS += CONFIG["TK_CFLAGS"]
-CFLAGS += CONFIG["TK_CFLAGS"]
-
 if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android"):
     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
+    CFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
     CXXFLAGS += CONFIG["MOZ_PANGO_CFLAGS"]
 
 if CONFIG["MOZ_WAYLAND"]:
@@ -287,7 +293,7 @@ LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
 
 DEFINES["GRAPHITE2_STATIC"] = True
 
-if CONFIG["CC_TYPE"] == "clang":
+if CONFIG["CC_TYPE"] in ("clang", "clang-cl"):
     # Suppress warnings from Skia header files.
     SOURCES["gfxPlatform.cpp"].flags += ["-Wno-implicit-fallthrough"]
 

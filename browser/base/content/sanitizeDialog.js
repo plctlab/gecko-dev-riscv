@@ -3,10 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* import-globals-from ../../../toolkit/content/preferencesBindings.js */
+/* import-globals-from /toolkit/content/preferencesBindings.js */
 
 var { Sanitizer } = ChromeUtils.import("resource:///modules/Sanitizer.jsm");
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 Preferences.addAll([
   { id: "privacy.cpd.history", type: "bool" },

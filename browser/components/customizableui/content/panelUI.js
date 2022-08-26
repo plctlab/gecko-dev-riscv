@@ -391,7 +391,6 @@ const PanelUI = {
    * @param aEvent the event triggering the view showing.
    */
   async showSubView(aViewId, aAnchor, aEvent) {
-    let domEvent = null;
     if (aEvent) {
       // On Mac, ctrl-click will send a context menu event from the widget, so
       // we don't want to bring up the panel when ctrl key is pressed.
@@ -408,31 +407,6 @@ const PanelUI = {
         aEvent.key != "Enter"
       ) {
         return;
-      }
-      if (aEvent.type == "command" && aEvent.inputSource != null) {
-        // Synthesize a new DOM mouse event to pass on the inputSource.
-        domEvent = document.createEvent("MouseEvent");
-        domEvent.initNSMouseEvent(
-          "click",
-          true,
-          true,
-          null,
-          0,
-          aEvent.screenX,
-          aEvent.screenY,
-          0,
-          0,
-          false,
-          false,
-          false,
-          false,
-          0,
-          aEvent.target,
-          0,
-          aEvent.inputSource
-        );
-      } else if (aEvent.mozInputSource != null || aEvent.type == "keypress") {
-        domEvent = aEvent;
       }
     }
 
@@ -455,7 +429,7 @@ const PanelUI = {
     this.ensurePanicViewInitialized(viewNode);
 
     let container = aAnchor.closest("panelmultiview");
-    if (container) {
+    if (container && !viewNode.hasAttribute("disallowSubView")) {
       container.showSubView(aViewId, aAnchor);
     } else if (!aAnchor.open) {
       aAnchor.open = true;
@@ -463,9 +437,8 @@ const PanelUI = {
       let tempPanel = document.createXULElement("panel");
       tempPanel.setAttribute("type", "arrow");
       tempPanel.setAttribute("id", "customizationui-widget-panel");
-
-      if (viewNode.getAttribute("remote") == "true") {
-        tempPanel.setAttribute("remote", "true");
+      if (viewNode.hasAttribute("neverhidden")) {
+        tempPanel.setAttribute("neverhidden", "true");
       }
 
       tempPanel.setAttribute("class", "cui-widget-panel panel-no-padding");
@@ -517,7 +490,7 @@ const PanelUI = {
       try {
         viewShown = await PanelMultiView.openPopup(tempPanel, anchor, {
           position: "bottomcenter topright",
-          triggerEvent: domEvent,
+          triggerEvent: aEvent,
         });
       } catch (ex) {
         Cu.reportError(ex);
@@ -717,6 +690,87 @@ const PanelUI = {
     }
   },
 
+  /**
+   * Selects and marks an item by id from the main view. The ids are an array,
+   * the first in the main view and the later ids in subsequent subviews that
+   * become marked when the user opens the subview. The subview marking is
+   * cancelled if a different subview is opened.
+   */
+  async selectAndMarkItem(itemIds) {
+    // This shouldn't really occur, but return early just in case.
+    if (document.documentElement.hasAttribute("customizing")) {
+      return;
+    }
+
+    // This function was triggered from a button while the menu was
+    // already open, so the panel should be in the process of hiding.
+    // Wait for the panel to hide first, then reopen it.
+    if (this.panel.state == "hiding") {
+      await new Promise(resolve => {
+        this.panel.addEventListener("popuphidden", resolve, { once: true });
+      });
+    }
+
+    if (this.panel.state != "open") {
+      await new Promise(resolve => {
+        this.panel.addEventListener("ViewShown", resolve, { once: true });
+        this.show();
+      });
+    }
+
+    let currentView;
+
+    let viewShownCB = event => {
+      viewHidingCB();
+
+      if (itemIds.length) {
+        let subItem = window.document.getElementById(itemIds[0]);
+        if (event.target.id == subItem?.closest("panelview")?.id) {
+          Services.tm.dispatchToMainThread(() => {
+            markItem(event.target);
+          });
+        } else {
+          itemIds = [];
+        }
+      }
+    };
+
+    let viewHidingCB = () => {
+      if (currentView) {
+        currentView.ignoreMouseMove = false;
+      }
+      currentView = null;
+    };
+
+    let popupHiddenCB = () => {
+      viewHidingCB();
+      this.panel.removeEventListener("ViewShown", viewShownCB);
+    };
+
+    let markItem = viewNode => {
+      let id = itemIds.shift();
+      let item = window.document.getElementById(id);
+      item.setAttribute("tabindex", "-1");
+
+      currentView = PanelView.forNode(viewNode);
+      currentView.selectedElement = item;
+      currentView.focusSelectedElement(true);
+
+      // Prevent the mouse from changing the highlight temporarily.
+      // This flag gets removed when the view is hidden or a key
+      // is pressed.
+      currentView.ignoreMouseMove = true;
+
+      if (itemIds.length) {
+        this.panel.addEventListener("ViewShown", viewShownCB, { once: true });
+      }
+      this.panel.addEventListener("ViewHiding", viewHidingCB, { once: true });
+    };
+
+    this.panel.addEventListener("popuphidden", popupHiddenCB, { once: true });
+    markItem(this.mainView);
+  },
+
   updateNotifications(notificationsChanged) {
     let notifications = this._notifications;
     if (!notifications || !notifications.length) {
@@ -904,16 +958,25 @@ const PanelUI = {
   // "Banner item" here refers to an item in the hamburger panel menu. They will
   // typically show up as a colored row in the panel.
   _showBannerItem(notification) {
+    const supportedIds = [
+      "update-downloading",
+      "update-available",
+      "update-manual",
+      "update-unsupported",
+      "update-restart",
+    ];
+    if (!supportedIds.includes(notification.id)) {
+      return;
+    }
+
     if (!this._panelBannerItem) {
       this._panelBannerItem = this.mainView.querySelector(".panel-banner-item");
     }
-    let label = this._panelBannerItem.getAttribute("label-" + notification.id);
-    // Ignore items we don't know about.
-    if (!label) {
-      return;
-    }
+
+    let l10nId = "appmenuitem-banner-" + notification.id;
+    document.l10n.setAttributes(this._panelBannerItem, l10nId);
+
     this._panelBannerItem.setAttribute("notificationid", notification.id);
-    this._panelBannerItem.setAttribute("label", label);
     this._panelBannerItem.hidden = false;
     this._panelBannerItem.notification = notification;
   },
@@ -978,30 +1041,8 @@ const PanelUI = {
     return iconAnchor || candidate;
   },
 
-  _addedShortcuts: false,
-  _formatPrintButtonShortcuts() {
-    let printButton = this.mainView.querySelector("#appMenu-print-button2");
-    if (printButton) {
-      if (
-        !Services.prefs.getBoolPref("print.tab_modal.enabled") &&
-        AppConstants.platform !== "macosx"
-      ) {
-        printButton.removeAttribute("shortcut");
-      } else if (!printButton.hasAttribute("shortcut")) {
-        printButton.setAttribute(
-          "shortcut",
-          ShortcutUtils.prettifyShortcut(
-            document.getElementById(printButton.getAttribute("key"))
-          )
-        );
-      }
-    }
-  },
   _ensureShortcutsShown(view = this.mainView) {
     if (view.hasAttribute("added-shortcuts")) {
-      // The print button shorcut visibility can change depending on the pref value,
-      // so we need to check this each time, even if we've already added shortcuts.
-      this._formatPrintButtonShortcuts();
       return;
     }
     view.setAttribute("added-shortcuts", "true");
@@ -1013,7 +1054,6 @@ const PanelUI = {
       }
       button.setAttribute("shortcut", ShortcutUtils.prettifyShortcut(key));
     }
-    this._formatPrintButtonShortcuts();
   },
 };
 

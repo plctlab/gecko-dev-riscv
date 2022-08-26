@@ -11,8 +11,17 @@ with Files("ThemeVariableMap.jsm"):
     BUG_COMPONENT = ("WebExtensions", "Themes")
 
 EXTRA_JS_MODULES += [
+    "BuiltInThemeConfig.jsm",
     "BuiltInThemes.jsm",
     "ThemeVariableMap.jsm",
+]
+
+BROWSER_CHROME_MANIFESTS += [
+    "test/browser/browser.ini",
+]
+
+XPCSHELL_TESTS_MANIFESTS += [
+    "test/xpcshell/xpcshell.ini",
 ]
 
 toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
@@ -29,9 +38,7 @@ elif toolkit == "gtk":
 else:
     DIRS += ["windows"]
 
-DIRS += [
-    "addons",
-]
+DIRS += ["addons", "shared/app-marketplace-icons"]
 
 with Files("osx/**"):
     SCHEDULES.exclusive = ["macosx"]

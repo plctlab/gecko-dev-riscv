@@ -21,13 +21,20 @@
 #include "mozilla/Poison.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Printf.h"
+#include "mozilla/ProcessType.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/RuntimeExceptionModule.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/JSONWriter.h"
+#include "mozilla/gfx/gfxVars.h"
+#include "mozilla/widget/TextRecognition.h"
 #include "BaseProfiler.h"
 
 #include "nsAppRunner.h"
@@ -79,7 +86,6 @@
 #include "nsIStringBundle.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIToolkitProfile.h"
-#include "nsIUUIDGenerator.h"
 #include "nsToolkitProfileService.h"
 #include "nsIURI.h"
 #include "nsIURL.h"
@@ -93,6 +99,7 @@
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/scache/StartupCache.h"
 #include "gfxPlatform.h"
+#include "PDMFactory.h"
 #ifdef XP_MACOSX
 #  include "gfxPlatformMac.h"
 #endif
@@ -105,6 +112,7 @@
 #  include <intrin.h>
 #  include <math.h>
 #  include "cairo/cairo-features.h"
+#  include "detect_win32k_conflicts.h"
 #  include "mozilla/PreXULSkeletonUI.h"
 #  include "mozilla/DllPrefetchExperimentRegistryInfo.h"
 #  include "mozilla/WindowsDllBlocklist.h"
@@ -112,7 +120,6 @@
 #  include "mozilla/WinHeaderOnlyUtils.h"
 #  include "mozilla/mscom/ProcessRuntime.h"
 #  include "mozilla/mscom/ProfilerMarkers.h"
-#  include "mozilla/widget/AudioSession.h"
 #  include "WinTokenUtils.h"
 
 #  if defined(MOZ_LAUNCHER_PROCESS)
@@ -130,9 +137,6 @@
 
 #if defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxSettings.h"
-#  if (defined(XP_WIN) || defined(XP_MACOSX))
-#    include "nsIUUIDGenerator.h"
-#  endif
 #endif
 
 #ifdef ACCESSIBILITY
@@ -276,7 +280,6 @@ static const char kPrefThemeId[] = "extensions.activeThemeID";
 static const char kPrefBrowserStartupBlankWindow[] =
     "browser.startup.blankWindow";
 static const char kPrefPreXulSkeletonUI[] = "browser.startup.preXulSkeletonUI";
-static const char kPrefDrawTabsInTitlebar[] = "browser.tabs.drawInTitlebar";
 #endif  // defined(XP_WIN)
 
 int gArgc;
@@ -430,6 +433,12 @@ static MOZ_FORMAT_PRINTF(2, 3) void Output(bool isError, const char* fmt, ...) {
 
     MessageBoxW(nullptr, wide_msg, L"XULRunner", flags);
   }
+#elif defined(MOZ_WIDGET_ANDROID)
+  SmprintfPointer msg = mozilla::Vsmprintf(fmt, ap);
+  if (msg) {
+    __android_log_print(isError ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO,
+                        "GeckoRuntime", "%s", msg.get());
+  }
 #else
   vfprintf(stderr, fmt, ap);
 #endif
@@ -466,52 +475,6 @@ static ArgResult CheckArgExists(const char* aArg) {
 
 bool gSafeMode = false;
 bool gFxREmbedded = false;
-
-// Fission enablement for the current session is determined once, at startup,
-// and then remains the same for the duration of the session.
-//
-// The following factors determine whether or not Fission is enabled for a
-// session, in order of precedence:
-//
-// - Safe mode: In safe mode, Fission is never enabled.
-//
-// - The MOZ_FORCE_ENABLE_FISSION environment variable: If set to any value,
-//   Fission will be enabled.
-//
-// - The 'fission.autostart' preference, if it has been configured by the user.
-static const char kPrefFissionAutostart[] = "fission.autostart";
-//
-// - The fission experiment enrollment status set during the previous run, which
-//   is controlled by the following preferences:
-//
-// The current enrollment status as controlled by Normandy. This value is only
-// stored in the default preference branch, and is not persisted across
-// sessions by the preference service. It therefore isn't available early
-// enough at startup, and needs to be synced to a preference in the user
-// branch which is persisted across sessions.
-static const char kPrefFissionExperimentEnrollmentStatus[] =
-    "fission.experiment.enrollmentStatus";
-//
-// The enrollment status to be used at browser startup. This automatically
-// synced from the above enrollmentStatus preference whenever the latter is
-// changed. It can have any of the values defined in the
-// `nsIXULRuntime_ExperimentStatus` enum. Meanings are documented in
-// the declaration of `nsIXULRuntime.fissionExperimentStatus`
-static const char kPrefFissionExperimentStartupEnrollmentStatus[] =
-    "fission.experiment.startupEnrollmentStatus";
-
-// The computed FissionAutostart value for the session, read by content
-// processes to initialize gFissionAutostart.
-//
-// This pref is locked, and only configured on the default branch, so should
-// never be persisted in a profile.
-static const char kPrefFissionAutostartSession[] = "fission.autostart.session";
-
-static nsIXULRuntime::ExperimentStatus gFissionExperimentStatus =
-    nsIXULRuntime::eExperimentStatusUnenrolled;
-static bool gFissionAutostart = false;
-static bool gFissionAutostartInitialized = false;
-static nsIXULRuntime::FissionDecisionStatus gFissionDecisionStatus;
 
 enum E10sStatus {
   kE10sEnabledByDefault,
@@ -583,6 +546,392 @@ bool BrowserTabsRemoteAutostart() {
 
   return gBrowserTabsRemoteAutostart;
 }
+
+}  // namespace mozilla
+
+// Win32k Infrastructure ==============================================
+
+// This bool tells us if we have initialized the following two statics
+// upon startup.
+
+static bool gWin32kInitialized = false;
+
+// Win32k Lockdown for the current session is determined once, at startup,
+// and then remains the same for the duration of the session.
+
+static nsIXULRuntime::ContentWin32kLockdownState gWin32kStatus;
+
+// The status of the win32k experiment. It is determined once, at startup,
+// and then remains the same for the duration of the session.
+
+static nsIXULRuntime::ExperimentStatus gWin32kExperimentStatus =
+    nsIXULRuntime::eExperimentStatusUnenrolled;
+
+#ifdef XP_WIN
+// The states for win32k lockdown can be generalized to:
+//  - User doesn't meet requirements (bad OS, webrender, remotegl) aka
+//  PersistentRequirement
+//  - User has Safe Mode enabled, Win32k Disabled by Env Var, or E10S disabled
+//  by Env Var aka TemporaryRequirement
+//  - User has set the win32k pref to something non-default aka NonDefaultPref
+//  - User has been enrolled in the experiment and does what it says aka
+//  Enrolled
+//  - User does the default aka Default
+//
+// We expect the below behvaior.  In the code, there may be references to these
+//     behaviors (e.g. [A]) but not always.
+//
+// [A] Becoming enrolled in the experiment while NonDefaultPref disqualifies
+//     you upon next browser start
+// [B] Becoming enrolled in the experiment while PersistentRequirement
+//     disqualifies you upon next browser start
+// [C] Becoming enrolled in the experiment while TemporaryRequirement does not
+//     disqualify you
+// [D] Becoming enrolled in the experiment will only take effect after restart
+// [E] While enrolled, becoming PersistentRequirement will not disqualify you
+//     until browser restart, but if the state is present at browser start,
+//     will disqualify you. Additionally, it will not affect the session value
+//     of gWin32kStatus.
+//     XXX(bobowen): I hope both webrender and wbgl.out-of-process require a
+//                   restart to take effect!
+// [F] While enrolled, becoming NonDefaultPref will disqualify you upon next
+//     browser start
+// [G] While enrolled, becoming TemporaryRequirement will _not_ disqualify you,
+//     but the session status will prevent win32k lockdown from taking effect.
+
+// The win32k pref
+static const char kPrefWin32k[] = "security.sandbox.content.win32k-disable";
+
+// The current enrollment status as controlled by Normandy. This value is only
+// stored in the default preference branch, and is not persisted across
+// sessions by the preference service. It therefore isn't available early
+// enough at startup, and needs to be synced to a preference in the user
+// branch which is persisted across sessions.
+static const char kPrefWin32kExperimentEnrollmentStatus[] =
+    "security.sandbox.content.win32k-experiment.enrollmentStatus";
+
+// The enrollment status to be used at browser startup. This automatically
+// synced from the above enrollmentStatus preference whenever the latter is
+// changed. We reused the Fission experiment enum - it can have any of the
+// values defined in the `nsIXULRuntime_ExperimentStatus` enum _except_ rollout.
+// Meanings are documented in the declaration of
+// `nsIXULRuntime.fissionExperimentStatus`
+static const char kPrefWin32kExperimentStartupEnrollmentStatus[] =
+    "security.sandbox.content.win32k-experiment.startupEnrollmentStatus";
+
+namespace mozilla {
+
+bool Win32kExperimentEnrolled() {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  return gWin32kExperimentStatus == nsIXULRuntime::eExperimentStatusControl ||
+         gWin32kExperimentStatus == nsIXULRuntime::eExperimentStatusTreatment;
+}
+
+}  // namespace mozilla
+
+static bool Win32kRequirementsUnsatisfied(
+    nsIXULRuntime::ContentWin32kLockdownState aStatus) {
+  return aStatus == nsIXULRuntime::ContentWin32kLockdownState::
+                        OperatingSystemNotSupported ||
+         aStatus ==
+             nsIXULRuntime::ContentWin32kLockdownState::MissingWebRender ||
+         aStatus ==
+             nsIXULRuntime::ContentWin32kLockdownState::MissingRemoteWebGL ||
+         aStatus ==
+             nsIXULRuntime::ContentWin32kLockdownState::DecodersArentRemote;
+}
+
+static void Win32kExperimentDisqualify() {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  Preferences::SetUint(kPrefWin32kExperimentEnrollmentStatus,
+                       nsIXULRuntime::eExperimentStatusDisqualified);
+}
+
+static void OnWin32kEnrollmentStatusChanged(const char* aPref, void* aData) {
+  auto newStatusInt =
+      Preferences::GetUint(kPrefWin32kExperimentEnrollmentStatus,
+                           nsIXULRuntime::eExperimentStatusUnenrolled);
+  auto newStatus = newStatusInt < nsIXULRuntime::eExperimentStatusCount
+                       ? nsIXULRuntime::ExperimentStatus(newStatusInt)
+                       : nsIXULRuntime::eExperimentStatusDisqualified;
+
+  // Set the startup pref for next browser start [D]
+  Preferences::SetUint(kPrefWin32kExperimentStartupEnrollmentStatus, newStatus);
+}
+
+namespace {
+// This observer is notified during `profile-before-change`, and ensures that
+// the experiment enrollment status is synced over before the browser shuts
+// down, even if it was not modified since win32k was initialized.
+class Win32kEnrollmentStatusShutdownObserver final : public nsIObserver {
+ public:
+  NS_DECL_ISUPPORTS
+
+  NS_IMETHOD Observe(nsISupports* aSubject, const char* aTopic,
+                     const char16_t* aData) override {
+    MOZ_ASSERT(!strcmp("profile-before-change", aTopic));
+    OnWin32kEnrollmentStatusChanged(kPrefWin32kExperimentEnrollmentStatus,
+                                    nullptr);
+    return NS_OK;
+  }
+
+ private:
+  ~Win32kEnrollmentStatusShutdownObserver() = default;
+};
+NS_IMPL_ISUPPORTS(Win32kEnrollmentStatusShutdownObserver, nsIObserver)
+}  // namespace
+
+static void OnWin32kChanged(const char* aPref, void* aData) {
+  // If we're actively enrolled in the Win32k experiment, disqualify the user
+  // from the experiment if the Win32k pref is modified. [F]
+  if (Win32kExperimentEnrolled() && Preferences::HasUserValue(kPrefWin32k)) {
+    Win32kExperimentDisqualify();
+  }
+}
+
+#endif  // XP_WIN
+
+namespace mozilla {
+void EnsureWin32kInitialized();
+}
+
+nsIXULRuntime::ContentWin32kLockdownState GetLiveWin32kLockdownState() {
+#ifdef XP_WIN
+
+  // HasUserValue The Pref functions can only be called on main thread
+  MOZ_ASSERT(NS_IsMainThread());
+  mozilla::EnsureWin32kInitialized();
+  gfxPlatform::GetPlatform();
+
+  if (gSafeMode) {
+    return nsIXULRuntime::ContentWin32kLockdownState::DisabledBySafeMode;
+  }
+
+  if (EnvHasValue("MOZ_ENABLE_WIN32K")) {
+    return nsIXULRuntime::ContentWin32kLockdownState::DisabledByEnvVar;
+  }
+
+  if (!mozilla::BrowserTabsRemoteAutostart()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::DisabledByE10S;
+  }
+
+  // Win32k lockdown is available on Win8+, but we are initially limiting it to
+  // Windows 10 v1709 (build 16299) or later. Before this COM initialization
+  // currently fails if user32.dll has loaded before it is called.
+  if (!IsWin10FallCreatorsUpdateOrLater()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::
+        OperatingSystemNotSupported;
+  }
+
+  {
+    ConflictingMitigationStatus conflictingMitigationStatus = {};
+    if (!detect_win32k_conflicting_mitigations(&conflictingMitigationStatus)) {
+      return nsIXULRuntime::ContentWin32kLockdownState::
+          IncompatibleMitigationPolicy;
+    }
+    if (conflictingMitigationStatus.caller_check ||
+        conflictingMitigationStatus.sim_exec ||
+        conflictingMitigationStatus.stack_pivot) {
+      return nsIXULRuntime::ContentWin32kLockdownState::
+          IncompatibleMitigationPolicy;
+    }
+  }
+
+  // Win32k Lockdown requires WebRender, but WR is not currently guaranteed
+  // on all computers. It can also fail to initialize and fallback to
+  // non-WR render path.
+  //
+  // We don't want a situation where "Win32k Lockdown + No WR" occurs
+  // without the user explicitly requesting unsupported behavior.
+  if (!gfx::gfxVars::UseWebRender()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::MissingWebRender;
+  }
+
+  // Non-native theming is required as well
+  if (!StaticPrefs::widget_non_native_theme_enabled()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::MissingNonNativeTheming;
+  }
+
+  // Win32k Lockdown requires Remote WebGL, but it may be disabled on
+  // certain hardware or virtual machines.
+  if (!gfx::gfxVars::AllowWebglOop() || !StaticPrefs::webgl_out_of_process()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::MissingRemoteWebGL;
+  }
+
+  // Some (not sure exactly which) decoders are not compatible
+  if (!PDMFactory::AllDecodersAreRemote()) {
+    return nsIXULRuntime::ContentWin32kLockdownState::DecodersArentRemote;
+  }
+
+  bool prefSetByUser =
+      Preferences::HasUserValue("security.sandbox.content.win32k-disable");
+  bool prefValue = Preferences::GetBool(
+      "security.sandbox.content.win32k-disable", false, PrefValueKind::User);
+  bool defaultValue = Preferences::GetBool(
+      "security.sandbox.content.win32k-disable", false, PrefValueKind::Default);
+
+  if (prefSetByUser) {
+    if (prefValue) {
+      return nsIXULRuntime::ContentWin32kLockdownState::EnabledByUserPref;
+    } else {
+      return nsIXULRuntime::ContentWin32kLockdownState::DisabledByUserPref;
+    }
+  }
+
+  if (gWin32kExperimentStatus ==
+      nsIXULRuntime::ExperimentStatus::eExperimentStatusControl) {
+    return nsIXULRuntime::ContentWin32kLockdownState::DisabledByControlGroup;
+  } else if (gWin32kExperimentStatus ==
+             nsIXULRuntime::ExperimentStatus::eExperimentStatusTreatment) {
+    return nsIXULRuntime::ContentWin32kLockdownState::EnabledByTreatmentGroup;
+  }
+
+  if (defaultValue) {
+    return nsIXULRuntime::ContentWin32kLockdownState::EnabledByDefault;
+  } else {
+    return nsIXULRuntime::ContentWin32kLockdownState::DisabledByDefault;
+  }
+
+#else
+
+  return nsIXULRuntime::ContentWin32kLockdownState::OperatingSystemNotSupported;
+
+#endif
+}
+
+namespace mozilla {
+
+void EnsureWin32kInitialized() {
+  if (gWin32kInitialized) {
+    return;
+  }
+  gWin32kInitialized = true;
+
+#ifdef XP_WIN
+
+  // Initialize the Win32k experiment, configuring win32k's
+  // default, before checking other overrides. This allows opting-out of a
+  // Win32k experiment through about:preferences or about:config from a
+  // safemode session.
+  uint32_t experimentRaw =
+      Preferences::GetUint(kPrefWin32kExperimentStartupEnrollmentStatus,
+                           nsIXULRuntime::eExperimentStatusUnenrolled);
+  gWin32kExperimentStatus =
+      experimentRaw < nsIXULRuntime::eExperimentStatusCount
+          ? nsIXULRuntime::ExperimentStatus(experimentRaw)
+          : nsIXULRuntime::eExperimentStatusDisqualified;
+
+  // Watch the experiment enrollment status pref to detect experiment
+  // disqualification, and ensure it is propagated for the next restart.
+  Preferences::RegisterCallback(&OnWin32kEnrollmentStatusChanged,
+                                kPrefWin32kExperimentEnrollmentStatus);
+  if (nsCOMPtr<nsIObserverService> observerService =
+          mozilla::services::GetObserverService()) {
+    nsCOMPtr<nsIObserver> shutdownObserver =
+        new Win32kEnrollmentStatusShutdownObserver();
+    observerService->AddObserver(shutdownObserver, "profile-before-change",
+                                 false);
+  }
+
+  // If the user no longer qualifies because they edited a required pref, check
+  // that. [B] [E]
+  auto tmpStatus = GetLiveWin32kLockdownState();
+  if (Win32kExperimentEnrolled() && Win32kRequirementsUnsatisfied(tmpStatus)) {
+    Win32kExperimentDisqualify();
+    gWin32kExperimentStatus = nsIXULRuntime::eExperimentStatusDisqualified;
+  }
+
+  // If the user has overridden an active experiment by setting a user value for
+  // "security.sandbox.content.win32k-disable", disqualify the user from the
+  // experiment. [A] [F]
+  if (Preferences::HasUserValue(kPrefWin32k) && Win32kExperimentEnrolled()) {
+    Win32kExperimentDisqualify();
+    gWin32kExperimentStatus = nsIXULRuntime::eExperimentStatusDisqualified;
+  }
+
+  // Unlike Fission, we do not configure the default branch based on experiment
+  // enrollment status.  Instead we check the startupEnrollmentPref in
+  // GetContentWin32kLockdownState()
+
+  Preferences::RegisterCallback(&OnWin32kChanged, kPrefWin32k);
+
+  // Set the state
+  gWin32kStatus = GetLiveWin32kLockdownState();
+
+#else
+  gWin32kStatus =
+      nsIXULRuntime::ContentWin32kLockdownState::OperatingSystemNotSupported;
+  gWin32kExperimentStatus = nsIXULRuntime::eExperimentStatusUnenrolled;
+
+#endif  // XP_WIN
+}
+
+nsIXULRuntime::ContentWin32kLockdownState GetWin32kLockdownState() {
+#ifdef XP_WIN
+
+  mozilla::EnsureWin32kInitialized();
+  return gWin32kStatus;
+
+#else
+
+  return nsIXULRuntime::ContentWin32kLockdownState::OperatingSystemNotSupported;
+
+#endif
+}
+
+}  // namespace mozilla
+
+// End Win32k Infrastructure ==========================================
+
+// Fission Infrastructure =============================================
+
+// Fission enablement for the current session is determined once, at startup,
+// and then remains the same for the duration of the session.
+//
+// The following factors determine whether or not Fission is enabled for a
+// session, in order of precedence:
+//
+// - Safe mode: In safe mode, Fission is never enabled.
+//
+// - The MOZ_FORCE_ENABLE_FISSION environment variable: If set to any value,
+//   Fission will be enabled.
+//
+// - The 'fission.autostart' preference, if it has been configured by the user.
+static const char kPrefFissionAutostart[] = "fission.autostart";
+//
+// - The fission experiment enrollment status set during the previous run, which
+//   is controlled by the following preferences:
+//
+// The current enrollment status as controlled by Normandy. This value is only
+// stored in the default preference branch, and is not persisted across
+// sessions by the preference service. It therefore isn't available early
+// enough at startup, and needs to be synced to a preference in the user
+// branch which is persisted across sessions.
+static const char kPrefFissionExperimentEnrollmentStatus[] =
+    "fission.experiment.enrollmentStatus";
+//
+// The enrollment status to be used at browser startup. This automatically
+// synced from the above enrollmentStatus preference whenever the latter is
+// changed. It can have any of the values defined in the
+// `nsIXULRuntime_ExperimentStatus` enum. Meanings are documented in
+// the declaration of `nsIXULRuntime.fissionExperimentStatus`
+static const char kPrefFissionExperimentStartupEnrollmentStatus[] =
+    "fission.experiment.startupEnrollmentStatus";
+
+// The computed FissionAutostart value for the session, read by content
+// processes to initialize gFissionAutostart.
+//
+// This pref is locked, and only configured on the default branch, so should
+// never be persisted in a profile.
+static const char kPrefFissionAutostartSession[] = "fission.autostart.session";
+
+static nsIXULRuntime::ExperimentStatus gFissionExperimentStatus =
+    nsIXULRuntime::eExperimentStatusUnenrolled;
+static bool gFissionAutostart = false;
+static bool gFissionAutostartInitialized = false;
+static nsIXULRuntime::FissionDecisionStatus gFissionDecisionStatus;
+
+namespace mozilla {
 
 bool FissionExperimentEnrolled() {
   MOZ_ASSERT(XRE_IsParentProcess());
@@ -700,12 +1049,12 @@ static void EnsureFissionAutostartInitialized() {
     } else {
       gFissionDecisionStatus = nsIXULRuntime::eFissionDisabledByE10sOther;
     }
-  } else if (gSafeMode) {
-    gFissionAutostart = false;
-    gFissionDecisionStatus = nsIXULRuntime::eFissionDisabledBySafeMode;
   } else if (EnvHasValue("MOZ_FORCE_ENABLE_FISSION")) {
     gFissionAutostart = true;
     gFissionDecisionStatus = nsIXULRuntime::eFissionEnabledByEnv;
+  } else if (EnvHasValue("MOZ_FORCE_DISABLE_FISSION")) {
+    gFissionAutostart = false;
+    gFissionDecisionStatus = nsIXULRuntime::eFissionDisabledByEnv;
   } else {
     // NOTE: This will take into account changes to the default due to
     // `InitializeFissionExperimentStatus`.
@@ -754,6 +1103,12 @@ bool FissionAutostart() {
   EnsureFissionAutostartInitialized();
   return gFissionAutostart;
 }
+
+}  // namespace mozilla
+
+// End Fission Infrastructure =========================================
+
+namespace mozilla {
 
 bool SessionHistoryInParent() {
   return FissionAutostart() ||
@@ -972,25 +1327,18 @@ nsXULAppInfo::GetWidgetToolkit(nsACString& aResult) {
 // Ensure that the GeckoProcessType enum, defined in xpcom/build/nsXULAppAPI.h,
 // is synchronized with the const unsigned longs defined in
 // xpcom/system/nsIXULRuntime.idl.
-#define SYNC_ENUMS(a, b)                                                   \
-  static_assert(nsIXULRuntime::PROCESS_TYPE_##a ==                         \
-                    static_cast<int>(GeckoProcessType_##b),                \
-                "GeckoProcessType in nsXULAppAPI.h not synchronized with " \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
+                           process_bin_type, procinfo_typename,               \
+                           webidl_typename, allcaps_name)                     \
+  static_assert(nsIXULRuntime::PROCESS_TYPE_##allcaps_name ==                 \
+                    static_cast<int>(GeckoProcessType_##enum_name),           \
+                "GeckoProcessType in nsXULAppAPI.h not synchronized with "    \
                 "nsIXULRuntime.idl");
-
-SYNC_ENUMS(DEFAULT, Default)
-SYNC_ENUMS(CONTENT, Content)
-SYNC_ENUMS(IPDLUNITTEST, IPDLUnitTest)
-SYNC_ENUMS(GMPLUGIN, GMPlugin)
-SYNC_ENUMS(GPU, GPU)
-SYNC_ENUMS(VR, VR)
-SYNC_ENUMS(RDD, RDD)
-SYNC_ENUMS(SOCKET, Socket)
-SYNC_ENUMS(SANDBOX_BROKER, RemoteSandboxBroker)
-SYNC_ENUMS(FORKSERVER, ForkServer)
+#include "mozilla/GeckoProcessTypes.h"
+#undef GECKO_PROCESS_TYPE
 
 // .. and ensure that that is all of them:
-static_assert(GeckoProcessType_ForkServer + 1 == GeckoProcessType_End,
+static_assert(GeckoProcessType_Utility + 1 == GeckoProcessType_End,
               "Did not find the final GeckoProcessType");
 
 NS_IMETHODIMP
@@ -1072,6 +1420,41 @@ nsXULAppInfo::GetFissionAutostart(bool* aResult) {
 }
 
 NS_IMETHODIMP
+nsXULAppInfo::GetWin32kExperimentStatus(ExperimentStatus* aResult) {
+  if (!XRE_IsParentProcess()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  EnsureWin32kInitialized();
+  *aResult = gWin32kExperimentStatus;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetWin32kLiveStatusTestingOnly(
+    nsIXULRuntime::ContentWin32kLockdownState* aResult) {
+  if (!XRE_IsParentProcess()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  EnsureWin32kInitialized();
+  *aResult = GetLiveWin32kLockdownState();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetWin32kSessionStatus(
+    nsIXULRuntime::ContentWin32kLockdownState* aResult) {
+  if (!XRE_IsParentProcess()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  EnsureWin32kInitialized();
+  *aResult = gWin32kStatus;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsXULAppInfo::GetFissionExperimentStatus(ExperimentStatus* aResult) {
   if (!XRE_IsParentProcess()) {
     return NS_ERROR_NOT_AVAILABLE;
@@ -1115,8 +1498,8 @@ nsXULAppInfo::GetFissionDecisionStatusString(nsACString& aResult) {
     case eFissionEnabledByEnv:
       aResult = "enabledByEnv";
       break;
-    case eFissionDisabledBySafeMode:
-      aResult = "disabledBySafeMode";
+    case eFissionDisabledByEnv:
+      aResult = "disabledByEnv";
       break;
     case eFissionEnabledByDefault:
       aResult = "enabledByDefault";
@@ -1226,6 +1609,12 @@ nsXULAppInfo::GetIs64Bit(bool* aResult) {
 }
 
 NS_IMETHODIMP
+nsXULAppInfo::GetIsTextRecognitionSupported(bool* aResult) {
+  *aResult = widget::TextRecognition::IsSupported();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsXULAppInfo::EnsureContentProcess() {
   if (!XRE_IsParentProcess()) return NS_ERROR_NOT_AVAILABLE;
 
@@ -1278,26 +1667,6 @@ nsXULAppInfo::GetReplacedLockTime(PRTime* aReplacedLockTime) {
 }
 
 NS_IMETHODIMP
-nsXULAppInfo::GetIsReleaseOrBeta(bool* aResult) {
-#ifdef RELEASE_OR_BETA
-  *aResult = true;
-#else
-  *aResult = false;
-#endif
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsXULAppInfo::GetIsOfficialBranding(bool* aResult) {
-#ifdef MOZ_OFFICIAL_BRANDING
-  *aResult = true;
-#else
-  *aResult = false;
-#endif
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 nsXULAppInfo::GetDefaultUpdateChannel(nsACString& aResult) {
   aResult.AssignLiteral(MOZ_STRINGIFY(MOZ_UPDATE_CHANNEL));
   return NS_OK;
@@ -1322,6 +1691,26 @@ nsXULAppInfo::GetWindowsDLLBlocklistStatus(bool* aResult) {
 NS_IMETHODIMP
 nsXULAppInfo::GetRestartedByOS(bool* aResult) {
   *aResult = gRestartedByOS;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetChromeColorSchemeIsDark(bool* aResult) {
+  LookAndFeel::EnsureColorSchemesInitialized();
+  *aResult = LookAndFeel::ColorSchemeForChrome() == ColorScheme::Dark;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetContentThemeDerivedColorSchemeIsDark(bool* aResult) {
+  *aResult =
+      LookAndFeel::ThemeDerivedColorSchemeForContent() == ColorScheme::Dark;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetDrawInTitlebar(bool* aResult) {
+  *aResult = LookAndFeel::DrawInTitlebar();
   return NS_OK;
 }
 
@@ -1521,15 +1910,15 @@ nsXULAppInfo::RemoveCrashReportAnnotation(const nsACString& key) {
 }
 
 NS_IMETHODIMP
-nsXULAppInfo::IsAnnotationWhitelistedForPing(const nsACString& aValue,
-                                             bool* aIsWhitelisted) {
+nsXULAppInfo::IsAnnotationAllowlistedForPing(const nsACString& aValue,
+                                             bool* aIsAllowlisted) {
   CrashReporter::Annotation annotation;
 
   if (!AnnotationFromString(annotation, PromiseFlatCString(aValue).get())) {
     return NS_ERROR_INVALID_ARG;
   }
 
-  *aIsWhitelisted = CrashReporter::IsAnnotationWhitelistedForPing(annotation);
+  *aIsAllowlisted = CrashReporter::IsAnnotationAllowlistedForPing(annotation);
 
   return NS_OK;
 }
@@ -1619,10 +2008,7 @@ nsXULAppInfo::Callback(nsISupports* aData) {
 
 static const nsXULAppInfo kAppInfo;
 namespace mozilla {
-nsresult AppInfoConstructor(nsISupports* aOuter, REFNSIID aIID,
-                            void** aResult) {
-  NS_ENSURE_NO_AGGREGATION(aOuter);
-
+nsresult AppInfoConstructor(REFNSIID aIID, void** aResult) {
   return const_cast<nsXULAppInfo*>(&kAppInfo)->QueryInterface(aIID, aResult);
 }
 }  // namespace mozilla
@@ -1685,30 +2071,6 @@ ScopedXPCOMStartup::~ScopedXPCOMStartup() {
   }
 }
 
-// {5F5E59CE-27BC-47eb-9D1F-B09CA9049836}
-static const nsCID kProfileServiceCID = {
-    0x5f5e59ce,
-    0x27bc,
-    0x47eb,
-    {0x9d, 0x1f, 0xb0, 0x9c, 0xa9, 0x4, 0x98, 0x36}};
-
-static already_AddRefed<nsIFactory> ProfileServiceFactoryConstructor(
-    const mozilla::Module& module, const mozilla::Module::CIDEntry& entry) {
-  nsCOMPtr<nsIFactory> factory;
-  NS_NewToolkitProfileFactory(getter_AddRefs(factory));
-  return factory.forget();
-}
-
-static const mozilla::Module::CIDEntry kXRECIDs[] = {
-    {&kProfileServiceCID, false, ProfileServiceFactoryConstructor, nullptr},
-    {nullptr}};
-
-static const mozilla::Module::ContractIDEntry kXREContracts[] = {
-    {NS_PROFILESERVICE_CONTRACTID, &kProfileServiceCID}, {nullptr}};
-
-extern const mozilla::Module kXREModule = {mozilla::Module::kVersion, kXRECIDs,
-                                           kXREContracts};
-
 nsresult ScopedXPCOMStartup::Initialize(bool aInitJSContext) {
   NS_ASSERTION(gDirServiceProvider, "Should not get here!");
 
@@ -1753,15 +2115,9 @@ nsSingletonFactory::nsSingletonFactory(nsISupports* aSingleton)
 NS_IMPL_ISUPPORTS(nsSingletonFactory, nsIFactory)
 
 NS_IMETHODIMP
-nsSingletonFactory::CreateInstance(nsISupports* aOuter, const nsIID& aIID,
-                                   void** aResult) {
-  NS_ENSURE_NO_AGGREGATION(aOuter);
-
+nsSingletonFactory::CreateInstance(const nsIID& aIID, void** aResult) {
   return mSingleton->QueryInterface(aIID, aResult);
 }
-
-NS_IMETHODIMP
-nsSingletonFactory::LockFactory(bool) { return NS_OK; }
 
 /**
  * Set our windowcreator on the WindowWatcher service.
@@ -1990,7 +2346,7 @@ static void ReflectSkeletonUIPrefToRegistry(const char* aPref, void* aData) {
   bool shouldBeEnabled =
       Preferences::GetBool(kPrefPreXulSkeletonUI, false) &&
       Preferences::GetBool(kPrefBrowserStartupBlankWindow, false) &&
-      Preferences::GetBool(kPrefDrawTabsInTitlebar, false);
+      LookAndFeel::DrawInTitlebar();
   if (shouldBeEnabled && Preferences::HasUserValue(kPrefThemeId)) {
     nsCString themeId;
     Preferences::GetCString(kPrefThemeId, themeId);
@@ -2019,8 +2375,9 @@ static void SetupSkeletonUIPrefs() {
   Preferences::RegisterCallback(&ReflectSkeletonUIPrefToRegistry,
                                 kPrefBrowserStartupBlankWindow);
   Preferences::RegisterCallback(&ReflectSkeletonUIPrefToRegistry, kPrefThemeId);
-  Preferences::RegisterCallback(&ReflectSkeletonUIPrefToRegistry,
-                                kPrefDrawTabsInTitlebar);
+  Preferences::RegisterCallback(
+      &ReflectSkeletonUIPrefToRegistry,
+      nsDependentCString(StaticPrefs::GetPrefName_browser_tabs_inTitlebar()));
 }
 
 #  if defined(MOZ_LAUNCHER_PROCESS)
@@ -2346,14 +2703,22 @@ class ReturnAbortOnError {
 }  // namespace
 
 static nsresult ProfileMissingDialog(nsINativeAppSupport* aNative) {
-#ifdef MOZ_BACKGROUNDTASKS
+#ifdef MOZ_WIDGET_ANDROID
+  // We cannot really do anything this early during initialization, so we just
+  // return as this is likely the effect of misconfiguration on the test side.
+  // Non-test code paths cannot set the profile folder, which is always the
+  // default one.
+  Output(true, "Could not find profile folder.\n");
+  return NS_ERROR_ABORT;
+#else
+#  ifdef MOZ_BACKGROUNDTASKS
   if (BackgroundTasks::IsBackgroundTaskMode()) {
     // We should never get to this point in background task mode.
     Output(false,
            "Could not determine any profile running in backgroundtask mode!\n");
     return NS_ERROR_ABORT;
   }
-#endif
+#  endif  // MOZ_BACKGROUNDTASKS
 
   nsresult rv;
 
@@ -2394,6 +2759,7 @@ static nsresult ProfileMissingDialog(nsINativeAppSupport* aNative) {
 
     return NS_ERROR_ABORT;
   }
+#endif    // MOZ_WIDGET_ANDROID
 }
 
 static ReturnAbortOnError ProfileLockedDialog(nsIFile* aProfileDir,
@@ -2549,11 +2915,17 @@ static ReturnAbortOnError ShowProfileManager(
       nsCOMPtr<nsIAppStartup> appStartup(components::AppStartup::Service());
       NS_ENSURE_TRUE(appStartup, NS_ERROR_FAILURE);
 
+      nsAutoCString features("centerscreen,chrome,modal,titlebar");
+      // If we're launching a private browsing window make sure to set that
+      // feature for the Profile Manager window as well, so it groups correctly
+      // on the Windows taskbar.
+      if (CheckArgExists("private-window") == ARG_FOUND) {
+        features.AppendLiteral(",private");
+      }
       nsCOMPtr<mozIDOMWindowProxy> newWindow;
       rv = windowWatcher->OpenWindow(
           nullptr, nsDependentCString(kProfileManagerURL), "_blank"_ns,
-          "centerscreen,chrome,modal,titlebar"_ns, ioParamBlock,
-          getter_AddRefs(newWindow));
+          features, ioParamBlock, getter_AddRefs(newWindow));
 
       NS_ENSURE_SUCCESS_LOG(rv, rv);
 
@@ -2611,7 +2983,6 @@ static ReturnAbortOnError ShowProfileManager(
 
 static bool gDoMigration = false;
 static bool gDoProfileReset = false;
-static bool gResetDeleteOldProfile = true;
 static nsCOMPtr<nsIToolkitProfile> gResetOldProfile;
 
 static nsresult LockProfile(nsINativeAppSupport* aNative, nsIFile* aRootDir,
@@ -2666,14 +3037,6 @@ static nsresult SelectProfile(nsToolkitProfileService* aProfileSvc,
   if (EnvHasValue("MOZ_RESET_PROFILE_RESTART")) {
     gDoProfileReset = true;
     gDoMigration = true;
-    SaveToEnv("MOZ_RESET_PROFILE_RESTART=");
-    // We only want to restore the previous session if the profile refresh was
-    // triggered by user. And if it was a user-triggered profile refresh
-    // through, say, the safeMode dialog or the troubleshooting page, the
-    // MOZ_RESET_PROFILE_RESTART env variable would be set. Hence we set
-    // MOZ_RESET_PROFILE_MIGRATE_SESSION here so that Firefox profile migrator
-    // would migrate old session data later.
-    SaveToEnv("MOZ_RESET_PROFILE_MIGRATE_SESSION=1");
   }
 
   // reset-profile and migration args need to be checked before any profiles are
@@ -2714,19 +3077,6 @@ static nsresult SelectProfile(nsToolkitProfileService* aProfileSvc,
 
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (rv == NS_MIGRATE_INTO_PACKAGE) {
-    if (!*aProfile) {
-      NS_WARNING(
-          "Attempted package profile migration without existing profile.");
-      return NS_ERROR_ABORT;
-    }
-
-    gDoProfileReset = true;
-    gResetDeleteOldProfile = false;
-    gDoMigration = true;
-    return NS_OK;
-  }
-
   if (didCreate) {
     // For a fresh install, we would like to let users decide
     // to do profile migration on their own later after using.
@@ -2751,11 +3101,11 @@ static nsresult SelectProfile(nsToolkitProfileService* aProfileSvc,
 }
 
 #ifdef MOZ_BLOCK_PROFILE_DOWNGRADE
-struct FileWriteFunc : public JSONWriteFunc {
+struct FileWriteFunc final : public JSONWriteFunc {
   FILE* mFile;
   explicit FileWriteFunc(FILE* aFile) : mFile(aFile) {}
 
-  void Write(const Span<const char>& aStr) override {
+  void Write(const Span<const char>& aStr) final {
     fprintf(mFile, "%.*s", int(aStr.size()), aStr.data());
   }
 };
@@ -2793,10 +3143,7 @@ static void SubmitDowngradeTelemetry(const nsCString& aLastVersion,
   NS_ENSURE_SUCCESS_VOID(rv);
 
   nsID uuid;
-  nsCOMPtr<nsIUUIDGenerator> uuidGen =
-      do_GetService("@mozilla.org/uuid-generator;1");
-  NS_ENSURE_TRUE_VOID(uuidGen);
-  rv = uuidGen->GenerateUUIDInPlace(&uuid);
+  rv = nsID::GenerateUUIDInPlace(uuid);
   NS_ENSURE_SUCCESS_VOID(rv);
 
   nsCString arch("null");
@@ -2997,11 +3344,17 @@ static ReturnAbortOnError CheckDowngrade(nsIFile* aProfileDir,
 
       paramBlock->SetInt(0, flags);
 
+      nsAutoCString features("centerscreen,chrome,modal,titlebar");
+      // If we're launching a private browsing window make sure to set that
+      // feature for the Profile Manager window as well, so it groups correctly
+      // on the Windows taskbar.
+      if (CheckArgExists("private-window") == ARG_FOUND) {
+        features.AppendLiteral(",private");
+      }
       nsCOMPtr<mozIDOMWindowProxy> newWindow;
       rv = windowWatcher->OpenWindow(
           nullptr, nsDependentCString(kProfileDowngradeURL), "_blank"_ns,
-          "centerscreen,chrome,modal,titlebar"_ns, paramBlock,
-          getter_AddRefs(newWindow));
+          features, paramBlock, getter_AddRefs(newWindow));
       NS_ENSURE_SUCCESS(rv, rv);
 
       paramBlock->GetInt(1, &result);
@@ -3296,8 +3649,7 @@ static bool RemoveComponentRegistries(nsIFile* aProfileDir,
 
   file->SetNativeLeafName("startupCache"_ns);
   nsresult rv = file->Remove(true);
-  return NS_SUCCEEDED(rv) || rv == NS_ERROR_FILE_TARGET_DOES_NOT_EXIST ||
-         rv == NS_ERROR_FILE_NOT_FOUND;
+  return NS_SUCCEEDED(rv) || rv == NS_ERROR_FILE_NOT_FOUND;
 }
 
 // When we first initialize the crash reporter we don't have a profile,
@@ -3400,6 +3752,7 @@ bool fire_glxtest_process();
 #endif
 
 #include "GeckoProfiler.h"
+#include "ProfilerControl.h"
 
 // Encapsulates startup and shutdown state for XRE_main
 class XREMain {
@@ -3510,7 +3863,7 @@ static bool CheckForUserMismatch() {
 static bool CheckForUserMismatch() { return false; }
 #endif
 
-static void IncreaseDescriptorLimits() {
+void mozilla::startup::IncreaseDescriptorLimits() {
 #ifdef XP_UNIX
   // Increase the fd limit to accomodate IPC resources like shared memory.
   // See also the Darwin case in config/external/nspr/pr/moz.build
@@ -3647,7 +4000,7 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
   if (PR_GetEnv("XRE_MAIN_BREAK")) NS_BREAK();
 #endif
 
-  IncreaseDescriptorLimits();
+  mozilla::startup::IncreaseDescriptorLimits();
 
 #ifdef USE_GLX_TEST
   // bug 639842 - it's very important to fire this process BEFORE we set up
@@ -3810,7 +4163,30 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
       CrashReporter::AnnotateCrashReport(CrashReporter::Annotation::AppInitDLLs,
                                          NS_ConvertUTF16toUTF8(appInitDLLs));
     }
+
+    nsString packageFamilyName = widget::WinUtils::GetPackageFamilyName();
+    if (StringBeginsWith(packageFamilyName, u"Mozilla."_ns) ||
+        StringBeginsWith(packageFamilyName, u"MozillaCorporation."_ns)) {
+      CrashReporter::AnnotateCrashReport(
+          CrashReporter::Annotation::WindowsPackageFamilyName,
+          NS_ConvertUTF16toUTF8(packageFamilyName));
+    }
 #endif
+
+    bool isBackgroundTaskMode = false;
+#ifdef MOZ_BACKGROUNDTASKS
+    Maybe<nsCString> backgroundTasks = BackgroundTasks::GetBackgroundTasks();
+    if (backgroundTasks.isSome()) {
+      isBackgroundTaskMode = true;
+      CrashReporter::AnnotateCrashReport(
+          CrashReporter::Annotation::BackgroundTaskName, backgroundTasks.ref());
+    }
+#endif
+    CrashReporter::AnnotateCrashReport(
+        CrashReporter::Annotation::BackgroundTaskMode, isBackgroundTaskMode);
+
+    CrashReporter::AnnotateCrashReport(CrashReporter::Annotation::HeadlessMode,
+                                       gfxPlatform::IsHeadless());
 
     CrashReporter::SetRestartArgs(gArgc, gArgv);
 
@@ -3840,6 +4216,11 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
         SaveWordToEnv("MOZ_CRASHREPORTER_STRINGS_OVERRIDE", overridePath);
       }
     }
+  } else {
+    // We might have registered a runtime exception module very early in process
+    // startup to catch early crashes. This is before we have access to ini file
+    // data, so unregister here if it turns out the crash reporter is disabled.
+    CrashReporter::UnregisterRuntimeExceptionModule();
   }
 
 #if defined(MOZ_SANDBOX) && defined(XP_WIN)
@@ -4021,6 +4402,11 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
     mStartOffline = true;
   }
 
+  // On Windows, to get working console arrangements so help/version/etc
+  // print something, we need to initialize the native app support.
+  rv = NS_CreateNativeAppSupport(getter_AddRefs(mNativeApp));
+  if (NS_FAILED(rv)) return 1;
+
   // Handle --help, --full-version and --version command line arguments.
   // They should return quickly, so we deal with them here.
   if (CheckArg("h") || CheckArg("help") || CheckArg("?")) {
@@ -4117,29 +4503,63 @@ bool IsWaylandEnabled() {
   if (!waylandDisplay) {
     return false;
   }
-
-  const char* x11Display = PR_GetEnv("DISPLAY");
+  if (!PR_GetEnv("DISPLAY")) {
+    // No X11 display, so try to run wayland.
+    return true;
+  }
   // MOZ_ENABLE_WAYLAND is our primary Wayland on/off switch.
-  const char* waylandPref = PR_GetEnv("MOZ_ENABLE_WAYLAND");
-  bool enableWayland = !x11Display || (waylandPref && *waylandPref == '1');
-  if (!enableWayland) {
-    const char* backendPref = PR_GetEnv("GDK_BACKEND");
-    enableWayland = (backendPref && strncmp(backendPref, "wayland", 7) == 0);
-    if (enableWayland) {
+  if (const char* waylandPref = PR_GetEnv("MOZ_ENABLE_WAYLAND")) {
+    return *waylandPref == '1';
+  }
+  if (const char* backendPref = PR_GetEnv("GDK_BACKEND")) {
+    if (!strncmp(backendPref, "wayland", 7)) {
       NS_WARNING(
           "Wayland backend should be enabled by MOZ_ENABLE_WAYLAND=1."
-          "GDK_BACKEND is a Gtk3 debug variable and may cause various issues.");
+          "GDK_BACKEND is a Gtk3 debug variable and may cause issues.");
+      return true;
     }
   }
-  if (enableWayland && gtk_check_version(3, 22, 0) != nullptr) {
-    NS_WARNING("Running Wayland backen on Gtk3 < 3.22. Expect issues/glitches");
-  }
-  return enableWayland;
+#  ifdef EARLY_BETA_OR_EARLIER
+  // Enable by default when we're running on a recent enough GTK version. We'd
+  // like to check further details like compositor version and so on ideally
+  // to make sure we don't enable it on old Mutter or what not, but we can't,
+  // so let's assume that if the user is running on a Wayland session by
+  // default we're ok, since either the distro has enabled Wayland by default,
+  // or the user has gone out of their way to use Wayland.
+  //
+  // TODO(emilio): If users hit problems, we might be able to restrict it to
+  // GNOME / KDE  / known-good-desktop environments by checking
+  // XDG_CURRENT_DESKTOP or so...
+  return !gtk_check_version(3, 24, 30);
+#  else
+  return false;
+#  endif
 }
 #endif
 
 #if defined(MOZ_UPDATER) && !defined(MOZ_WIDGET_ANDROID)
-bool ShouldProcessUpdates(nsXREDirProvider& aDirProvider) {
+enum struct ShouldNotProcessUpdatesReason {
+  DevToolsLaunching,
+  NotAnUpdatingTask,
+  OtherInstanceRunning,
+};
+
+const char* ShouldNotProcessUpdatesReasonAsString(
+    ShouldNotProcessUpdatesReason aReason) {
+  switch (aReason) {
+    case ShouldNotProcessUpdatesReason::DevToolsLaunching:
+      return "DevToolsLaunching";
+    case ShouldNotProcessUpdatesReason::NotAnUpdatingTask:
+      return "NotAnUpdatingTask";
+    case ShouldNotProcessUpdatesReason::OtherInstanceRunning:
+      return "OtherInstanceRunning";
+    default:
+      MOZ_CRASH("impossible value for ShouldNotProcessUpdatesReason");
+  }
+}
+
+Maybe<ShouldNotProcessUpdatesReason> ShouldNotProcessUpdates(
+    nsXREDirProvider& aDirProvider) {
   // Do not process updates if we're launching devtools, as evidenced by
   // "--chrome ..." with the browser toolbox chrome document URL.
 
@@ -4154,8 +4574,8 @@ bool ShouldProcessUpdates(nsXREDirProvider& aDirProvider) {
   const char* chromeParam = nullptr;
   if (ARG_FOUND == CheckArg("chrome", &chromeParam, CheckArgFlag::None)) {
     if (!chromeParam || !strcmp(BROWSER_TOOLBOX_WINDOW_URL, chromeParam)) {
-      NS_WARNING("!ShouldProcessUpdates(): launching devtools");
-      return false;
+      NS_WARNING("ShouldNotProcessUpdates(): DevToolsLaunching");
+      return Some(ShouldNotProcessUpdatesReason::DevToolsLaunching);
     }
   }
 
@@ -4163,7 +4583,25 @@ bool ShouldProcessUpdates(nsXREDirProvider& aDirProvider) {
   // Do not process updates if we're running a background task mode and another
   // instance is already running.  This avoids periodic maintenance updating
   // underneath a browsing session.
-  if (BackgroundTasks::IsBackgroundTaskMode()) {
+  Maybe<nsCString> backgroundTasks = BackgroundTasks::GetBackgroundTasks();
+  if (backgroundTasks.isSome()) {
+    // Only process updates for specific tasks: at this time, the
+    // `backgroundupdate` task and the test-only `shouldprocessupdates` task.
+    //
+    // Background tasks can be sparked by Firefox instances that are shutting
+    // down, which can cause races between the task startup trying to update and
+    // Firefox trying to invoke the updater.  This happened when converting
+    // `pingsender` to a background task, since it is launched to send pings at
+    // shutdown: Bug 1736373.
+    //
+    // We'd prefer to have this be a property of the task definition sibling to
+    // `backgroundTaskTimeoutSec`, but when we reach this code we're well before
+    // we can load the task JSM.
+    if (!BackgroundTasks::IsUpdatingTaskName(backgroundTasks.ref())) {
+      NS_WARNING("ShouldNotProcessUpdates(): NotAnUpdatingTask");
+      return Some(ShouldNotProcessUpdatesReason::NotAnUpdatingTask);
+    }
+
     // At this point we have a dir provider but no XPCOM directory service.  We
     // launch the update sync manager using that information so that it doesn't
     // need to ask for (and fail to find) the directory service.
@@ -4173,7 +4611,7 @@ bool ShouldProcessUpdates(nsXREDirProvider& aDirProvider) {
                                        getter_AddRefs(anAppFile));
     if (NS_FAILED(rv) || !anAppFile) {
       // Strange, but not a reason to skip processing updates.
-      return true;
+      return Nothing();
     }
 
     auto updateSyncManager = new nsUpdateSyncManager(anAppFile);
@@ -4181,13 +4619,13 @@ bool ShouldProcessUpdates(nsXREDirProvider& aDirProvider) {
     bool otherInstance = false;
     updateSyncManager->IsOtherInstanceRunning(&otherInstance);
     if (otherInstance) {
-      NS_WARNING("!ShouldProcessUpdates(): other instance is running");
-      return false;
+      NS_WARNING("ShouldNotProcessUpdates(): OtherInstanceRunning");
+      return Some(ShouldNotProcessUpdatesReason::OtherInstanceRunning);
     }
   }
 #  endif
 
-  return true;
+  return Nothing();
 }
 #endif
 
@@ -4246,11 +4684,12 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
 #endif
 
   // Enable Telemetry IO Reporting on DEBUG, nightly and local builds,
-  // but disable it on FUZZING builds.
+  // but disable it on FUZZING builds and for ANDROID.
 #ifndef FUZZING
-#  ifdef DEBUG
+#  ifndef ANDROID
+#    ifdef DEBUG
   mozilla::Telemetry::InitIOReporting(gAppData->xreDirectory);
-#  else
+#    else
   {
     const char* releaseChannel = MOZ_STRINGIFY(MOZ_UPDATE_CHANNEL);
     if (strcmp(releaseChannel, "nightly") == 0 ||
@@ -4258,8 +4697,9 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
       mozilla::Telemetry::InitIOReporting(gAppData->xreDirectory);
     }
   }
-#  endif /* DEBUG */
-#endif   /* FUZZING */
+#    endif /* DEBUG */
+#  endif   /* ANDROID */
+#endif     /* FUZZING */
 
 #if defined(XP_WIN)
   // Enable the HeapEnableTerminationOnCorruption exploit mitigation. We ignore
@@ -4299,11 +4739,7 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   // consistently.
 
   // Set program name to the one defined in application.ini.
-  {
-    nsAutoCString program(gAppData->name);
-    ToLowerCase(program);
-    g_set_prgname(program.get());
-  }
+  g_set_prgname(gAppData->remotingName);
 
   // Initialize GTK here for splash.
 
@@ -4438,9 +4874,6 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   setupProfilingStuff();
 #endif
 
-  rv = NS_CreateNativeAppSupport(getter_AddRefs(mNativeApp));
-  if (NS_FAILED(rv)) return 1;
-
   bool canRun = false;
   rv = mNativeApp->Start(&canRun);
   if (NS_FAILED(rv) || !canRun) {
@@ -4465,32 +4898,8 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
     return 0;
   }
 
-#ifdef MOZ_BACKGROUNDTASKS
-  if (BackgroundTasks::IsBackgroundTaskMode()) {
-    // Allow tests to specify profile path via the environment.
-    if (!EnvHasValue("XRE_PROFILE_PATH")) {
-      nsString installHash;
-      mDirProvider.GetInstallHash(installHash);
-
-      nsCOMPtr<nsIFile> file;
-      nsresult rv = BackgroundTasks::CreateTemporaryProfileDirectory(
-          NS_LossyConvertUTF16toASCII(installHash), getter_AddRefs(file));
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return 1;
-      }
-
-      SaveFileToEnv("XRE_PROFILE_PATH", file);
-    }
-  }
-#endif
-
-  rv = NS_NewToolkitProfileService(getter_AddRefs(mProfileSvc));
-  if (rv == NS_ERROR_FILE_ACCESS_DENIED) {
-    PR_fprintf(PR_STDERR,
-               "Error: Access was denied while trying to open files in "
-               "your profile directory.\n");
-  }
-  if (NS_FAILED(rv)) {
+  mProfileSvc = NS_GetToolkitProfileService();
+  if (!mProfileSvc) {
     // We failed to choose or create profile - notify user and quit
     ProfileMissingDialog(mNativeApp);
     return 1;
@@ -4551,7 +4960,9 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
 #endif
 
 #if defined(MOZ_UPDATER) && !defined(MOZ_WIDGET_ANDROID)
-  if (ShouldProcessUpdates(mDirProvider)) {
+  Maybe<ShouldNotProcessUpdatesReason> shouldNotProcessUpdatesReason =
+      ShouldNotProcessUpdates(mDirProvider);
+  if (shouldNotProcessUpdatesReason.isNothing()) {
     // Check for and process any available updates
     nsCOMPtr<nsIFile> updRoot;
     bool persistent;
@@ -4609,7 +5020,12 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
       // Support for testing *not* processing an update.  The launched process
       // can witness this environment variable and conclude that its runtime
       // environment resulted in not processing updates.
-      SaveToEnv("MOZ_TEST_PROCESS_UPDATES=!ShouldProcessUpdates()");
+
+      SaveToEnv(nsPrintfCString(
+                    "MOZ_TEST_PROCESS_UPDATES=ShouldNotProcessUpdates(): %s",
+                    ShouldNotProcessUpdatesReasonAsString(
+                        shouldNotProcessUpdatesReason.value()))
+                    .get());
     }
   }
 #endif
@@ -4646,6 +5062,16 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   }
 
   if (gDoProfileReset) {
+    if (EnvHasValue("MOZ_RESET_PROFILE_RESTART")) {
+      SaveToEnv("MOZ_RESET_PROFILE_RESTART=");
+      // We only want to restore the previous session if the profile refresh was
+      // triggered by user. And if it was a user-triggered profile refresh
+      // through, say, the safeMode dialog or the troubleshooting page, the
+      // MOZ_RESET_PROFILE_RESTART env variable would be set. Hence we set
+      // MOZ_RESET_PROFILE_MIGRATE_SESSION here so that Firefox profile migrator
+      // would migrate old session data later.
+      SaveToEnv("MOZ_RESET_PROFILE_MIGRATE_SESSION=1");
+    }
     // Unlock the source profile.
     mProfileLock->Unlock();
 
@@ -4831,7 +5257,7 @@ nsresult XREMain::XRE_mainRun() {
 
 #if defined(XP_WIN)
   RefPtr<mozilla::DllServices> dllServices(mozilla::DllServices::Get());
-  dllServices->StartUntrustedModulesProcessor();
+  dllServices->StartUntrustedModulesProcessor(false);
   auto dllServicesDisable =
       MakeScopeExit([&dllServices]() { dllServices->DisableFull(); });
 
@@ -4983,8 +5409,9 @@ nsresult XREMain::XRE_mainRun() {
           initializedJSContext = true;
         }
 
-        if (NS_FAILED(ProfileResetCleanup(mProfileSvc, gResetOldProfile,
-                                          gResetDeleteOldProfile))) {
+        nsresult backupCreated =
+            ProfileResetCleanup(mProfileSvc, gResetOldProfile);
+        if (NS_FAILED(backupCreated)) {
           NS_WARNING("Could not cleanup the profile that was reset");
         }
       }
@@ -5019,16 +5446,36 @@ nsresult XREMain::XRE_mainRun() {
     // files can't override JS engine start-up prefs.
     mDirProvider.FinishInitializingUserPrefs();
 
-    nsAppStartupNotifier::NotifyObservers(APPSTARTUP_CATEGORY);
+    nsCOMPtr<nsIFile> workingDir;
+    rv = NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR,
+                                getter_AddRefs(workingDir));
+    if (NS_FAILED(rv)) {
+      // No working dir? This can happen if it gets deleted before we start.
+      workingDir = nullptr;
+    }
+
+    cmdLine = new nsCommandLine();
+
+    rv = cmdLine->Init(gArgc, gArgv, workingDir,
+                       nsICommandLine::STATE_INITIAL_LAUNCH);
+    NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
+
+    nsAppStartupNotifier::NotifyObservers(APPSTARTUP_CATEGORY, cmdLine);
 
     appStartup = components::AppStartup::Service();
     NS_ENSURE_TRUE(appStartup, NS_ERROR_FAILURE);
 
     mDirProvider.DoStartup();
 
+#ifdef XP_WIN
+    // It needs to be called on the main thread because it has to use
+    // nsObserverService.
+    EnsureWin32kInitialized();
+#endif
+
     // As FilePreferences need the profile directory, we must initialize right
     // here.
-    mozilla::FilePreferences::InitDirectoriesWhitelist();
+    mozilla::FilePreferences::InitDirectoriesAllowlist();
     mozilla::FilePreferences::InitPrefs();
 
     OverrideDefaultLocaleIfNeeded();
@@ -5040,21 +5487,7 @@ nsresult XREMain::XRE_mainRun() {
 
     appStartup->GetShuttingDown(&mShuttingDown);
 
-    nsCOMPtr<nsIFile> workingDir;
-    rv = NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR,
-                                getter_AddRefs(workingDir));
-    if (NS_FAILED(rv)) {
-      // No working dir? This can happen if it gets deleted before we start.
-      workingDir = nullptr;
-    }
-
     if (!mShuttingDown) {
-      cmdLine = new nsCommandLine();
-
-      rv = cmdLine->Init(gArgc, gArgv, workingDir,
-                         nsICommandLine::STATE_INITIAL_LAUNCH);
-      NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
-
       /* Special-case services that need early access to the command
           line. */
       nsCOMPtr<nsIObserverService> obsService =
@@ -5168,9 +5601,9 @@ nsresult XREMain::XRE_mainRun() {
       NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
 
 #  ifdef MOZILLA_OFFICIAL
-      // Check if we're running from a DMG and allow the user to install to the
-      // Applications directory.
-      if (MacRunFromDmgUtils::MaybeInstallFromDmgAndRelaunch()) {
+      // Check if we're running from a DMG or an app translocated location and
+      // allow the user to install to the Applications directory.
+      if (MacRunFromDmgUtils::MaybeInstallAndRelaunch()) {
         bool userAllowedQuit = true;
         appStartup->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
       }
@@ -5300,11 +5733,11 @@ nsresult XREMain::XRE_mainRun() {
 }
 
 #if defined(MOZ_WIDGET_ANDROID)
-static already_AddRefed<nsIFile> GreOmniPath() {
+static already_AddRefed<nsIFile> GreOmniPath(int argc, char** argv) {
   nsresult rv;
 
   const char* path = nullptr;
-  ArgResult ar = CheckArg("greomni", &path);
+  ArgResult ar = CheckArg(argc, argv, "greomni", &path, CheckArgFlag::None);
   if (ar == ARG_BAD) {
     PR_fprintf(PR_STDERR,
                "Error: argument --greomni requires a path argument\n");
@@ -5396,7 +5829,7 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
     nsCOMPtr<nsIFile> greDir;
 
 #if defined(MOZ_WIDGET_ANDROID)
-    greDir = GreOmniPath();
+    greDir = GreOmniPath(argc, argv);
     if (!greDir) {
       return 2;
     }
@@ -5437,6 +5870,15 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
   mAppData->sandboxPermissionsService = aConfig.sandboxPermissionsService;
 #endif
 
+  // Once we unset the exception handler, we lose the ability to properly
+  // detect hangs -- they show up as crashes.  We do this as late as possible.
+  // In particular, after ProcessRuntime is destroyed on Windows.
+  auto unsetExceptionHandler = MakeScopeExit([&] {
+    if (mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER)
+      return CrashReporter::UnsetExceptionHandler();
+    return NS_OK;
+  });
+
   mozilla::IOInterposerInit ioInterposerGuard;
 
 #if defined(XP_WIN)
@@ -5476,6 +5918,10 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
   // run!
   rv = XRE_mainRun();
 
+#ifdef MOZ_X11
+  XRE_CleanupX11ErrorHandler();
+#endif
+
 #ifdef MOZ_INSTRUMENT_EVENT_LOOP
   mozilla::ShutdownEventTracing();
 #endif
@@ -5492,10 +5938,6 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 #endif /* MOZ_WIDGET_GTK */
 
   mScopedXPCOM = nullptr;
-
-#if defined(XP_WIN)
-  mozilla::widget::StopAudioSession();
-#endif
 
   // unlock the profile after ScopedXPCOMStartup object (xpcom)
   // has gone out of scope.  see bug #386739 for more details
@@ -5516,9 +5958,6 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 #  endif
   }
 #endif
-
-  if (mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER)
-    CrashReporter::UnsetExceptionHandler();
 
   XRE_DeinitCommandLine();
 
@@ -5578,7 +6017,8 @@ nsresult XRE_InitCommandLine(int aArgc, char* aArgv[]) {
 #endif
 
 #if defined(MOZ_WIDGET_ANDROID)
-  nsCOMPtr<nsIFile> greOmni = gAppData ? gAppData->xreDirectory : GreOmniPath();
+  nsCOMPtr<nsIFile> greOmni =
+      gAppData ? gAppData->xreDirectory : GreOmniPath(aArgc, aArgv);
   if (!greOmni) {
     return NS_ERROR_FAILURE;
   }
@@ -5596,9 +6036,7 @@ nsresult XRE_DeinitCommandLine() {
   return rv;
 }
 
-GeckoProcessType XRE_GetProcessType() {
-  return mozilla::startup::sChildProcessType;
-}
+GeckoProcessType XRE_GetProcessType() { return GetGeckoProcessType(); }
 
 const char* XRE_GetProcessTypeString() {
   return XRE_GeckoProcessTypeToString(XRE_GetProcessType());
@@ -5613,17 +6051,18 @@ bool XRE_IsE10sParentProcess() {
 #endif
 }
 
-#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
-                           bin_type)                                     \
-  bool XRE_Is##xre_name##Process() {                                     \
-    return XRE_GetProcessType() == GeckoProcessType_##enum_name;         \
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
+                           process_bin_type, procinfo_typename,               \
+                           webidl_typename, allcaps_name)                     \
+  bool XRE_Is##proc_typename##Process() {                                     \
+    return XRE_GetProcessType() == GeckoProcessType_##enum_name;              \
   }
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE
 
 bool XRE_UseNativeEventProcessing() {
 #if defined(XP_MACOSX) || defined(XP_WIN)
-  if (XRE_IsRDDProcess() || XRE_IsSocketProcess()) {
+  if (XRE_IsRDDProcess() || XRE_IsSocketProcess() || XRE_IsUtilityProcess()) {
     return false;
   }
 #endif
@@ -5721,10 +6160,11 @@ mozilla::BinPathType XRE_GetChildProcBinPathType(
   }
 
   switch (aProcessType) {
-#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, xre_name, \
-                           bin_type)                                     \
-  case GeckoProcessType_##enum_name:                                     \
-    return BinPathType::bin_type;
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
+                           process_bin_type, procinfo_typename,               \
+                           webidl_typename, allcaps_name)                     \
+  case GeckoProcessType_##enum_name:                                          \
+    return BinPathType::process_bin_type;
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE
     default:

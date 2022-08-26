@@ -7,6 +7,7 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src chrome: blob:; object-src 'none'">
+    <meta name="color-scheme" content="light dark">
     <link rel="localization" href="browser/branding/brandings.ftl"/>
     <link rel="localization" href="branding/brand.ftl"/>
     <link rel="localization" href="browser/branding/sync-brand.ftl">
@@ -16,11 +17,7 @@
     <link rel="stylesheet" href="chrome://global/skin/in-content/common.css">
     <link rel="stylesheet" href="chrome://browser/content/protections.css">
     <link rel="icon" href="chrome://browser/skin/controlcenter/dashboard.svg">
-    <script type="module" src="chrome://browser/content/protections.js"></script>
-    <script type="module" src="chrome://browser/content/lockwise-card.js"></script>
-    <script type="module" src="chrome://browser/content/monitor-card.js"></script>
-    <script type="module" src="chrome://browser/content/proxy-card.js"></script>
-    <script type="module" src="chrome://browser/content/vpn-card.js"></script>
+    <script type="module" src="chrome://browser/content/protections.mjs"></script>
     <title data-l10n-id="protection-report-webpage-title"></title>
   </head>
 
@@ -66,7 +63,7 @@
                 <label id="graphLegendDescription" data-l10n-id="graph-legend-description"></label>
                 <input id="tab-social" data-type="social" type="radio" name="tabs" aria-labelledby="socialLabel socialTitle" aria-describedby="socialContent" checked>
                 <label id="socialLabel" for="tab-social" data-type="social">
-                  <img class="icon-small" src="chrome://browser/skin/controlcenter/socialblock.svg" data-type="social"/>
+                  <img class="icon-small" src="chrome://browser/skin/thumb-down.svg" data-type="social"/>
                   <span data-type="social"></span>
                 </label>
 
@@ -243,7 +240,7 @@
             </div>
           </div>
       </section>
-      <!-- Markup for Lockwise card. -->
+      <!-- Markup for passwords card. -->
       <section class="card card-no-hover lockwise-card hidden">
         <div class="card-header">
           <img class="icon" src="chrome://browser/content/logos/lockwise.svg"/>
@@ -259,14 +256,14 @@
                 <a target="_blank" id="lockwise-how-it-works" data-l10n-id="lockwise-how-it-works-link" href=""></a>
               </p>
             </div>
-            <button id="save-passwords-button" class="primary" data-l10n-id="protection-report-save-passwords-button"></button>
+            <button id="save-passwords-button" class="primary" data-l10n-id="protection-report-passwords-save-passwords-button"></button>
             <div class="lockwise-scanned-wrapper">
                 <img id="lockwise-scanned-icon" />
                 <span id="lockwise-scanned-text" class="content">
                   <!-- Display message for stored logins here. -->
                 </span>
               </div>
-            <button id="manage-passwords-button" class="primary" data-l10n-id="protection-report-manage-passwords-button"></button>
+            <button id="manage-passwords-button" class="primary" data-l10n-id="protection-report-passwords-manage-passwords-button"></button>
           </div>
         </div>
         <!-- <div class="card-body hidden">

@@ -20,7 +20,6 @@
 var mainWindow = window.window.browsingContext.topChromeWindow;
 var contentPage1 = "http://www.example.com/chrome/toolkit/components/url-classifier/tests/mochitest/bug_1580416.html";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm");
 const {BrowserTestUtils} = ChromeUtils.import("resource://testing-common/BrowserTestUtils.jsm");
 const {TestUtils} = ChromeUtils.import("resource://testing-common/TestUtils.jsm");
 
@@ -72,6 +71,7 @@ SpecialPowers.pushPrefEnv(
   {"set": [["privacy.trackingprotection.enabled", true],
            ["urlclassifier.trackingTable", "test-track-simple"],
            ["urlclassifier.trackingWhitelistTable", "test-trackwhite-simple"],
+           ["dom.security.https_first", false],
            ["network.stricttransportsecurity.preloadlist", false]]},
   test);
 

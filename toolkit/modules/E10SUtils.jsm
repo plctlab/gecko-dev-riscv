@@ -6,31 +6,32 @@
 
 var EXPORTED_SYMBOLS = ["E10SUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "useSeparateFileUriProcess",
   "browser.tabs.remote.separateFileUriProcess",
   false
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "useSeparatePrivilegedAboutContentProcess",
   "browser.tabs.remote.separatePrivilegedContentProcess",
   false
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "separatePrivilegedMozillaWebContentProcess",
   "browser.tabs.remote.separatePrivilegedMozillaWebContentProcess",
   false
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "separatedMozillaDomains",
   "browser.tabs.remote.separatedMozillaDomains",
   "",
@@ -39,36 +40,23 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "useCrossOriginOpenerPolicy",
   "browser.tabs.remote.useCrossOriginOpenerPolicy",
   false
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "serializationHelper",
   "@mozilla.org/network/serialization-helper;1",
   "nsISerializationHelper"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "extProtService",
   "@mozilla.org/uriloader/external-protocol-service;1",
   "nsIExternalProtocolService"
 );
-
-function getAboutModule(aURL) {
-  // Needs to match NS_GetAboutModuleName
-  let moduleName = aURL.pathQueryRef.replace(/[#?].*/, "").toLowerCase();
-  let contract = "@mozilla.org/network/protocol/about;1?what=" + moduleName;
-  try {
-    return Cc[contract].getService(Ci.nsIAboutModule);
-  } catch (e) {
-    // Either the about module isn't defined or it is broken. In either case
-    // ignore it.
-    return null;
-  }
-}
 
 function getOriginalReaderModeURI(aURI) {
   try {
@@ -82,7 +70,7 @@ function getOriginalReaderModeURI(aURI) {
 
 const NOT_REMOTE = null;
 
-// These must match any similar ones in ContentParent.h and ProcInfo.h
+// These must match the similar ones in RemoteTypes.h, ProcInfo.h, ChromeUtils.webidl and ChromeUtils.cpp
 const WEB_REMOTE_TYPE = "web";
 const FISSION_WEB_REMOTE_TYPE = "webIsolated";
 const WEB_REMOTE_COOP_COEP_TYPE_PREFIX = "webCOOP+COEP=";
@@ -90,15 +78,17 @@ const FILE_REMOTE_TYPE = "file";
 const EXTENSION_REMOTE_TYPE = "extension";
 const PRIVILEGEDABOUT_REMOTE_TYPE = "privilegedabout";
 const PRIVILEGEDMOZILLA_REMOTE_TYPE = "privilegedmozilla";
+const SERVICEWORKER_REMOTE_TYPE = "webServiceWorker";
 
 // This must start with the WEB_REMOTE_TYPE above.
-const LARGE_ALLOCATION_REMOTE_TYPE = "webLargeAllocation";
 const DEFAULT_REMOTE_TYPE = WEB_REMOTE_TYPE;
 
 // This list is duplicated between Navigator.cpp and here because navigator
 // is not accessible in this context. Please update both if the list changes.
 const kSafeSchemes = [
   "bitcoin",
+  "ftp",
+  "ftps",
   "geo",
   "im",
   "irc",
@@ -110,6 +100,7 @@ const kSafeSchemes = [
   "news",
   "nntp",
   "openpgp4fpr",
+  "sftp",
   "sip",
   "sms",
   "smsto",
@@ -120,6 +111,8 @@ const kSafeSchemes = [
   "wtai",
   "xmpp",
 ];
+
+const STANDARD_SAFE_PROTOCOLS = kSafeSchemes;
 
 // Note that even if the scheme fits the criteria for a web-handled scheme
 // (ie it is compatible with the checks registerProtocolHandler uses), it may
@@ -143,15 +136,16 @@ function validatedWebRemoteType(
   aResultPrincipal,
   aRemoteSubframes,
   aIsWorker = false,
-  aOriginAttributes = {}
+  aOriginAttributes = {},
+  aWorkerType = Ci.nsIE10SUtils.REMOTE_WORKER_TYPE_SHARED
 ) {
   // To load into the Privileged Mozilla Content Process you must be https,
   // and be an exact match or a subdomain of an allowlisted domain.
   if (
-    separatePrivilegedMozillaWebContentProcess &&
+    lazy.separatePrivilegedMozillaWebContentProcess &&
     aTargetUri.asciiHost &&
     aTargetUri.scheme == "https" &&
-    separatedMozillaDomains.some(function(val) {
+    lazy.separatedMozillaDomains.some(function(val) {
       return (
         aTargetUri.asciiHost == val || aTargetUri.asciiHost.endsWith("." + val)
       );
@@ -188,7 +182,9 @@ function validatedWebRemoteType(
     // ( https://bugzilla.mozilla.org/show_bug.cgi?id=1589085 ), and this code
     // can get called several times per page load so that seems like something
     // we'd want to avoid.
-    let handlerInfo = extProtService.getProtocolHandlerInfo(aTargetUri.scheme);
+    let handlerInfo = lazy.extProtService.getProtocolHandlerInfo(
+      aTargetUri.scheme
+    );
     try {
       if (!handlerInfo.alwaysAskBeforeHandling) {
         let app = handlerInfo.preferredApplicationHandler;
@@ -246,7 +242,14 @@ function validatedWebRemoteType(
       return aPreferredRemoteType;
     }
 
+    if (
+      aIsWorker &&
+      aWorkerType === Ci.nsIE10SUtils.REMOTE_WORKER_TYPE_SERVICE
+    ) {
+      return `${SERVICEWORKER_REMOTE_TYPE}=${targetPrincipal.siteOrigin}`;
+    }
     return `${FISSION_WEB_REMOTE_TYPE}=${targetPrincipal.siteOrigin}`;
+    // else fall through and probably return WEB_REMOTE_TYPE
   }
 
   if (!aPreferredRemoteType) {
@@ -275,11 +278,29 @@ var E10SUtils = {
   EXTENSION_REMOTE_TYPE,
   PRIVILEGEDABOUT_REMOTE_TYPE,
   PRIVILEGEDMOZILLA_REMOTE_TYPE,
-  LARGE_ALLOCATION_REMOTE_TYPE,
   FISSION_WEB_REMOTE_TYPE,
+  SERVICEWORKER_REMOTE_TYPE,
+  STANDARD_SAFE_PROTOCOLS,
+
+  /**
+   * @param aURI The URI of the about page
+   * @return The instance of the nsIAboutModule related to this uri
+   */
+  getAboutModule(aURL) {
+    // Needs to match NS_GetAboutModuleName
+    let moduleName = aURL.pathQueryRef.replace(/[#?].*/, "").toLowerCase();
+    let contract = "@mozilla.org/network/protocol/about;1?what=" + moduleName;
+    try {
+      return Cc[contract].getService(Ci.nsIAboutModule);
+    } catch (e) {
+      // Either the about module isn't defined or it is broken. In either case
+      // ignore it.
+      return null;
+    }
+  },
 
   useCrossOriginOpenerPolicy() {
-    return useCrossOriginOpenerPolicy;
+    return lazy.useCrossOriginOpenerPolicy;
   },
 
   _log: null,
@@ -311,7 +332,7 @@ var E10SUtils = {
 
     try {
       if (csp) {
-        serializedCSP = serializationHelper.serializeToString(csp);
+        serializedCSP = lazy.serializationHelper.serializeToString(csp);
       }
     } catch (e) {
       this.log().error(`Failed to serialize csp '${csp}' ${e}`);
@@ -332,7 +353,7 @@ var E10SUtils = {
     }
 
     try {
-      let csp = serializationHelper.deserializeObject(csp_b64);
+      let csp = lazy.serializationHelper.deserializeObject(csp_b64);
       csp.QueryInterface(Ci.nsIContentSecurityPolicy);
       return csp;
     } catch (e) {
@@ -414,7 +435,8 @@ var E10SUtils = {
     aResultPrincipal = null,
     aIsSubframe = false,
     aIsWorker = false,
-    aOriginAttributes = {}
+    aOriginAttributes = {},
+    aWorkerType = Ci.nsIE10SUtils.REMOTE_WORKER_TYPE_SHARED
   ) {
     if (!aMultiProcess) {
       return NOT_REMOTE;
@@ -437,12 +459,12 @@ var E10SUtils = {
           : aPreferredRemoteType;
 
       case "file":
-        return useSeparateFileUriProcess
+        return lazy.useSeparateFileUriProcess
           ? FILE_REMOTE_TYPE
           : DEFAULT_REMOTE_TYPE;
 
       case "about":
-        let module = getAboutModule(aURI);
+        let module = this.getAboutModule(aURI);
         // If the module doesn't exist then an error page will be loading, that
         // should be ok to load in any process
         if (!module) {
@@ -459,7 +481,7 @@ var E10SUtils = {
         if (flags & Ci.nsIAboutModule.URI_MUST_LOAD_IN_CHILD) {
           if (
             flags & Ci.nsIAboutModule.URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS &&
-            (useSeparatePrivilegedAboutContentProcess ||
+            (lazy.useSeparatePrivilegedAboutContentProcess ||
               aURI.filePath == "logins" ||
               // Force about:welcome and about:home into the privileged content process to
               // workaround code coverage test failures which result from the
@@ -609,7 +631,8 @@ var E10SUtils = {
           aResultPrincipal,
           aRemoteSubframes,
           aIsWorker,
-          aOriginAttributes
+          aOriginAttributes,
+          aWorkerType
         );
         log.debug(`  validatedWebRemoteType() returning: ${remoteType}`);
         return remoteType;
@@ -643,17 +666,10 @@ var E10SUtils = {
       return NOT_REMOTE;
     }
 
-    if (
-      // We don't want to launch workers in a large allocation remote type,
-      // change it to the web remote type (then getRemoteTypeForURIObject
-      // may change it to an isolated one).
-      aPreferredRemoteType === LARGE_ALLOCATION_REMOTE_TYPE ||
-      // Similarly to the large allocation remote type, we don't want to
-      // launch the shared worker in a web coop+coep remote type even if
-      // was registered from a frame loaded in a child process with that
-      // remote type.
-      aPreferredRemoteType?.startsWith(WEB_REMOTE_COOP_COEP_TYPE_PREFIX)
-    ) {
+    // We don't want to launch the shared worker in a web coop+coep remote type
+    // even if was registered from a frame loaded in a child process with that
+    // remote type.
+    if (aPreferredRemoteType?.startsWith(WEB_REMOTE_COOP_COEP_TYPE_PREFIX)) {
       aPreferredRemoteType = DEFAULT_REMOTE_TYPE;
     }
 
@@ -691,7 +707,8 @@ var E10SUtils = {
         aPrincipal,
         false, // aIsSubFrame
         true, // aIsWorker
-        aPrincipal.originAttributes
+        aPrincipal.originAttributes,
+        aWorkerType
       );
     }
 
@@ -781,7 +798,7 @@ var E10SUtils = {
       if (tmpa.startsWith("{")) {
         principal = Services.scriptSecurityManager.JSONToPrincipal(tmpa);
       } else {
-        principal = serializationHelper.deserializeObject(principal_b64);
+        principal = lazy.serializationHelper.deserializeObject(principal_b64);
       }
       principal.QueryInterface(Ci.nsIPrincipal);
       return principal;
@@ -810,7 +827,9 @@ var E10SUtils = {
     let serialized = null;
     if (cookieJarSettings) {
       try {
-        serialized = serializationHelper.serializeToString(cookieJarSettings);
+        serialized = lazy.serializationHelper.serializeToString(
+          cookieJarSettings
+        );
       } catch (e) {
         this.log().error(
           `Failed to serialize cookieJarSettings '${cookieJarSettings}' ${e}`
@@ -830,7 +849,7 @@ var E10SUtils = {
     let deserialized = null;
     if (cookieJarSettings_b64) {
       try {
-        deserialized = serializationHelper.deserializeObject(
+        deserialized = lazy.serializationHelper.deserializeObject(
           cookieJarSettings_b64
         );
         deserialized.QueryInterface(Ci.nsICookieJarSettings);
@@ -863,7 +882,7 @@ var E10SUtils = {
     let serialized = null;
     if (referrerInfo) {
       try {
-        serialized = serializationHelper.serializeToString(referrerInfo);
+        serialized = lazy.serializationHelper.serializeToString(referrerInfo);
       } catch (e) {
         this.log().error(
           `Failed to serialize referrerInfo '${referrerInfo}' ${e}`
@@ -882,7 +901,9 @@ var E10SUtils = {
     let deserialized = null;
     if (referrerInfo_b64) {
       try {
-        deserialized = serializationHelper.deserializeObject(referrerInfo_b64);
+        deserialized = lazy.serializationHelper.deserializeObject(
+          referrerInfo_b64
+        );
         deserialized.QueryInterface(Ci.nsIReferrerInfo);
       } catch (e) {
         this.log().error(

@@ -110,6 +110,10 @@ AutoCompleteResult.prototype = {
     return this.getValueAt(aIndex);
   },
 
+  isRemovableAt(aRowIndex) {
+    return true;
+  },
+
   removeValueAt(aRowIndex) {},
 
   // nsISupports implementation
@@ -152,7 +156,7 @@ AutoCompleteSearch.prototype = {
   ]),
 
   // nsIFactory implementation
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };

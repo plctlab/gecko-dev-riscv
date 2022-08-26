@@ -19,7 +19,8 @@ with Files("*IMContextWrapper*"):
 with Files("*nsGtkKeyUtils*"):
     BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
-DIRS += ["mozgtk"]
+if CONFIG["COMPILE_ENVIRONMENT"]:
+    DIRS += ["mozgtk"]
 
 if CONFIG["MOZ_WAYLAND"]:
     DIRS += ["wayland", "mozwayland"]
@@ -27,10 +28,15 @@ if CONFIG["MOZ_WAYLAND"]:
 EXPORTS += [
     "MozContainer.h",
     "nsGTKToolkit.h",
+    "nsGtkUtils.h",
     "nsImageToPixbuf.h",
 ]
 
-EXPORTS.mozilla += ["WidgetUtilsGtk.h"]
+EXPORTS.mozilla += [
+    "GRefPtr.h",
+    "GUniquePtr.h",
+    "WidgetUtilsGtk.h",
+]
 
 EXPORTS.mozilla.widget += [
     "WindowSurface.h",
@@ -38,6 +44,7 @@ EXPORTS.mozilla.widget += [
 ]
 
 UNIFIED_SOURCES += [
+    "AsyncGtkClipboardRequest.cpp",
     "GfxInfo.cpp",
     "gtk3drawing.cpp",
     "GtkCompositorWidget.cpp",
@@ -45,6 +52,8 @@ UNIFIED_SOURCES += [
     "MozContainer.cpp",
     "MPRISServiceHandler.cpp",
     "NativeKeyBindings.cpp",
+    "NativeMenuGtk.cpp",
+    "NativeMenuSupport.cpp",
     "nsApplicationChooser.cpp",
     "nsAppShell.cpp",
     "nsBidiKeyboard.cpp",
@@ -55,7 +64,6 @@ UNIFIED_SOURCES += [
     "nsGtkKeyUtils.cpp",
     "nsImageToPixbuf.cpp",
     "nsLookAndFeel.cpp",
-    "nsNativeBasicThemeGTK.cpp",
     "nsSound.cpp",
     "nsToolkit.cpp",
     "nsWidgetFactory.cpp",
@@ -86,7 +94,6 @@ if CONFIG["MOZ_WAYLAND"]:
         "DMABufSurface.cpp",
         "MozContainerWayland.cpp",
         "nsClipboardWayland.cpp",
-        "nsClipboardWaylandAsync.cpp",
         "nsWaylandDisplay.cpp",
         "WaylandBuffer.cpp",
         "WindowSurfaceWaylandMultiBuffer.cpp",
@@ -99,23 +106,27 @@ if CONFIG["MOZ_WAYLAND"]:
         "WaylandBuffer.h",
     ]
 
-if CONFIG["MOZ_X11"]:
+if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
     UNIFIED_SOURCES += [
         "CompositorWidgetChild.cpp",
         "CompositorWidgetParent.cpp",
         "InProcessGtkCompositorWidget.cpp",
-        "nsClipboardX11.cpp",
-        "nsShmImage.cpp",
         "nsUserIdleServiceGTK.cpp",
-        "WindowSurfaceX11.cpp",
-        "WindowSurfaceX11Image.cpp",
-        "WindowSurfaceX11SHM.cpp",
     ]
     EXPORTS.mozilla.widget += [
         "CompositorWidgetChild.h",
         "CompositorWidgetParent.h",
         "GtkCompositorWidget.h",
         "InProcessGtkCompositorWidget.h",
+    ]
+
+if CONFIG["MOZ_X11"]:
+    UNIFIED_SOURCES += [
+        "nsClipboardX11.cpp",
+        "nsShmImage.cpp",
+        "WindowSurfaceX11.cpp",
+        "WindowSurfaceX11Image.cpp",
+        "WindowSurfaceX11SHM.cpp",
     ]
 
 if CONFIG["NS_PRINTING"]:
@@ -145,7 +156,7 @@ LOCAL_INCLUDES += [
     "/widget/headless",
 ]
 
-if CONFIG["MOZ_X11"]:
+if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
     LOCAL_INCLUDES += [
         "/widget/x11",
     ]
@@ -154,17 +165,20 @@ DEFINES["CAIRO_GFX"] = True
 
 DEFINES["MOZ_APP_NAME"] = '"%s"' % CONFIG["MOZ_APP_NAME"]
 
-CFLAGS += CONFIG["TK_CFLAGS"]
-CXXFLAGS += CONFIG["TK_CFLAGS"]
+CFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
+CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
 
 if CONFIG["MOZ_WAYLAND"]:
     CFLAGS += CONFIG["MOZ_WAYLAND_CFLAGS"]
     CXXFLAGS += CONFIG["MOZ_WAYLAND_CFLAGS"]
 
 if CONFIG["MOZ_ENABLE_DBUS"]:
+    EXPORTS.mozilla.widget += [
+        "AsyncDBus.h",
+    ]
+    UNIFIED_SOURCES += [
+        "AsyncDBus.cpp",
+    ]
     CXXFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]
 
-CXXFLAGS += ["-Wno-error=shadow"]
 CXXFLAGS += ["-Werror=switch"]
-
-REQUIRES_UNIFIED_BUILD = True

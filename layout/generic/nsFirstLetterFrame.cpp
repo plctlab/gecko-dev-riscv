@@ -175,7 +175,7 @@ void nsFirstLetterFrame::Reflow(nsPresContext* aPresContext,
     WritingMode kidWritingMode = WritingModeForLine(wm, kid);
     LogicalSize kidAvailSize = availSize.ConvertTo(kidWritingMode, wm);
     ReflowInput rs(aPresContext, aReflowInput, kid, kidAvailSize);
-    nsLineLayout ll(aPresContext, nullptr, &aReflowInput, nullptr, nullptr);
+    nsLineLayout ll(aPresContext, nullptr, aReflowInput, nullptr, nullptr);
 
     ll.BeginLineReflow(
         bp.IStart(wm), bp.BStart(wm), availSize.ISize(wm), NS_UNCONSTRAINEDSIZE,
@@ -271,8 +271,6 @@ void nsFirstLetterFrame::Reflow(nsPresContext* aPresContext,
       }
     }
   }
-
-  NS_FRAME_SET_TRUNCATION(aReflowStatus, aReflowInput, aMetrics);
 }
 
 /* virtual */

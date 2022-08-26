@@ -2,23 +2,27 @@ import React from "react";
 import { shallow } from "enzyme";
 import {
   Colorways,
-  computeColorWayStateFromActiveTheme,
+  computeColorWay,
   VariationsCircle,
 } from "content-src/aboutwelcome/components/Colorways";
 import { WelcomeScreen } from "content-src/aboutwelcome/components/MultiStageAboutWelcome";
 
 describe("Multistage AboutWelcome module", () => {
+  let clock;
   let sandbox;
   beforeEach(() => {
+    clock = sinon.useFakeTimers();
     sandbox = sinon.createSandbox();
   });
-  afterEach(() => sandbox.restore());
+  afterEach(() => {
+    clock.restore();
+    sandbox.restore();
+  });
 
   describe("Colorway component", () => {
     const COLORWAY_SCREEN_PROPS = {
       id: "test-colorway-screen",
       totalNumberofScreens: 1,
-      order: 0,
       content: {
         subtitle: "test subtitle",
         tiles: {
@@ -26,8 +30,7 @@ describe("Multistage AboutWelcome module", () => {
           action: {
             theme: "<event>",
           },
-          defaultVariationId: "soft",
-          systemDefaultVariationId: "automatic",
+          defaultVariationIndex: 0,
           systemVariations: [
             {
               id: "automatic",
@@ -42,6 +45,10 @@ describe("Multistage AboutWelcome module", () => {
             {
               id: "soft",
               label: "Soft",
+            },
+            {
+              id: "bold",
+              label: "Bold",
             },
           ],
           colorways: [
@@ -98,7 +105,34 @@ describe("Multistage AboutWelcome module", () => {
       );
     });
 
-    it("should render coloways options", () => {
+    it("should use default when activeTheme is alpenglow", () => {
+      const wrapper = shallow(<Colorways {...COLORWAY_SCREEN_PROPS} />);
+      wrapper.setProps({ activeTheme: "alpenglow" });
+
+      const colorwaysOptionIcons = wrapper.find(
+        ".tiles-theme-section .theme .icon"
+      );
+      assert.strictEqual(colorwaysOptionIcons.length, 2);
+
+      // Default automatic theme is selected when unsupported in colorway alpenglow theme is active
+      assert.strictEqual(
+        colorwaysOptionIcons
+          .first()
+          .prop("className")
+          .includes("selected"),
+        true
+      );
+
+      assert.strictEqual(
+        colorwaysOptionIcons
+          .first()
+          .prop("className")
+          .includes("default"),
+        true
+      );
+    });
+
+    it("should render colorways options", () => {
       const wrapper = shallow(<Colorways {...COLORWAY_SCREEN_PROPS} />);
 
       const colorwaysOptions = wrapper.find(
@@ -108,8 +142,14 @@ describe("Multistage AboutWelcome module", () => {
       const colorwaysOptionIcons = wrapper.find(
         ".tiles-theme-section .theme .icon"
       );
+
+      const colorwaysLabels = wrapper.find(
+        ".tiles-theme-section .theme span.sr-only"
+      );
+
       assert.strictEqual(colorwaysOptions.length, 2);
       assert.strictEqual(colorwaysOptionIcons.length, 2);
+      assert.strictEqual(colorwaysLabels.length, 2);
 
       // First colorway option
       // Default theme radio option is selected by default
@@ -126,8 +166,6 @@ describe("Multistage AboutWelcome module", () => {
         colorwaysOptions.first().prop("data-colorway"),
         "default"
       );
-      // Value  of Default theme radio option should be using systemDefaultVariationId
-      assert.strictEqual(colorwaysOptions.first().prop("value"), "automatic");
 
       // Second colorway option
       assert.strictEqual(
@@ -143,12 +181,119 @@ describe("Multistage AboutWelcome module", () => {
         colorwaysOptions.last().prop("data-colorway"),
         "abstract"
       );
-      // Value  of non-Default theme radio option should be using
-      // 'colorwayId-defaultVariationId'
+
+      //Colorway should be labelled for screen readers (parent label is for tooltip only, and does not describe the Colorway)
       assert.strictEqual(
-        colorwaysOptions.last().prop("value"),
-        "abstract-soft"
+        colorwaysOptions.last().prop("aria-labelledby"),
+        "abstract-label"
       );
+    });
+
+    it("should handle colorway clicks", () => {
+      sandbox.stub(React, "useEffect").callsFake((fn, vals) => {
+        if (vals[0] === "in") {
+          fn();
+        }
+      });
+
+      const handleAction = sandbox.stub();
+      const wrapper = shallow(
+        <Colorways handleAction={handleAction} {...COLORWAY_SCREEN_PROPS} />
+      );
+      const colorwaysOptions = wrapper.find(
+        ".tiles-theme-section .theme input[name='theme']"
+      );
+
+      let props = wrapper.find(VariationsCircle).props();
+      assert.propertyVal(props, "transition", "");
+      assert.propertyVal(props, "nextColor", "default");
+
+      const option = colorwaysOptions.last();
+      option.simulate("click", {
+        currentTarget: {
+          dataset: {
+            colorway: option.prop("data-colorway"),
+          },
+        },
+      });
+      props = wrapper.find(VariationsCircle).props();
+      assert.propertyVal(props, "transition", "out");
+      assert.propertyVal(props, "nextColor", "abstract");
+
+      clock.tick(500);
+      assert.strictEqual(
+        wrapper.find(VariationsCircle).props().transition,
+        "in"
+      );
+      assert.calledWith(handleAction, {
+        currentTarget: { value: "abstract-soft" },
+      });
+    });
+
+    it("should select a variation based on active theme", () => {
+      sandbox.stub(React, "useEffect").callsFake((fn, vals) => {
+        if (vals[0] === "in") {
+          fn();
+        }
+      });
+
+      const handleAction = sandbox.stub();
+      const wrapper = shallow(
+        <Colorways
+          handleAction={handleAction}
+          {...COLORWAY_SCREEN_PROPS}
+          activeTheme="something-bold"
+        />
+      );
+
+      const option = wrapper
+        .find(".tiles-theme-section .theme input[name='theme']")
+        .last();
+      option.simulate("click", {
+        currentTarget: {
+          dataset: {
+            colorway: option.prop("data-colorway"),
+          },
+        },
+      });
+      clock.tick(500);
+
+      assert.calledWith(handleAction, {
+        currentTarget: { value: "abstract-bold" },
+      });
+    });
+
+    it("should use a default variation for unknown active theme", () => {
+      sandbox.stub(React, "useEffect").callsFake((fn, vals) => {
+        if (vals[0] === "in") {
+          fn();
+        }
+      });
+
+      const handleAction = sandbox.stub();
+      const wrapper = shallow(
+        <Colorways
+          handleAction={handleAction}
+          {...COLORWAY_SCREEN_PROPS}
+          activeTheme="unknown"
+        />
+      );
+
+      const option = wrapper
+        .find(".tiles-theme-section .theme input[name='theme']")
+        .last();
+      option.simulate("click", {
+        currentTarget: {
+          dataset: {
+            colorway: option.prop("data-colorway"),
+          },
+        },
+      });
+      clock.tick(500);
+
+      assert.calledWith(handleAction, {
+        currentTarget: { value: "abstract-soft" },
+      });
     });
 
     it("should render variations options", () => {
@@ -190,31 +335,39 @@ describe("Multistage AboutWelcome module", () => {
         variationContainer.props().className.includes("abstract"),
         true
       );
+      // Localized tag text attribute is set to colorwayText
+      assert.strictEqual(
+        variationsWrapper
+          .find(".colorway-text")
+          .parent()
+          .prop("text"),
+        "Abstract"
+      );
     });
 
-    it("should computeColorWayStateFromActiveTheme for default active theme", () => {
+    it("should computeColorWayId for default active theme", () => {
       let TEST_COLORWAY_PROPS = {
         ...COLORWAY_SCREEN_PROPS,
       };
 
-      const { colorwayId, colorwayText } = computeColorWayStateFromActiveTheme(
-        TEST_COLORWAY_PROPS
+      const colorwayId = computeColorWay(
+        TEST_COLORWAY_PROPS.activeTheme,
+        TEST_COLORWAY_PROPS.content.tiles.systemVariations
       );
       assert.strictEqual(colorwayId, "default");
-      assert.strictEqual(colorwayText, "Default");
     });
 
-    it("should computeColorWayStateFromActiveTheme for non-default active theme", () => {
+    it("should computeColorWayId for non-default active theme", () => {
       let TEST_COLORWAY_PROPS = {
         ...COLORWAY_SCREEN_PROPS,
         activeTheme: "abstract-soft",
       };
 
-      const { colorwayId, colorwayText } = computeColorWayStateFromActiveTheme(
-        TEST_COLORWAY_PROPS
+      const colorwayId = computeColorWay(
+        TEST_COLORWAY_PROPS.activeTheme,
+        TEST_COLORWAY_PROPS.content.tiles.systemVariations
       );
       assert.strictEqual(colorwayId, "abstract");
-      assert.strictEqual(colorwayText, "Abstract");
     });
   });
 });

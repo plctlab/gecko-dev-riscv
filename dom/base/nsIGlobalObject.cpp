@@ -43,7 +43,7 @@ nsIGlobalObject::nsIGlobalObject()
 
 bool nsIGlobalObject::IsScriptForbidden(JSObject* aCallback,
                                         bool aIsJSImplementedWebIDL) const {
-  if (mIsScriptForbidden) {
+  if (mIsScriptForbidden || mIsDying) {
     return true;
   }
 
@@ -51,7 +51,8 @@ bool nsIGlobalObject::IsScriptForbidden(JSObject* aCallback,
     if (aIsJSImplementedWebIDL) {
       return false;
     }
-    if (!xpc::Scriptability::Get(aCallback).Allowed()) {
+
+    if (!xpc::Scriptability::AllowedIfExists(aCallback)) {
       return true;
     }
   }
@@ -134,6 +135,8 @@ void nsIGlobalObject::UnlinkObjectsInGlobal() {
 
   mReportRecords.Clear();
   mReportingObservers.Clear();
+  mCountQueuingStrategySizeFunction = nullptr;
+  mByteLengthQueuingStrategySizeFunction = nullptr;
 }
 
 void nsIGlobalObject::TraverseObjectsInGlobal(
@@ -149,6 +152,8 @@ void nsIGlobalObject::TraverseObjectsInGlobal(
   nsIGlobalObject* tmp = this;
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mReportRecords)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mReportingObservers)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCountQueuingStrategySizeFunction)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mByteLengthQueuingStrategySizeFunction)
 }
 
 void nsIGlobalObject::AddEventTargetObject(DOMEventTargetHelper* aObject) {
@@ -347,4 +352,28 @@ void nsIGlobalObject::RemoveReportRecords() {
   for (auto& observer : mReportingObservers) {
     observer->ForgetReports();
   }
+}
+
+already_AddRefed<mozilla::dom::Function>
+nsIGlobalObject::GetCountQueuingStrategySizeFunction() {
+  return do_AddRef(mCountQueuingStrategySizeFunction);
+}
+
+void nsIGlobalObject::SetCountQueuingStrategySizeFunction(
+    mozilla::dom::Function* aFunction) {
+  mCountQueuingStrategySizeFunction = aFunction;
+}
+
+already_AddRefed<mozilla::dom::Function>
+nsIGlobalObject::GetByteLengthQueuingStrategySizeFunction() {
+  return do_AddRef(mByteLengthQueuingStrategySizeFunction);
+}
+
+void nsIGlobalObject::SetByteLengthQueuingStrategySizeFunction(
+    mozilla::dom::Function* aFunction) {
+  mByteLengthQueuingStrategySizeFunction = aFunction;
+}
+
+bool nsIGlobalObject::ShouldResistFingerprinting() const {
+  return nsContentUtils::ShouldResistFingerprinting();
 }

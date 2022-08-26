@@ -11,9 +11,9 @@ import {
   getSourceLineCount,
   isThirdParty,
   isJavaScript,
-  underRoot,
+  isDescendantOfRoot,
+  removeThreadActorId,
   isUrlExtension,
-  isExtensionDirectoryPath,
   getLineText,
 } from "../source.js";
 
@@ -39,7 +39,6 @@ const defaultSymbolDeclarations = {
   literals: [],
   hasJsx: false,
   hasTypes: false,
-  loading: false,
   framework: undefined,
 };
 
@@ -496,7 +495,7 @@ describe("sources", () => {
     });
   });
 
-  describe("underRoot", () => {
+  describe("isDescendantOfRoot", () => {
     const threads = [
       makeMockThread({ actor: "server0.conn1.child1/thread19" }),
     ];
@@ -505,25 +504,30 @@ describe("sources", () => {
       const source = makeMockSource(
         "resource://activity-stream/vendor/react.js"
       );
-      expect(underRoot(source, "resource://activity-stream", threads)).toBe(
-        true
+      const rootWithoutThreadActor = removeThreadActorId(
+        "resource://activity-stream",
+        threads
       );
+      expect(isDescendantOfRoot(source, rootWithoutThreadActor)).toBe(true);
     });
 
     it("should detect source urls under chrome:// as root", () => {
       const source = makeMockSource(
         "chrome://browser/content/contentSearchUI.js"
       );
-      expect(underRoot(source, "chrome://", threads)).toBe(true);
+      const rootWithoutThreadActor = removeThreadActorId("chrome://", threads);
+      expect(isDescendantOfRoot(source, rootWithoutThreadActor)).toBe(true);
     });
 
     it("should detect source urls if root is a thread actor Id", () => {
       const source = makeMockSource(
         "resource://activity-stream/vendor/react-dom.js"
       );
-      expect(underRoot(source, "server0.conn1.child1/thread19", threads)).toBe(
-        true
+      const rootWithoutThreadActor = removeThreadActorId(
+        "server0.conn1.child1/thread19",
+        threads
       );
+      expect(isDescendantOfRoot(source, rootWithoutThreadActor)).toBe(true);
     });
   });
 
@@ -536,20 +540,6 @@ describe("sources", () => {
     });
     it("should return false for non-extension assets", () => {
       expect(isUrlExtension("https://example.org/init.js")).toBe(false);
-    });
-  });
-
-  describe("isExtensionDirectoryPath", () => {
-    it("should detect mozilla extension directory", () => {
-      expect(isExtensionDirectoryPath("moz-extension://id")).toBe(true);
-    });
-    it("should detect chrome extension directory", () => {
-      expect(isExtensionDirectoryPath("chrome-extension://id")).toBe(true);
-    });
-    it("should return false for child file within the extension directory", () => {
-      expect(isExtensionDirectoryPath("moz-extension://id/js/content.js")).toBe(
-        false
-      );
     });
   });
 

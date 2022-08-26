@@ -19,6 +19,7 @@ EXPORTS.mozilla.dom += [
     "CSSTransition.h",
     "DocumentTimeline.h",
     "KeyframeEffect.h",
+    "ScrollTimeline.h",
 ]
 
 EXPORTS.mozilla += [
@@ -29,7 +30,6 @@ EXPORTS.mozilla += [
     "AnimationTarget.h",
     "AnimationUtils.h",
     "ComputedTiming.h",
-    "ComputedTimingFunction.h",
     "EffectCompositor.h",
     "EffectSet.h",
     "Keyframe.h",
@@ -48,7 +48,6 @@ UNIFIED_SOURCES += [
     "AnimationPerformanceWarning.cpp",
     "AnimationTimeline.cpp",
     "AnimationUtils.cpp",
-    "ComputedTimingFunction.cpp",
     "CSSAnimation.cpp",
     "CSSPseudoElement.cpp",
     "CSSTransition.cpp",
@@ -58,6 +57,7 @@ UNIFIED_SOURCES += [
     "KeyframeEffect.cpp",
     "KeyframeUtils.cpp",
     "PendingAnimationTracker.cpp",
+    "ScrollTimeline.cpp",
     "TimingParams.cpp",
 ]
 

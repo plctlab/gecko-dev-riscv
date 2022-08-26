@@ -13,6 +13,7 @@ add_task(async function() {
   // devtools.browsertoolbox.fission should be true to monitor resources from
   // remote browsers & frames.
   await pushPref("devtools.browsertoolbox.fission", true);
+  await pushPref("devtools.browsertoolbox.scope", "everything");
 
   // Open a test tab
   const tab = await addTab("data:text/html,Root Node tests");
@@ -55,7 +56,7 @@ add_task(async function() {
   // Check that the resource command captures resources from new targets.
   info("Open a first tab on the example.com domain");
   const comTab = await addTab(
-    "http://example.com/document-builder.sjs?html=com"
+    "https://example.com/document-builder.sjs?html=com"
   );
   info("Use console.log in the example.com page");
   logInTab(comTab, "test-from-example-com");
@@ -73,18 +74,18 @@ add_task(async function() {
 
   // Check that messages from new targets are still captured after calling
   // unwatch for another resource.
-  info("Open a second tab on the example.net domain");
-  const netTab = await addTab(
-    "http://example.net/document-builder.sjs?html=net"
+  info("Open a second tab on the example.org domain");
+  const orgTab = await addTab(
+    "https://example.org/document-builder.sjs?html=org"
   );
-  info("Use console.log in the example.net page");
-  logInTab(netTab, "test-from-example-net");
+  info("Use console.log in the example.org page");
+  logInTab(orgTab, "test-from-example-org");
   info(
-    "Wait until onAvailable received the CONSOLE_MESSAGE resource emitted from the example.net tab"
+    "Wait until onAvailable received the CONSOLE_MESSAGE resource emitted from the example.org tab"
   );
   await waitUntil(() =>
     receivedMessages.find(
-      resource => resource.message.arguments[0] === "test-from-example-net"
+      resource => resource.message.arguments[0] === "test-from-example-org"
     )
   );
 

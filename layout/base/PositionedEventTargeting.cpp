@@ -7,7 +7,6 @@
 #include "PositionedEventTargeting.h"
 
 #include "mozilla/EventListenerManager.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
@@ -225,7 +224,7 @@ static nsIContent* GetClickableAncestor(
   // this check to any non-auto cursor. Such a change would also pick up things
   // like contenteditable or input fields, which can then be removed from the
   // loop below, and would have better performance.
-  if (aFrame->StyleUI()->mCursor.keyword == StyleCursorKind::Pointer) {
+  if (aFrame->StyleUI()->Cursor().keyword == StyleCursorKind::Pointer) {
     return aFrame->GetContent();
   }
 
@@ -275,16 +274,16 @@ static nsIContent* GetClickableAncestor(
 
     static Element::AttrValuesArray clickableRoles[] = {
         nsGkAtoms::button, nsGkAtoms::key, nullptr};
-    if (content->IsElement() && content->AsElement()->FindAttrValueIn(
-                                    kNameSpaceID_None, nsGkAtoms::role,
-                                    clickableRoles, eIgnoreCase) >= 0) {
-      return content;
+    if (auto* element = Element::FromNode(*content)) {
+      if (element->IsLink()) {
+        return content;
+      }
+      if (element->FindAttrValueIn(kNameSpaceID_None, nsGkAtoms::role,
+                                   clickableRoles, eIgnoreCase) >= 0) {
+        return content;
+      }
     }
     if (content->IsEditable()) {
-      return content;
-    }
-    nsCOMPtr<nsIURI> linkURI;
-    if (content->IsLink(getter_AddRefs(linkURI))) {
       return content;
     }
   }
@@ -449,7 +448,7 @@ static nsIFrame* GetClosest(RelativeTo aRoot,
     nsIContent* content = f->GetContent();
     if (content && content->IsElement() &&
         content->AsElement()->State().HasState(
-            EventStates(NS_EVENT_STATE_VISITED))) {
+            ElementState(ElementState::VISITED))) {
       distance *= aPrefs.mVisitedWeight / 100.0f;
     }
     if (distance < bestDistance) {

@@ -464,17 +464,25 @@ interface nsILoadInfo : nsISupports
    */
   const unsigned long HTTPS_ONLY_TOP_LEVEL_LOAD_IN_PROGRESS = (1 << 4);
 
-  /**
-   * This flag indicates that the request should not be logged to the
-   * console.
+   /**
+   * This flag can only ever be set on downloads. It indicates
+   * that the download https connection succeeded. This flag is mostly
+   * used to counter time-outs which allows to cancel the channel
+   * if the https load has not started.
    */
-  const unsigned long HTTPS_ONLY_DO_NOT_LOG_TO_CONSOLE = (1 << 5);
+  const unsigned long HTTPS_ONLY_DOWNLOAD_IN_PROGRESS = (1 << 5);
 
   /**
    * This flag indicates that the request should not be logged to the
    * console.
    */
-  const unsigned long HTTPS_ONLY_UPGRADED_HTTPS_FIRST = (1 << 6);
+  const unsigned long HTTPS_ONLY_DO_NOT_LOG_TO_CONSOLE = (1 << 6);
+
+  /**
+   * This flag indicates that the request should not be logged to the
+   * console.
+   */
+  const unsigned long HTTPS_ONLY_UPGRADED_HTTPS_FIRST = (1 << 7);
 
   /**
    * Upgrade state of HTTPS-Only Mode. The flag HTTPS_ONLY_EXEMPT can get
@@ -501,6 +509,12 @@ interface nsILoadInfo : nsISupports
    * the script was created by the HTML parser.
    */
   [infallible] attribute boolean parserCreatedScript;
+
+  /**
+   * True if this request is known to have been triggered by a user
+   * manually requesting the URI to be saved.
+   */
+  [infallible] attribute boolean isUserTriggeredSave;
 
   /**
    * True if this request is from DevTools.
@@ -1031,6 +1045,16 @@ interface nsILoadInfo : nsISupports
   attribute nsIURI resultPrincipalURI;
 
   /**
+   * This is the URI used to create the most recent channel in the load's
+   * redirect chain, if it's different from channel's `originalURI`.
+   * This is always null for loads not handled by DocumentLoadListener. If
+   * non-null, channelCreationOriginalURI will be used instead of channel's
+   * originalURI to re-create the channel in the final content process selected
+   * to perform the load.
+   */
+  attribute nsIURI channelCreationOriginalURI;
+
+  /**
    * Returns a unique nsID used to construct the null principal for the
    * resulting resource if the SANDBOXED_ORIGIN flag is set.  This is used by
    * GetChannelResultPrincipal() to ensure that the same null principal is
@@ -1302,6 +1326,7 @@ interface nsILoadInfo : nsISupports
   const uint32_t BLOCKING_REASON_CLASSIFY_CRYPTOMINING_URI = 2007;
   const uint32_t BLOCKING_REASON_CLASSIFY_FINGERPRINTING_URI = 2008;
   const uint32_t BLOCKING_REASON_CLASSIFY_SOCIALTRACKING_URI = 2009;
+  const uint32_t BLOCKING_REASON_CLASSIFY_EMAILTRACKING_URI = 2010;
   const uint32_t BLOCKING_REASON_MIXED_BLOCKED = 3001;
   // The general reason comes from nsCSPContext::permitsInternal(),
   // which is way too generic to distinguish an exact reason.
@@ -1356,6 +1381,7 @@ interface nsILoadInfo : nsISupports
   cenum CrossOriginEmbedderPolicy : 8 {
     EMBEDDER_POLICY_NULL = 0,
     EMBEDDER_POLICY_REQUIRE_CORP = 1,
+    EMBEDDER_POLICY_CREDENTIALLESS = 2,
   };
 
   /**
@@ -1368,6 +1394,11 @@ interface nsILoadInfo : nsISupports
   [infallible] attribute nsILoadInfo_CrossOriginEmbedderPolicy
         loadingEmbedderPolicy;
 
+  /**
+   * This attribute will be true if the top level document has COEP:
+   * credentialless enabled in Origin Trial.
+   */
+  [infallible] attribute boolean isOriginTrialCoepCredentiallessEnabledForTopLevel;
   /**
    * This attribute will be true if this is a load triggered by a media
    * element.
@@ -1385,7 +1416,13 @@ interface nsILoadInfo : nsISupports
    * elements
    */
   [infallible] attribute boolean isFromObjectOrEmbed;
-  
+
+  /**
+   * This attribute will be true if the URL is known to be possibly broken and
+   * CheckForBrokenChromeURL and RecordZeroLengthEvent should be skipped.
+   */
+  [infallible] readonly attribute boolean shouldSkipCheckForBrokenURLOrZeroSized;
+
   /**
    * If this is non-null, this property holds the URI as it was before query
    * stripping was performed.

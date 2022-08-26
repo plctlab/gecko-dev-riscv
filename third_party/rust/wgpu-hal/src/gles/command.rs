@@ -17,17 +17,19 @@ pub(super) struct State {
     vertex_buffers:
         [(super::VertexBufferDesc, Option<super::BufferBinding>); crate::MAX_VERTEX_BUFFERS],
     vertex_attributes: ArrayVec<super::AttributeDesc, { super::MAX_VERTEX_ATTRIBUTES }>,
-    color_targets: ArrayVec<super::ColorTargetDesc, { crate::MAX_COLOR_TARGETS }>,
+    color_targets: ArrayVec<super::ColorTargetDesc, { crate::MAX_COLOR_ATTACHMENTS }>,
     stencil: super::StencilState,
     depth_bias: wgt::DepthBiasState,
     samplers: [Option<glow::Sampler>; super::MAX_SAMPLERS],
     texture_slots: [TextureSlotDesc; super::MAX_TEXTURE_SLOTS],
     render_size: wgt::Extent3d,
-    resolve_attachments: ArrayVec<(u32, super::TextureView), { crate::MAX_COLOR_TARGETS }>,
-    invalidate_attachments: ArrayVec<u32, { crate::MAX_COLOR_TARGETS + 2 }>,
+    resolve_attachments: ArrayVec<(u32, super::TextureView), { crate::MAX_COLOR_ATTACHMENTS }>,
+    invalidate_attachments: ArrayVec<u32, { crate::MAX_COLOR_ATTACHMENTS + 2 }>,
     has_pass_label: bool,
     instance_vbuf_mask: usize,
     dirty_vbuf_mask: usize,
+    active_first_instance: u32,
+    push_offset_to_uniform: ArrayVec<super::UniformDesc, { super::MAX_PUSH_CONSTANTS }>,
 }
 
 impl super::CommandBuffer {
@@ -42,6 +44,21 @@ impl super::CommandBuffer {
         let start = self.data_bytes.len() as u32;
         self.data_bytes.extend(marker.as_bytes());
         start..self.data_bytes.len() as u32
+    }
+
+    fn add_push_constant_data(&mut self, data: &[u32]) -> Range<u32> {
+        let data_raw = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const _,
+                data.len() * mem::size_of::<u32>(),
+            )
+        };
+        let start = self.data_bytes.len();
+        assert!(start < u32::MAX as usize);
+        self.data_bytes.extend_from_slice(data_raw);
+        let end = self.data_bytes.len();
+        assert!(end < u32::MAX as usize);
+        (start as u32)..(end as u32)
     }
 }
 
@@ -75,34 +92,44 @@ impl super::CommandEncoder {
             .private_caps
             .contains(super::PrivateCapabilities::VERTEX_BUFFER_LAYOUT)
         {
-            for (index, &(ref vb_desc, ref vb)) in self.state.vertex_buffers.iter().enumerate() {
+            for (index, pair) in self.state.vertex_buffers.iter().enumerate() {
                 if self.state.dirty_vbuf_mask & (1 << index) == 0 {
                     continue;
                 }
-                let vb = vb.as_ref().unwrap();
-                let instance_offset = match vb_desc.step {
-                    wgt::VertexStepMode::Vertex => 0,
-                    wgt::VertexStepMode::Instance => first_instance * vb_desc.stride,
+                let (buffer_desc, vb) = match *pair {
+                    // Not all dirty bindings are necessarily filled. Some may be unused.
+                    (_, None) => continue,
+                    (ref vb_desc, Some(ref vb)) => (vb_desc.clone(), vb),
                 };
+                let instance_offset = match buffer_desc.step {
+                    wgt::VertexStepMode::Vertex => 0,
+                    wgt::VertexStepMode::Instance => first_instance * buffer_desc.stride,
+                };
+
                 self.cmd_buffer.commands.push(C::SetVertexBuffer {
                     index: index as u32,
                     buffer: super::BufferBinding {
                         raw: vb.raw,
                         offset: vb.offset + instance_offset as wgt::BufferAddress,
                     },
-                    buffer_desc: vb_desc.clone(),
+                    buffer_desc,
                 });
+                self.state.dirty_vbuf_mask ^= 1 << index;
             }
         } else {
+            let mut vbuf_mask = 0;
             for attribute in self.state.vertex_attributes.iter() {
                 if self.state.dirty_vbuf_mask & (1 << attribute.buffer_index) == 0 {
                     continue;
                 }
-                let (buffer_desc, buffer) =
-                    self.state.vertex_buffers[attribute.buffer_index as usize].clone();
+                let (buffer_desc, vb) =
+                    match self.state.vertex_buffers[attribute.buffer_index as usize] {
+                        // Not all dirty bindings are necessarily filled. Some may be unused.
+                        (_, None) => continue,
+                        (ref vb_desc, Some(ref vb)) => (vb_desc.clone(), vb),
+                    };
 
                 let mut attribute_desc = attribute.clone();
-                let vb = buffer.unwrap();
                 attribute_desc.offset += vb.offset as u32;
                 if buffer_desc.step == wgt::VertexStepMode::Instance {
                     attribute_desc.offset += buffer_desc.stride * first_instance;
@@ -113,43 +140,47 @@ impl super::CommandEncoder {
                     buffer_desc,
                     attribute_desc,
                 });
+                vbuf_mask |= 1 << attribute.buffer_index;
             }
+            self.state.dirty_vbuf_mask ^= vbuf_mask;
         }
     }
 
     fn rebind_sampler_states(&mut self, dirty_textures: u32, dirty_samplers: u32) {
         for (texture_index, slot) in self.state.texture_slots.iter().enumerate() {
-            if let Some(sampler_index) = slot.sampler_index {
-                if dirty_textures & (1 << texture_index) != 0
-                    || dirty_samplers & (1 << sampler_index) != 0
-                {
-                    if let Some(sampler) = self.state.samplers[sampler_index as usize] {
-                        self.cmd_buffer
-                            .commands
-                            .push(C::BindSampler(texture_index as u32, sampler));
-                    }
-                }
+            if dirty_textures & (1 << texture_index) != 0
+                || slot
+                    .sampler_index
+                    .map_or(false, |si| dirty_samplers & (1 << si) != 0)
+            {
+                let sampler = slot
+                    .sampler_index
+                    .and_then(|si| self.state.samplers[si as usize]);
+                self.cmd_buffer
+                    .commands
+                    .push(C::BindSampler(texture_index as u32, sampler));
             }
         }
     }
 
     fn prepare_draw(&mut self, first_instance: u32) {
-        if first_instance != 0 {
-            self.state.dirty_vbuf_mask = self.state.instance_vbuf_mask;
+        if first_instance != self.state.active_first_instance {
+            // rebind all per-instance buffers on first-instance change
+            self.state.dirty_vbuf_mask |= self.state.instance_vbuf_mask;
+            self.state.active_first_instance = first_instance;
         }
         if self.state.dirty_vbuf_mask != 0 {
             self.rebind_vertex_data(first_instance);
-            if first_instance == 0 {
-                self.state.dirty_vbuf_mask = 0;
-            }
         }
     }
 
     fn set_pipeline_inner(&mut self, inner: &super::PipelineInner) {
         self.cmd_buffer.commands.push(C::SetProgram(inner.program));
 
-        //TODO: push constants
-        let _ = &inner.uniforms;
+        self.state.push_offset_to_uniform.clear();
+        self.state
+            .push_offset_to_uniform
+            .extend(inner.uniforms.iter().cloned());
 
         // rebind textures, if needed
         let mut dirty_textures = 0u32;
@@ -199,12 +230,16 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         }
         for bar in barriers {
             // GLES only synchronizes storage -> anything explicitly
-            if !bar.usage.start.contains(crate::BufferUses::STORAGE_WRITE) {
+            if !bar
+                .usage
+                .start
+                .contains(crate::BufferUses::STORAGE_READ_WRITE)
+            {
                 continue;
             }
             self.cmd_buffer
                 .commands
-                .push(C::BufferBarrier(bar.buffer.raw, bar.usage.end));
+                .push(C::BufferBarrier(bar.buffer.raw.unwrap(), bar.usage.end));
         }
     }
 
@@ -222,7 +257,11 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         let mut combined_usage = crate::TextureUses::empty();
         for bar in barriers {
             // GLES only synchronizes storage -> anything explicitly
-            if !bar.usage.start.contains(crate::TextureUses::STORAGE_WRITE) {
+            if !bar
+                .usage
+                .start
+                .contains(crate::TextureUses::STORAGE_READ_WRITE)
+            {
                 continue;
             }
             // unlike buffers, there is no need for a concrete texture
@@ -239,22 +278,9 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
 
     unsafe fn clear_buffer(&mut self, buffer: &super::Buffer, range: crate::MemoryRange) {
         self.cmd_buffer.commands.push(C::ClearBuffer {
-            dst: buffer.raw,
+            dst: buffer.clone(),
             dst_target: buffer.target,
             range,
-        });
-    }
-
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &super::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    ) {
-        let (dst, dst_target) = texture.inner.as_native();
-        self.cmd_buffer.commands.push(C::ClearTexture {
-            dst,
-            dst_target,
-            subresource_range: subresource_range.clone(),
         });
     }
 
@@ -266,14 +292,17 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     ) where
         T: Iterator<Item = crate::BufferCopy>,
     {
-        //TODO: preserve `src.target` and `dst.target`
-        // at least for the buffers that require it.
+        let (src_target, dst_target) = if src.target == dst.target {
+            (glow::COPY_READ_BUFFER, glow::COPY_WRITE_BUFFER)
+        } else {
+            (src.target, dst.target)
+        };
         for copy in regions {
             self.cmd_buffer.commands.push(C::CopyBufferToBuffer {
-                src: src.raw,
-                src_target: glow::COPY_READ_BUFFER,
-                dst: dst.raw,
-                dst_target: glow::COPY_WRITE_BUFFER,
+                src: src.clone(),
+                src_target,
+                dst: dst.clone(),
+                dst_target,
                 copy,
             })
         }
@@ -298,6 +327,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
                 dst: dst_raw,
                 dst_target,
                 copy,
+                dst_is_cubemap: dst.is_cubemap,
             })
         }
     }
@@ -311,10 +341,11 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         T: Iterator<Item = crate::BufferTextureCopy>,
     {
         let (dst_raw, dst_target) = dst.inner.as_native();
+
         for mut copy in regions {
             copy.clamp_size_to_virtual(&dst.copy_size);
             self.cmd_buffer.commands.push(C::CopyBufferToTexture {
-                src: src.raw,
+                src: src.clone(),
                 src_target: src.target,
                 dst: dst_raw,
                 dst_target,
@@ -340,7 +371,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
                 src: src_raw,
                 src_target,
                 src_format: src.format,
-                dst: dst.raw,
+                dst: dst.clone(),
                 dst_target: dst.target,
                 copy,
             })
@@ -377,7 +408,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         let query_range = start as u32..self.cmd_buffer.queries.len() as u32;
         self.cmd_buffer.commands.push(C::CopyQueryResults {
             query_range,
-            dst: buffer.raw,
+            dst: buffer.clone(),
             dst_target: buffer.target,
             dst_offset: offset,
         });
@@ -395,54 +426,75 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             self.state.has_pass_label = true;
         }
 
-        // set the framebuffer
-        self.cmd_buffer.commands.push(C::ResetFramebuffer);
-        for (i, cat) in desc.color_attachments.iter().enumerate() {
-            let attachment = glow::COLOR_ATTACHMENT0 + i as u32;
-            self.cmd_buffer.commands.push(C::BindAttachment {
-                attachment,
-                view: cat.target.view.clone(),
-            });
-            if let Some(ref rat) = cat.resolve_target {
-                self.state
-                    .resolve_attachments
-                    .push((attachment, rat.view.clone()));
+        match desc
+            .color_attachments
+            .first()
+            .filter(|at| at.is_some())
+            .and_then(|at| at.as_ref().map(|at| &at.target.view.inner))
+        {
+            // default framebuffer (provided externally)
+            Some(&super::TextureInner::DefaultRenderbuffer) => {
+                self.cmd_buffer
+                    .commands
+                    .push(C::ResetFramebuffer { is_default: true });
             }
-            if !cat.ops.contains(crate::AttachmentOps::STORE) {
-                self.state.invalidate_attachments.push(attachment);
-            }
-        }
-        if let Some(ref dsat) = desc.depth_stencil_attachment {
-            let aspects = dsat.target.view.aspects;
-            let attachment = match aspects {
-                crate::FormatAspects::DEPTH => glow::DEPTH_ATTACHMENT,
-                crate::FormatAspects::STENCIL => glow::STENCIL_ATTACHMENT,
-                _ => glow::DEPTH_STENCIL_ATTACHMENT,
-            };
-            self.cmd_buffer.commands.push(C::BindAttachment {
-                attachment,
-                view: dsat.target.view.clone(),
-            });
-            if aspects.contains(crate::FormatAspects::DEPTH)
-                && !dsat.depth_ops.contains(crate::AttachmentOps::STORE)
-            {
-                self.state
-                    .invalidate_attachments
-                    .push(glow::DEPTH_ATTACHMENT);
-            }
-            if aspects.contains(crate::FormatAspects::STENCIL)
-                && !dsat.stencil_ops.contains(crate::AttachmentOps::STORE)
-            {
-                self.state
-                    .invalidate_attachments
-                    .push(glow::STENCIL_ATTACHMENT);
+            _ => {
+                // set the framebuffer
+                self.cmd_buffer
+                    .commands
+                    .push(C::ResetFramebuffer { is_default: false });
+
+                for (i, cat) in desc.color_attachments.iter().enumerate() {
+                    if let Some(cat) = cat.as_ref() {
+                        let attachment = glow::COLOR_ATTACHMENT0 + i as u32;
+                        self.cmd_buffer.commands.push(C::BindAttachment {
+                            attachment,
+                            view: cat.target.view.clone(),
+                        });
+                        if let Some(ref rat) = cat.resolve_target {
+                            self.state
+                                .resolve_attachments
+                                .push((attachment, rat.view.clone()));
+                        }
+                        if !cat.ops.contains(crate::AttachmentOps::STORE) {
+                            self.state.invalidate_attachments.push(attachment);
+                        }
+                    }
+                }
+                if let Some(ref dsat) = desc.depth_stencil_attachment {
+                    let aspects = dsat.target.view.aspects;
+                    let attachment = match aspects {
+                        crate::FormatAspects::DEPTH => glow::DEPTH_ATTACHMENT,
+                        crate::FormatAspects::STENCIL => glow::STENCIL_ATTACHMENT,
+                        _ => glow::DEPTH_STENCIL_ATTACHMENT,
+                    };
+                    self.cmd_buffer.commands.push(C::BindAttachment {
+                        attachment,
+                        view: dsat.target.view.clone(),
+                    });
+                    if aspects.contains(crate::FormatAspects::DEPTH)
+                        && !dsat.depth_ops.contains(crate::AttachmentOps::STORE)
+                    {
+                        self.state
+                            .invalidate_attachments
+                            .push(glow::DEPTH_ATTACHMENT);
+                    }
+                    if aspects.contains(crate::FormatAspects::STENCIL)
+                        && !dsat.stencil_ops.contains(crate::AttachmentOps::STORE)
+                    {
+                        self.state
+                            .invalidate_attachments
+                            .push(glow::STENCIL_ATTACHMENT);
+                    }
+                }
+
+                // set the draw buffers and states
+                self.cmd_buffer
+                    .commands
+                    .push(C::SetDrawColorBuffers(desc.color_attachments.len() as u8));
             }
         }
 
-        // set the draw buffers and states
-        self.cmd_buffer
-            .commands
-            .push(C::SetDrawColorBuffers(desc.color_attachments.len() as u8));
         let rect = crate::Rect {
             x: 0,
             y: 0,
@@ -456,7 +508,12 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         });
 
         // issue the clears
-        for (i, cat) in desc.color_attachments.iter().enumerate() {
+        for (i, cat) in desc
+            .color_attachments
+            .iter()
+            .filter_map(|at| at.as_ref())
+            .enumerate()
+        {
             if !cat.ops.contains(crate::AttachmentOps::LOAD) {
                 let c = &cat.clear_value;
                 self.cmd_buffer
@@ -480,12 +537,19 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             }
         }
         if let Some(ref dsat) = desc.depth_stencil_attachment {
-            if !dsat.depth_ops.contains(crate::AttachmentOps::LOAD) {
+            let clear_depth = !dsat.depth_ops.contains(crate::AttachmentOps::LOAD);
+            let clear_stencil = !dsat.stencil_ops.contains(crate::AttachmentOps::LOAD);
+
+            if clear_depth && clear_stencil {
+                self.cmd_buffer.commands.push(C::ClearDepthAndStencil(
+                    dsat.clear_value.0,
+                    dsat.clear_value.1,
+                ));
+            } else if clear_depth {
                 self.cmd_buffer
                     .commands
                     .push(C::ClearDepth(dsat.clear_value.0));
-            }
-            if !dsat.stencil_ops.contains(crate::AttachmentOps::LOAD) {
+            } else if clear_stencil {
                 self.cmd_buffer
                     .commands
                     .push(C::ClearStencil(dsat.clear_value.1));
@@ -512,6 +576,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         }
         self.state.instance_vbuf_mask = 0;
         self.state.dirty_vbuf_mask = 0;
+        self.state.active_first_instance = 0;
         self.state.color_targets.clear();
         self.state.vertex_attributes.clear();
         self.state.primitive = super::PrimitiveState::default();
@@ -594,10 +659,25 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         &mut self,
         _layout: &super::PipelineLayout,
         _stages: wgt::ShaderStages,
-        _offset: u32,
-        _data: &[u32],
+        start_offset: u32,
+        data: &[u32],
     ) {
-        unimplemented!()
+        let range = self.cmd_buffer.add_push_constant_data(data);
+
+        let end = start_offset + data.len() as u32 * 4;
+        let mut offset = start_offset;
+        while offset < end {
+            let uniform = self.state.push_offset_to_uniform[offset as usize / 4].clone();
+            let size = uniform.size;
+            if uniform.location.is_none() {
+                panic!("No uniform for push constant");
+            }
+            self.cmd_buffer.commands.push(C::SetPushConstants {
+                uniform,
+                offset: range.start + offset,
+            });
+            offset += size;
+        }
     }
 
     unsafe fn insert_debug_marker(&mut self, label: &str) {
@@ -615,12 +695,6 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     unsafe fn set_render_pipeline(&mut self, pipeline: &super::RenderPipeline) {
         self.state.topology = conv::map_primitive_topology(pipeline.primitive.topology);
 
-        for index in self.state.vertex_attributes.len()..pipeline.vertex_attributes.len() {
-            self.cmd_buffer
-                .commands
-                .push(C::UnsetVertexAttribute(index as u32));
-        }
-
         if self
             .private_caps
             .contains(super::PrivateCapabilities::VERTEX_BUFFER_LAYOUT)
@@ -635,6 +709,13 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
                 });
             }
         } else {
+            for index in 0..self.state.vertex_attributes.len() {
+                self.cmd_buffer
+                    .commands
+                    .push(C::UnsetVertexAttribute(index as u32));
+            }
+            self.state.vertex_attributes.clear();
+
             self.state.dirty_vbuf_mask = 0;
             // copy vertex attributes
             for vat in pipeline.vertex_attributes.iter() {
@@ -750,7 +831,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         self.state.index_format = format;
         self.cmd_buffer
             .commands
-            .push(C::SetIndexBuffer(binding.buffer.raw));
+            .push(C::SetIndexBuffer(binding.buffer.raw.unwrap()));
     }
     unsafe fn set_vertex_buffer<'a>(
         &mut self,
@@ -760,7 +841,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         self.state.dirty_vbuf_mask |= 1 << index;
         let (_, ref mut vb) = self.state.vertex_buffers[index as usize];
         *vb = Some(super::BufferBinding {
-            raw: binding.buffer.raw,
+            raw: binding.buffer.raw.unwrap(),
             offset: binding.offset,
         });
     }
@@ -842,7 +923,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
                 offset + draw * mem::size_of::<wgt::DrawIndirectArgs>() as wgt::BufferAddress;
             self.cmd_buffer.commands.push(C::DrawIndirect {
                 topology: self.state.topology,
-                indirect_buf: buffer.raw,
+                indirect_buf: buffer.raw.unwrap(),
                 indirect_offset,
             });
         }
@@ -864,7 +945,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
             self.cmd_buffer.commands.push(C::DrawIndexedIndirect {
                 topology: self.state.topology,
                 index_type,
-                indirect_buf: buffer.raw,
+                indirect_buf: buffer.raw.unwrap(),
                 indirect_offset,
             });
         }
@@ -915,7 +996,7 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     }
     unsafe fn dispatch_indirect(&mut self, buffer: &super::Buffer, offset: wgt::BufferAddress) {
         self.cmd_buffer.commands.push(C::DispatchIndirect {
-            indirect_buf: buffer.raw,
+            indirect_buf: buffer.raw.unwrap(),
             indirect_offset: offset,
         });
     }

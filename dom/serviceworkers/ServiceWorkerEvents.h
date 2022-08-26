@@ -22,8 +22,7 @@
 
 class nsIInterceptedChannel;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Blob;
 class Client;
@@ -139,6 +138,7 @@ class FetchEvent final : public ExtendableEvent {
   nsMainThreadPtrHandle<ServiceWorkerRegistrationInfo> mRegistration;
   RefPtr<Request> mRequest;
   RefPtr<Promise> mHandled;
+  RefPtr<Promise> mPreloadResponse;
   nsCString mScriptSpec;
   nsCString mPreventDefaultScriptSpec;
   nsString mClientId;
@@ -186,6 +186,8 @@ class FetchEvent final : public ExtendableEvent {
   }
 
   Promise* Handled() const { return mHandled; }
+
+  Promise* PreloadResponse() const { return mPreloadResponse; }
 
   void RespondWith(JSContext* aCx, Promise& aArg, ErrorResult& aRv);
 
@@ -302,7 +304,6 @@ class ExtendableMessageEvent final : public ExtendableEvent {
   void GetPorts(nsTArray<RefPtr<MessagePort>>& aPorts);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_serviceworkerevents_h__ */

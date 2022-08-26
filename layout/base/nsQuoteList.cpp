@@ -10,6 +10,9 @@
 #include "nsReadableUtils.h"
 #include "nsIContent.h"
 #include "nsIFrame.h"
+#include "nsIFrameInlines.h"
+#include "nsContainerFrame.h"
+#include "mozilla/ContainStyleScopeManager.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Text.h"
 #include "mozilla/intl/Quotes.h"
@@ -50,10 +53,20 @@ nsString nsQuoteNode::Text() {
   const auto& quotesProp = mPseudoFrame->StyleList()->mQuotes;
 
   if (quotesProp.IsAuto()) {
-    // Look up CLDR-derived quotation marks for current language;
-    // if none available, use built-in default.
+    // Look up CLDR-derived quotation marks for the language of the context.
+    const nsIFrame* frame = mPseudoFrame->GetInFlowParent();
+    // Parent of the pseudo is the element around which the quotes are applied;
+    // we want lang from *its* parent, unless it is the root.
+    // XXX Are there other cases where we shouldn't look up to the parent?
+    if (!frame->Style()->IsRootElementStyle()) {
+      if (const nsIFrame* parent = frame->GetInFlowParent()) {
+        frame = parent;
+      }
+    }
     const intl::Quotes* quotes =
-        intl::QuotesForLang(mPseudoFrame->StyleFont()->mLanguage);
+        intl::QuotesForLang(frame->StyleFont()->mLanguage);
+    // If we don't have quote-mark data for the language, use built-in
+    // defaults.
     if (!quotes) {
       static const intl::Quotes sDefaultQuotes = {
           {0x201c, 0x201d, 0x2018, 0x2019}};
@@ -87,9 +100,21 @@ nsString nsQuoteNode::Text() {
   return result;
 }
 
+static int32_t GetDepthBeforeFirstQuoteNode(ContainStyleScope* aScope) {
+  for (auto* ancestor = aScope->GetParent(); ancestor;
+       ancestor = ancestor->GetParent()) {
+    auto& quoteList = ancestor->GetQuoteList();
+    if (auto* node = static_cast<nsQuoteNode*>(
+            aScope->GetPrecedingElementInGenConList(&quoteList))) {
+      return node->DepthAfter();
+    }
+  }
+  return 0;
+}
+
 void nsQuoteList::Calc(nsQuoteNode* aNode) {
   if (aNode == FirstNode()) {
-    aNode->mDepthBefore = 0;
+    aNode->mDepthBefore = GetDepthBeforeFirstQuoteNode(mScope);
   } else {
     aNode->mDepthBefore = Prev(aNode)->DepthAfter();
   }

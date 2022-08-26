@@ -22,14 +22,14 @@ namespace system {
 static void NormalizeAddr(const nsACString& aAddr, nsCString& aNormalized) {
   nsTArray<nsCString> addr;
   ParseString(aAddr, '.', addr);
-  aNormalized = StringJoin("."_ns, IntegerRange(4),
-                           [&addr](nsACString& dst, const int i) {
-                             if (i < addr.Length()) {
-                               dst.Append(addr[i]);
-                             } else {
-                               dst.Append('0');
-                             }
-                           });
+  aNormalized =
+      StringJoin("."_ns, IntegerRange(4), [&addr](nsACString& dst, size_t i) {
+        if (i < addr.Length()) {
+          dst.Append(addr[i]);
+        } else {
+          dst.Append('0');
+        }
+      });
 }
 
 static PRUint32 MaskIPv4Addr(PRUint32 aAddr, uint16_t aMaskLen) {
@@ -140,7 +140,7 @@ static bool IsMatchWildcard(const nsACString& aHost,
       }
       nsAutoCString token(
           Substring(override, tokenStart, tokenEnd - tokenStart));
-      offset = host.Find(token, /* aIgnoreCase = */ false, offset);
+      offset = host.Find(token, offset);
       if (offset == -1 || (!star && offset)) {
         return false;
       }

@@ -18,14 +18,11 @@ extern crate smallbitvec;
 extern crate smallvec;
 #[cfg(feature = "string_cache")]
 extern crate string_cache;
-extern crate thin_slice;
 
 use servo_arc::{Arc, ThinArc};
 use smallbitvec::{InternalStorage, SmallBitVec};
 use smallvec::{Array, SmallVec};
 use std::alloc::Layout;
-#[cfg(debug_assertions)]
-use std::any::TypeId;
 #[cfg(debug_assertions)]
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -40,7 +37,6 @@ use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::slice;
 use std::str;
-use thin_slice::ThinBoxedSlice;
 
 /// Result type for ToShmem::to_shmem.
 ///
@@ -61,16 +57,12 @@ pub struct SharedMemoryBuilder {
     /// The current position in the buffer, where the next value will be written
     /// at.
     index: usize,
-    /// Pointers to every sharable value that we store in the shared memory
+    /// Pointers to every shareable value that we store in the shared memory
     /// buffer.  We use this to assert against encountering the same value
     /// twice, e.g. through another Arc reference, so that we don't
     /// inadvertently store duplicate copies of values.
     #[cfg(debug_assertions)]
     shared_values: HashSet<*const c_void>,
-    /// Types of values that we may duplicate in the shared memory buffer when
-    /// there are shared references to them, such as in Arcs.
-    #[cfg(debug_assertions)]
-    allowed_duplication_types: HashSet<TypeId>,
 }
 
 /// Amount of padding needed after `size` bytes to ensure that the following
@@ -93,17 +85,7 @@ impl SharedMemoryBuilder {
             index: 0,
             #[cfg(debug_assertions)]
             shared_values: HashSet::new(),
-            #[cfg(debug_assertions)]
-            allowed_duplication_types: HashSet::new(),
         }
-    }
-
-    /// Notes a type as being allowed for duplication when being copied to the
-    /// shared memory buffer, such as Arcs referencing the same value.
-    #[inline]
-    pub fn add_allowed_duplication_type<T: 'static>(&mut self) {
-        #[cfg(debug_assertions)]
-        self.allowed_duplication_types.insert(TypeId::of::<T>());
     }
 
     /// Returns the number of bytes currently used in the buffer.
@@ -342,23 +324,6 @@ impl<T: ToShmem> ToShmem for Box<[T]> {
     }
 }
 
-impl<T: ToShmem> ToShmem for ThinBoxedSlice<T> {
-    fn to_shmem(&self, builder: &mut SharedMemoryBuilder) -> Result<Self> {
-        // We could support this if we needed but in practice we will never
-        // need to handle such big ThinBoxedSlices.
-        assert!(
-            self.spilled_storage().is_none(),
-            "ToShmem failed for ThinBoxedSlice: too many entries ({})",
-            self.len(),
-        );
-
-        unsafe {
-            let dest = to_shmem_slice(self.iter(), builder)?;
-            Ok(ManuallyDrop::new(ThinBoxedSlice::from_raw(dest)))
-        }
-    }
-}
-
 impl ToShmem for Box<str> {
     fn to_shmem(&self, builder: &mut SharedMemoryBuilder) -> Result<Self> {
         // Reserve space for the string bytes.
@@ -451,23 +416,16 @@ impl<T: ToShmem> ToShmem for Option<T> {
     }
 }
 
-impl<T: 'static + ToShmem> ToShmem for Arc<T> {
+impl<T: ToShmem> ToShmem for Arc<T> {
     fn to_shmem(&self, builder: &mut SharedMemoryBuilder) -> Result<Self> {
         // Assert that we don't encounter any shared references to values we
-        // don't expect.  Those we expect are those noted by calling
-        // add_allowed_duplication_type, and should be types where we're fine
-        // with duplicating any shared references in the shared memory buffer.
-        //
-        // Unfortunately there's no good way to print out the exact type of T
-        // in the assertion message.
+        // don't expect.
         #[cfg(debug_assertions)]
         assert!(
-            !builder.shared_values.contains(&self.heap_ptr()) ||
-                builder
-                    .allowed_duplication_types
-                    .contains(&TypeId::of::<T>()),
-            "ToShmem failed for Arc<T>: encountered a value of type T with multiple references \
-             and which has not been explicitly allowed with an add_allowed_duplication_type call",
+            !builder.shared_values.contains(&self.heap_ptr()),
+            "ToShmem failed for Arc<{}>: encountered a value with multiple \
+            references.",
+            std::any::type_name::<T>()
         );
 
         // Make a clone of the Arc-owned value with all of its heap allocations
@@ -490,7 +448,7 @@ impl<T: 'static + ToShmem> ToShmem for Arc<T> {
     }
 }
 
-impl<H: 'static + ToShmem, T: 'static + ToShmem> ToShmem for ThinArc<H, T> {
+impl<H: ToShmem, T: ToShmem> ToShmem for ThinArc<H, T> {
     fn to_shmem(&self, builder: &mut SharedMemoryBuilder) -> Result<Self> {
         // We don't currently have any shared ThinArc values in stylesheets,
         // so don't support them for now.

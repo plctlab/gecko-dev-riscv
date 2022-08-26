@@ -18,6 +18,7 @@
 #include "nsIObserverService.h"
 #include "nsIFile.h"
 #include "nsIURI.h"
+#include "nsINetworkPredictor.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsNetCID.h"
@@ -309,9 +310,9 @@ class WalkMemoryCacheRunnable : public WalkCacheRunnable {
 
   virtual void OnEntryInfo(const nsACString& aURISpec,
                            const nsACString& aIdEnhance, int64_t aDataSize,
-                           int32_t aFetchCount, uint32_t aLastModifiedTime,
-                           uint32_t aExpirationTime, bool aPinned,
-                           nsILoadContextInfo* aInfo) override {
+                           int64_t aAltDataSize, uint32_t aFetchCount,
+                           uint32_t aLastModifiedTime, uint32_t aExpirationTime,
+                           bool aPinned, nsILoadContextInfo* aInfo) override {
     nsresult rv;
 
     nsCOMPtr<nsIURI> uri;
@@ -320,9 +321,9 @@ class WalkMemoryCacheRunnable : public WalkCacheRunnable {
       return;
     }
 
-    rv = mCallback->OnCacheEntryInfo(uri, aIdEnhance, aDataSize, aFetchCount,
-                                     aLastModifiedTime, aExpirationTime,
-                                     aPinned, aInfo);
+    rv = mCallback->OnCacheEntryInfo(uri, aIdEnhance, aDataSize, aAltDataSize,
+                                     aFetchCount, aLastModifiedTime,
+                                     aExpirationTime, aPinned, aInfo);
     if (NS_FAILED(rv)) {
       LOG(("  callback failed, canceling the walk"));
       mCancel = true;
@@ -381,8 +382,8 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
       }
 
       rv = mWalker->mCallback->OnCacheEntryInfo(
-          uri, mIdEnhance, mDataSize, mFetchCount, mLastModifiedTime,
-          mExpirationTime, mPinned, mInfo);
+          uri, mIdEnhance, mDataSize, mAltDataSize, mFetchCount,
+          mLastModifiedTime, mExpirationTime, mPinned, mInfo);
       if (NS_FAILED(rv)) {
         mWalker->mCancel = true;
       }
@@ -395,7 +396,8 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
     nsCString mURISpec;
     nsCString mIdEnhance;
     int64_t mDataSize{0};
-    int32_t mFetchCount{0};
+    int64_t mAltDataSize{0};
+    uint32_t mFetchCount{0};
     uint32_t mLastModifiedTime{0};
     uint32_t mExpirationTime{0};
     bool mPinned{false};
@@ -479,9 +481,9 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
 
   virtual void OnEntryInfo(const nsACString& aURISpec,
                            const nsACString& aIdEnhance, int64_t aDataSize,
-                           int32_t aFetchCount, uint32_t aLastModifiedTime,
-                           uint32_t aExpirationTime, bool aPinned,
-                           nsILoadContextInfo* aInfo) override {
+                           int64_t aAltDataSize, uint32_t aFetchCount,
+                           uint32_t aLastModifiedTime, uint32_t aExpirationTime,
+                           bool aPinned, nsILoadContextInfo* aInfo) override {
     // Called directly from CacheFileIOManager::GetEntryInfo.
 
     // Invoke onCacheEntryInfo on the main thread for this entry.
@@ -489,6 +491,7 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
     info->mURISpec = aURISpec;
     info->mIdEnhance = aIdEnhance;
     info->mDataSize = aDataSize;
+    info->mAltDataSize = aAltDataSize;
     info->mFetchCount = aFetchCount;
     info->mLastModifiedTime = aLastModifiedTime;
     info->mExpirationTime = aExpirationTime;
@@ -1159,24 +1162,44 @@ bool CacheStorageService::IsForcedValidEntry(
     nsACString const& aContextEntryKey) {
   mozilla::MutexAutoLock lock(mForcedValidEntriesLock);
 
-  TimeStamp validUntil;
+  ForcedValidData data;
 
-  if (!mForcedValidEntries.Get(aContextEntryKey, &validUntil)) {
+  if (!mForcedValidEntries.Get(aContextEntryKey, &data)) {
     return false;
   }
 
-  if (validUntil.IsNull()) {
+  if (data.validUntil.IsNull()) {
+    MOZ_ASSERT_UNREACHABLE("the timeStamp should never be null");
     return false;
   }
 
   // Entry timeout not reached yet
-  if (TimeStamp::NowLoRes() <= validUntil) {
+  if (TimeStamp::NowLoRes() <= data.validUntil) {
     return true;
   }
 
   // Entry timeout has been reached
   mForcedValidEntries.Remove(aContextEntryKey);
+
+  if (!data.viewed) {
+    Telemetry::AccumulateCategorical(
+        Telemetry::LABELS_PREDICTOR_PREFETCH_USE_STATUS::WaitedTooLong);
+  }
   return false;
+}
+
+void CacheStorageService::MarkForcedValidEntryUse(nsACString const& aContextKey,
+                                                  nsACString const& aEntryKey) {
+  mozilla::MutexAutoLock lock(mForcedValidEntriesLock);
+
+  ForcedValidData data;
+
+  if (!mForcedValidEntries.Get(aContextKey + aEntryKey, &data)) {
+    return;
+  }
+
+  data.viewed = true;
+  mForcedValidEntries.InsertOrUpdate(aContextKey + aEntryKey, data);
 }
 
 // Allows a cache entry to be loaded directly from cache without further
@@ -1189,10 +1212,11 @@ void CacheStorageService::ForceEntryValidFor(nsACString const& aContextKey,
   TimeStamp now = TimeStamp::NowLoRes();
   ForcedValidEntriesPrune(now);
 
-  // This will be the timeout
-  TimeStamp validUntil = now + TimeDuration::FromSeconds(aSecondsToTheFuture);
+  ForcedValidData data;
+  data.validUntil = now + TimeDuration::FromSeconds(aSecondsToTheFuture);
+  data.viewed = false;
 
-  mForcedValidEntries.InsertOrUpdate(aContextKey + aEntryKey, validUntil);
+  mForcedValidEntries.InsertOrUpdate(aContextKey + aEntryKey, data);
 }
 
 void CacheStorageService::RemoveEntryForceValid(nsACString const& aContextKey,
@@ -1201,6 +1225,12 @@ void CacheStorageService::RemoveEntryForceValid(nsACString const& aContextKey,
 
   LOG(("CacheStorageService::RemoveEntryForceValid context='%s' entryKey=%s",
        aContextKey.BeginReading(), aEntryKey.BeginReading()));
+  ForcedValidData data;
+  bool ok = mForcedValidEntries.Get(aContextKey + aEntryKey, &data);
+  if (ok && !data.viewed) {
+    Telemetry::AccumulateCategorical(
+        Telemetry::LABELS_PREDICTOR_PREFETCH_USE_STATUS::WaitedTooLong);
+  }
   mForcedValidEntries.Remove(aContextKey + aEntryKey);
 }
 
@@ -1211,7 +1241,11 @@ void CacheStorageService::ForcedValidEntriesPrune(TimeStamp& now) {
   if (now < dontPruneUntil) return;
 
   for (auto iter = mForcedValidEntries.Iter(); !iter.Done(); iter.Next()) {
-    if (iter.Data() < now) {
+    if (iter.Data().validUntil < now) {
+      if (!iter.Data().viewed) {
+        Telemetry::AccumulateCategorical(
+            Telemetry::LABELS_PREDICTOR_PREFETCH_USE_STATUS::WaitedTooLong);
+      }
       iter.Remove();
     }
   }
@@ -2052,7 +2086,11 @@ void CacheStorageService::GetCacheEntryInfo(CacheEntry* aEntry,
   if (NS_FAILED(aEntry->GetStorageDataSize(&dataSize))) {
     dataSize = 0;
   }
-  int32_t fetchCount;
+  int64_t altDataSize;
+  if (NS_FAILED(aEntry->GetAltDataSize(&altDataSize))) {
+    altDataSize = 0;
+  }
+  uint32_t fetchCount;
   if (NS_FAILED(aEntry->GetFetchCount(&fetchCount))) {
     fetchCount = 0;
   }
@@ -2065,8 +2103,9 @@ void CacheStorageService::GetCacheEntryInfo(CacheEntry* aEntry,
     expirationTime = 0;
   }
 
-  aCallback->OnEntryInfo(uriSpec, enhanceId, dataSize, fetchCount, lastModified,
-                         expirationTime, aEntry->IsPinned(), info);
+  aCallback->OnEntryInfo(uriSpec, enhanceId, dataSize, altDataSize, fetchCount,
+                         lastModified, expirationTime, aEntry->IsPinned(),
+                         info);
 }
 
 // static
@@ -2141,7 +2180,7 @@ void CacheStorageService::TelemetryRecordEntryCreation(
                                  timeStamp, TimeStamp::NowLoRes());
 }
 
-void CacheStorageService::TelemetryRecordEntryRemoval(CacheEntry const* entry) {
+void CacheStorageService::TelemetryRecordEntryRemoval(CacheEntry* entry) {
   MOZ_ASSERT(CacheStorageService::IsOnManagementThread());
 
   // Doomed entries must not be considered, we are only interested in purged
@@ -2197,6 +2236,7 @@ size_t CacheStorageService::SizeOfIncludingThis(
 NS_IMETHODIMP
 CacheStorageService::CollectReports(nsIHandleReportCallback* aHandleReport,
                                     nsISupports* aData, bool aAnonymize) {
+  MutexAutoLock lock(mLock);
   MOZ_COLLECT_REPORT("explicit/network/cache2/io", KIND_HEAP, UNITS_BYTES,
                      CacheFileIOManager::SizeOfIncludingThis(MallocSizeOf),
                      "Memory used by the cache IO manager.");
@@ -2204,8 +2244,6 @@ CacheStorageService::CollectReports(nsIHandleReportCallback* aHandleReport,
   MOZ_COLLECT_REPORT("explicit/network/cache2/index", KIND_HEAP, UNITS_BYTES,
                      CacheIndex::SizeOfIncludingThis(MallocSizeOf),
                      "Memory used by the cache index.");
-
-  MutexAutoLock lock(mLock);
 
   // Report the service instance, this doesn't report entries, done lower
   MOZ_COLLECT_REPORT("explicit/network/cache2/service", KIND_HEAP, UNITS_BYTES,

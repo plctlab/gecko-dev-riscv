@@ -14,8 +14,8 @@
  * for your subclass to wrap, and optionally implement and override the tracker.
  */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Changeset, SyncEngine, Tracker } = ChromeUtils.import(
   "resource://services-sync/engines.js"
@@ -24,10 +24,14 @@ const { RawCryptoWrapper } = ChromeUtils.import(
   "resource://services-sync/record.js"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Async: "resource://services-common/async.js",
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Log: "resource://gre/modules/Log.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
 });
 
 var EXPORTED_SYMBOLS = ["BridgedEngine", "LogAdapter"];
@@ -47,12 +51,15 @@ class BridgedStore {
       throw new Error("Store must be associated with an Engine instance.");
     }
     this.engine = engine;
-    this._log = Log.repository.getLogger(`Sync.Engine.${name}.Store`);
+    this._log = lazy.Log.repository.getLogger(`Sync.Engine.${name}.Store`);
     this._batchChunkSize = 500;
   }
 
   async applyIncomingBatch(records) {
-    for (let chunk of PlacesUtils.chunkArray(records, this._batchChunkSize)) {
+    for (let chunk of lazy.PlacesUtils.chunkArray(
+      records,
+      this._batchChunkSize
+    )) {
       let incomingEnvelopesAsJSON = chunk.map(record =>
         JSON.stringify(record.toIncomingEnvelope())
       );
@@ -161,16 +168,16 @@ class LogAdapter {
 
   get maxLevel() {
     let level = this.log.level;
-    if (level <= Log.Level.All) {
+    if (level <= lazy.Log.Level.All) {
       return Ci.mozIServicesLogSink.LEVEL_TRACE;
     }
-    if (level <= Log.Level.Info) {
+    if (level <= lazy.Log.Level.Info) {
       return Ci.mozIServicesLogSink.LEVEL_DEBUG;
     }
-    if (level <= Log.Level.Warn) {
+    if (level <= lazy.Log.Level.Warn) {
       return Ci.mozIServicesLogSink.LEVEL_WARN;
     }
-    if (level <= Log.Level.Error) {
+    if (level <= lazy.Log.Level.Error) {
       return Ci.mozIServicesLogSink.LEVEL_ERROR;
     }
     return Ci.mozIServicesLogSink.LEVEL_OFF;

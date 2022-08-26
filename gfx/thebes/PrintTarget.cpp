@@ -105,6 +105,13 @@ already_AddRefed<DrawTarget> PrintTarget::GetReferenceDrawTarget() {
             size.width, size.height);
         break;
 #endif
+#ifdef CAIRO_HAS_QUARTZ_SURFACE
+      case CAIRO_SURFACE_TYPE_QUARTZ:
+        similar = cairo_quartz_surface_create_cg_layer(
+            mCairoSurface, cairo_surface_get_content(mCairoSurface), size.width,
+            size.height);
+        break;
+#endif
       default:
         similar = cairo_surface_create_similar(
             mCairoSurface, cairo_surface_get_content(mCairoSurface), size.width,
@@ -185,12 +192,5 @@ void PrintTarget::Finish() {
   // null surfaces are allowed here
   cairo_surface_finish(mCairoSurface);
 }
-
-void PrintTarget::RegisterPageDoneCallback(PageDoneCallback&& aCallback) {
-  MOZ_ASSERT(aCallback && !IsSyncPagePrinting());
-  mPageDoneCallback = std::move(aCallback);
-}
-
-void PrintTarget::UnregisterPageDoneCallback() { mPageDoneCallback = nullptr; }
 
 }  // namespace mozilla::gfx

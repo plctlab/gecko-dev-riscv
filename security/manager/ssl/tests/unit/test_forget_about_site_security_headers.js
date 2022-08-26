@@ -44,20 +44,14 @@ function add_tests() {
   // that the platform doesn't consider a.pinning.example.com to be HSTS any
   // longer.
   add_task(async function() {
-    sss.processHeader(
-      uri,
-      GOOD_MAX_AGE,
-      secInfo,
-      0,
-      Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST
-    );
+    sss.processHeader(uri, GOOD_MAX_AGE, secInfo);
 
-    Assert.ok(sss.isSecureURI(uri, 0), "a.pinning.example.com should be HSTS");
+    Assert.ok(sss.isSecureURI(uri), "a.pinning.example.com should be HSTS");
 
     await ForgetAboutSite.removeDataFromDomain("a.pinning.example.com");
 
     Assert.ok(
-      !sss.isSecureURI(uri, 0),
+      !sss.isSecureURI(uri),
       "a.pinning.example.com should not be HSTS now"
     );
   });
@@ -67,39 +61,27 @@ function add_tests() {
   // doesn't consider the subdomain to be HSTS any longer. Also test that
   // unrelated sites don't also get removed.
   add_task(async function() {
-    sss.processHeader(
-      uri,
-      GOOD_MAX_AGE,
-      secInfo,
-      0,
-      Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST
-    );
+    sss.processHeader(uri, GOOD_MAX_AGE, secInfo);
 
     Assert.ok(
-      sss.isSecureURI(uri, 0),
+      sss.isSecureURI(uri),
       "a.pinning.example.com should be HSTS (subdomain case)"
     );
 
     // Add an unrelated site to HSTS.
     let unrelatedURI = Services.io.newURI("https://example.org");
-    sss.processHeader(
-      unrelatedURI,
-      GOOD_MAX_AGE,
-      secInfo,
-      0,
-      Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST
-    );
-    Assert.ok(sss.isSecureURI(unrelatedURI, 0), "example.org should be HSTS");
+    sss.processHeader(unrelatedURI, GOOD_MAX_AGE, secInfo);
+    Assert.ok(sss.isSecureURI(unrelatedURI), "example.org should be HSTS");
 
     await ForgetAboutSite.removeDataFromDomain("example.com");
 
     Assert.ok(
-      !sss.isSecureURI(uri, 0),
+      !sss.isSecureURI(uri),
       "a.pinning.example.com should not be HSTS now (subdomain case)"
     );
 
     Assert.ok(
-      sss.isSecureURI(unrelatedURI, 0),
+      sss.isSecureURI(unrelatedURI),
       "example.org should still be HSTS"
     );
   });
@@ -120,31 +102,17 @@ function add_tests() {
     let unrelatedURI = Services.io.newURI("https://example.org");
 
     for (let originAttributes of originAttributesList) {
-      sss.processHeader(
-        uri,
-        GOOD_MAX_AGE,
-        secInfo,
-        0,
-        Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST,
-        originAttributes
-      );
+      sss.processHeader(uri, GOOD_MAX_AGE, secInfo, originAttributes);
 
       Assert.ok(
-        sss.isSecureURI(uri, 0, originAttributes),
+        sss.isSecureURI(uri, originAttributes),
         "a.pinning.example.com should be HSTS (originAttributes case)"
       );
 
       // Add an unrelated site to HSTS.
-      sss.processHeader(
-        unrelatedURI,
-        GOOD_MAX_AGE,
-        secInfo,
-        0,
-        Ci.nsISiteSecurityService.SOURCE_ORGANIC_REQUEST,
-        originAttributes
-      );
+      sss.processHeader(unrelatedURI, GOOD_MAX_AGE, secInfo, originAttributes);
       Assert.ok(
-        sss.isSecureURI(unrelatedURI, 0, originAttributes),
+        sss.isSecureURI(unrelatedURI, originAttributes),
         "example.org should be HSTS (originAttributes case)"
       );
     }
@@ -153,13 +121,13 @@ function add_tests() {
 
     for (let originAttributes of originAttributesList) {
       Assert.ok(
-        !sss.isSecureURI(uri, 0, originAttributes),
+        !sss.isSecureURI(uri, originAttributes),
         "a.pinning.example.com should not be HSTS now " +
           "(originAttributes case)"
       );
 
       Assert.ok(
-        sss.isSecureURI(unrelatedURI, 0, originAttributes),
+        sss.isSecureURI(unrelatedURI, originAttributes),
         "example.org should still be HSTS (originAttributes case)"
       );
     }

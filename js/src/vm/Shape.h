@@ -22,9 +22,9 @@
 #include "NamespaceImports.h"
 
 #include "gc/Barrier.h"
-#include "gc/FreeOp.h"
+#include "gc/GCContext.h"
 #include "gc/MaybeRooted.h"
-#include "gc/Rooting.h"
+#include "gc/Policy.h"
 #include "js/HashTable.h"
 #include "js/Id.h"  // JS::PropertyKey
 #include "js/MemoryMetrics.h"
@@ -39,6 +39,7 @@
 #include "vm/PropMap.h"
 #include "vm/StringType.h"
 #include "vm/SymbolType.h"
+#include "vm/TaggedProto.h"
 
 // [SMDOC] Shapes
 //
@@ -200,7 +201,7 @@ class BaseShape : public gc::TenuredCellWithNonGCPointer<const JSClass> {
   BaseShape& operator=(const BaseShape& other) = delete;
 
  public:
-  void finalize(JSFreeOp* fop) {}
+  void finalize(JS::GCContext* gcx) {}
 
   BaseShape(const JSClass* clasp, JS::Realm* realm, TaggedProto proto);
 
@@ -214,9 +215,6 @@ class BaseShape : public gc::TenuredCellWithNonGCPointer<const JSClass> {
   JS::Compartment* maybeCompartment() const { return compartment(); }
 
   TaggedProto proto() const { return proto_; }
-
-  void setRealmForMergeRealms(JS::Realm* realm) { realm_ = realm; }
-  void setProtoForMergeRealms(TaggedProto proto) { proto_ = proto; }
 
   /*
    * Lookup base shapes from the zone's baseShapes table, adding if not
@@ -461,8 +459,8 @@ class Shape : public gc::CellWithTenuredGCPointer<gc::TenuredCell, BaseShape> {
   void dump() const;
 #endif
 
-  inline void purgeCache(JSFreeOp* fop);
-  inline void finalize(JSFreeOp* fop);
+  inline void purgeCache(JS::GCContext* gcx);
+  inline void finalize(JS::GCContext* gcx);
 
   static const JS::TraceKind TraceKind = JS::TraceKind::Shape;
 
@@ -547,7 +545,7 @@ class SharedShape : public js::Shape {
    * getInitialShape calls, until the new shape becomes unreachable in a GC
    * and the table entry is purged.
    */
-  static void insertInitialShape(JSContext* cx, HandleShape shape);
+  static void insertInitialShape(JSContext* cx, Handle<Shape*> shape);
 
   /*
    * Some object subclasses are allocated with a built-in set of properties.

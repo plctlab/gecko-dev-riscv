@@ -10,12 +10,44 @@ const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class Command extends Module {
+class CommandModule extends Module {
+  constructor(messageHandler) {
+    super(messageHandler);
+    this._testCategorySessionData = [];
+
+    this._createdByMessageHandlerConstructor = this._isCreatedByMessageHandlerConstructor();
+  }
   destroy() {}
 
   /**
    * Commands
    */
+
+  _applySessionData(params) {
+    if (params.category === "testCategory") {
+      const added = params.added || [];
+      const removed = params.removed || [];
+
+      this._testCategorySessionData = this._testCategorySessionData
+        .concat(added)
+        .filter(value => !removed.includes(value));
+
+      return {
+        addedData: added.join(", "),
+        removedData: removed.join(", "),
+        sessionData: this._testCategorySessionData.join(", "),
+        contextId: this.messageHandler.contextId,
+      };
+    }
+
+    if (params.category === "browser_session_data_browser_element") {
+      this.emitEvent("received-session-data", {
+        contextId: this.messageHandler.contextId,
+      });
+    }
+
+    return {};
+  }
 
   testWindowGlobalModule() {
     return "windowglobal-value";
@@ -34,6 +66,21 @@ class Command extends Module {
   testForwardToWindowGlobal() {
     return "forward-to-windowglobal-value";
   }
+
+  testIsCreatedByMessageHandlerConstructor() {
+    return this._createdByMessageHandlerConstructor;
+  }
+
+  _isCreatedByMessageHandlerConstructor() {
+    let caller = Components.stack.caller;
+    while (caller) {
+      if (caller.name === this.messageHandler.constructor.name) {
+        return true;
+      }
+      caller = caller.caller;
+    }
+    return false;
+  }
 }
 
-const command = Command;
+const command = CommandModule;

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! A [`@layer`][layer] urle.
+//! A [`@layer`][layer] rule.
 //!
 //! [layer]: https://drafts.csswg.org/css-cascade-5/#layering
 
@@ -13,100 +13,51 @@ use crate::values::AtomIdent;
 
 use super::CssRules;
 
-use cssparser::{Parser, SourceLocation, ToCss as CssParserToCss, Token};
+use cssparser::{Parser, SourceLocation, Token};
 use servo_arc::Arc;
 use smallvec::SmallVec;
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ParseError, ToCss};
 
-/// The order of a given layer. We encode in a 32-bit integer as follows:
-///
-///  * 0 is reserved for the initial (top-level) layer.
-///  * Top 7 bits are for top level layer order.
-///  * The 25 remaining bits are split in 5 chunks of 5 bits each, for each
-///    nesting level.
-///
-/// This scheme this gives up to 127 layers in the top level, and up to 31
-/// children layers in nested levels, with a max of 6 nesting levels over all.
-///
-/// This seemingly complicated scheme is to avoid fixing up layer orders after
-/// the cascade data rebuild.
-///
-/// An alternative approach that would allow improving those limits would be to
-/// make layers have a sequential identifier, and sort layer order after the
-/// fact. But that complicates incremental cascade data rebuild.
-#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq, PartialOrd, Ord)]
-pub struct LayerOrder(u32);
+/// The order of a given layer. We use 16 bits so that we can pack LayerOrder
+/// and CascadeLevel in a single 32-bit struct. If we need more bits we can go
+/// back to packing CascadeLevel in a single byte as we did before.
+#[derive(Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq, PartialOrd, Ord)]
+pub struct LayerOrder(u16);
 
 impl LayerOrder {
-    const FIRST_LEVEL_BITS: usize = 7;
-    const CHILD_BITS: usize = 5;
-    const FIRST_LEVEL_MASK: u32 = 0b11111110_00000000_00000000_00000000;
-    const CHILD_MASK: u32 = 0b00011111;
-
-    /// Get the raw value.
-    pub fn raw(self) -> u32 {
-        self.0
+    /// The order of the root layer.
+    pub const fn root() -> Self {
+        Self(std::u16::MAX - 1)
     }
 
-    /// The top level layer (implicit) is zero.
+    /// The order of the style attribute layer.
+    pub const fn style_attribute() -> Self {
+        Self(std::u16::MAX)
+    }
+
+    /// Returns whether this layer is for the style attribute, which behaves
+    /// differently in terms of !important, see
+    /// https://github.com/w3c/csswg-drafts/issues/6872
+    ///
+    /// (This is a bit silly, mind-you, but it's needed so that revert-layer
+    /// behaves correctly).
     #[inline]
-    pub const fn top_level() -> Self {
+    pub fn is_style_attribute_layer(&self) -> bool {
+        *self == Self::style_attribute()
+    }
+
+    /// The first cascade layer order.
+    pub const fn first() -> Self {
         Self(0)
     }
 
-    /// The first layer order.
+    /// Increment the cascade layer order.
     #[inline]
-    pub const fn first() -> Self {
-        Self(1 << (32 - Self::FIRST_LEVEL_BITS))
-    }
-
-    fn child_bit_offset(self) -> usize {
-        if self.0 & (Self::CHILD_MASK << 5) != 0 {
-            return 0; // We're at the last or next-to-last level.
+    pub fn inc(&mut self) {
+        if self.0 != std::u16::MAX - 1 {
+            self.0 += 1;
         }
-        if self.0 & (Self::CHILD_MASK << 10) != 0 {
-            return 5;
-        }
-        if self.0 & (Self::CHILD_MASK << 15) != 0 {
-            return 10;
-        }
-        if self.0 & (Self::CHILD_MASK << 20) != 0 {
-            return 15;
-        }
-        if self.0 != 0 {
-            return 20;
-        }
-        return 25;
-    }
-
-    fn sibling_bit_mask_max_and_offset(self) -> (u32, u32, u32) {
-        debug_assert_ne!(self.0, 0, "Top layer should have no siblings");
-        for offset in &[0, 5, 10, 15, 20] {
-            let mask = Self::CHILD_MASK << *offset;
-            if self.0 & mask != 0 {
-                return (mask, (1 << Self::CHILD_BITS) - 1, *offset);
-            }
-        }
-        return (Self::FIRST_LEVEL_MASK, (1 << Self::FIRST_LEVEL_BITS) - 1, 25);
-    }
-
-    /// Generate the layer order for our first child.
-    pub fn for_child(self) -> Self {
-        Self(self.0 | (1 << self.child_bit_offset()))
-    }
-
-    /// Generate the layer order for our next sibling. Might return the same
-    /// order when our limits overflow.
-    pub fn for_next_sibling(self) -> Self {
-        let (mask, max_index, offset) = self.sibling_bit_mask_max_and_offset();
-        let self_index = (self.0 & mask) >> offset;
-        let next_index = if self_index == max_index {
-            self_index
-        } else {
-            self_index + 1
-        };
-        Self((self.0 & !mask) | (next_index << offset))
     }
 }
 
@@ -197,71 +148,34 @@ impl ToCss for LayerName {
     }
 }
 
-/// The kind of layer rule this is.
 #[derive(Debug, ToShmem)]
-pub enum LayerRuleKind {
-    /// A block `@layer <name>? { ... }`
-    Block {
-        /// The layer name, or `None` if anonymous.
-        name: Option<LayerName>,
-        /// The nested rules.
-        rules: Arc<Locked<CssRules>>,
-    },
-    /// A statement `@layer <name>, <name>, <name>;`
-    Statement {
-        /// The list of layers to sort.
-        names: Vec<LayerName>,
-    },
-}
-
-/// A [`@layer`][layer] rule.
-///
-/// [layer]: https://drafts.csswg.org/css-cascade-5/#layering
-#[derive(Debug, ToShmem)]
-pub struct LayerRule {
-    /// The kind of layer rule we are.
-    pub kind: LayerRuleKind,
-    /// The source position where this media rule was found.
+/// A block `@layer <name>? { ... }`
+/// https://drafts.csswg.org/css-cascade-5/#layer-block
+pub struct LayerBlockRule {
+    /// The layer name, or `None` if anonymous.
+    pub name: Option<LayerName>,
+    /// The nested rules.
+    pub rules: Arc<Locked<CssRules>>,
+    /// The source position where this rule was found.
     pub source_location: SourceLocation,
 }
 
-impl ToCssWithGuard for LayerRule {
+impl ToCssWithGuard for LayerBlockRule {
     fn to_css(
         &self,
         guard: &SharedRwLockReadGuard,
         dest: &mut crate::str::CssStringWriter,
     ) -> fmt::Result {
         dest.write_str("@layer")?;
-        match self.kind {
-            LayerRuleKind::Block {
-                ref name,
-                ref rules,
-            } => {
-                if let Some(ref name) = *name {
-                    dest.write_char(' ')?;
-                    name.to_css(&mut CssWriter::new(dest))?;
-                }
-                rules.read_with(guard).to_css_block(guard, dest)
-            },
-            LayerRuleKind::Statement { ref names } => {
-                let mut writer = CssWriter::new(dest);
-                let mut first = true;
-                for name in &**names {
-                    if first {
-                        writer.write_char(' ')?;
-                    } else {
-                        writer.write_str(", ")?;
-                    }
-                    first = false;
-                    name.to_css(&mut writer)?;
-                }
-                dest.write_char(';')
-            },
+        if let Some(ref name) = self.name {
+            dest.write_char(' ')?;
+            name.to_css(&mut CssWriter::new(dest))?;
         }
+        self.rules.read_with(guard).to_css_block(guard, dest)
     }
 }
 
-impl DeepCloneWithLock for LayerRule {
+impl DeepCloneWithLock for LayerBlockRule {
     fn deep_clone_with_lock(
         &self,
         lock: &SharedRwLock,
@@ -269,25 +183,57 @@ impl DeepCloneWithLock for LayerRule {
         params: &DeepCloneParams,
     ) -> Self {
         Self {
-            kind: match self.kind {
-                LayerRuleKind::Block {
-                    ref name,
-                    ref rules,
-                } => LayerRuleKind::Block {
-                    name: name.clone(),
-                    rules: Arc::new(
-                        lock.wrap(
-                            rules
-                                .read_with(guard)
-                                .deep_clone_with_lock(lock, guard, params),
-                        ),
-                    ),
-                },
-                LayerRuleKind::Statement { ref names } => LayerRuleKind::Statement {
-                    names: names.clone(),
-                },
-            },
+            name: self.name.clone(),
+            rules: Arc::new(
+                lock.wrap(
+                    self.rules
+                        .read_with(guard)
+                        .deep_clone_with_lock(lock, guard, params),
+                ),
+            ),
             source_location: self.source_location.clone(),
         }
+    }
+}
+
+/// A statement `@layer <name>, <name>, <name>;`
+///
+/// https://drafts.csswg.org/css-cascade-5/#layer-empty
+#[derive(Clone, Debug, ToShmem)]
+pub struct LayerStatementRule {
+    /// The list of layers to sort.
+    pub names: Vec<LayerName>,
+    /// The source position where this rule was found.
+    pub source_location: SourceLocation,
+}
+
+impl ToCssWithGuard for LayerStatementRule {
+    fn to_css(
+        &self,
+        _: &SharedRwLockReadGuard,
+        dest: &mut crate::str::CssStringWriter,
+    ) -> fmt::Result {
+        let mut writer = CssWriter::new(dest);
+        writer.write_str("@layer ")?;
+        let mut first = true;
+        for name in &*self.names {
+            if !first {
+                writer.write_str(", ")?;
+            }
+            first = false;
+            name.to_css(&mut writer)?;
+        }
+        writer.write_char(';')
+    }
+}
+
+impl DeepCloneWithLock for LayerStatementRule {
+    fn deep_clone_with_lock(
+        &self,
+        _: &SharedRwLock,
+        _: &SharedRwLockReadGuard,
+        _: &DeepCloneParams,
+    ) -> Self {
+        self.clone()
     }
 }

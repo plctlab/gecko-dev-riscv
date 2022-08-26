@@ -3,26 +3,25 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
+const lazy = {};
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   RemoteL10n: "resource://activity-stream/lib/RemoteL10n.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "TrackingDBService",
   "@mozilla.org/tracking-db-service;1",
   "nsITrackingDBService"
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "milestones",
   "browser.contentblocking.cfr-milestone.milestones",
   "[]",
@@ -115,7 +114,7 @@ class PageAction {
   }
 
   reloadL10n() {
-    RemoteL10n.reloadL10n();
+    lazy.RemoteL10n.reloadL10n();
   }
 
   async showAddressBarNotifier(recommendation, shouldExpand = false) {
@@ -328,7 +327,7 @@ class PageAction {
       return string;
     }
 
-    const [localeStrings] = await RemoteL10n.l10n.formatMessages([
+    const [localeStrings] = await lazy.RemoteL10n.l10n.formatMessages([
       {
         id: string.string_id,
         args: string.args,
@@ -428,15 +427,15 @@ class PageAction {
 
     let { content, id } = message;
     let { primary, secondary } = content.buttons;
-    let earliestDate = await TrackingDBService.getEarliestRecordedDate();
+    let earliestDate = await lazy.TrackingDBService.getEarliestRecordedDate();
     let timestamp = new Date().getTime(earliestDate);
     let panelTitle = "";
     let headerLabel = this.window.document.getElementById(
       "cfr-notification-header-label"
     );
     let reachedMilestone = 0;
-    let totalSaved = await TrackingDBService.sumAllEvents();
-    for (let milestone of milestones) {
+    let totalSaved = await lazy.TrackingDBService.sumAllEvents();
+    for (let milestone of lazy.milestones) {
       if (totalSaved >= milestone) {
         reachedMilestone = milestone;
       }
@@ -445,7 +444,7 @@ class PageAction {
       headerLabel.firstChild.remove();
     }
     headerLabel.appendChild(
-      RemoteL10n.createElement(this.window.document, "span", {
+      lazy.RemoteL10n.createElement(this.window.document, "span", {
         content: message.content.heading_text,
         attributes: {
           blockedCount: reachedMilestone,
@@ -462,9 +461,6 @@ class PageAction {
     this.window.document
       .getElementById("contextual-feature-recommendation-notification")
       .setAttribute("data-notification-bucket", content.bucket_id);
-    let notification = this.window.document.getElementById(
-      "notification-popup"
-    );
 
     let primaryBtnString = await this.getStrings(primary.label);
     let primaryActionCallback = () => {
@@ -508,29 +504,6 @@ class PageAction {
       },
     ];
 
-    let style = this.window.document.createElement("style");
-    style.textContent = `
-      .cfr-notification-milestone .panel-arrow {
-        fill: #0250BB !important;
-      }
-    `;
-    style.classList.add("milestone-style");
-
-    let arrow;
-    let manageClass = event => {
-      if (event === "dismissed" || event === "removed") {
-        style = notification.shadowRoot.querySelector(".milestone-style");
-        if (style) {
-          notification.shadowRoot.removeChild(style);
-        }
-        arrow.classList.remove("cfr-notification-milestone");
-      } else if (event === "showing") {
-        notification.shadowRoot.appendChild(style);
-        arrow = notification.shadowRoot.querySelector(".panel-arrowcontainer");
-        arrow.classList.add("cfr-notification-milestone");
-      }
-    };
-
     // Actually show the notification
     this.currentNotification = this.window.PopupNotifications.show(
       browser,
@@ -541,7 +514,6 @@ class PageAction {
       secondaryActions,
       {
         hideClose: true,
-        eventCallback: manageClass,
         persistWhileVisible: true,
       }
     );
@@ -578,18 +550,21 @@ class PageAction {
     );
     const { primary, secondary } = content.buttons;
     let primaryActionCallback;
-    let options = { persistent: !!content.persistent_doorhanger };
+    let persistent = !!content.persistent_doorhanger;
+    let options = { persistent, persistWhileVisible: persistent };
     let panelTitle;
 
     headerLabel.value = await this.getStrings(content.heading_text);
-    headerLink.setAttribute(
-      "href",
-      SUMO_BASE_URL + content.info_icon.sumo_path
-    );
-    headerImage.setAttribute(
-      "tooltiptext",
-      await this.getStrings(content.info_icon.label, "tooltiptext")
-    );
+    if (content.info_icon) {
+      headerLink.setAttribute(
+        "href",
+        SUMO_BASE_URL + content.info_icon.sumo_path
+      );
+      headerImage.setAttribute(
+        "tooltiptext",
+        await this.getStrings(content.info_icon.label, "tooltiptext")
+      );
+    }
     headerLink.onclick = () =>
       this._sendTelemetry({
         message_id: id,
@@ -614,7 +589,7 @@ class PageAction {
           author.firstChild.remove();
         }
         author.appendChild(
-          RemoteL10n.createElement(this.window.document, "span", {
+          lazy.RemoteL10n.createElement(this.window.document, "span", {
             content: content.text,
           })
         );
@@ -657,7 +632,7 @@ class PageAction {
         }
         // Main body content of the dropdown
         footerText.appendChild(
-          RemoteL10n.createElement(this.window.document, "span", {
+          lazy.RemoteL10n.createElement(this.window.document, "span", {
             content: content.text,
           })
         );
@@ -878,16 +853,18 @@ const CFRPageActions = {
         // The browser has a recommendation specified with this host, so show
         // the page action
         pageAction.showAddressBarNotifier(recommendation);
-      } else if (recommendation.retain) {
-        // Keep the recommendation first time the user navigates away just in
-        // case they will go back to the previous page
-        pageAction.hideAddressBarNotifier();
-        recommendation.retain = false;
-      } else {
-        // The user has navigated away from the specified host in the given
-        // browser, so the recommendation is no longer valid and should be removed
-        RecommendationMap.delete(browser);
-        pageAction.hideAddressBarNotifier();
+      } else if (!recommendation.content.persistent_doorhanger) {
+        if (recommendation.retain) {
+          // Keep the recommendation first time the user navigates away just in
+          // case they will go back to the previous page
+          pageAction.hideAddressBarNotifier();
+          recommendation.retain = false;
+        } else {
+          // The user has navigated away from the specified host in the given
+          // browser, so the recommendation is no longer valid and should be removed
+          RecommendationMap.delete(browser);
+          pageAction.hideAddressBarNotifier();
+        }
       }
     } else {
       // There's no recommendation specified for this browser, so hide the page action
@@ -962,7 +939,7 @@ const CFRPageActions = {
    */
   async addRecommendation(browser, host, recommendation, dispatchCFRAction) {
     const win = browser.ownerGlobal;
-    if (PrivateBrowsingUtils.isWindowPrivate(win)) {
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
       return false;
     }
     if (
@@ -1033,8 +1010,5 @@ const CFRPageActions = {
     }
   },
 };
-
-this.PageAction = PageAction;
-this.CFRPageActions = CFRPageActions;
 
 const EXPORTED_SYMBOLS = ["CFRPageActions", "PageAction"];

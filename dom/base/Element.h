@@ -26,7 +26,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/FlushType.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PseudoStyleType.h"
@@ -40,6 +39,7 @@
 #include "mozilla/dom/FragmentOrElement.h"
 #include "mozilla/dom/NameSpaceConstants.h"
 #include "mozilla/dom/NodeInfo.h"
+#include "mozilla/dom/RustTypes.h"
 #include "mozilla/dom/ShadowRootBinding.h"
 #include "nsAtom.h"
 #include "nsAttrValue.h"
@@ -112,6 +112,7 @@ namespace css {
 struct URLValue;
 }  // namespace css
 namespace dom {
+struct CheckVisibilityOptions;
 struct CustomElementData;
 struct SetHTMLOptions;
 struct GetAnimationsOptions;
@@ -168,8 +169,12 @@ enum {
   // style of an element is up-to-date, even during the same restyle process.
   ELEMENT_HANDLED_SNAPSHOT = ELEMENT_FLAG_BIT(3),
 
+  // If this flag is set on an element, that means that it is a HTML datalist
+  // element or has a HTML datalist element ancestor.
+  ELEMENT_IS_DATALIST_OR_HAS_DATALIST_ANCESTOR = ELEMENT_FLAG_BIT(4),
+
   // Remaining bits are for subclasses
-  ELEMENT_TYPE_SPECIFIC_BITS_OFFSET = NODE_TYPE_SPECIFIC_BITS_OFFSET + 4
+  ELEMENT_TYPE_SPECIFIC_BITS_OFFSET = NODE_TYPE_SPECIFIC_BITS_OFFSET + 5
 };
 
 #undef ELEMENT_FLAG_BIT
@@ -217,7 +222,7 @@ class Element : public FragmentOrElement {
 #ifdef MOZILLA_INTERNAL_API
   explicit Element(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : FragmentOrElement(std::move(aNodeInfo)),
-        mState(NS_EVENT_STATE_READONLY | NS_EVENT_STATE_DEFINED) {
+        mState(ElementState::READONLY | ElementState::DEFINED) {
     MOZ_ASSERT(mNodeInfo->NodeType() == ELEMENT_NODE,
                "Bad NodeType in aNodeInfo");
     SetIsElement();
@@ -238,10 +243,10 @@ class Element : public FragmentOrElement {
   NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) override;
 
   /**
-   * Method to get the full state of this element.  See mozilla/EventStates.h
-   * for the possible bits that could be set here.
+   * Method to get the full state of this element. See dom/base/rust/lib.rs for
+   * the possible bits that could be set here.
    */
-  EventStates State() const {
+  ElementState State() const {
     // mState is maintained by having whoever might have changed it
     // call UpdateState() or one of the other mState mutators.
     return mState;
@@ -262,12 +267,12 @@ class Element : public FragmentOrElement {
   /**
    * Method to update mState with link state information.  This does not notify.
    */
-  void UpdateLinkState(EventStates aState);
+  void UpdateLinkState(ElementState aState);
 
   /**
    * Returns the current disabled state of the element.
    */
-  bool IsDisabled() const { return State().HasState(NS_EVENT_STATE_DISABLED); }
+  bool IsDisabled() const { return State().HasState(ElementState::DISABLED); }
 
   virtual int32_t TabIndexDefault() { return -1; }
 
@@ -294,9 +299,16 @@ class Element : public FragmentOrElement {
    */
   void SetShadowRoot(ShadowRoot* aShadowRoot);
 
+  void SetLastRememberedBSize(float aBSize);
+  void SetLastRememberedISize(float aISize);
+  void RemoveLastRememberedBSize();
+  void RemoveLastRememberedISize();
+
   /**
    * Make focus on this element.
    */
+  // TODO: Convert Focus() to MOZ_CAN_RUN_SCRIPT and get rid of the
+  //       kungFuDeathGrip in it.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void Focus(const FocusOptions& aOptions,
                                                  const CallerType aCallerType,
                                                  ErrorResult& aError);
@@ -304,13 +316,13 @@ class Element : public FragmentOrElement {
   /**
    * Show blur and clear focus.
    */
-  virtual void Blur(mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void Blur(mozilla::ErrorResult& aError);
 
   /**
    * The style state of this element. This is the real state of the element
    * with any style locks applied for pseudo-class inspecting.
    */
-  EventStates StyleState() const {
+  ElementState StyleState() const {
     if (!HasLockedStyleStates()) {
       return mState;
     }
@@ -323,9 +335,9 @@ class Element : public FragmentOrElement {
    */
   struct StyleStateLocks {
     // mLocks tracks which event states should be locked.
-    EventStates mLocks;
+    ElementState mLocks;
     // mValues tracks if the locked state should be on or off.
-    EventStates mValues;
+    ElementState mValues;
   };
 
   /**
@@ -337,12 +349,12 @@ class Element : public FragmentOrElement {
    * Add a style state lock on this element.
    * aEnabled is the value to lock the given state bits to.
    */
-  void LockStyleStates(EventStates aStates, bool aEnabled);
+  void LockStyleStates(ElementState aStates, bool aEnabled);
 
   /**
    * Remove a style state lock on this element.
    */
-  void UnlockStyleStates(EventStates aStates);
+  void UnlockStyleStates(ElementState aStates);
 
   /**
    * Clear all style state locks on this element.
@@ -353,15 +365,15 @@ class Element : public FragmentOrElement {
    * Accessors for the state of our dir attribute.
    */
   bool HasDirAuto() const {
-    return State().HasState(NS_EVENT_STATE_DIR_ATTR_LIKE_AUTO);
+    return State().HasState(ElementState::HAS_DIR_ATTR_LIKE_AUTO);
   }
 
   /**
    * Elements with dir="rtl" or dir="ltr".
    */
   bool HasFixedDir() const {
-    return State().HasAtLeastOneOfStates(NS_EVENT_STATE_DIR_ATTR_LTR |
-                                         NS_EVENT_STATE_DIR_ATTR_RTL);
+    return State().HasAtLeastOneOfStates(ElementState::HAS_DIR_ATTR_LTR |
+                                         ElementState::HAS_DIR_ATTR_RTL);
   }
 
   /**
@@ -472,21 +484,21 @@ class Element : public FragmentOrElement {
   inline void SetDirectionality(Directionality aDir, bool aNotify) {
     UnsetFlags(NODE_ALL_DIRECTION_FLAGS);
     if (!aNotify) {
-      RemoveStatesSilently(DIRECTION_STATES);
+      RemoveStatesSilently(ElementState::DIR_STATES);
     }
 
     switch (aDir) {
       case (eDir_RTL):
         SetFlags(NODE_HAS_DIRECTION_RTL);
         if (!aNotify) {
-          AddStatesSilently(NS_EVENT_STATE_RTL);
+          AddStatesSilently(ElementState::RTL);
         }
         break;
 
       case (eDir_LTR):
         SetFlags(NODE_HAS_DIRECTION_LTR);
         if (!aNotify) {
-          AddStatesSilently(NS_EVENT_STATE_LTR);
+          AddStatesSilently(ElementState::LTR);
         }
         break;
 
@@ -595,9 +607,9 @@ class Element : public FragmentOrElement {
 
   void SetDefined(bool aSet) {
     if (aSet) {
-      AddStates(NS_EVENT_STATE_DEFINED);
+      AddStates(ElementState::DEFINED);
     } else {
-      RemoveStates(NS_EVENT_STATE_DEFINED);
+      RemoveStates(ElementState::DEFINED);
     }
   }
 
@@ -651,10 +663,9 @@ class Element : public FragmentOrElement {
   /**
    * Method to get the _intrinsic_ content state of this element.  This is the
    * state that is independent of the element's presentation.  To get the full
-   * content state, use State().  See mozilla/EventStates.h for
    * the possible bits that could be set here.
    */
-  virtual EventStates IntrinsicState() const;
+  virtual ElementState IntrinsicState() const;
 
   /**
    * Method to add state bits.  This should be called from subclass
@@ -662,7 +673,7 @@ class Element : public FragmentOrElement {
    * time and other places where we don't want to notify a state
    * change.
    */
-  void AddStatesSilently(EventStates aStates) { mState |= aStates; }
+  void AddStatesSilently(ElementState aStates) { mState |= aStates; }
 
   /**
    * Method to remove state bits.  This should be called from subclass
@@ -670,7 +681,7 @@ class Element : public FragmentOrElement {
    * time and other places where we don't want to notify a state
    * change.
    */
-  void RemoveStatesSilently(EventStates aStates) { mState &= ~aStates; }
+  void RemoveStatesSilently(ElementState aStates) { mState &= ~aStates; }
 
   already_AddRefed<ShadowRoot> AttachShadowInternal(ShadowRootMode,
                                                     ErrorResult& aError);
@@ -695,12 +706,12 @@ class Element : public FragmentOrElement {
   // Also need to allow Link to call UpdateLinkState.
   friend class Link;
 
-  void NotifyStateChange(EventStates aStates);
+  void NotifyStateChange(ElementState aStates);
 
-  void NotifyStyleStateChange(EventStates aStates);
+  void NotifyStyleStateChange(ElementState aStates);
 
   // Style state computed from element's state and style locks.
-  EventStates StyleStateFromLocks() const;
+  ElementState StyleStateFromLocks() const;
 
  protected:
   // Methods for the ESM, nsGlobalWindow, focus manager and Document to
@@ -708,22 +719,22 @@ class Element : public FragmentOrElement {
   // These will handle setting up script blockers when they notify, so no need
   // to do it in the callers unless desired.  States passed here must only be
   // those in EXTERNALLY_MANAGED_STATES.
-  void AddStates(EventStates aStates) {
-    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
+  void AddStates(ElementState aStates) {
+    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(ElementState::INTRINSIC_STATES),
                "Should only be adding externally-managed states here");
-    EventStates old = mState;
+    ElementState old = mState;
     AddStatesSilently(aStates);
     NotifyStateChange(old ^ mState);
   }
-  void RemoveStates(EventStates aStates) {
-    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
+  void RemoveStates(ElementState aStates) {
+    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(ElementState::INTRINSIC_STATES),
                "Should only be removing externally-managed states here");
-    EventStates old = mState;
+    ElementState old = mState;
     RemoveStatesSilently(aStates);
     NotifyStateChange(old ^ mState);
   }
-  void ToggleStates(EventStates aStates, bool aNotify) {
-    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
+  void ToggleStates(ElementState aStates, bool aNotify) {
+    MOZ_ASSERT(!aStates.HasAtLeastOneOfStates(ElementState::INTRINSIC_STATES),
                "Should only be removing externally-managed states here");
     mState ^= aStates;
     if (aNotify) {
@@ -733,13 +744,13 @@ class Element : public FragmentOrElement {
 
  public:
   // Public methods to manage state bits in MANUALLY_MANAGED_STATES.
-  void AddManuallyManagedStates(EventStates aStates) {
-    MOZ_ASSERT(MANUALLY_MANAGED_STATES.HasAllStates(aStates),
+  void AddManuallyManagedStates(ElementState aStates) {
+    MOZ_ASSERT(ElementState::MANUALLY_MANAGED_STATES.HasAllStates(aStates),
                "Should only be adding manually-managed states here");
     AddStates(aStates);
   }
-  void RemoveManuallyManagedStates(EventStates aStates) {
-    MOZ_ASSERT(MANUALLY_MANAGED_STATES.HasAllStates(aStates),
+  void RemoveManuallyManagedStates(ElementState aStates) {
+    MOZ_ASSERT(ElementState::MANUALLY_MANAGED_STATES.HasAllStates(aStates),
                "Should only be removing manually-managed states here");
     RemoveStates(aStates);
   }
@@ -1054,10 +1065,11 @@ class Element : public FragmentOrElement {
 #endif
 
   /**
-   * Append to aOutDescription a short (preferably one line) string
-   * describing the element.
+   * Append to aOutDescription a string describing the element and its
+   * attributes.
+   * If aShort is true, only the id and class attributes will be listed.
    */
-  void Describe(nsAString& aOutDescription) const;
+  void Describe(nsAString& aOutDescription, bool aShort = false) const;
 
   /*
    * Attribute Mapping Helpers
@@ -1305,11 +1317,33 @@ class Element : public FragmentOrElement {
     return slots ? slots->mShadowRoot.get() : nullptr;
   }
 
+  const Maybe<float> GetLastRememberedBSize() const {
+    const nsExtendedDOMSlots* slots = GetExistingExtendedDOMSlots();
+    return slots ? slots->mLastRememberedBSize : Nothing();
+  }
+  const Maybe<float> GetLastRememberedISize() const {
+    const nsExtendedDOMSlots* slots = GetExistingExtendedDOMSlots();
+    return slots ? slots->mLastRememberedISize : Nothing();
+  }
+  bool HasLastRememberedBSize() const {
+    return GetLastRememberedBSize().isSome();
+  }
+  bool HasLastRememberedISize() const {
+    return GetLastRememberedISize().isSome();
+  }
+
+  // https://drafts.csswg.org/cssom-view-1/#dom-element-checkvisibility
+  MOZ_CAN_RUN_SCRIPT bool CheckVisibility(const CheckVisibilityOptions&);
+
  private:
+  // DO NOT USE THIS FUNCTION directly in C++. This function is supposed to be
+  // called from JS. Use PresShell::ScrollContentIntoView instead.
   MOZ_CAN_RUN_SCRIPT void ScrollIntoView(const ScrollIntoViewOptions& aOptions);
 
  public:
   MOZ_CAN_RUN_SCRIPT
+  // DO NOT USE THIS FUNCTION directly in C++. This function is supposed to be
+  // called from JS. Use PresShell::ScrollContentIntoView instead.
   void ScrollIntoView(const BooleanOrScrollIntoViewOptions& aObject);
   MOZ_CAN_RUN_SCRIPT void Scroll(double aXScroll, double aYScroll);
   MOZ_CAN_RUN_SCRIPT void Scroll(const ScrollToOptions& aOptions);
@@ -1336,6 +1370,11 @@ class Element : public FragmentOrElement {
   MOZ_CAN_RUN_SCRIPT int32_t ClientHeight() {
     return CSSPixel::FromAppUnits(GetClientAreaRect().Height()).Rounded();
   }
+
+  MOZ_CAN_RUN_SCRIPT int32_t ScreenX();
+  MOZ_CAN_RUN_SCRIPT int32_t ScreenY();
+  MOZ_CAN_RUN_SCRIPT already_AddRefed<nsIScreen> GetScreen();
+
   MOZ_CAN_RUN_SCRIPT int32_t ScrollTopMin();
   MOZ_CAN_RUN_SCRIPT int32_t ScrollTopMax();
   MOZ_CAN_RUN_SCRIPT int32_t ScrollLeftMin();
@@ -1475,7 +1514,7 @@ class Element : public FragmentOrElement {
     return slots ? slots->mAttributeMap.get() : nullptr;
   }
 
-  virtual void RecompileScriptEventListeners() {}
+  void RecompileScriptEventListeners();
 
   /**
    * Get the attr info for the given namespace ID and attribute name.  The
@@ -1931,22 +1970,41 @@ class Element : public FragmentOrElement {
    * and that we are actually on a link.
    *
    * @param aVisitor event visitor
-   * @param aURI the uri of the link, set only if the return value is true [OUT]
    * @return true if we can handle the link event, false otherwise
    */
-  bool CheckHandleEventForLinksPrecondition(EventChainVisitor& aVisitor,
-                                            nsIURI** aURI) const;
+  bool CheckHandleEventForLinksPrecondition(EventChainVisitor& aVisitor) const;
 
   /**
    * Handle status bar updates before they can be cancelled.
    */
   void GetEventTargetParentForLinks(EventChainPreVisitor& aVisitor);
 
+  void DispatchChromeOnlyLinkClickEvent(EventChainPostVisitor& aVisitor);
+
   /**
    * Handle default actions for link event if the event isn't consumed yet.
    */
   MOZ_CAN_RUN_SCRIPT
   nsresult PostHandleEventForLinks(EventChainPostVisitor& aVisitor);
+
+ public:
+  /**
+   * Check if this element is a link. This matches the CSS definition of the
+   * :any-link pseudo-class.
+   */
+  bool IsLink() const {
+    return mState.HasAtLeastOneOfStates(ElementState::VISITED |
+                                        ElementState::UNVISITED);
+  }
+
+  /**
+   * Get a pointer to the full href URI (fully resolved and canonicalized, since
+   * it's an nsIURI object) for link elements.
+   *
+   * @return A pointer to the URI or null if the element is not a link, or it
+   *         has no HREF attribute, or the HREF attribute is an invalid URI.
+   */
+  virtual already_AddRefed<nsIURI> GetHrefURI() const { return nullptr; }
 
   /**
    * Get the target of this link element. Consumers should established that
@@ -1960,6 +2018,7 @@ class Element : public FragmentOrElement {
    */
   virtual void GetLinkTarget(nsAString& aTarget);
 
+ protected:
   enum class ReparseAttributes { No, Yes };
   /**
    * Copy attributes and state to another element
@@ -1974,7 +2033,7 @@ class Element : public FragmentOrElement {
    * content attribute name and returns the corresponding event name, to be used
    * for adding the actual event listener.
    */
-  static nsAtom* GetEventNameForAttr(nsAtom* aAttr);
+  virtual nsAtom* GetEventNameForAttr(nsAtom* aAttr);
 
   /**
    * Register/unregister this element to accesskey map if it supports accesskey.
@@ -2011,7 +2070,7 @@ class Element : public FragmentOrElement {
   void AsElement() = delete;
 
   // Data members
-  EventStates mState;
+  ElementState mState;
   // Per-node data managed by Servo.
   //
   // There should not be data on nodes that are not in the flattened tree, or

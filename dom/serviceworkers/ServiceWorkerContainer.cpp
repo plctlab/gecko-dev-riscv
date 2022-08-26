@@ -20,11 +20,12 @@
 
 #include "nsCycleCollectionParticipant.h"
 #include "nsServiceManagerUtils.h"
-#include "mozilla/BasePrincipal.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StorageAccess.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/DOMMozPromiseRequestHolder.h"
 #include "mozilla/dom/MessageEvent.h"
@@ -46,8 +47,7 @@
 #  undef DispatchMessage
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ServiceWorkerContainer)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
@@ -57,53 +57,6 @@ NS_IMPL_RELEASE_INHERITED(ServiceWorkerContainer, DOMEventTargetHelper)
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(ServiceWorkerContainer, DOMEventTargetHelper,
                                    mControllerWorker, mReadyPromise)
-
-namespace {
-
-bool IsInPrivateBrowsing(JSContext* const aCx) {
-  if (const nsCOMPtr<nsIGlobalObject> global = xpc::CurrentNativeGlobal(aCx)) {
-    if (const nsCOMPtr<nsIPrincipal> principal = global->PrincipalOrNull()) {
-      return principal->GetPrivateBrowsingId() > 0;
-    }
-  }
-  return false;
-}
-
-bool IsServiceWorkersTestingEnabledInWindow(JSObject* const aGlobal) {
-  if (const nsCOMPtr<nsPIDOMWindowInner> innerWindow =
-          Navigator::GetWindowFromGlobal(aGlobal)) {
-    if (auto* bc = innerWindow->GetBrowsingContext()) {
-      return bc->Top()->ServiceWorkersTestingEnabled();
-    }
-  }
-  return false;
-}
-
-}  // namespace
-
-/* static */
-bool ServiceWorkerContainer::IsEnabled(JSContext* aCx, JSObject* aGlobal) {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  // FIXME: Why does this need to root? Shouldn't the caller root aGlobal for
-  // us?
-  JS::Rooted<JSObject*> global(aCx, aGlobal);
-
-  if (!StaticPrefs::dom_serviceWorkers_enabled()) {
-    return false;
-  }
-
-  if (IsInPrivateBrowsing(aCx)) {
-    return false;
-  }
-
-  if (IsSecureContextOrObjectIsFromSecureContext(aCx, global)) {
-    return true;
-  }
-
-  return StaticPrefs::dom_serviceWorkers_testing_enabled() ||
-         IsServiceWorkersTestingEnabledInWindow(global);
-}
 
 // static
 already_AddRefed<ServiceWorkerContainer> ServiceWorkerContainer::Create(
@@ -153,7 +106,7 @@ using mozilla::dom::ipc::StructuredCloneData;
 struct MOZ_HEAP_CLASS ServiceWorkerContainer::ReceivedMessage {
   explicit ReceivedMessage(const ClientPostMessageArgs& aArgs)
       : mServiceWorker(aArgs.serviceWorker()) {
-    mClonedData.CopyFromClonedMessageDataForBackgroundChild(aArgs.clonedData());
+    mClonedData.CopyFromClonedMessageData(aArgs.clonedData());
   }
 
   ServiceWorkerDescriptor mServiceWorker;
@@ -252,17 +205,6 @@ already_AddRefed<Promise> ServiceWorkerContainer::Register(
   // disabled by the 'extensions.background_service_worker.enabled' pref.
   if (scriptURI->SchemeIs("moz-extension") &&
       !StaticPrefs::extensions_backgroundServiceWorker_enabled_AtStartup()) {
-    aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
-    return nullptr;
-  }
-
-  // Allow a webextension principal to register a service worker script with
-  // a moz-extension url only if 'extensions.service_worker_register.allowed'
-  // is true.
-  if (scriptURI->SchemeIs("moz-extension") &&
-      aCallerType == CallerType::NonSystem &&
-      (!baseURI->SchemeIs("moz-extension") ||
-       !StaticPrefs::extensions_serviceWorkerRegister_allowed())) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
     return nullptr;
   }
@@ -610,13 +552,20 @@ void ServiceWorkerContainer::GetScopeForUrl(const nsAString& aUrl,
     return;
   }
 
-  nsCOMPtr<Document> doc = window->GetExtantDoc();
-  if (NS_WARN_IF(!doc)) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+  nsCOMPtr<nsIPrincipal> principal;
+  nsresult rv = StoragePrincipalHelper::GetPrincipal(
+      window,
+      StaticPrefs::privacy_partition_serviceWorkers()
+          ? StoragePrincipalHelper::eForeignPartitionedPrincipal
+          : StoragePrincipalHelper::eRegularPrincipal,
+      getter_AddRefs(principal));
+
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aRv.Throw(rv);
     return;
   }
 
-  aRv = swm->GetScopeForUrl(doc->NodePrincipal(), aUrl, aScope);
+  aRv = swm->GetScopeForUrl(principal, aUrl, aScope);
 }
 
 nsIGlobalObject* ServiceWorkerContainer::GetGlobalIfValid(
@@ -643,7 +592,10 @@ nsIGlobalObject* ServiceWorkerContainer::GetGlobalIfValid(
   // the registration it increases the chance they can bypass the storage
   // block via postMessage(), etc.
   auto storageAllowed = StorageAllowedForWindow(window);
-  if (NS_WARN_IF(storageAllowed != StorageAccess::eAllow)) {
+  if (NS_WARN_IF(storageAllowed != StorageAccess::eAllow &&
+                 (!StaticPrefs::privacy_partition_serviceWorkers() ||
+                  !StoragePartitioningEnabled(storageAllowed,
+                                              doc->CookieJarSettings())))) {
     if (aStorageFailureCB) {
       aStorageFailureCB(doc);
     }
@@ -792,5 +744,4 @@ Result<Ok, bool> ServiceWorkerContainer::FillInMessageEventInit(
   return Ok();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

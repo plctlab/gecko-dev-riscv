@@ -7,7 +7,6 @@
  * Tests utility functions contained in `source-utils.js`
  */
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
 const curl = require("devtools/client/shared/curl");
 const Curl = curl.Curl;
 const CurlUtils = curl.CurlUtils;
@@ -60,9 +59,8 @@ add_task(async function() {
     "accept-language header present in curl output"
   );
   ok(
-    !headerTypeInParams(curlParams, "Accept-Encoding") &&
-      inParams(curlParams, "--compressed"),
-    '"--compressed" param replaced accept-encoding header'
+    exactHeaderInParams(curlParams, "Accept-Encoding: gzip, deflate, br"),
+    "accept-encoding header present in curl output"
   );
   ok(
     exactHeaderInParams(curlParams, "Origin: https://example.com"),

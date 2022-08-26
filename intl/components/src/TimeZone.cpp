@@ -169,13 +169,8 @@ Result<int32_t, ICUError> TimeZone::GetUTCOffsetMs(int64_t aLocalMilliseconds) {
   // time starts or the time zone offset is increased due to a time zone rule
   // change), t_local must be interpreted using the time zone offset before the
   // transition.
-#ifndef U_HIDE_DRAFT_API
   constexpr UTimeZoneLocalOption skippedTime = UCAL_TZ_LOCAL_FORMER;
   constexpr UTimeZoneLocalOption repeatedTime = UCAL_TZ_LOCAL_FORMER;
-#else
-  constexpr UTimeZoneLocalOption skippedTime = UTimeZoneLocalOption(0x4);
-  constexpr UTimeZoneLocalOption repeatedTime = UTimeZoneLocalOption(0x4);
-#endif
 
   UDate date = UDate(aLocalMilliseconds);
 
@@ -268,14 +263,14 @@ Result<bool, ICUError> TimeZone::SetDefaultTimeZone(
 
   // Retrieve the current default time zone in case we need to restore it.
   TimeZoneIdentifierVector defaultTimeZone;
-  MOZ_TRY(FillVectorWithICUCall(defaultTimeZone, ucal_getDefaultTimeZone));
+  MOZ_TRY(FillBufferWithICUCall(defaultTimeZone, ucal_getDefaultTimeZone));
 
   // Try to set the new time zone.
   MOZ_TRY(mozilla::intl::SetDefaultTimeZone(tzid));
 
   // Check if the time zone was actually applied.
   TimeZoneIdentifierVector newTimeZone;
-  MOZ_TRY(FillVectorWithICUCall(newTimeZone, ucal_getDefaultTimeZone));
+  MOZ_TRY(FillBufferWithICUCall(newTimeZone, ucal_getDefaultTimeZone));
 
   // Return if the new time zone was successfully applied.
   if (!IsUnknownTimeZone(newTimeZone)) {
@@ -296,12 +291,21 @@ ICUResult TimeZone::SetDefaultTimeZoneFromHostTimeZone() {
   }
 #else
   TimeZoneIdentifierVector hostTimeZone;
-  MOZ_TRY(FillVectorWithICUCall(hostTimeZone, ucal_getHostTimeZone));
+  MOZ_TRY(FillBufferWithICUCall(hostTimeZone, ucal_getHostTimeZone));
 
   MOZ_TRY(mozilla::intl::SetDefaultTimeZone(hostTimeZone));
 #endif
 
   return Ok{};
+}
+
+Result<Span<const char>, ICUError> TimeZone::GetTZDataVersion() {
+  UErrorCode status = U_ZERO_ERROR;
+  const char* tzdataVersion = ucal_getTZDataVersion(&status);
+  if (U_FAILURE(status)) {
+    return Err(ToICUError(status));
+  }
+  return MakeStringSpan(tzdataVersion);
 }
 
 Result<SpanEnumeration<char>, ICUError> TimeZone::GetAvailableTimeZones(

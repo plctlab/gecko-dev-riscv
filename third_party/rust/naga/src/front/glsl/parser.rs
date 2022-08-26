@@ -1,15 +1,15 @@
 use super::{
-    ast::{FunctionKind, Profile, TypeQualifier},
+    ast::{FunctionKind, Profile, TypeQualifiers},
     context::{Context, ExprPos},
     error::ExpectedToken,
     error::{Error, ErrorKind},
     lex::{Lexer, LexerResultKind},
     token::{Directive, DirectiveKind},
-    token::{SourceMetadata, Token, TokenValue},
+    token::{Token, TokenValue},
     variables::{GlobalOrConstant, VarDeclaration},
     Parser, Result,
 };
-use crate::{arena::Handle, Block, Constant, ConstantInner, Expression, ScalarValue, Type};
+use crate::{arena::Handle, Block, Constant, ConstantInner, Expression, ScalarValue, Span, Type};
 use core::convert::TryFrom;
 use pp_rs::token::{PreprocessorError, Token as PPToken, TokenValue as PPTokenValue};
 use std::iter::Peekable;
@@ -21,18 +21,42 @@ mod types;
 
 pub struct ParsingContext<'source> {
     lexer: Peekable<Lexer<'source>>,
-    last_meta: SourceMetadata,
+    /// Used to store tokens already consumed by the parser but that need to be backtracked
+    backtracked_token: Option<Token>,
+    last_meta: Span,
 }
 
 impl<'source> ParsingContext<'source> {
     pub fn new(lexer: Lexer<'source>) -> Self {
         ParsingContext {
             lexer: lexer.peekable(),
-            last_meta: SourceMetadata::none(),
+            backtracked_token: None,
+            last_meta: Span::default(),
         }
     }
 
-    pub fn expect_ident(&mut self, parser: &mut Parser) -> Result<(String, SourceMetadata)> {
+    /// Helper method for backtracking from a consumed token
+    ///
+    /// This method should always be used instead of assigning to `backtracked_token` since
+    /// it validates that backtracking hasn't occurred more than one time in a row
+    ///
+    /// # Panics
+    /// - If the parser already backtracked without bumping in between
+    pub fn backtrack(&mut self, token: Token) -> Result<()> {
+        // This should never happen
+        if let Some(ref prev_token) = self.backtracked_token {
+            return Err(Error {
+                kind: ErrorKind::InternalError("The parser tried to backtrack twice in a row"),
+                meta: prev_token.meta,
+            });
+        }
+
+        self.backtracked_token = Some(token);
+
+        Ok(())
+    }
+
+    pub fn expect_ident(&mut self, parser: &mut Parser) -> Result<(String, Span)> {
         let token = self.bump(parser)?;
 
         match token.value {
@@ -59,6 +83,11 @@ impl<'source> ParsingContext<'source> {
 
     pub fn next(&mut self, parser: &mut Parser) -> Option<Token> {
         loop {
+            if let Some(token) = self.backtracked_token.take() {
+                self.last_meta = token.meta;
+                break Some(token);
+            }
+
             let res = self.lexer.next()?;
 
             match res.kind {
@@ -94,30 +123,34 @@ impl<'source> ParsingContext<'source> {
     }
 
     pub fn peek(&mut self, parser: &mut Parser) -> Option<&Token> {
-        match self.lexer.peek()?.kind {
-            LexerResultKind::Token(_) => {
-                let res = self.lexer.peek()?;
-
-                match res.kind {
-                    LexerResultKind::Token(ref token) => Some(token),
-                    _ => unreachable!(),
-                }
+        loop {
+            if let Some(ref token) = self.backtracked_token {
+                break Some(token);
             }
-            LexerResultKind::Error(_) | LexerResultKind::Directive(_) => {
-                let res = self.lexer.next()?;
 
-                match res.kind {
-                    LexerResultKind::Directive(directive) => {
-                        parser.handle_directive(directive, res.meta)
+            match self.lexer.peek()?.kind {
+                LexerResultKind::Token(_) => {
+                    let res = self.lexer.peek()?;
+
+                    match res.kind {
+                        LexerResultKind::Token(ref token) => break Some(token),
+                        _ => unreachable!(),
                     }
-                    LexerResultKind::Error(error) => parser.errors.push(Error {
-                        kind: ErrorKind::PreprocessorError(error),
-                        meta: res.meta,
-                    }),
-                    _ => unreachable!(),
                 }
+                LexerResultKind::Error(_) | LexerResultKind::Directive(_) => {
+                    let res = self.lexer.next()?;
 
-                self.peek(parser)
+                    match res.kind {
+                        LexerResultKind::Directive(directive) => {
+                            parser.handle_directive(directive, res.meta)
+                        }
+                        LexerResultKind::Error(error) => parser.errors.push(Error {
+                            kind: ErrorKind::PreprocessorError(error),
+                            meta: res.meta,
+                        }),
+                        _ => unreachable!(),
+                    }
+                }
             }
         }
     }
@@ -139,28 +172,26 @@ impl<'source> ParsingContext<'source> {
             self.parse_external_declaration(parser, &mut ctx, &mut body)?;
         }
 
-        match parser.lookup_function.get("main").and_then(|declaration| {
-            declaration
-                .overloads
-                .iter()
-                .find_map(|decl| match decl.kind {
-                    FunctionKind::Call(handle) if decl.defined && decl.parameters.is_empty() => {
-                        Some(handle)
+        // Add an `EntryPoint` to `parser.module` for `main`, if a
+        // suitable overload exists. Error out if we can't find one.
+        if let Some(declaration) = parser.lookup_function.get("main") {
+            for decl in declaration.overloads.iter() {
+                if let FunctionKind::Call(handle) = decl.kind {
+                    if decl.defined && decl.parameters.is_empty() {
+                        parser.add_entry_point(handle, body, ctx.expressions);
+                        return Ok(());
                     }
-                    _ => None,
-                })
-        }) {
-            Some(handle) => parser.add_entry_point(handle, body, ctx.expressions),
-            None => parser.errors.push(Error {
-                kind: ErrorKind::SemanticError("Missing entry point".into()),
-                meta: SourceMetadata::none(),
-            }),
+                }
+            }
         }
 
-        Ok(())
+        Err(Error {
+            kind: ErrorKind::SemanticError("Missing entry point".into()),
+            meta: Span::default(),
+        })
     }
 
-    fn parse_uint_constant(&mut self, parser: &mut Parser) -> Result<(u32, SourceMetadata)> {
+    fn parse_uint_constant(&mut self, parser: &mut Parser) -> Result<(u32, Span)> {
         let (value, meta) = self.parse_constant_expression(parser)?;
 
         let int = match parser.module.constants[value].inner {
@@ -192,7 +223,7 @@ impl<'source> ParsingContext<'source> {
     fn parse_constant_expression(
         &mut self,
         parser: &mut Parser,
-    ) -> Result<(Handle<Constant>, SourceMetadata)> {
+    ) -> Result<(Handle<Constant>, Span)> {
         let mut block = Block::new();
 
         let mut ctx = Context::new(parser, &mut block);
@@ -206,7 +237,7 @@ impl<'source> ParsingContext<'source> {
 }
 
 impl Parser {
-    fn handle_directive(&mut self, directive: Directive, meta: SourceMetadata) {
+    fn handle_directive(&mut self, directive: Directive, meta: Span) {
         let mut tokens = directive.tokens.into_iter();
 
         match directive.kind {
@@ -366,25 +397,26 @@ impl Parser {
     }
 }
 
-pub struct DeclarationContext<'ctx> {
-    qualifiers: Vec<(TypeQualifier, SourceMetadata)>,
+pub struct DeclarationContext<'ctx, 'qualifiers> {
+    qualifiers: TypeQualifiers<'qualifiers>,
+    /// Indicates a global declaration
     external: bool,
 
     ctx: &'ctx mut Context,
     body: &'ctx mut Block,
 }
 
-impl<'ctx> DeclarationContext<'ctx> {
+impl<'ctx, 'qualifiers> DeclarationContext<'ctx, 'qualifiers> {
     fn add_var(
         &mut self,
         parser: &mut Parser,
         ty: Handle<Type>,
         name: String,
         init: Option<Handle<Constant>>,
-        meta: SourceMetadata,
+        meta: Span,
     ) -> Result<Handle<Expression>> {
         let decl = VarDeclaration {
-            qualifiers: &self.qualifiers,
+            qualifiers: &mut self.qualifiers,
             ty,
             name: Some(name),
             init,
@@ -404,8 +436,13 @@ impl<'ctx> DeclarationContext<'ctx> {
         }
     }
 
+    /// Emits all the expressions captured by the emitter and starts the emitter again
+    ///
+    /// Alias to [`emit_restart`] with the declaration body
+    ///
+    /// [`emit_restart`]: Context::emit_restart
+    #[inline]
     fn flush_expressions(&mut self) {
-        self.ctx.emit_flush(self.body);
-        self.ctx.emit_start()
+        self.ctx.emit_restart(self.body);
     }
 }

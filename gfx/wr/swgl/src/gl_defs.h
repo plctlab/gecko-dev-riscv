@@ -34,6 +34,7 @@ typedef intptr_t GLintptr;
 #define GL_RGBA8 0x8058
 #define GL_R8 0x8229
 #define GL_R16 0x822A
+#define GL_RG16 0x822C
 #define GL_RGBA32I 0x8D82
 #define GL_BGRA8 0x93A1
 #define GL_RG8 0x822B
@@ -131,6 +132,8 @@ typedef intptr_t GLintptr;
 #define GL_MAX_TEXTURE_IMAGE_UNITS 0x8872
 #define GL_MAX_TEXTURE_SIZE 0x0D33
 #define GL_MAX_ARRAY_TEXTURE_LAYERS 0x88FF
+#define GL_MIN_PROGRAM_TEXEL_OFFSET 0x8904
+#define GL_MAX_PROGRAM_TEXEL_OFFSET 0x8905
 
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30

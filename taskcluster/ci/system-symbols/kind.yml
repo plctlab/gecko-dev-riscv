@@ -2,15 +2,15 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ---
-loader: taskgraph.loader.transform:loader
+loader: gecko_taskgraph.loader.transform:loader
 
 kind-dependencies:
     - toolchain
     - fetch
 
 transforms:
-    - taskgraph.transforms.job:transforms
-    - taskgraph.transforms.task:transforms
+    - gecko_taskgraph.transforms.job:transforms
+    - gecko_taskgraph.transforms.task:transforms
 
 job-defaults:
     attributes:
@@ -22,10 +22,15 @@ job-defaults:
         kind: other
         tier: 2
     worker-type: b-linux
+    worker:
+        env:
+            MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: system
 
 jobs:
     mac:
         description: Extract macOS system symbols found in crashreports
+        attributes:
+            build_platform: macos
         index:
             product: system-symbols
             job-name: mac
@@ -48,6 +53,8 @@ jobs:
             symbol: system-symbols-mac
     win:
         description: Extract windows system symbols found in crashreports
+        attributes:
+            build_platform: windows
         index:
             product: system-symbols
             job-name: win
@@ -68,3 +75,185 @@ jobs:
         fetches:
             toolchain:
                 - linux64-dump_syms
+    archlinux:
+        description: Extract ArchLinux system symbols found in crashreports
+        attributes:
+            build_platform: archlinux
+        index:
+            product: system-symbols
+            job-name: archlinux
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh arch
+        treeherder:
+            symbol: sys-symbols-archlinux
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    debian:
+        description: Extract Debian system symbols found in crashreports
+        attributes:
+            build_platform: debian
+        index:
+            product: system-symbols
+            job-name: debian
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh debian
+        treeherder:
+            symbol: sys-symbols-debian
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    firefox-snap:
+        description: Extract Firefox Snap symbols found in crashreports
+        attributes:
+            build_platform: firefox-snap
+        index:
+            product: system-symbols
+            job-name: firefox-snap
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh firefox-snap
+        treeherder:
+            symbol: firefox-symbols-snap
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    gnome-sdk-snap:
+        description: Extract GNOME SDK Snap symbols found in crashreports
+        attributes:
+            build_platform: gnome-sdk-snap
+        index:
+            product: system-symbols
+            job-name: gnome-sdk-snap
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh gnome-sdk-snap
+        treeherder:
+            symbol: gnome-sdk-symbols-snap
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    fedora:
+        description: Extract Fedora system symbols found in crashreports
+        attributes:
+            build_platform: fedora
+        index:
+            product: system-symbols
+            job-name: fedora
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh fedora
+        treeherder:
+            symbol: sys-symbols-fedora
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    opensuse:
+        description: Extract OpenSUSE system symbols found in crashreports
+        attributes:
+            build_platform: opensuse
+        index:
+            product: system-symbols
+            job-name: opensuse
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh opensuse
+        treeherder:
+            symbol: sys-symbols-opensuse
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers
+    ubuntu:
+        description: Extract Ubuntu system symbols found in crashreports
+        attributes:
+            build_platform: ubuntu
+        index:
+            product: system-symbols
+            job-name: ubuntu
+            type: generic
+        worker:
+            artifacts:
+                - name: public/build
+                  type: directory
+                  path: /builds/worker/artifacts/
+            docker-image: {in-tree: system-symbols-linux-scraper}
+            max-run-time: 14400
+        run:
+            using: run-task
+            command: >-
+                ./run.sh ubuntu
+        treeherder:
+            symbol: sys-symbols-ubuntu
+        fetches:
+            toolchain:
+                - linux64-dump_syms
+            fetch:
+                - symbol-scrapers

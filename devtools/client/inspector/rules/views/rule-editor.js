@@ -28,7 +28,6 @@ const {
   SELECTOR_ELEMENT,
   SELECTOR_PSEUDO_CLASS,
 } = require("devtools/shared/css/parsing-utils");
-const promise = require("promise");
 const Services = require("Services");
 const EventEmitter = require("devtools/shared/event-emitter");
 const CssLogic = require("devtools/shared/inspector/css-logic");
@@ -82,7 +81,7 @@ function RuleEditor(ruleView, rule) {
 }
 
 RuleEditor.prototype = {
-  destroy: function() {
+  destroy() {
     this.rule.domRule.off("location-changed");
     this.toolbox.off("tool-registered", this._onToolChanged);
     this.toolbox.off("tool-unregistered", this._onToolChanged);
@@ -112,7 +111,7 @@ RuleEditor.prototype = {
     return trait && !this.rule.elementStyle.element.isAnonymous;
   },
 
-  _create: function() {
+  _create() {
     this.element = this.doc.createElement("div");
     this.element.className = "ruleview-rule devtools-monospace";
     this.element.dataset.ruleId = this.rule.domRule.actorID;
@@ -135,6 +134,38 @@ RuleEditor.prototype = {
     this.source.appendChild(sourceLabel);
 
     this.updateSourceLink();
+
+    if (this.rule.domRule.ancestorData.length > 0) {
+      const parts = this.rule.domRule.ancestorData.map(ancestorData => {
+        if (ancestorData.type == "layer") {
+          return `@layer${ancestorData.value ? " " + ancestorData.value : ""}`;
+        }
+        if (ancestorData.type == "media") {
+          return `@media ${ancestorData.value}`;
+        }
+        // We shouldn't get here as `type` can only be set to "layer" or "media", but just
+        // in case, let's return an empty string.
+        console.warn("Unknown ancestor data type:", ancestorData.type);
+        return ``;
+      });
+
+      // We force the string to be LTR in CSS, but as @ is listed as having neutral
+      // directionality and starting a string with this char would default to RTL for that
+      // character (when in RTL locale), and then the next char (`m` of `media`, or `l` of `layer`)
+      // would start a new LTR visual run, since it is strongly LTR (through `direction` CSS property).
+      // To have the `@` properly displayed, we force LTR with \u202A
+      const title = `${parts.join("\n").replaceAll("@", "\u202A@")}`;
+
+      this.ancestorDataEl = createChild(this.element, "ul", {
+        class: "ruleview-rule-ancestor-data theme-link",
+        title,
+      });
+      for (const part of parts) {
+        createChild(this.ancestorDataEl, "li", {
+          textContent: part,
+        });
+      }
+    }
 
     const code = createChild(this.element, "div", {
       class: "ruleview-code",
@@ -174,7 +205,7 @@ RuleEditor.prototype = {
           selector = await this.rule.inherited.getUniqueSelector();
         } else {
           // This is an inline style from the current node.
-          selector = this.ruleView.inspector.selectionCssSelector;
+          selector = await this.ruleView.inspector.selection.nodeFront.getUniqueSelector();
         }
 
         const isHighlighted = this.ruleView.isSelectorHighlighted(selector);
@@ -243,7 +274,7 @@ RuleEditor.prototype = {
   /**
    * Called when a tool is registered or unregistered.
    */
-  _onToolChanged: function() {
+  _onToolChanged() {
     // When the source editor is registered, update the source links
     // to be clickable; and if it is unregistered, update the links to
     // be unclickable.  However, some links are never clickable, so
@@ -261,18 +292,17 @@ RuleEditor.prototype = {
    * Event handler called when a property changes on the
    * StyleRuleActor.
    */
-  _locationChanged: function() {
+  _locationChanged() {
     this.updateSourceLink();
   },
 
-  _onSourceClick: function() {
+  _onSourceClick() {
     if (this.source.hasAttribute("unselectable")) {
       return;
     }
 
     const { inspector } = this.ruleView;
-    const target = inspector.currentTarget;
-    if (Tools.styleEditor.isTargetSupported(target)) {
+    if (Tools.styleEditor.isToolSupported(inspector.toolbox)) {
       inspector.toolbox.viewSourceInStyleEditorByFront(
         this.rule.sheet,
         this.rule.ruleLine,
@@ -289,23 +319,23 @@ RuleEditor.prototype = {
    * @param {Object | null} originalLocation
    *        The original position object (url/line/column) or null.
    */
-  _updateLocation: function(originalLocation) {
-    let displayURL = this.rule.sheet ? this.rule.sheet.href : null;
+  _updateLocation(originalLocation) {
+    let displayURL = this.rule.sheet?.href;
+    const constructed = this.rule.sheet?.constructed;
     let line = this.rule.ruleLine;
     if (originalLocation) {
       displayURL = originalLocation.url;
       line = originalLocation.line;
     }
 
-    let sourceTextContent = CssLogic.shortSource({ href: displayURL });
+    let sourceTextContent = CssLogic.shortSource({
+      constructed,
+      href: displayURL,
+    });
     let title = displayURL ? displayURL : sourceTextContent;
     if (line > 0) {
       sourceTextContent += ":" + line;
       title += ":" + line;
-    }
-    if (this.rule.mediaText) {
-      sourceTextContent += " @" + this.rule.mediaText;
-      title += " @" + this.rule.mediaText;
     }
 
     const sourceLabel = this.element.querySelector(
@@ -315,14 +345,13 @@ RuleEditor.prototype = {
     sourceLabel.textContent = sourceTextContent;
   },
 
-  updateSourceLink: function() {
+  updateSourceLink() {
     if (this.rule.isSystem) {
       const sourceLabel = this.element.querySelector(
         ".ruleview-rule-source-label"
       );
       const title = this.rule.title;
-      const sourceHref =
-        this.rule.sheet && this.rule.sheet.href ? this.rule.sheet.href : title;
+      const sourceHref = this.rule.sheet?.href || title;
 
       const uaLabel = STYLE_INSPECTOR_L10N.getStr("rule.userAgentStyles");
       sourceLabel.textContent = uaLabel + " " + title;
@@ -364,7 +393,7 @@ RuleEditor.prototype = {
       this._onToolChanged();
     }
 
-    promise.resolve().then(() => {
+    Promise.resolve().then(() => {
       this.emit("source-link-updated");
     });
   },
@@ -375,7 +404,7 @@ RuleEditor.prototype = {
    * @param {Boolean} reset
    *        True to completely reset the rule editor before populating.
    */
-  populate: function(reset) {
+  populate(reset) {
     // Clear out existing viewers.
     while (this.selectorText.hasChildNodes()) {
       this.selectorText.removeChild(this.selectorText.lastChild);
@@ -470,7 +499,7 @@ RuleEditor.prototype = {
    * @return {TextProperty}
    *        The new property
    */
-  addProperty: function(name, value, priority, enabled, siblingProp) {
+  addProperty(name, value, priority, enabled, siblingProp) {
     const prop = this.rule.createProperty(
       name,
       value,
@@ -509,7 +538,7 @@ RuleEditor.prototype = {
    * @param {TextProperty} siblingProp
    *        Optional, the property next to which all new props should be added.
    */
-  addProperties: function(properties, siblingProp) {
+  addProperties(properties, siblingProp) {
     if (!properties || !properties.length) {
       return;
     }
@@ -540,7 +569,7 @@ RuleEditor.prototype = {
    * name is given, we'll create a real TextProperty and add it to the
    * rule.
    */
-  newProperty: function() {
+  newProperty() {
     // If we're already creating a new property, ignore this.
     if (!this.closeBrace.hasAttribute("tabindex")) {
       return;
@@ -587,7 +616,7 @@ RuleEditor.prototype = {
    * @param {Boolean} commit
    *        True if the value should be committed.
    */
-  _onNewProperty: function(value, commit) {
+  _onNewProperty(value, commit) {
     if (!value || !commit) {
       return;
     }
@@ -616,7 +645,7 @@ RuleEditor.prototype = {
    * added, since we want to wait until after the inplace editor `destroy`
    * event has been fired to keep consistent UI state.
    */
-  _newPropertyDestroy: function() {
+  _newPropertyDestroy() {
     // We're done, make the close brace focusable again.
     this.closeBrace.setAttribute("tabindex", "0");
 
@@ -726,7 +755,7 @@ RuleEditor.prototype = {
    * @param {Number} direction
    *        The move focus direction number.
    */
-  _moveSelectorFocus: function(direction) {
+  _moveSelectorFocus(direction) {
     if (!direction || direction === Services.focus.MOVEFOCUS_BACKWARD) {
       return;
     }

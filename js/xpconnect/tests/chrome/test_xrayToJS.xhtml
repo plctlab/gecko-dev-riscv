@@ -32,7 +32,9 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=933681
     }
   }
 
-  var {AppConstants} = SpecialPowers.Cu.import("resource://gre/modules/AppConstants.jsm", {});
+  var { AppConstants } = SpecialPowers.ChromeUtils.import(
+    "resource://gre/modules/AppConstants.jsm"
+  );
   var isNightlyBuild = AppConstants.NIGHTLY_BUILD;
   var isReleaseOrBeta = AppConstants.RELEASE_OR_BETA;
 
@@ -231,7 +233,11 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=933681
       "pop", "shift", "unshift", "splice", "concat", "slice", "lastIndexOf", "indexOf",
       "includes", "forEach", "map", "reduce", "reduceRight", "filter", "some", "every", "find",
       "findIndex", "copyWithin", "fill", Symbol.iterator, Symbol.unscopables, "entries", "keys",
-      "values", "constructor", "flat", "flatMap", "at"];
+      "values", "constructor", "flat", "flatMap", "at", "findLast", "findLastIndex"];
+  if (isNightlyBuild) {
+    gPrototypeProperties['Array'].push("group");
+    gPrototypeProperties['Array'].push("groupToMap");
+  }
   gConstructorProperties['Array'] =
     constructorProps(["isArray", "from", "of", Symbol.species]);
   for (var c of typedArrayClasses) {

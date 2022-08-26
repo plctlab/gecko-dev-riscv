@@ -12,7 +12,7 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-add_task(async function setup() {
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["general.autoScroll", true],
@@ -22,7 +22,7 @@ add_task(async function setup() {
   });
 });
 
-add_task(async function test_main() {
+async function doTest() {
   function httpURL(filename) {
     const chromeURL = getRootDirectory(gTestPath) + filename;
     return chromeURL.replace(
@@ -38,10 +38,10 @@ add_task(async function test_main() {
   const pageUrl = httpURL("helper_test_autoscrolling_in_oop_frame.html");
 
   await BrowserTestUtils.withNewTab(pageUrl, async function(browser) {
-    await flushApzRepaintsInPopup(browser);
+    await promiseApzFlushedRepaintsInPopup(browser);
 
     const iframeContext = browser.browsingContext.children[0];
-    await flushApzRepaintsInPopup(iframeContext);
+    await promiseApzFlushedRepaintsInPopup(iframeContext);
 
     const { screenX, screenY, viewId, presShellId } = await SpecialPowers.spawn(
       iframeContext,
@@ -49,8 +49,8 @@ add_task(async function test_main() {
       () => {
         const winUtils = SpecialPowers.getDOMWindowUtils(content);
         return {
-          screenX: content.mozInnerScreenX,
-          screenY: content.mozInnerScreenY,
+          screenX: content.mozInnerScreenX * content.devicePixelRatio,
+          screenY: content.mozInnerScreenY * content.devicePixelRatio,
           viewId: winUtils.getViewId(content.document.documentElement),
           presShellId: winUtils.getPresShellId(),
         };
@@ -96,7 +96,7 @@ add_task(async function test_main() {
 
     // Flush APZ repaints and waits for MozAfterPaint to make sure the scroll has
     // been reflected on the main thread.
-    const apzPromise = flushApzRepaintsInPopup(browser);
+    const apzPromise = promiseApzFlushedRepaintsInPopup(browser);
 
     await Promise.all([apzPromise, scrollEventPromise]);
 
@@ -108,4 +108,13 @@ add_task(async function test_main() {
 
     iframeContext.stopApzAutoscroll(viewId, presShellId);
   });
+}
+
+add_task(async function test_autoscroll_in_oop_iframe() {
+  await doTest();
+});
+
+add_task(async function test_autoscroll_in_oop_iframe_with_os_zoom() {
+  await SpecialPowers.pushPrefEnv({ set: [["ui.textScaleFactor", 200]] });
+  await doTest();
 });

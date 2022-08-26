@@ -66,6 +66,7 @@ impl App {
             ReferenceFrameKind::Transform {
                 is_2d_scale_translation: false,
                 should_snap: false,
+                paired_with_perspective: false,
             },
             SpatialTreeItemKey::new(0, 0),
         );
@@ -81,7 +82,7 @@ impl App {
 
         let space_and_clip = SpaceAndClipInfo {
             spatial_id,
-            clip_id: ClipId::root(pipeline_id),
+            clip_chain_id: ClipChainId::INVALID,
         };
         let clip_bounds = LayoutRect::from_size(bounds.size());
         let complex_clip = ComplexClipRegion {
@@ -90,9 +91,10 @@ impl App {
             mode: ClipMode::Clip,
         };
         let clip_id = builder.define_clip_rounded_rect(
-            &space_and_clip,
+            space_and_clip.spatial_id,
             complex_clip,
         );
+        let clip_chain_id = builder.define_clip_chain(None, [clip_id]);
 
         // Fill it with a white rect
         builder.push_rect(
@@ -100,7 +102,7 @@ impl App {
                 LayoutRect::from_size(bounds.size()),
                 SpaceAndClipInfo {
                     spatial_id,
-                    clip_id,
+                    clip_chain_id,
                 }
             ),
             LayoutRect::from_size(bounds.size()),
@@ -140,24 +142,30 @@ impl Example for App {
         self.add_rounded_rect(bounds, ColorF::new(0.0, 0.0, 1.0, 0.5), builder, pipeline_id, key2, None);
     }
 
-    fn on_event(&mut self, win_event: winit::WindowEvent, api: &mut RenderApi, document_id: DocumentId) -> bool {
+    fn on_event(
+        &mut self,
+        win_event: winit::event::WindowEvent,
+        _window: &winit::window::Window,
+        api: &mut RenderApi,
+        document_id: DocumentId
+    ) -> bool {
         let mut rebuild_display_list = false;
 
         match win_event {
-            winit::WindowEvent::KeyboardInput {
-                input: winit::KeyboardInput {
-                    state: winit::ElementState::Pressed,
+            winit::event::WindowEvent::KeyboardInput {
+                input: winit::event::KeyboardInput {
+                    state: winit::event::ElementState::Pressed,
                     virtual_keycode: Some(key),
                     ..
                 },
                 ..
             } => {
                 let (delta_angle, delta_opacity) = match key {
-                    winit::VirtualKeyCode::Down => (0.0, -0.1),
-                    winit::VirtualKeyCode::Up => (0.0, 0.1),
-                    winit::VirtualKeyCode::Right => (1.0, 0.0),
-                    winit::VirtualKeyCode::Left => (-1.0, 0.0),
-                    winit::VirtualKeyCode::R => {
+                    winit::event::VirtualKeyCode::Down => (0.0, -0.1),
+                    winit::event::VirtualKeyCode::Up => (0.0, 0.1),
+                    winit::event::VirtualKeyCode::Right => (1.0, 0.0),
+                    winit::event::VirtualKeyCode::Left => (-1.0, 0.0),
+                    winit::event::VirtualKeyCode::R => {
                         rebuild_display_list = true;
                         (0.0, 0.0)
                     }
@@ -200,7 +208,7 @@ impl Example for App {
                         colors: vec![],
                     },
                 );
-                txn.generate_frame(0);
+                txn.generate_frame(0, RenderReasons::empty());
                 api.send_transaction(document_id, txn);
             }
             _ => (),

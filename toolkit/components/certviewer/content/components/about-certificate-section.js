@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/remote-page */
 
 import { InfoGroupContainer } from "./info-group-container.js";
 import { CertificateTabsSection } from "./certificate-tabs-section.js";
@@ -92,7 +92,7 @@ export class AboutCertificateSection extends HTMLElement {
     if (!embeddedScts) {
       return;
     }
-    let items = embeddedScts.shadowRoot.querySelectorAll(".version");
+    let items = embeddedScts.shadowRoot.querySelectorAll(".timestamp");
 
     for (let i = 0; i < items.length; i++) {
       items[i].classList.add("padding");

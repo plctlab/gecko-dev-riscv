@@ -320,7 +320,7 @@ class Nursery {
   void renderProfileJSON(JSONPrinter& json) const;
 
   // Print header line for profile times.
-  static void printProfileHeader();
+  void printProfileHeader();
 
   // Print total profile times on shutdown.
   void printTotalProfileTimes();
@@ -472,6 +472,7 @@ class Nursery {
     size_t nurseryCapacity = 0;
     size_t nurseryCommitted = 0;
     size_t nurseryUsedBytes = 0;
+    size_t nurseryUsedChunkCount = 0;
     size_t tenuredBytes = 0;
     size_t tenuredCells = 0;
     mozilla::TimeStamp endTime;
@@ -479,7 +480,7 @@ class Nursery {
   PreviousGC previousGC;
 
   bool hasRecentGrowthData;
-  double smoothedGrowthFactor;
+  double smoothedTargetSize;
 
   // Calculate the promotion rate of the most recent minor GC.
   // The valid_for_tenuring parameter is used to return whether this
@@ -555,9 +556,9 @@ class Nursery {
 
       if (key->asLinear().hasLatin1Chars()) {
         MOZ_ASSERT(lookup->asLinear().hasLatin1Chars());
-        return mozilla::ArrayEqual(key->asLinear().latin1Chars(nogc),
-                                   lookup->asLinear().latin1Chars(nogc),
-                                   lookup->length());
+        return EqualChars(key->asLinear().latin1Chars(nogc),
+                          lookup->asLinear().latin1Chars(nogc),
+                          lookup->length());
       } else {
         MOZ_ASSERT(key->asLinear().hasTwoByteChars());
         MOZ_ASSERT(lookup->asLinear().hasTwoByteChars());
@@ -642,23 +643,6 @@ class Nursery {
   size_t doPretenuring(JSRuntime* rt, JS::GCReason reason,
                        bool validPromotionRate, double promotionRate);
 
-  // Move all objects and everything they can reach to the tenured heap.
-  void collectToObjectFixedPoint(TenuringTracer& mover);
-
-  // Move all strings and all strings they can reach to the tenured heap, and
-  // additionally do any fixups for when strings are pointing into memory that
-  // was deduplicated.
-  void collectToStringFixedPoint(TenuringTracer& mover);
-
-  // The dependent string chars needs to be relocated if the base which it's
-  // using chars from has been deduplicated.
-  template <typename CharT>
-  void relocateDependentStringChars(JSDependentString* tenuredDependentStr,
-                                    JSLinearString* baseOrRelocOverlay,
-                                    size_t* offset,
-                                    bool* rootBaseNotYetForwarded,
-                                    JSLinearString** rootBase);
-
   // Handle relocation of slots/elements pointers stored in Ion frames.
   inline void setForwardingPointer(void* oldData, void* newData, bool direct);
 
@@ -677,7 +661,7 @@ class Nursery {
 
   // Updates pointers to nursery objects that have been tenured and discards
   // pointers to objects that have been freed.
-  void sweep(JSTracer* trc);
+  void sweep();
 
   // Reset the current chunk and position after a minor collection. Also poison
   // the nursery on debug & nightly builds.
@@ -708,7 +692,7 @@ class Nursery {
   void maybeClearProfileDurations();
   void startProfile(ProfileKey key);
   void endProfile(ProfileKey key);
-  static void printProfileDurations(const ProfileDurations& times);
+  static void printProfileDurations(FILE* file, const ProfileDurations& times);
 
   mozilla::TimeStamp collectionStartTime() const;
   mozilla::TimeStamp lastCollectionEndTime() const;

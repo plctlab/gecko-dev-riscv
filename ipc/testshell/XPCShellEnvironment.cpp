@@ -4,16 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdlib.h>
-#include <errno.h>
 #ifdef HAVE_IO_H
 #  include <io.h> /* for isatty() */
 #endif
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h> /* for isatty() */
 #endif
-
-#include "base/basictypes.h"
 
 #include "jsapi.h"
 #include "js/CharacterEncoding.h"
@@ -28,25 +24,20 @@
 #include "XPCShellEnvironment.h"
 
 #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
-#include "mozilla/XPCOM.h"
 #include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/ScriptSettings.h"
 
 #include "nsIPrincipal.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIXPConnect.h"
+#include "nsServiceManagerUtils.h"
 
 #include "nsJSUtils.h"
-#include "nsJSPrincipals.h"
-#include "nsThreadUtils.h"
-#include "nsXULAppAPI.h"
 
 #include "BackstagePass.h"
 
 #include "TestShellChild.h"
-#include "TestShellParent.h"
 
-using mozilla::AutoSafeJSContext;
 using mozilla::dom::AutoEntryScript;
 using mozilla::dom::AutoJSAPI;
 using mozilla::ipc::XPCShellEnvironment;
@@ -406,7 +397,7 @@ bool XPCShellEnvironment::Init() {
   return true;
 }
 
-bool XPCShellEnvironment::EvaluateString(const nsString& aString,
+bool XPCShellEnvironment::EvaluateString(const nsAString& aString,
                                          nsString* aResult) {
   AutoEntryScript aes(GetGlobalObject(),
                       "ipc XPCShellEnvironment::EvaluateString");
@@ -416,7 +407,7 @@ bool XPCShellEnvironment::EvaluateString(const nsString& aString,
   options.setFileAndLine("typein", 0);
 
   JS::SourceText<char16_t> srcBuf;
-  if (!srcBuf.init(cx, aString.get(), aString.Length(),
+  if (!srcBuf.init(cx, aString.BeginReading(), aString.Length(),
                    JS::SourceOwnership::Borrowed)) {
     return false;
   }

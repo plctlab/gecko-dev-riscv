@@ -277,13 +277,6 @@ def create_parser(mach_interface=False):
         help="Run without multiple processes (e10s).",
     )
     add_arg(
-        "--enable-webrender",
-        dest="enable_webrender",
-        action="store_true",
-        default=False,
-        help="Enable the WebRender compositor in Gecko.",
-    )
-    add_arg(
         "--device-name",
         dest="device_name",
         default=None,
@@ -291,11 +284,19 @@ def create_parser(mach_interface=False):
         help="Device name of mobile device.",
     )
     add_arg(
-        "--enable-fission",
-        dest="enable_fission",
+        "--disable-fission",
+        dest="fission",
+        action="store_false",
+        default=True,
+        help="Disable Fission (site isolation) in Gecko.",
+    )
+    add_arg(
+        "--enable-fission-mobile",
+        dest="fission_mobile",
         action="store_true",
         default=False,
-        help="Enable Fission (site isolation) in Gecko.",
+        help="Temporary work-around to enable fission on mobile as it is enabled "
+        "by default for desktop now but not mobile.",
     )
     add_arg(
         "--setpref",
@@ -356,6 +357,24 @@ def create_parser(mach_interface=False):
         help="Name of conditioned profile to use. Prefix with `artifact:` "
         "if we should obtain the profile from CI.",
     )
+    add_arg(
+        "--webext",
+        dest="webext",
+        action="store_true",
+        default=False,
+        help="Whether to use webextension to execute pageload tests "
+        "(WebExtension is being deprecated).",
+    )
+    add_arg(
+        "--test-bytecode-cache",
+        dest="test_bytecode_cache",
+        default=False,
+        action="store_true",
+        help="If set, the pageload test will set the preference "
+        "`dom.script_loader.bytecode_cache.strategy=-1` and wait 20 seconds after "
+        "the first cold pageload to populate the bytecode cache before running "
+        "a warm pageload test. Only available if `--chimera` is also provided.",
+    )
 
     # for browsertime jobs, cold page load is determined by a '--cold' cmd line argument
     add_arg(
@@ -369,9 +388,18 @@ def create_parser(mach_interface=False):
     add_arg(
         "--browsertime",
         dest="browsertime",
-        default=False,
+        default=True,
         action="store_true",
         help="Whether to use browsertime to execute pageload tests",
+    )
+    add_arg(
+        "--browsertime-arg",
+        dest="browsertime_user_args",
+        action="append",
+        default=[],
+        metavar="OPTION=VALUE",
+        help="Add extra browsertime arguments to your test run using "
+        "this option e.g.: --browsertime-arg timeout.scripts=1000",
     )
     add_arg(
         "--browsertime-node", dest="browsertime_node", help="path to Node.js executable"
@@ -423,6 +451,12 @@ def create_parser(mach_interface=False):
         help="path to geckodriver executable",
     )
     add_arg(
+        "--browsertime-existing-results",
+        dest="browsertime_existing_results",
+        default=None,
+        help="load existing results instead of running tests",
+    )
+    add_arg(
         "--verbose",
         dest="verbose",
         action="store_true",
@@ -436,6 +470,21 @@ def create_parser(mach_interface=False):
         default=False,
         help="Enable marionette tracing",
     )
+    add_arg(
+        "--clean",
+        dest="clean",
+        action="store_true",
+        default=False,
+        help="Clean the python virtualenv (remove, and rebuild) for Raptor before running tests.",
+    )
+    add_arg(
+        "--collect-perfstats",
+        dest="collect_perfstats",
+        action="store_true",
+        default=False,
+        help="If set, the test will collect perfstats in addition to "
+        "the regular metrics it gathers.",
+    )
 
     add_logging_group(parser)
     return parser
@@ -445,6 +494,14 @@ def verify_options(parser, args):
     ctx = vars(args)
     if args.binary is None and args.app != "chrome-m":
         parser.error("--binary is required!")
+
+    # Debug-mode is disabled in CI (check for attribute in case of mach_interface issues)
+    if hasattr(args, "run_local") and (not args.run_local and args.debug_mode):
+        parser.error("Cannot run debug mode in CI")
+
+    # If running on webextension, browsertime flag is changed (browsertime is run by default)
+    if args.webext:
+        args.browsertime = False
 
     # make sure that browsertime_video is set if visual metrics are requested
     if args.browsertime_visualmetrics and not args.browsertime_video:
@@ -470,6 +527,12 @@ def verify_options(parser, args):
         # Force cold pageloads with 2 page cycles
         args.cold = True
         args.page_cycles = 2
+        # Create bytecode cache at the first cold load, so that the next warm load uses it.
+        # This is applicable for chimera mode only
+        if args.test_bytecode_cache:
+            args.extra_prefs.append("dom.script_loader.bytecode_cache.strategy=-1")
+    elif args.test_bytecode_cache:
+        parser.error("--test-bytecode-cache can only be used in --chimera mode")
 
     # if running on a desktop browser make sure the binary exists
     if args.app in DESKTOP_APPS:
@@ -502,6 +565,13 @@ def verify_options(parser, args):
                 "Memory test is only supported when running Raptor on Firefox Android "
                 "browsers!"
             )
+
+    if args.fission:
+        print("Fission enabled through browser preferences")
+        args.extra_prefs.append("fission.autostart=true")
+    else:
+        print("Fission disabled through browser preferences")
+        args.extra_prefs.append("fission.autostart=false")
 
     # if running on geckoview/refbrow/fenix, we need an activity and intent
     if args.app in ["geckoview", "refbrow", "fenix"]:

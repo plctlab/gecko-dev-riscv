@@ -9,6 +9,7 @@
 #include <ole2.h>
 #include <shlobj.h>
 
+#include "nsComponentManagerUtils.h"
 #include "nsDataObj.h"
 #include "nsArrayUtils.h"
 #include "nsClipboard.h"
@@ -28,6 +29,8 @@
 #include "mozilla/Components.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
+#include "nsProxyRelease.h"
+#include "nsIObserverService.h"
 #include "nsIOutputStream.h"
 #include "nscore.h"
 #include "nsDirectoryServiceDefs.h"
@@ -38,8 +41,11 @@
 #include "nsIPrincipal.h"
 #include "nsNativeCharsetUtils.h"
 #include "nsMimeTypes.h"
+#include "nsIMIMEService.h"
 #include "imgIEncoder.h"
 #include "imgITools.h"
+#include "WinUtils.h"
+#include "nsLocalFile.h"
 
 #include "mozilla/LazyIdleThread.h"
 #include <algorithm>
@@ -157,7 +163,8 @@ NS_IMETHODIMP nsDataObj::CStream::OnStopRequest(nsIRequest* aRequest,
 // and cancel the operation.
 nsresult nsDataObj::CStream::WaitForCompletion() {
   // We are guaranteed OnStopRequest will get called, so this should be ok.
-  SpinEventLoopUntil([&]() { return mChannelRead; });
+  SpinEventLoopUntil("widget:nsDataObj::CStream::WaitForCompletion"_ns,
+                     [&]() { return mChannelRead; });
 
   if (!mChannelData.Length()) mChannelResult = NS_ERROR_FAILURE;
 
@@ -534,6 +541,12 @@ STDMETHODIMP nsDataObj::QueryInterface(REFIID riid, void** ppv) {
 STDMETHODIMP_(ULONG) nsDataObj::AddRef() {
   ++m_cRef;
   NS_LOG_ADDREF(this, m_cRef, "nsDataObj", sizeof(*this));
+
+  // When the first reference is taken, hold our own internal reference.
+  if (m_cRef == 1) {
+    mKeepAlive = this;
+  }
+
   return m_cRef;
 }
 
@@ -621,6 +634,12 @@ STDMETHODIMP_(ULONG) nsDataObj::Release() {
   --m_cRef;
 
   NS_LOG_RELEASE(this, m_cRef, "nsDataObj");
+
+  // If we hold the last reference, submit release of it to the main thread.
+  if (m_cRef == 1 && mKeepAlive) {
+    NS_ReleaseOnMainThread("nsDataObj release", mKeepAlive.forget(), true);
+  }
+
   if (0 != m_cRef) return m_cRef;
 
   // We have released our last ref on this object and need to delete the
@@ -633,6 +652,10 @@ STDMETHODIMP_(ULONG) nsDataObj::Release() {
     mCachedTempFile = nullptr;
     helper->Attach();
   }
+
+  // In case the destructor ever AddRef/Releases, ensure we don't delete twice
+  // or take mKeepAlive as another reference.
+  m_cRef = 1;
 
   delete this;
 
@@ -655,6 +678,9 @@ BOOL nsDataObj::FormatsMatch(const FORMATETC& source,
 //-----------------------------------------------------
 STDMETHODIMP nsDataObj::GetData(LPFORMATETC aFormat, LPSTGMEDIUM pSTM) {
   if (!mTransferable) return DV_E_FORMATETC;
+
+  // Hold an extra reference in case we end up spinning the event loop.
+  RefPtr<nsDataObj> keepAliveDuringGetData(this);
 
   uint32_t dfInx = 0;
 
@@ -1063,34 +1089,19 @@ nsDataObj ::GetFileContents(FORMATETC& aFE, STGMEDIUM& aSTG) {
 
 }  // GetFileContents
 
-//
-// Given a unicode string, we ensure that it contains only characters which are
-// valid within the file system. Remove all forbidden characters from the name,
-// and completely disallow any title that starts with a forbidden name and
-// extension (e.g. "nul" is invalid, but "nul." and "nul.txt" are also invalid
-// and will cause problems).
-//
-// It would seem that this is more functionality suited to being in nsIFile.
-//
-static void MangleTextToValidFilename(nsString& aText) {
-  static const char* forbiddenNames[] = {
-      "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",  "COM8",
-      "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",  "LPT7",
-      "LPT8", "LPT9", "CON",  "PRN",  "AUX",  "NUL",  "CLOCK$"};
-
-  aText.StripChars(FILE_PATH_SEPARATOR FILE_ILLEGAL_CHARACTERS);
-  aText.CompressWhitespace(true, true);
-  uint32_t nameLen;
-  for (size_t n = 0; n < ArrayLength(forbiddenNames); ++n) {
-    nameLen = (uint32_t)strlen(forbiddenNames[n]);
-    if (aText.EqualsIgnoreCase(forbiddenNames[n], nameLen)) {
-      // invalid name is either the entire string, or a prefix with a period
-      if (aText.Length() == nameLen || aText.CharAt(nameLen) == char16_t('.')) {
-        aText.Truncate();
-        break;
-      }
-    }
+// Ensure that the supplied name doesn't have invalid characters.
+static void ValidateFilename(nsString& aFilename) {
+  nsCOMPtr<nsIMIMEService> mimeService = do_GetService("@mozilla.org/mime;1");
+  if (NS_WARN_IF(!mimeService)) {
+    aFilename.Truncate();
+    return;
   }
+
+  nsAutoString outFilename;
+  mimeService->ValidateFileNameForSaving(aFilename, EmptyCString(),
+                                         nsIMIMEService::VALIDATE_SANITIZE_ONLY,
+                                         outFilename);
+  aFilename = outFilename;
 }
 
 //
@@ -1102,10 +1113,7 @@ static void MangleTextToValidFilename(nsString& aText) {
 //
 static bool CreateFilenameFromTextA(nsString& aText, const char* aExtension,
                                     char* aFilename, uint32_t aFilenameLen) {
-  // ensure that the supplied name doesn't have invalid characters. If
-  // a valid mangled filename couldn't be created then it will leave the
-  // text empty.
-  MangleTextToValidFilename(aText);
+  ValidateFilename(aText);
   if (aText.IsEmpty()) return false;
 
   // repeatably call WideCharToMultiByte as long as the title doesn't fit in the
@@ -1115,7 +1123,7 @@ static bool CreateFilenameFromTextA(nsString& aText, const char* aExtension,
   // will be a valid MBCS filename of the correct length.
   int maxUsableFilenameLen =
       aFilenameLen - strlen(aExtension) - 1;  // space for ext + null byte
-  int currLen, textLen = (int)std::min(aText.Length(), aFilenameLen);
+  int currLen, textLen = (int)std::min<uint32_t>(aText.Length(), aFilenameLen);
   char defaultChar = '_';
   do {
     currLen = WideCharToMultiByte(CP_ACP, WC_COMPOSITECHECK | WC_DEFAULTCHAR,
@@ -1134,10 +1142,7 @@ static bool CreateFilenameFromTextA(nsString& aText, const char* aExtension,
 
 static bool CreateFilenameFromTextW(nsString& aText, const wchar_t* aExtension,
                                     wchar_t* aFilename, uint32_t aFilenameLen) {
-  // ensure that the supplied name doesn't have invalid characters. If
-  // a valid mangled filename couldn't be created then it will leave the
-  // text empty.
-  MangleTextToValidFilename(aText);
+  ValidateFilename(aText);
   if (aText.IsEmpty()) return false;
 
   const int extensionLen = wcslen(aExtension);
@@ -1947,8 +1952,8 @@ nsresult nsDataObj ::ExtractShortcutTitle(nsString& outTitle) {
 // BuildPlatformHTML
 //
 // Munge our HTML data to win32's CF_HTML spec. Basically, put the requisite
-// header information on it. This will null terminate |outPlatformHTML|. See
-//  http://msdn.microsoft.com/workshop/networking/clipboard/htmlclipboard.asp
+// header information on it. This will null-terminate |outPlatformHTML|. See
+//  https://docs.microsoft.com/en-us/windows/win32/dataxchg/html-clipboard-format
 // for details.
 //
 // We assume that |inOurHTML| is already a fragment (ie, doesn't have <HTML>
@@ -1958,15 +1963,7 @@ nsresult nsDataObj ::ExtractShortcutTitle(nsString& outTitle) {
 nsresult nsDataObj ::BuildPlatformHTML(const char* inOurHTML,
                                        char** outPlatformHTML) {
   *outPlatformHTML = nullptr;
-
   nsDependentCString inHTMLString(inOurHTML);
-  const char* const numPlaceholder = "00000000";
-  const char* const startHTMLPrefix = "Version:0.9\r\nStartHTML:";
-  const char* const endHTMLPrefix = "\r\nEndHTML:";
-  const char* const startFragPrefix = "\r\nStartFragment:";
-  const char* const endFragPrefix = "\r\nEndFragment:";
-  const char* const startSourceURLPrefix = "\r\nSourceURL:";
-  const char* const endFragTrailer = "\r\n";
 
   // Do we already have mSourceURL from a drag?
   if (mSourceURL.IsEmpty()) {
@@ -1976,60 +1973,90 @@ nsresult nsDataObj ::BuildPlatformHTML(const char* inOurHTML,
     AppendUTF16toUTF8(url, mSourceURL);
   }
 
-  const int32_t kSourceURLLength = mSourceURL.Length();
-  const int32_t kNumberLength = strlen(numPlaceholder);
+  constexpr auto kStartHTMLPrefix = "Version:0.9\r\nStartHTML:"_ns;
+  constexpr auto kEndHTMLPrefix = "\r\nEndHTML:"_ns;
+  constexpr auto kStartFragPrefix = "\r\nStartFragment:"_ns;
+  constexpr auto kEndFragPrefix = "\r\nEndFragment:"_ns;
+  constexpr auto kStartSourceURLPrefix = "\r\nSourceURL:"_ns;
+  constexpr auto kEndFragTrailer = "\r\n"_ns;
 
-  const int32_t kTotalHeaderLen =
-      strlen(startHTMLPrefix) + strlen(endHTMLPrefix) +
-      strlen(startFragPrefix) + strlen(endFragPrefix) + strlen(endFragTrailer) +
-      (kSourceURLLength > 0 ? strlen(startSourceURLPrefix) : 0) +
-      kSourceURLLength + (4 * kNumberLength);
+  // The CF_HTML's size is embedded in the fragment, in such a way that the
+  // number of digits in the size is part of the size itself. While it _is_
+  // technically possible to compute the necessary size of the size-field
+  // precisely -- by trial and error, if nothing else -- it's simpler just to
+  // pick a rough but generous estimate and zero-pad it. (Zero-padding is
+  // explicitly permitted by the format definition.)
+  //
+  // Originally, in 2001, the "rough but generous estimate" was 8 digits. While
+  // a maximum size of (10**9 - 1) bytes probably would have covered all
+  // possible use-cases at the time, it's somewhat more likely to overflow
+  // nowadays. Nonetheless, for the sake of backwards compatibility with any
+  // misbehaving consumers of our existing CF_HTML output, we retain exactly
+  // that padding for (most) fragments where it suffices. (No such misbehaving
+  // consumers are actually known, so this is arguably paranoia.)
+  //
+  // It is now 2022. A padding size of 16 will cover up to about 8.8 petabytes,
+  // which should be enough for at least the next few years or so.
+  const size_t numberLength = inHTMLString.Length() < 9999'0000 ? 8 : 16;
 
-  constexpr auto htmlHeaderString = "<html><body>\r\n"_ns;
+  const size_t sourceURLLength = mSourceURL.Length();
 
-  constexpr auto fragmentHeaderString = "<!--StartFragment-->"_ns;
+  const size_t fixedHeaderLen =
+      kStartHTMLPrefix.Length() + kEndHTMLPrefix.Length() +
+      kStartFragPrefix.Length() + kEndFragPrefix.Length() +
+      kEndFragTrailer.Length() + (4 * numberLength);
 
-  nsDependentCString trailingString(
+  const size_t totalHeaderLen =
+      fixedHeaderLen + (sourceURLLength > 0
+                            ? kStartSourceURLPrefix.Length() + sourceURLLength
+                            : 0);
+
+  constexpr auto kHeaderString = "<html><body>\r\n<!--StartFragment-->"_ns;
+  constexpr auto kTrailingString =
       "<!--EndFragment-->\r\n"
       "</body>\r\n"
-      "</html>");
+      "</html>"_ns;
 
   // calculate the offsets
-  int32_t startHTMLOffset = kTotalHeaderLen;
-  int32_t startFragOffset = startHTMLOffset + htmlHeaderString.Length() +
-                            fragmentHeaderString.Length();
+  size_t startHTMLOffset = totalHeaderLen;
+  size_t startFragOffset = startHTMLOffset + kHeaderString.Length();
 
-  int32_t endFragOffset = startFragOffset + inHTMLString.Length();
-
-  int32_t endHTMLOffset = endFragOffset + trailingString.Length();
+  size_t endFragOffset = startFragOffset + inHTMLString.Length();
+  size_t endHTMLOffset = endFragOffset + kTrailingString.Length();
 
   // now build the final version
   nsCString clipboardString;
   clipboardString.SetCapacity(endHTMLOffset);
 
-  clipboardString.Append(startHTMLPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", startHTMLOffset));
+  const int numberLengthInt = static_cast<int>(numberLength);
+  clipboardString.Append(kStartHTMLPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, startHTMLOffset);
 
-  clipboardString.Append(endHTMLPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", endHTMLOffset));
+  clipboardString.Append(kEndHTMLPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, endHTMLOffset);
 
-  clipboardString.Append(startFragPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", startFragOffset));
+  clipboardString.Append(kStartFragPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, startFragOffset);
 
-  clipboardString.Append(endFragPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", endFragOffset));
+  clipboardString.Append(kEndFragPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, endFragOffset);
 
-  if (kSourceURLLength > 0) {
-    clipboardString.Append(startSourceURLPrefix);
+  if (sourceURLLength > 0) {
+    clipboardString.Append(kStartSourceURLPrefix);
     clipboardString.Append(mSourceURL);
   }
 
-  clipboardString.Append(endFragTrailer);
+  clipboardString.Append(kEndFragTrailer);
 
-  clipboardString.Append(htmlHeaderString);
-  clipboardString.Append(fragmentHeaderString);
+  // Assert that the positional values were correct as we pass by their
+  // corresponding positions.
+  MOZ_ASSERT(clipboardString.Length() == startHTMLOffset);
+  clipboardString.Append(kHeaderString);
+  MOZ_ASSERT(clipboardString.Length() == startFragOffset);
   clipboardString.Append(inHTMLString);
-  clipboardString.Append(trailingString);
+  MOZ_ASSERT(clipboardString.Length() == endFragOffset);
+  clipboardString.Append(kTrailingString);
+  MOZ_ASSERT(clipboardString.Length() == endHTMLOffset);
 
   *outPlatformHTML = ToNewCString(clipboardString, mozilla::fallible);
   if (!*outPlatformHTML) return NS_ERROR_OUT_OF_MEMORY;
@@ -2140,10 +2167,10 @@ HRESULT nsDataObj::GetDownloadDetails(nsIURI** aSourceURI,
     NS_UnescapeURL(urlFileName);
     CopyUTF8toUTF16(urlFileName, srcFileName);
   }
-  if (srcFileName.IsEmpty()) return E_FAIL;
 
   // make the name safe for the filesystem
-  MangleTextToValidFilename(srcFileName);
+  ValidateFilename(srcFileName);
+  if (srcFileName.IsEmpty()) return E_FAIL;
 
   sourceURI.swap(*aSourceURI);
   aFilename = srcFileName;

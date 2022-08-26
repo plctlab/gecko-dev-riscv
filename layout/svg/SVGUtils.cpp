@@ -650,7 +650,6 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
   bool shouldPushMask = false;
 
   if (shouldGenerateMask) {
-    Matrix maskTransform;
     RefPtr<SourceSurface> maskSurface;
 
     // maskFrame can be nullptr even if maskUsage.shouldGenerateMaskLayer is
@@ -662,12 +661,9 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
     if (maskUsage.shouldGenerateMaskLayer && maskFrame) {
       StyleMaskMode maskMode =
           aFrame->StyleSVGReset()->mMask.mLayers[0].mMaskMode;
-      SVGMaskFrame::MaskParams params(&aContext, aFrame, aTransform,
-                                      maskUsage.opacity, maskMode, aImgParams);
-      // We want the mask to be untransformed so use the inverse of the current
-      // transform as the maskTransform to compensate.
-      maskTransform = aContext.CurrentMatrix();
-      maskTransform.Invert();
+      SVGMaskFrame::MaskParams params(aContext.GetDrawTarget(), aFrame,
+                                      aTransform, maskUsage.opacity, maskMode,
+                                      aImgParams);
 
       maskSurface = maskFrame->GetMaskForMaskedFrame(params);
 
@@ -680,13 +676,9 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
     }
 
     if (maskUsage.shouldGenerateClipMaskLayer) {
-      RefPtr<SourceSurface> clipMaskSurface = clipPathFrame->GetClipMask(
-          aContext, aFrame, aTransform, maskSurface, maskTransform);
+      RefPtr<SourceSurface> clipMaskSurface =
+          clipPathFrame->GetClipMask(aContext, aFrame, aTransform, maskSurface);
       if (clipMaskSurface) {
-        // We want the mask to be untransformed so use the inverse of the
-        // current transform as the maskTransform to compensate.
-        maskTransform = aContext.CurrentMatrix();
-        maskTransform.Invert();
         maskSurface = clipMaskSurface;
       } else {
         // Either entire surface is clipped out, or gfx buffer allocation
@@ -704,6 +696,10 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
     // SVG mask multiply opacity into maskSurface already, so we do not bother
     // to apply opacity again.
     if (shouldPushMask) {
+      // We want the mask to be untransformed so use the inverse of the
+      // current transform as the maskTransform to compensate.
+      Matrix maskTransform = aContext.CurrentMatrix();
+      maskTransform.Invert();
       target->PushGroupForBlendBack(gfxContentType::COLOR_ALPHA,
                                     maskFrame ? 1.0 : maskUsage.opacity,
                                     maskSurface, maskTransform);
@@ -786,8 +782,9 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
       svgFrame->PaintSVG(aContext, SVGUtils::GetCSSPxToDevPxMatrix(aTarget),
                          aImgParams, dirtyRect);
     };
-    FilterInstance::PaintFilteredFrame(aFrame, target, callback, dirtyRegion,
-                                       aImgParams);
+    FilterInstance::PaintFilteredFrame(
+        aFrame, aFrame->StyleEffects()->mFilters.AsSpan(), target, callback,
+        dirtyRegion, aImgParams);
   } else {
     svgFrame->PaintSVG(*target, aTransform, aImgParams, aDirtyRect);
   }
@@ -807,17 +804,19 @@ void SVGUtils::PaintFrameWithEffects(nsIFrame* aFrame, gfxContext& aContext,
 }
 
 bool SVGUtils::HitTestClip(nsIFrame* aFrame, const gfxPoint& aPoint) {
-  // If the clip-path property references non-existent or invalid clipPath
-  // element(s) we ignore it.
-  SVGClipPathFrame* clipPathFrame;
-  SVGObserverUtils::GetAndObserveClipPath(aFrame, &clipPathFrame);
-  if (clipPathFrame) {
-    return clipPathFrame->PointIsInsideClipPath(aFrame, aPoint);
+  const nsStyleSVGReset* svgReset = aFrame->StyleSVGReset();
+  if (!svgReset->HasClipPath()) {
+    return true;
   }
-  if (aFrame->StyleSVGReset()->HasClipPath()) {
-    return CSSClipPathInstance::HitTestBasicShapeOrPathClip(aFrame, aPoint);
+  if (svgReset->mClipPath.IsUrl()) {
+    // If the clip-path property references non-existent or invalid clipPath
+    // element(s) we ignore it.
+    SVGClipPathFrame* clipPathFrame;
+    SVGObserverUtils::GetAndObserveClipPath(aFrame, &clipPathFrame);
+    return !clipPathFrame ||
+           clipPathFrame->PointIsInsideClipPath(aFrame, aPoint);
   }
-  return true;
+  return CSSClipPathInstance::HitTestBasicShapeOrPathClip(aFrame, aPoint);
 }
 
 nsIFrame* SVGUtils::HitTestChildren(SVGDisplayContainerFrame* aFrame,
@@ -1528,18 +1527,22 @@ void SVGUtils::SetupStrokeGeometry(nsIFrame* aFrame, gfxContext* aContext,
     return;
   }
 
-  aContext->SetLineWidth(strokeOptions.mLineWidth);
+  // SVGContentUtils::GetStrokeOptions gets the stroke options in CSS px;
+  // convert to device pixels for gfxContext.
+  float devPxPerCSSPx = aFrame->PresContext()->CSSToDevPixelScale().scale;
+
+  aContext->SetLineWidth(strokeOptions.mLineWidth * devPxPerCSSPx);
   aContext->SetLineCap(strokeOptions.mLineCap);
   aContext->SetMiterLimit(strokeOptions.mMiterLimit);
   aContext->SetLineJoin(strokeOptions.mLineJoin);
   aContext->SetDash(strokeOptions.mDashPattern, strokeOptions.mDashLength,
-                    strokeOptions.mDashOffset);
+                    strokeOptions.mDashOffset, devPxPerCSSPx);
 }
 
 uint16_t SVGUtils::GetGeometryHitTestFlags(nsIFrame* aFrame) {
   uint16_t flags = 0;
 
-  switch (aFrame->StyleUI()->mPointerEvents) {
+  switch (aFrame->Style()->PointerEvents()) {
     case StylePointerEvents::None:
       break;
     case StylePointerEvents::Auto:
@@ -1651,10 +1654,7 @@ nsRect SVGUtils::ToCanvasBounds(const gfxRect& aUserspaceRect,
 }
 
 gfxMatrix SVGUtils::GetCSSPxToDevPxMatrix(nsIFrame* aNonSVGFrame) {
-  int32_t appUnitsPerDevPixel =
-      aNonSVGFrame->PresContext()->AppUnitsPerDevPixel();
-  float devPxPerCSSPx =
-      1 / nsPresContext::AppUnitsToFloatCSSPixels(appUnitsPerDevPixel);
+  float devPxPerCSSPx = aNonSVGFrame->PresContext()->CSSToDevPixelScale().scale;
 
   return gfxMatrix(devPxPerCSSPx, 0.0, 0.0, devPxPerCSSPx, 0.0, 0.0);
 }

@@ -42,14 +42,36 @@ pub enum MinMaxOp {
 pub enum SortKey {
     Number,
     Percentage,
+    Cap,
     Ch,
     Deg,
+    Dvb,
+    Dvh,
+    Dvi,
+    Dvmax,
+    Dvmin,
+    Dvw,
     Em,
     Ex,
+    Ic,
+    Lvb,
+    Lvh,
+    Lvi,
+    Lvmax,
+    Lvmin,
+    Lvw,
     Px,
     Rem,
     Sec,
+    Svb,
+    Svh,
+    Svi,
+    Svmax,
+    Svmin,
+    Svw,
+    Vb,
     Vh,
+    Vi,
     Vmax,
     Vmin,
     Vw,
@@ -133,6 +155,14 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         match *self {
             Self::Leaf(ref l) => l.sort_key(),
             _ => SortKey::Other,
+        }
+    }
+
+    /// Returns the leaf if we can (if simplification has allowed it).
+    pub fn as_leaf(&self) -> Option<&L> {
+        match *self {
+            Self::Leaf(ref l) => Some(l),
+            _ => None,
         }
     }
 

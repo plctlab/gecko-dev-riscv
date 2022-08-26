@@ -4,7 +4,6 @@
 
 var EXPORTED_SYMBOLS = ["FxAccountsClient"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { CommonUtils } = ChromeUtils.import(
   "resource://services-common/utils.js"
 );
@@ -247,7 +246,11 @@ FxAccountsClient.prototype = {
       sessionTokenHex,
       "sessionToken"
     );
-    return this._request("/account/attached_clients", "GET", credentials);
+    return this._requestWithHeaders(
+      "/account/attached_clients",
+      "GET",
+      credentials
+    );
   },
 
   /**
@@ -420,14 +423,15 @@ FxAccountsClient.prototype = {
 
     let bundle = CommonUtils.hexToBytes(resp.bundle);
     let mac = bundle.slice(-32);
-
-    let hasher = CryptoUtils.makeHMACHasher(
-      Ci.nsICryptoHMAC.SHA256,
-      CryptoUtils.makeHMACKey(respHMACKey)
+    let key = CommonUtils.byteStringToArrayBuffer(respHMACKey);
+    // CryptoUtils.hmac takes ArrayBuffers as inputs for the key and data and
+    // returns an ArrayBuffer.
+    let bundleMAC = await CryptoUtils.hmac(
+      "SHA-256",
+      key,
+      CommonUtils.byteStringToArrayBuffer(bundle.slice(0, -32))
     );
-
-    let bundleMAC = CryptoUtils.digestBytes(bundle.slice(0, -32), hasher);
-    if (mac !== bundleMAC) {
+    if (mac !== CommonUtils.arrayBufferToByteString(bundleMAC)) {
       throw new Error("error unbundling encryption keys");
     }
 
@@ -753,7 +757,7 @@ FxAccountsClient.prototype = {
    *          "info": "https://docs.dev.lcip.og/errors/1234" // link to more info on the error
    *        }
    */
-  async _request(path, method, credentials, jsonPayload) {
+  async _requestWithHeaders(path, method, credentials, jsonPayload) {
     // We were asked to back off.
     if (this.backoffError) {
       log.debug("Received new request during backoff, re-rejecting.");
@@ -783,12 +787,22 @@ FxAccountsClient.prototype = {
       throw error;
     }
     try {
-      return JSON.parse(response.body);
+      return { body: JSON.parse(response.body), headers: response.headers };
     } catch (error) {
       log.error("json parse error on response: " + response.body);
       // eslint-disable-next-line no-throw-literal
       throw { error };
     }
+  },
+
+  async _request(path, method, credentials, jsonPayload) {
+    const response = await this._requestWithHeaders(
+      path,
+      method,
+      credentials,
+      jsonPayload
+    );
+    return response.body;
   },
 };
 

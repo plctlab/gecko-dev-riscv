@@ -101,27 +101,35 @@ var tests = [
       Services.prefs.setBoolPref(p, true);
       is(Services.prefs.getBoolPref(p), true, "The pref should be set: " + p);
     });
+    Services.prefs.setCharPref("dom.push.userAgentID", "testvalue");
     Troubleshoot.snapshot(function(snapshot) {
       let p = snapshot.modifiedPreferences;
       is(
         p["javascript.troubleshoot"],
         true,
-        "The pref should be present because it's whitelisted " +
-          "but not blacklisted."
+        "The pref should be present because it's in the allowed prefs " +
+          "and not in the pref regexes that are disallowed."
       );
       ok(
         !("troubleshoot.foo" in p),
-        "The pref should be absent because it's not in the whitelist."
+        "The pref should be absent because it's not in the allowed prefs."
       );
       ok(
         !("network.proxy.troubleshoot" in p),
-        "The pref should be absent because it's blacklisted."
+        "The pref should be absent because it's in the pref regexes " +
+          "that are disallowed."
+      );
+      ok(
+        !("dom.push.userAgentID" in p),
+        "The pref should be absent because it's in the pref regexes " +
+          "that are disallowed."
       );
       ok(
         !("print.print_to_filename" in p),
-        "The pref should be absent because it's not whitelisted."
+        "The pref should be absent because it's not in the allowed prefs."
       );
       prefs.forEach(p => Services.prefs.deleteBranch(p));
+      Services.prefs.clearUserPref("dom.push.userAgentID");
       done();
     });
   },
@@ -372,6 +380,12 @@ const SNAPSHOT_SCHEMA = {
         safeMode: {
           type: "boolean",
         },
+        memorySizeBytes: {
+          type: "number",
+        },
+        diskAvailableBytes: {
+          type: "number",
+        },
       },
     },
     crashes: {
@@ -535,9 +549,6 @@ const SNAPSHOT_SCHEMA = {
         windowLayerManagerRemote: {
           type: "boolean",
         },
-        windowUsingAdvancedLayers: {
-          type: "boolean",
-        },
         numAcceleratedWindowsMessage: {
           type: "object",
           properties: {
@@ -616,9 +627,6 @@ const SNAPSHOT_SCHEMA = {
         },
         directWriteVersion: {
           type: "string",
-        },
-        usesTiling: {
-          type: "boolean",
         },
         clearTypeParameters: {
           type: "string",
@@ -850,6 +858,10 @@ const SNAPSHOT_SCHEMA = {
               },
             },
           },
+        },
+        codecSupportInfo: {
+          required: false,
+          type: "string",
         },
       },
     },
@@ -1107,7 +1119,7 @@ const SNAPSHOT_SCHEMA = {
     remoteAgent: {
       type: "object",
       properties: {
-        listening: {
+        running: {
           required: true,
           type: "boolean",
         },
@@ -1170,7 +1182,7 @@ const SNAPSHOT_SCHEMA = {
           },
           required: true,
         },
-        remoteConfigs: {
+        nimbusRollouts: {
           type: "array",
           items: {
             type: "object",

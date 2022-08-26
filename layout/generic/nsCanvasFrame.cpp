@@ -27,6 +27,7 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/StaticPrefs_browser.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/dom/AnonymousContent.h"
 #include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/RenderRootStateManager.h"
@@ -355,7 +356,7 @@ bool nsDisplayCanvasBackgroundColor::CreateWebRenderCommands(
       LayoutDeviceRect::FromAppUnits(bgClipRect, appUnitsPerDevPixel);
 
   wr::LayoutRect r = wr::ToLayoutRect(rect);
-  aBuilder.PushRect(r, r, !BackfaceIsHidden(),
+  aBuilder.PushRect(r, r, !BackfaceIsHidden(), false, false,
                     wr::ToColorF(ToDeviceColor(mColor)));
   return true;
 }
@@ -461,11 +462,13 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     ComputedStyle* bg = nullptr;
     nsIFrame* dependentFrame = nullptr;
     bool isThemed = IsThemed();
-    if (!isThemed &&
-        nsCSSRendering::FindBackgroundFrame(this, &dependentFrame)) {
-      bg = dependentFrame->Style();
-      if (dependentFrame == this) {
-        dependentFrame = nullptr;
+    if (!isThemed) {
+      dependentFrame = nsCSSRendering::FindBackgroundFrame(this);
+      if (dependentFrame) {
+        bg = dependentFrame->Style();
+        if (dependentFrame == this) {
+          dependentFrame = nullptr;
+        }
       }
     }
 
@@ -494,13 +497,15 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
       // conform to their HCM background color when a solid color is rendered,
       // and some websites use solid-color images instead of an overwritable
       // background color.
-      if (!PresContext()->PrefSheetPrefs().mUseDocumentColors &&
+      if (PresContext()->ForcingColors() &&
           StaticPrefs::
               browser_display_suppress_canvas_background_image_on_forced_colors()) {
         return true;
       }
       return false;
     }();
+
+    nsDisplayList layerItems(aBuilder);
 
     // Create separate items for each background layer.
     const nsStyleImageLayers& layers = bg->StyleBackground()->mImage;
@@ -516,7 +521,7 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
           GetRectRelativeToSelf() + aBuilder->ToReferenceFrame(this);
 
       const ActiveScrolledRoot* thisItemASR = asr;
-      nsDisplayList thisItemList;
+      nsDisplayList thisItemList(aBuilder);
       nsDisplayBackgroundImage::InitData bgData =
           nsDisplayBackgroundImage::GetInitData(aBuilder, this, i, bgRect, bg);
 
@@ -573,7 +578,7 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
             aBuilder, this, i + 1, &thisItemList, layers.mLayers[i].mBlendMode,
             thisItemASR, true);
       }
-      aLists.BorderBackground()->AppendToTop(&thisItemList);
+      layerItems.AppendToTop(&thisItemList);
     }
 
     bool hasFixedBottomLayer =
@@ -591,9 +596,11 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
       // interleaving the two with a scrolled background color.
       // PresShell::AddCanvasBackgroundColorItem makes sure there always is a
       // non-scrolled background color item at the bottom.
-      aLists.BorderBackground()
-          ->AppendNewToBottom<nsDisplayCanvasBackgroundColor>(aBuilder, this);
+      aLists.BorderBackground()->AppendNewToTop<nsDisplayCanvasBackgroundColor>(
+          aBuilder, this);
     }
+
+    aLists.BorderBackground()->AppendToTop(&layerItems);
 
     if (needBlendContainer) {
       const ActiveScrolledRoot* containerASR = contASRTracker.GetContainerASR();
@@ -882,10 +889,9 @@ void nsCanvasFrame::Reflow(nsPresContext* aPresContext,
                                  aStatus);
 
   NS_FRAME_TRACE_REFLOW_OUT("nsCanvasFrame::Reflow", aStatus);
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
-nsresult nsCanvasFrame::GetContentForEvent(WidgetEvent* aEvent,
+nsresult nsCanvasFrame::GetContentForEvent(const WidgetEvent* aEvent,
                                            nsIContent** aContent) {
   NS_ENSURE_ARG_POINTER(aContent);
   nsresult rv = nsIFrame::GetContentForEvent(aEvent, aContent);

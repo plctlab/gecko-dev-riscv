@@ -10,9 +10,12 @@ const {
   targetConfigurationSpec,
 } = require("devtools/shared/specs/target-configuration");
 const {
-  WatchedDataHelpers,
-} = require("devtools/server/actors/watcher/WatchedDataHelpers.jsm");
-const { SUPPORTED_DATA } = WatchedDataHelpers;
+  SessionDataHelpers,
+} = require("devtools/server/actors/watcher/SessionDataHelpers.jsm");
+const {
+  isBrowsingContextPartOfContext,
+} = require("devtools/server/actors/watcher/browsing-context-helpers.jsm");
+const { SUPPORTED_DATA } = SessionDataHelpers;
 const { TARGET_CONFIGURATION } = SUPPORTED_DATA;
 const Services = require("Services");
 
@@ -23,16 +26,14 @@ const SUPPORTED_OPTIONS = {
   cacheDisabled: true,
   // Enable color scheme simulation.
   colorSchemeSimulation: true,
+  // Enable custom formatters
+  customFormatters: true,
   // Set a custom user agent
   customUserAgent: true,
-  // Is the client using the new performance panel.
-  isNewPerfPanelEnabled: true,
   // Enable JavaScript
   javascriptEnabled: true,
   // Force a custom device pixel ratio (used in RDM). Set to null to restore origin ratio.
   overrideDPPX: true,
-  // Enable paint flashing mode.
-  paintFlashing: true,
   // Enable print simulation mode.
   printSimulationEnabled: true,
   // Override navigator.maxTouchPoints (used in RDM and doesn't apply if RDM isn't enabled)
@@ -102,8 +103,10 @@ const TargetConfigurationActor = ActorClassWithSpec(targetConfigurationSpec, {
    */
   _shouldHandleConfigurationInParentProcess() {
     // Only handle parent process configuration if the watcherActor is tied to a
-    // browser element (i.e. we're *not* in the Browser Toolbox)
-    return this.watcherActor.browserElement;
+    // browser element.
+    // For now, the Browser Toolbox and Web Extension are having a unique target
+    // which applies the configuration by itself on new documents.
+    return this.watcherActor.sessionContext.type == "browser-element";
   },
 
   /**
@@ -122,11 +125,16 @@ const TargetConfigurationActor = ActorClassWithSpec(targetConfigurationSpec, {
       return;
     }
 
-    // If the watcher is bound to one browser element (i.e. a tab), ignore
-    // updates related to other browser elements
+    // Only process BrowsingContexts which are related to the debugged scope.
+    // As this callback fires very early, the BrowsingContext may not have
+    // any WindowGlobal yet and so we ignore all checks dones against the WindowGlobal
+    // if there is none. Meaning we might accept more BrowsingContext than expected.
     if (
-      this.watcherActor.browserId &&
-      browsingContext.browserId != this.watcherActor.browserId
+      !isBrowsingContextPartOfContext(
+        browsingContext,
+        this.watcherActor.sessionContext,
+        { acceptNoWindowGlobal: true, forceAcceptTopLevelTarget: true }
+      )
     ) {
       return;
     }
@@ -146,7 +154,7 @@ const TargetConfigurationActor = ActorClassWithSpec(targetConfigurationSpec, {
   },
 
   _getConfiguration() {
-    const targetConfigurationData = this.watcherActor.getWatchedData(
+    const targetConfigurationData = this.watcherActor.getSessionDataForType(
       TARGET_CONFIGURATION
     );
     if (!targetConfigurationData) {

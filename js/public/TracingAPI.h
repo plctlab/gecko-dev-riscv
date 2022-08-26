@@ -44,6 +44,7 @@ enum class TracerKind {
   GrayBuffering,
   ClearEdges,
   Sweeping,
+  MinorSweeping,
   Barrier,
 
   // Callback tracers: General-purpose tracers that have a single virtual
@@ -55,6 +56,7 @@ enum class TracerKind {
   // Specific kinds of callback tracer.
   UnmarkGray,
   VerifyTraceProtoAndIface,
+  CompartmentCheck,
 };
 
 enum class WeakMapTraceAction {
@@ -86,28 +88,18 @@ enum class WeakMapTraceAction {
 // Whether a tracer should trace weak edges. GCMarker sets this to Skip.
 enum class WeakEdgeTraceAction { Skip, Trace };
 
-// Whether a tracer can skip tracing JS::Ids. This is needed by the cycle
-// collector to skip some Ids for performance reasons. Not all Ids are skipped.
-enum class IdTraceAction { CanSkip, Trace };
-
 struct TraceOptions {
   JS::WeakMapTraceAction weakMapAction = WeakMapTraceAction::TraceValues;
   JS::WeakEdgeTraceAction weakEdgeAction = WeakEdgeTraceAction::Trace;
-  JS::IdTraceAction idAction = IdTraceAction::Trace;
 
   TraceOptions() = default;
   TraceOptions(JS::WeakMapTraceAction weakMapActionArg,
-               JS::WeakEdgeTraceAction weakEdgeActionArg,
-               JS::IdTraceAction idActionArg = IdTraceAction::Trace)
-      : weakMapAction(weakMapActionArg),
-        weakEdgeAction(weakEdgeActionArg),
-        idAction(idActionArg) {}
+               JS::WeakEdgeTraceAction weakEdgeActionArg)
+      : weakMapAction(weakMapActionArg), weakEdgeAction(weakEdgeActionArg) {}
   MOZ_IMPLICIT TraceOptions(JS::WeakMapTraceAction weakMapActionArg)
       : weakMapAction(weakMapActionArg) {}
   MOZ_IMPLICIT TraceOptions(JS::WeakEdgeTraceAction weakEdgeActionArg)
       : weakEdgeAction(weakEdgeActionArg) {}
-  MOZ_IMPLICIT TraceOptions(JS::IdTraceAction idActionArg)
-      : idAction(idActionArg) {}
 };
 
 class AutoTracingName;
@@ -199,9 +191,6 @@ class JS_PUBLIC_API JSTracer {
   }
   bool traceWeakEdges() const {
     return options_.weakEdgeAction == JS::WeakEdgeTraceAction::Trace;
-  }
-  bool canSkipJsids() const {
-    return options_.idAction == JS::IdTraceAction::CanSkip;
   }
 
   JS::TracingContext& context() { return context_; }
@@ -320,7 +309,7 @@ class JS_PUBLIC_API CallbackTracer
 
   // Override this method to receive notification when a node in the GC
   // heap graph is visited.
-  virtual void onChild(const JS::GCCellPtr& thing) = 0;
+  virtual void onChild(JS::GCCellPtr thing) = 0;
 
  private:
   template <typename T>
@@ -465,26 +454,26 @@ inline void TraceEdge(JSTracer* trc, JS::TenuredHeap<T>* thingp,
 }
 
 // Edges that are always traced as part of root marking do not require
-// incremental barriers. |JS::UnsafeTraceRoot| overloads allow for marking
+// incremental barriers. |JS::TraceRoot| overloads allow for marking
 // non-barriered pointers but assert that this happens during root marking.
 //
 // Note that while |edgep| must never be null, it is fine for |*edgep| to be
 // nullptr.
-#define JS_DECLARE_UNSAFE_TRACE_ROOT(type)                              \
-  extern JS_PUBLIC_API void UnsafeTraceRoot(JSTracer* trc, type* edgep, \
-                                            const char* name);
+#define JS_DECLARE_TRACE_ROOT(type)                               \
+  extern JS_PUBLIC_API void TraceRoot(JSTracer* trc, type* edgep, \
+                                      const char* name);
 
 // Declare edge-tracing function overloads for public GC pointer types.
-JS_FOR_EACH_PUBLIC_GC_POINTER_TYPE(JS_DECLARE_UNSAFE_TRACE_ROOT)
-JS_FOR_EACH_PUBLIC_TAGGED_GC_POINTER_TYPE(JS_DECLARE_UNSAFE_TRACE_ROOT)
+JS_FOR_EACH_PUBLIC_GC_POINTER_TYPE(JS_DECLARE_TRACE_ROOT)
+JS_FOR_EACH_PUBLIC_TAGGED_GC_POINTER_TYPE(JS_DECLARE_TRACE_ROOT)
 
 // We also require overloads for these purely-internal types.  These overloads
 // ought not be in public headers, and they should use a different name in order
 // to not be *actual* overloads, but for the moment we still declare them here.
-JS_DECLARE_UNSAFE_TRACE_ROOT(js::AbstractGeneratorObject*)
-JS_DECLARE_UNSAFE_TRACE_ROOT(js::SavedFrame*)
+JS_DECLARE_TRACE_ROOT(js::AbstractGeneratorObject*)
+JS_DECLARE_TRACE_ROOT(js::SavedFrame*)
 
-#undef JS_DECLARE_UNSAFE_TRACE_ROOT
+#undef JS_DECLARE_TRACE_ROOT
 
 extern JS_PUBLIC_API void TraceChildren(JSTracer* trc, GCCellPtr thing);
 
@@ -505,29 +494,11 @@ extern JS_PUBLIC_API void UnsafeTraceManuallyBarrieredEdge(JSTracer* trc,
                                                            JSObject** edgep,
                                                            const char* name);
 
-// Not part of the public API, but declared here so we can use it in
-// GCPolicyAPI.h
-template <typename T>
-inline bool TraceManuallyBarrieredWeakEdge(JSTracer* trc, T* thingp,
-                                           const char* name);
-
-template <typename T>
-class WeakHeapPtr;
-
-template <typename T>
-inline bool TraceWeakEdge(JSTracer* trc, WeakHeapPtr<T>* thingp,
-                          const char* name);
-
 namespace gc {
 
 // Return true if the given edge is not live and is about to be swept.
 template <typename T>
-extern JS_PUBLIC_API bool EdgeNeedsSweep(JS::Heap<T>* edgep);
-
-// Not part of the public API, but declared here so we can use it in GCPolicy
-// which is.
-template <typename T>
-bool IsAboutToBeFinalizedUnbarriered(T* thingp);
+extern JS_PUBLIC_API bool TraceWeakEdge(JSTracer* trc, JS::Heap<T>* thingp);
 
 }  // namespace gc
 

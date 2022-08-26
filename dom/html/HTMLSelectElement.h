@@ -7,8 +7,8 @@
 #define mozilla_dom_HTMLSelectElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "nsGenericHTMLElement.h"
-#include "nsIConstraintValidation.h"
 
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/UnionTypes.h"
@@ -74,7 +74,7 @@ class MOZ_STACK_CLASS SafeOptionListMutation {
  * Implementation of &lt;select&gt;
  */
 class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
-                                public nsIConstraintValidation {
+                                public ConstraintValidation {
  public:
   /**
    *  IS_SELECTED   whether to set the option(s) to true or false
@@ -98,7 +98,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
     NO_RESELECT = 1 << 4
   };
 
-  using nsIConstraintValidation::GetValidationMessage;
+  using ConstraintValidation::GetValidationMessage;
 
   explicit HTMLSelectElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -139,7 +139,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
   void SetName(const nsAString& aName, ErrorResult& aRv) {
     SetHTMLAttr(nsGkAtoms::name, aName, aRv);
   }
-  bool Required() const { return State().HasState(NS_EVENT_STATE_REQUIRED); }
+  bool Required() const { return State().HasState(ElementState::REQUIRED); }
   void SetRequired(bool aVal, ErrorResult& aRv) {
     SetHTMLBoolAttr(nsGkAtoms::required, aVal, aRv);
   }
@@ -164,7 +164,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
   }
   void Add(const HTMLOptionElementOrHTMLOptGroupElement& aElement,
            const Nullable<HTMLElementOrLong>& aBefore, ErrorResult& aRv);
-  void Remove(int32_t aIndex);
+  void Remove(int32_t aIndex) const;
   void IndexedSetter(uint32_t aIndex, HTMLOptionElement* aOption,
                      ErrorResult& aRv) {
     mOptions->IndexedSetter(aIndex, aOption, aRv);
@@ -176,7 +176,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
 
   int32_t SelectedIndex() const { return mSelectedIndex; }
   void SetSelectedIndex(int32_t aIdx) { SetSelectedIndexInternal(aIdx, true); }
-  void GetValue(DOMString& aValue);
+  void GetValue(DOMString& aValue) const;
   void SetValue(const nsAString& aValue);
 
   // Override SetCustomValidity so we update our state properly when it's called
@@ -213,7 +213,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
 
   virtual void FieldSetDisabledChanged(bool aNotify) override;
 
-  EventStates IntrinsicState() const override;
+  ElementState IntrinsicState() const override;
 
   /**
    * To be called when stuff is added under a child of the select--but *before*
@@ -298,7 +298,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
 
   HTMLOptionsCollection* GetOptions() { return mOptions; }
 
-  // nsIConstraintValidation
+  // ConstraintValidation
   nsresult GetValidationMessage(nsAString& aValidationMessage,
                                 ValidityStateType aType) override;
 
@@ -322,8 +322,8 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
    */
   bool IsCombobox() const { return !Multiple() && Size() <= 1; }
 
-  bool OpenInParentProcess();
-  void SetOpenInParentProcess(bool aVal);
+  bool OpenInParentProcess() const { return mIsOpenInParentProcess; }
+  void SetOpenInParentProcess(bool aVal) { mIsOpenInParentProcess = aVal; }
 
   void GetPreviewValue(nsAString& aValue) { aValue = mPreviewValue; }
   void SetPreviewValue(const nsAString& aValue);
@@ -339,7 +339,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
    * @param aIndex the index
    * @return whether the option at the index is selected
    */
-  bool IsOptionSelectedByIndex(int32_t aIndex);
+  bool IsOptionSelectedByIndex(int32_t aIndex) const;
   /**
    * Starting with (and including) aStartIndex, find the first selected index
    * and set mSelectedIndex to it.
@@ -437,8 +437,8 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
   nsISelectControlFrame* GetSelectFrame();
 
   /**
-   * Helper method for dispatching ContentReset notifications to list
-   * and combo box frames.
+   * Helper method for dispatching ContentReset notifications to list box
+   * frames.
    */
   void DispatchContentReset();
 
@@ -486,33 +486,36 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
   nsContentUtils::AutocompleteAttrState mAutocompleteAttrState;
   nsContentUtils::AutocompleteAttrState mAutocompleteInfoState;
   /** false if the parser is in the middle of adding children. */
-  bool mIsDoneAddingChildren;
+  bool mIsDoneAddingChildren : 1;
   /** true if our disabled state has changed from the default **/
-  bool mDisabledChanged;
+  bool mDisabledChanged : 1;
   /** true if child nodes are being added or removed.
    *  Used by SafeOptionListMutation.
    */
-  bool mMutating;
+  bool mMutating : 1;
   /**
    * True if DoneAddingChildren will get called but shouldn't restore state.
    */
-  bool mInhibitStateRestoration;
+  bool mInhibitStateRestoration : 1;
   /**
    * True if the selection has changed since the element's creation.
    */
-  bool mSelectionHasChanged;
+  bool mSelectionHasChanged : 1;
   /**
    * True if the default selected option has been set.
    */
-  bool mDefaultSelectionSet;
+  bool mDefaultSelectionSet : 1;
   /**
    * True if :-moz-ui-invalid can be shown.
    */
-  bool mCanShowInvalidUI;
+  bool mCanShowInvalidUI : 1;
   /**
    * True if :-moz-ui-valid can be shown.
    */
-  bool mCanShowValidUI;
+  bool mCanShowValidUI : 1;
+
+  /** True if we're open in the parent process */
+  bool mIsOpenInParentProcess : 1;
 
   /** The number of non-options as children of the select */
   uint32_t mNonOptionChildren;

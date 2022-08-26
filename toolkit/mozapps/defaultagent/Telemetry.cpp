@@ -15,6 +15,7 @@
 #include "EventLog.h"
 #include "Notification.h"
 #include "Policy.h"
+#include "UtfConvert.h"
 
 #include "json/json.h"
 #include "mozilla/ArrayUtils.h"
@@ -98,14 +99,9 @@ static TelemetryFieldResult GetOSLocale() {
   }
 
   // We'll need the locale string in UTF-8 to be able to submit it.
-  int bufLen = WideCharToMultiByte(CP_UTF8, 0, localeName, -1, nullptr, 0,
-                                   nullptr, nullptr);
-  mozilla::UniquePtr<char[]> narrowLocaleName =
-      mozilla::MakeUnique<char[]>(bufLen);
-  WideCharToMultiByte(CP_UTF8, 0, localeName, -1, narrowLocaleName.get(),
-                      bufLen, nullptr, nullptr);
+  Utf16ToUtf8Result narrowLocaleName = Utf16ToUtf8(localeName);
 
-  return std::string(narrowLocaleName.get());
+  return narrowLocaleName.unwrapOr("");
 }
 
 static FilePathResult GetPingFilePath(std::wstring& uuid) {
@@ -170,9 +166,10 @@ static FilePathResult GetPingsenderPath() {
 
 static mozilla::WindowsError SendPing(
     const std::string defaultBrowser, const std::string previousDefaultBrowser,
-    const std::string osVersion, const std::string osLocale,
-    const std::string notificationType, const std::string notificationShown,
-    const std::string notificationAction,
+    const std::string defaultPdf, const std::string osVersion,
+    const std::string osLocale, const std::string notificationType,
+    const std::string notificationShown, const std::string notificationAction,
+    const std::string notificationNotShownReason,
     const std::string prevNotificationAction) {
   // Fill in the ping JSON object.
   Json::Value ping;
@@ -180,11 +177,13 @@ static mozilla::WindowsError SendPing(
   ping["build_version"] = MOZILLA_VERSION;
   ping["default_browser"] = defaultBrowser;
   ping["previous_default_browser"] = previousDefaultBrowser;
+  ping["default_pdf_viewer_raw"] = defaultPdf;
   ping["os_version"] = osVersion;
   ping["os_locale"] = osLocale;
   ping["notification_type"] = notificationType;
   ping["notification_shown"] = notificationShown;
   ping["notification_action"] = notificationAction;
+  ping["notification_not_shown_reason"] = notificationNotShownReason;
   ping["previous_notification_action"] = prevNotificationAction;
 
   // Stringify the JSON.
@@ -328,6 +327,9 @@ static TelemetryFieldResult GetAndUpdatePreviousDefaultBrowser(
 // for the next time the ping is sent.
 // The values passed will only be cached if actions were actually taken
 // (i.e. not when notificationShown == "not-shown")
+// Because of this, we know that any data that we store will have a
+// notificationNotShownReason of NotApplicable. Thus, we don't have to actually
+// store that value.
 HRESULT MaybeCache(Cache& cache, const std::string& notificationType,
                    const std::string& notificationShown,
                    const std::string& notificationAction,
@@ -359,6 +361,7 @@ HRESULT MaybeCache(Cache& cache, const std::string& notificationType,
 HRESULT MaybeSwapForCached(Cache& cache, std::string& notificationType,
                            std::string& notificationShown,
                            std::string& notificationAction,
+                           std::string& notificationNotShownReason,
                            std::string& prevNotificationAction) {
   Cache::MaybeEntryResult result = cache.Dequeue();
   if (result.isErr()) {
@@ -376,6 +379,11 @@ HRESULT MaybeSwapForCached(Cache& cache, std::string& notificationType,
   notificationType = maybeEntry.value().notificationType;
   notificationShown = maybeEntry.value().notificationShown;
   notificationAction = maybeEntry.value().notificationAction;
+  // MaybeCache only stores data in the cache if we showed a notification. Which
+  // means that we know that any stored ping will have a
+  // notificationNotShownReason of NotApplicable.
+  notificationNotShownReason = GetStringForNotificationNotShownReason(
+      NotificationNotShownReason::NotApplicable);
   if (maybeEntry.value().prevNotificationAction.isSome()) {
     prevNotificationAction = maybeEntry.value().prevNotificationAction.value();
   } else {
@@ -428,16 +436,20 @@ HRESULT MaybeWritePreviousNotificationAction(
 }
 
 HRESULT SendDefaultBrowserPing(
-    const DefaultBrowserInfo& browserInfo,
+    const DefaultBrowserInfo& browserInfo, const DefaultPdfInfo& pdfInfo,
     const NotificationActivities& activitiesPerformed) {
   std::string currentDefaultBrowser =
       GetStringForBrowser(browserInfo.currentDefaultBrowser);
+  std::string currentDefaultPdf = pdfInfo.currentDefaultPdf;
   std::string notificationType =
       GetStringForNotificationType(activitiesPerformed.type);
   std::string notificationShown =
       GetStringForNotificationShown(activitiesPerformed.shown);
   std::string notificationAction =
       GetStringForNotificationAction(activitiesPerformed.action);
+  std::string notificationNotShownReason =
+      GetStringForNotificationNotShownReason(
+          activitiesPerformed.notShownReason);
 
   TelemetryFieldResult osVersionResult = GetOSVersion();
   if (osVersionResult.isErr()) {
@@ -492,7 +504,8 @@ HRESULT SendDefaultBrowserPing(
   }
 
   hr = MaybeSwapForCached(cache, notificationType, notificationShown,
-                          notificationAction, prevNotificationAction);
+                          notificationAction, notificationNotShownReason,
+                          prevNotificationAction);
   if (FAILED(hr)) {
     return hr;
   }
@@ -508,8 +521,9 @@ HRESULT SendDefaultBrowserPing(
   }
   std::string previousDefaultBrowser = previousDefaultBrowserResult.unwrap();
 
-  return SendPing(currentDefaultBrowser, previousDefaultBrowser, osVersion,
-                  osLocale, notificationType, notificationShown,
-                  notificationAction, prevNotificationAction)
+  return SendPing(currentDefaultBrowser, previousDefaultBrowser,
+                  currentDefaultPdf, osVersion, osLocale, notificationType,
+                  notificationShown, notificationAction,
+                  notificationNotShownReason, prevNotificationAction)
       .AsHResult();
 }

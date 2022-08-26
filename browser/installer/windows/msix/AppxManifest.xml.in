@@ -3,7 +3,17 @@
 - License, v. 2.0. If a copy of the MPL was not distributed with this file,
 - You can obtain one at http://mozilla.org/MPL/2.0/. -->
 <!-- #filter substitution -->
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap2="http://schemas.microsoft.com/appx/manifest/uap/windows10/2" xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap2 uap3 uap10 rescap">
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap2="http://schemas.microsoft.com/appx/manifest/uap/windows10/2"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap2 uap3 uap10 rescap">
+
   <Identity Name="@APPX_IDENTITY@" Publisher="@APPX_PUBLISHER@" Version="@APPX_VERSION@" ProcessorArchitecture="@APPX_ARCH@" />
   <Properties>
     <DisplayName>@APPX_DISPLAYNAME@</DisplayName>
@@ -24,14 +34,24 @@
     <rescap:Capability Name="runFullTrust" />
   </Capabilities>
   <Applications>
-    <Application Id="FIREFOX" Executable="VFS\ProgramFiles\@APPX_INSTDIR@\@MOZ_APP_NAME@.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="VFS\ProgramFiles\@APPX_INSTDIR@\@MOZ_APP_NAME@.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements BackgroundColor="#20123A" DisplayName="@MOZ_APP_DISPLAYNAME@" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" Description="@MOZ_APP_DISPLAYNAME@">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\LargeTile.png" Square71x71Logo="Assets\SmallTile.png" />
       </uap:VisualElements>
       <Extensions>
+        <uap3:Extension Category="windows.appExecutionAlias" EntryPoint="Windows.FullTrustApplication" Executable="VFS\ProgramFiles\@APPX_INSTDIR@\@MOZ_APP_NAME@.exe">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="@MOZ_APP_NAME@.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
         <uap3:Extension Category="windows.fileTypeAssociation">
           <uap3:FileTypeAssociation Name="htm">
             <uap:SupportedFileTypes>
+              <!-- Keep synchronized with
+                   https://searchfox.org/mozilla-central/source/browser/installer/windows/nsis/shared.nsh
+                   and `os.environment.launched_to_handle` and `os.environment.invoked_to_handle` telemetry in
+                   https://searchfox.org/mozilla-central/source/browser/components/BrowserContentHandler.jsm. -->
+              <uap:FileType>.avif</uap:FileType>
               <uap:FileType>.htm</uap:FileType>
               <uap:FileType>.html</uap:FileType>
               <uap:FileType>.pdf</uap:FileType>
@@ -65,6 +85,20 @@
             <uap:Logo>Assets\Document44x44.png</uap:Logo>
           </uap3:Protocol>
         </uap3:Extension>
+        <!-- COM registrations for the notification server. -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="NotificationServer"
+                                 AppId="@MOZ_INOTIFICATIONACTIVATION_CLSID@">
+              <com:Class Id="@MOZ_INOTIFICATIONACTIVATION_CLSID@"
+                         Path="VFS\ProgramFiles\@APPX_INSTDIR@\notificationserver.dll"
+                         ThreadingModel="Both" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="@MOZ_INOTIFICATIONACTIVATION_CLSID@" />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>
@@ -80,6 +114,12 @@
                        Path="VFS\ProgramFiles\@APPX_INSTDIR@\AccessibleMarshal.dll" />
         <com:Interface Id="@MOZ_IGECKOBACKCHANNEL_IID@"
                        ProxyStubClsid="@MOZ_IGECKOBACKCHANNEL_IID@" />
+        <com:Interface Id="@MOZ_IHANDLERCONTROL_IID@"
+                       ProxyStubClsid="@MOZ_IGECKOBACKCHANNEL_IID@"
+                       AsynchronousInterface="@MOZ_ASYNCIHANDLERCONTROL_IID@" />
+        <com:Interface Id="@MOZ_ASYNCIHANDLERCONTROL_IID@"
+                       ProxyStubClsid="@MOZ_IGECKOBACKCHANNEL_IID@"
+                       SynchronousInterface="@MOZ_IHANDLERCONTROL_IID@" />
         <com:Interface Id="4e747be5-2052-4265-8af0-8ecad7aad1c0"
                        ProxyStubClsid="1814ceeb-49e2-407f-af99-fa755a7d2607" />
         <com:Interface Id="1814ceeb-49e2-407f-af99-fa755a7d2607"

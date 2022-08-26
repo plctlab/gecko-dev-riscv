@@ -33,6 +33,7 @@
 #include <d3d11.h>
 #include <dcomp.h>
 #include <ddraw.h>
+#include <dxgi.h>
 
 namespace mozilla {
 namespace gfx {
@@ -276,7 +277,7 @@ bool DeviceManagerDx::CreateCompositorDevices() {
 
   if (int32_t sleepSec =
           StaticPrefs::gfx_direct3d11_sleep_on_create_device_AtStartup()) {
-    printf_stderr("Attach to PID: %d\n", GetCurrentProcessId());
+    printf_stderr("Attach to PID: %lu\n", GetCurrentProcessId());
     Sleep(sleepSec * 1000);
   }
 
@@ -460,10 +461,13 @@ void DeviceManagerDx::ImportDeviceInfo(const D3D11DeviceStatus& aDeviceStatus) {
   mDeviceStatus = Some(aDeviceStatus);
 }
 
-void DeviceManagerDx::ExportDeviceInfo(D3D11DeviceStatus* aOut) {
+bool DeviceManagerDx::ExportDeviceInfo(D3D11DeviceStatus* aOut) {
   if (mDeviceStatus) {
     *aOut = mDeviceStatus.value();
+    return true;
   }
+
+  return false;
 }
 
 void DeviceManagerDx::CreateContentDevices() {
@@ -491,20 +495,37 @@ IDXGIAdapter1* DeviceManagerDx::GetDXGIAdapter() {
   decltype(CreateDXGIFactory1)* createDXGIFactory1 =
       (decltype(CreateDXGIFactory1)*)GetProcAddress(dxgiModule,
                                                     "CreateDXGIFactory1");
-
   if (!createDXGIFactory1) {
     return nullptr;
   }
+  static const auto fCreateDXGIFactory2 =
+      (decltype(CreateDXGIFactory2)*)GetProcAddress(dxgiModule,
+                                                    "CreateDXGIFactory2");
 
   // Try to use a DXGI 1.1 adapter in order to share resources
   // across processes.
   RefPtr<IDXGIFactory1> factory1;
-  HRESULT hr =
-      createDXGIFactory1(__uuidof(IDXGIFactory1), getter_AddRefs(factory1));
-  if (FAILED(hr) || !factory1) {
-    // This seems to happen with some people running the iZ3D driver.
-    // They won't get acceleration.
-    return nullptr;
+  if (StaticPrefs::gfx_direct3d11_enable_debug_layer_AtStartup()) {
+    RefPtr<IDXGIFactory2> factory2;
+    if (fCreateDXGIFactory2) {
+      auto hr = fCreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG,
+                                    __uuidof(IDXGIFactory2),
+                                    getter_AddRefs(factory2));
+      MOZ_ALWAYS_TRUE(!FAILED(hr));
+    } else {
+      NS_WARNING(
+          "fCreateDXGIFactory2 not loaded, cannot create debug IDXGIFactory2.");
+    }
+    factory1 = factory2;
+  }
+  if (!factory1) {
+    HRESULT hr =
+        createDXGIFactory1(__uuidof(IDXGIFactory1), getter_AddRefs(factory1));
+    if (FAILED(hr) || !factory1) {
+      // This seems to happen with some people running the iZ3D driver.
+      // They won't get acceleration.
+      return nullptr;
+    }
   }
 
   if (!mDeviceStatus) {
@@ -859,7 +880,8 @@ FeatureStatus DeviceManagerDx::CreateContentDevice() {
   return FeatureStatus::Available;
 }
 
-RefPtr<ID3D11Device> DeviceManagerDx::CreateDecoderDevice() {
+RefPtr<ID3D11Device> DeviceManagerDx::CreateDecoderDevice(
+    bool aHardwareWebRender) {
   bool isAMD = false;
   {
     MutexAutoLock lock(mDeviceLock);
@@ -870,19 +892,17 @@ RefPtr<ID3D11Device> DeviceManagerDx::CreateDecoderDevice() {
   }
 
   bool reuseDevice = false;
-  if (StaticPrefs::gfx_direct3d11_reuse_decoder_device() < 0) {
-    // Use the default logic, which is to allow reuse of devices on AMD, but
-    // create separate devices everywhere else.
-    if (isAMD) {
-      reuseDevice = true;
-    }
-  } else if (StaticPrefs::gfx_direct3d11_reuse_decoder_device() > 0) {
+  if (gfxVars::ReuseDecoderDevice()) {
     reuseDevice = true;
+  } else if (isAMD) {
+    reuseDevice = true;
+    gfxCriticalNoteOnce << "Always have to reuse decoder device on AMD";
   }
 
   if (reuseDevice) {
-    if (mCompositorDevice && mCompositorDeviceSupportsVideo &&
-        !mDecoderDevice) {
+    // Use mCompositorDevice for decoder device only for hardware WebRender.
+    if (aHardwareWebRender && mCompositorDevice &&
+        mCompositorDeviceSupportsVideo && !mDecoderDevice) {
       mDecoderDevice = mCompositorDevice;
 
       RefPtr<ID3D10Multithread> multi;
@@ -928,6 +948,41 @@ RefPtr<ID3D11Device> DeviceManagerDx::CreateDecoderDevice() {
   }
   if (reuseDevice) {
     mDecoderDevice = device;
+  }
+  return device;
+}
+
+// ID3D11DeviceChild, IDXGIObject and ID3D11Device implement SetPrivateData with
+// the exact same parameters.
+template <typename T>
+static HRESULT SetDebugName(T* d3d11Object, const char* debugString) {
+  return d3d11Object->SetPrivateData(WKPDID_D3DDebugObjectName,
+                                     strlen(debugString), debugString);
+}
+
+RefPtr<ID3D11Device> DeviceManagerDx::CreateMediaEngineDevice() {
+  if (!sD3D11CreateDeviceFn) {
+    // We should just be on Windows Vista or XP in this case.
+    return nullptr;
+  }
+
+  HRESULT hr;
+  RefPtr<ID3D11Device> device;
+  UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT |
+               D3D11_CREATE_DEVICE_BGRA_SUPPORT |
+               D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+  if (!CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, flags, hr, device)) {
+    return nullptr;
+  }
+  if (FAILED(hr) || !device || !D3D11Checks::DoesDeviceWork()) {
+    return nullptr;
+  }
+  Unused << SetDebugName(device.get(), "MFMediaEngineDevice");
+
+  RefPtr<ID3D10Multithread> multi;
+  device->QueryInterface(__uuidof(ID3D10Multithread), getter_AddRefs(multi));
+  if (multi) {
+    multi->SetMultithreadProtected(TRUE);
   }
   return device;
 }

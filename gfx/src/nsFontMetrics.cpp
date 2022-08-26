@@ -104,6 +104,10 @@ class StubPropertyProvider final : public gfxTextRun::PropertyProvider {
   void GetSpacing(gfxTextRun::Range aRange, Spacing* aSpacing) const override {
     NS_ERROR("This shouldn't be called because we never enable spacing");
   }
+  gfx::ShapedTextFlags GetShapedTextFlags() const override {
+    NS_ERROR("This shouldn't be called because we never enable hyphens");
+    return gfx::ShapedTextFlags();
+  }
 };
 
 }  // namespace
@@ -155,8 +159,9 @@ void nsFontMetrics::Destroy() { mPresContext = nullptr; }
 
 static const gfxFont::Metrics& GetMetrics(
     nsFontMetrics* aFontMetrics, nsFontMetrics::FontOrientation aOrientation) {
-  return aFontMetrics->GetThebesFontGroup()->GetFirstValidFont()->GetMetrics(
-      aOrientation);
+  RefPtr<gfxFont> font =
+      aFontMetrics->GetThebesFontGroup()->GetFirstValidFont();
+  return font->GetMetrics(aOrientation);
 }
 
 static const gfxFont::Metrics& GetMetrics(nsFontMetrics* aFontMetrics) {

@@ -4,18 +4,22 @@
 
 var EXPORTED_SYMBOLS = ["RecentlyClosedTabsAndWindowsMenuUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PluralForm",
   "resource://gre/modules/PluralForm.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "SessionStore",
   "resource:///modules/sessionstore/SessionStore.jsm"
 );
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 
 var navigatorBundle = Services.strings.createBundle(
   "chrome://browser/locale/browser.properties"
@@ -43,8 +47,8 @@ var RecentlyClosedTabsAndWindowsMenuUtils = {
   ) {
     let doc = aWindow.document;
     let fragment = doc.createDocumentFragment();
-    if (SessionStore.getClosedTabCount(aWindow) != 0) {
-      let closedTabs = SessionStore.getClosedTabData(aWindow, false);
+    if (lazy.SessionStore.getClosedTabCount(aWindow) != 0) {
+      let closedTabs = lazy.SessionStore.getClosedTabData(aWindow);
       for (let i = 0; i < closedTabs.length; i++) {
         createEntry(
           aTagName,
@@ -89,7 +93,7 @@ var RecentlyClosedTabsAndWindowsMenuUtils = {
     aPrefixRestoreAll = false,
     aRestoreAllLabel = "appmenu-reopen-all-windows"
   ) {
-    let closedWindowData = SessionStore.getClosedWindowData(false);
+    let closedWindowData = lazy.SessionStore.getClosedWindowData();
     let doc = aWindow.document;
     let fragment = doc.createDocumentFragment();
     if (closedWindowData.length) {
@@ -106,7 +110,7 @@ var RecentlyClosedTabsAndWindowsMenuUtils = {
         let label =
           otherTabsCount == 0
             ? menuLabelStringSingleTab
-            : PluralForm.get(otherTabsCount, menuLabelString);
+            : lazy.PluralForm.get(otherTabsCount, menuLabelString);
         let menuLabel = label
           .replace("#1", undoItem.title)
           .replace("#2", otherTabsCount);
@@ -156,16 +160,6 @@ var RecentlyClosedTabsAndWindowsMenuUtils = {
   },
 };
 
-function setImage(aItem, aElement) {
-  let iconURL = aItem.image;
-  // don't initiate a connection just to fetch a favicon (see bug 467828)
-  if (/^https?:/.test(iconURL)) {
-    iconURL = "moz-anno:favicon:" + iconURL;
-  }
-
-  aElement.setAttribute("image", iconURL);
-}
-
 /**
  * Create a UI entry for a recently closed tab or window.
  * @param aTagName
@@ -196,7 +190,8 @@ function createEntry(
 
   element.setAttribute("label", aMenuLabel);
   if (aClosedTab.image) {
-    setImage(aClosedTab, element);
+    const iconURL = lazy.PlacesUIUtils.getImageURL(aClosedTab.image);
+    element.setAttribute("image", iconURL);
   }
   if (!aIsWindowsFragment) {
     element.setAttribute("value", aIndex);

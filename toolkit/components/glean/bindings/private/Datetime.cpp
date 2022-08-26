@@ -44,7 +44,6 @@ void DatetimeMetric::Set(const PRExplodedTime* aValue) const {
     }
   }
 
-#ifndef MOZ_GLEAN_ANDROID
   int32_t offset =
       exploded.tm_params.tp_gmt_offset + exploded.tm_params.tp_dst_offset;
   FogDatetime dt{exploded.tm_year,
@@ -56,17 +55,12 @@ void DatetimeMetric::Set(const PRExplodedTime* aValue) const {
                  static_cast<uint32_t>(exploded.tm_usec * 1000),
                  offset};
   fog_datetime_set(mId, &dt);
-#endif
 }
 
 Result<Maybe<PRExplodedTime>, nsCString> DatetimeMetric::TestGetValue(
     const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<PRExplodedTime>();
-#else
   nsCString err;
-  if (fog_datetime_test_get_error(mId, &aPingName, &err)) {
+  if (fog_datetime_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_datetime_test_has_value(mId, &aPingName)) {
@@ -84,7 +78,6 @@ Result<Maybe<PRExplodedTime>, nsCString> DatetimeMetric::TestGetValue(
   pret.tm_usec = static_cast<PRInt32>(ret.nano / 1000);  // truncated is fine
   pret.tm_params.tp_gmt_offset = static_cast<PRInt32>(ret.offset_seconds);
   return Some(std::move(pret));
-#endif
 }
 
 }  // namespace impl
@@ -107,7 +100,7 @@ GleanDatetime::Set(PRTime aValue, uint8_t aOptionalArgc) {
 
 NS_IMETHODIMP
 GleanDatetime::TestGetValue(const nsACString& aStorageName, JSContext* aCx,
-                            JS::MutableHandleValue aResult) {
+                            JS::MutableHandle<JS::Value> aResult) {
   auto result = mDatetime.TestGetValue(aStorageName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());
@@ -121,7 +114,8 @@ GleanDatetime::TestGetValue(const nsACString& aStorageName, JSContext* aCx,
   } else {
     double millis =
         static_cast<double>(PR_ImplodeTime(optresult.ptr())) / PR_USEC_PER_MSEC;
-    JS::RootedObject root(aCx, JS::NewDateObject(aCx, JS::TimeClip(millis)));
+    JS::Rooted<JSObject*> root(aCx,
+                               JS::NewDateObject(aCx, JS::TimeClip(millis)));
     aResult.setObject(*root);
   }
   return NS_OK;

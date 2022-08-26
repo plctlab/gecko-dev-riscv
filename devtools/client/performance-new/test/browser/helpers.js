@@ -84,6 +84,23 @@ function getElementByLabel(container, label) {
 /* exported getElementByLabel */
 
 /**
+ * This function looks inside of a container for some element that has a tooltip.
+ * It runs in a loop every requestAnimationFrame until it finds the element. If
+ * it doesn't find the element it throws an error.
+ *
+ * @param {Element} container
+ * @param {string} tooltip
+ * @returns {Promise<HTMLElement>}
+ */
+function getElementByTooltip(container, tooltip) {
+  return waitUntil(
+    () => container.querySelector(`[tooltiptext="${tooltip}"]`),
+    `Trying to find the button with the tooltip "${tooltip}".`
+  );
+}
+/* exported getElementByTooltip */
+
+/**
  * This function will select a node from the XPath.
  * @returns {HTMLElement?}
  */
@@ -180,10 +197,11 @@ async function makeSureProfilerPopupIsEnabled() {
  * any type of popup in the browser. This function waits for one of those events, and
  * checks that the viewId of the popup is PanelUI-profiler
  *
+ * @param {Window} window
  * @param {"popupshown" | "popuphidden"} eventName
  * @returns {Promise<void>}
  */
-function waitForProfilerPopupEvent(eventName) {
+function waitForProfilerPopupEvent(window, eventName) {
   return new Promise(resolve => {
     function handleEvent(event) {
       if (event.target.getAttribute("viewId") === "PanelUI-profiler") {
@@ -201,13 +219,14 @@ function waitForProfilerPopupEvent(eventName) {
  *
  * This function toggles the profiler menu button, and then uses user gestures
  * to click it open. It waits a tick to make sure it has a chance to initialize.
+ * @param {Window} window
  * @return {Promise<void>}
  */
 async function _toggleOpenProfilerPopup(window) {
   info("Toggle open the profiler popup.");
 
   info("> Find the profiler menu button.");
-  const profilerDropmarker = document.getElementById(
+  const profilerDropmarker = window.document.getElementById(
     "profiler-button-dropmarker"
   );
   if (!profilerDropmarker) {
@@ -216,10 +235,10 @@ async function _toggleOpenProfilerPopup(window) {
     );
   }
 
-  const popupShown = waitForProfilerPopupEvent("popupshown");
+  const popupShown = waitForProfilerPopupEvent(window, "popupshown");
 
   info("> Trigger a click on the profiler button dropmarker.");
-  await EventUtils.synthesizeMouseAtCenter(profilerDropmarker, {});
+  await EventUtils.synthesizeMouseAtCenter(profilerDropmarker, {}, window);
 
   if (profilerDropmarker.getAttribute("open") !== "true") {
     throw new Error(
@@ -238,10 +257,11 @@ async function _toggleOpenProfilerPopup(window) {
  * Do not use this directly in a test. Prefer withPopupOpen.
  *
  * This function uses a keyboard shortcut to close the profiler popup.
+ * @param {Window} window
  * @return {Promise<void>}
  */
 async function _closePopup(window) {
-  const popupHiddenPromise = waitForProfilerPopupEvent("popuphidden");
+  const popupHiddenPromise = waitForProfilerPopupEvent(window, "popuphidden");
   info("> Trigger an escape key to hide the popup");
   EventUtils.synthesizeKey("KEY_Escape");
 
@@ -275,7 +295,7 @@ async function withPopupOpen(window, callback) {
 async function openPopupAndEnsureCloses(window, callback) {
   await _toggleOpenProfilerPopup(window);
   // We want to ensure the popup gets closed by the test, during the callback.
-  const popupHiddenPromise = waitForProfilerPopupEvent("popuphidden");
+  const popupHiddenPromise = waitForProfilerPopupEvent(window, "popuphidden");
   await callback();
   info("> Verifying that the popup was closed by the test.");
   await popupHiddenPromise;
@@ -285,20 +305,19 @@ async function openPopupAndEnsureCloses(window, callback) {
 /**
  * This function overwrites the default profiler.firefox.com URL for tests. This
  * ensures that the tests do not attempt to access external URLs.
- * @param {string} url
+ * The origin needs to be on the allowlist in validateProfilerWebChannelUrl,
+ * otherwise the WebChannel won't work. ("http://example.com" is on that list.)
+ *
+ * @param {string} origin - For example: http://example.com
+ * @param {string} pathname - For example: /my/testing/frontend.html
  * @returns {Promise}
  */
-function setProfilerFrontendUrl(url) {
-  info(
-    "Setting the profiler URL to the fake frontend. Note that this doesn't currently " +
-      "support the WebChannels, so expect a few error messages about the WebChannel " +
-      "URLs not being correct."
-  );
+function setProfilerFrontendUrl(origin, pathname) {
   return SpecialPowers.pushPrefEnv({
     set: [
       // Make sure observer and testing function run in the same process
-      ["devtools.performance.recording.ui-base-url", url],
-      ["devtools.performance.recording.ui-base-url-path", ""],
+      ["devtools.performance.recording.ui-base-url", origin],
+      ["devtools.performance.recording.ui-base-url-path", pathname],
     ],
   });
 }
@@ -449,17 +468,17 @@ function withAboutProfiling(callback) {
  *                                          devtools panel's document, the
  *                                          second parameter is the opened tab's
  *                                          document.
+ * @param {Window} [aWindow] The browser's window object we target
  * @returns {Promise<void>}
  */
-async function withDevToolsPanel(url, callback) {
-  if (typeof url !== "string" && !callback) {
+async function withDevToolsPanel(url, callback, aWindow = window) {
+  if (typeof url === "function") {
+    aWindow = callback ?? window;
     callback = url;
     url = "about:blank";
   }
 
-  SpecialPowers.pushPrefEnv({
-    set: [["devtools.performance.new-panel-enabled", "true"]],
-  });
+  const { gBrowser } = aWindow;
 
   const { gDevTools } = require("devtools/client/framework/devtools");
 
@@ -606,6 +625,16 @@ function _adaptCustomPresetExpectationToCustomBuild(fixture) {
 }
 
 /**
+ * Get the content of the preset description.
+ * @param {Element} devtoolsDocument
+ * @returns {string}
+ */
+function getDevtoolsCustomPresetContent(devtoolsDocument) {
+  return devtoolsDocument.querySelector(".perf-presets-custom").innerText;
+}
+/* exported getDevtoolsCustomPresetContent */
+
+/**
  * This checks if the content of the preset description equals the fixture in
  * string form.
  * @param {Element} devtoolsDocument
@@ -616,7 +645,7 @@ function checkDevtoolsCustomPresetContent(devtoolsDocument, fixture) {
   fixture = fixture.replace(/^\s+/gm, "").trim();
   // This removes unavailable features from the fixture content.
   fixture = _adaptCustomPresetExpectationToCustomBuild(fixture);
-  is(devtoolsDocument.querySelector(".perf-presets-custom").innerText, fixture);
+  is(getDevtoolsCustomPresetContent(devtoolsDocument), fixture);
 }
 /* exported checkDevtoolsCustomPresetContent */
 

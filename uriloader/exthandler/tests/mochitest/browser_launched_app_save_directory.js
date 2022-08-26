@@ -11,9 +11,13 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
   "https://example.com"
 );
 
-add_task(async function setup() {
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.download.improvements_to_download_panel", true]],
+    set: [
+      ["browser.download.improvements_to_download_panel", true],
+      ["browser.download.always_ask_before_handling_new_types", false],
+      ["image.webp.enabled", true],
+    ],
   });
   const allowDirectoriesVal = DownloadIntegration.allowDirectories;
   DownloadIntegration.allowDirectories = true;
@@ -33,10 +37,12 @@ async function aDownloadLaunchedWithAppIsSavedInFolder(downloadDir) {
   let downloadFinishedPromise = promiseDownloadFinished(publicList);
   let initialTabsCount = gBrowser.tabs.length;
 
-  let loadingTab = await BrowserTestUtils.openNewForegroundTab(
+  let loadingTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
-    TEST_PATH + "file_pdf_application_pdf.pdf"
-  );
+    opening: TEST_PATH + "file_green.webp",
+    waitForLoad: false,
+    waitForStateStop: true,
+  });
 
   let download = await downloadFinishedPromise;
   await BrowserTestUtils.waitForCondition(
@@ -55,7 +61,7 @@ async function aDownloadLaunchedWithAppIsSavedInFolder(downloadDir) {
   );
 
   Assert.ok(
-    await OS.File.exists(download.target.path),
+    await IOUtils.exists(download.target.path),
     "The file should not have been deleted."
   );
 

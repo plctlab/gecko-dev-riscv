@@ -53,9 +53,9 @@ const GLOBE_ICON_SRC =
   "chrome://devtools/skin/images/aboutdebugging-globe-icon.svg";
 
 const TROUBLESHOOT_USB_URL =
-  "https://developer.mozilla.org/docs/Tools/Remote_Debugging/Debugging_over_USB";
+  "https://firefox-source-docs.mozilla.org/devtools-user/about_colon_debugging/index.html#connecting-to-a-remote-device";
 const TROUBLESHOOT_NETWORK_URL =
-  "https://developer.mozilla.org/docs/Tools/Remote_Debugging/Debugging_over_a_network";
+  "https://firefox-source-docs.mozilla.org/devtools-user/about_colon_debugging/index.html#connecting-over-the-network";
 
 class ConnectPage extends PureComponent {
   static get propTypes() {
@@ -67,8 +67,8 @@ class ConnectPage extends PureComponent {
   }
 
   // TODO: avoid the use of this method
-  // https://bugzilla.mozilla.org/show_bug.cgi?id=1508688
-  componentWillMount() {
+  // https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     this.props.dispatch(Actions.selectPage(PAGE_TYPES.CONNECT));
   }
 

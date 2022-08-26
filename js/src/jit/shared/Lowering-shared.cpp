@@ -306,8 +306,7 @@ void LIRGeneratorShared::assignSafepoint(LInstruction* ins, MInstruction* mir,
   }
 }
 
-void LIRGeneratorShared::assignWasmSafepoint(LInstruction* ins,
-                                             MInstruction* mir) {
+void LIRGeneratorShared::assignWasmSafepoint(LInstruction* ins) {
   MOZ_ASSERT(!osiPoint_);
   MOZ_ASSERT(!ins->safepoint());
 
@@ -317,24 +316,4 @@ void LIRGeneratorShared::assignWasmSafepoint(LInstruction* ins,
     abort(AbortReason::Alloc, "noteNeedsSafepoint failed");
     return;
   }
-}
-
-// Simple shared compare-and-select for all platforms that don't specialize
-// further.  See emitWasmCompareAndSelect in CodeGenerator.cpp.
-bool LIRGeneratorShared::canSpecializeWasmCompareAndSelect(
-    MCompare::CompareType compTy, MIRType insTy) {
-  return insTy == MIRType::Int32 && (compTy == MCompare::Compare_Int32 ||
-                                     compTy == MCompare::Compare_UInt32);
-}
-
-void LIRGeneratorShared::lowerWasmCompareAndSelect(MWasmSelect* ins,
-                                                   MDefinition* lhs,
-                                                   MDefinition* rhs,
-                                                   MCompare::CompareType compTy,
-                                                   JSOp jsop) {
-  MOZ_ASSERT(canSpecializeWasmCompareAndSelect(compTy, ins->type()));
-  auto* lir = new (alloc()) LWasmCompareAndSelect(
-      useRegister(lhs), useAny(rhs), compTy, jsop,
-      useRegisterAtStart(ins->trueExpr()), useAny(ins->falseExpr()));
-  defineReuseInput(lir, ins, LWasmCompareAndSelect::IfTrueExprIndex);
 }

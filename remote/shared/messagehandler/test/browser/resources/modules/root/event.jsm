@@ -10,18 +10,24 @@ const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class Event extends Module {
+class EventModule extends Module {
   destroy() {}
 
   /**
    * Commands
    */
 
-  testEmitRootEvent() {
-    this.messageHandler.emitMessageHandlerEvent("event.testRootEvent", {
-      text: "event from root",
+  testEmitInternalRootEvent() {
+    this.emitEvent("internal-event-from-root", {
+      text: "internal event from root",
+    });
+  }
+
+  testEmitProtocolRootEvent() {
+    this.emitProtocolEvent("event.testRootEvent", {
+      text: "protocol event from root",
     });
   }
 }
 
-const event = Event;
+const event = EventModule;

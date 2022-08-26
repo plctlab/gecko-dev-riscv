@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* This is a JavaScript module (JSM) to be imported via
- * Components.utils.import() and acts as a singleton. Only the following
+ * ChromeUtils.import() and acts as a singleton. Only the following
  * listed symbols will exposed on import, and only when and where imported.
  */
 
@@ -15,16 +15,15 @@ var EXPORTED_SYMBOLS = [
   "DumpBookmarks",
 ];
 
-const { PlacesBackups } = ChromeUtils.import(
-  "resource://gre/modules/PlacesBackups.jsm"
+const { PlacesBackups } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesBackups.sys.mjs"
 );
-const { PlacesSyncUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesSyncUtils.jsm"
+const { PlacesSyncUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesSyncUtils.sys.mjs"
 );
-const { PlacesUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesUtils.jsm"
+const { PlacesUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Logger } = ChromeUtils.import("resource://tps/logger.jsm");
 
 async function DumpBookmarks() {

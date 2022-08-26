@@ -10,6 +10,7 @@ avoid-blacklist-and-whitelist:
     extensions:
         - js
         - jsm
+        - mjs
         - jxs
         - xml
         - html
@@ -66,6 +67,7 @@ avoid-blacklist-and-whitelist:
         - browser/components/urlbar/tests/unit/test_search_suggestions.js
         - browser/components/urlbar/tests/unit/test_tokenizer.js
         - browser/extensions/screenshots/background/main.js
+        - browser/extensions/webcompat/shims/nielsen.js
         - browser/modules/SitePermissions.jsm
         - browser/tools/mozscreenshots/mozscreenshots/extension/configurations/PermissionPrompts.jsm
         - build/clang-plugin/CustomMatchers.h
@@ -124,7 +126,6 @@ avoid-blacklist-and-whitelist:
         - dom/media/autoplay/test/mochitest/test_autoplay_policy_key_blacklist.html
         - dom/media/autoplay/test/mochitest/test_autoplay_policy_permission.html
         - dom/media/webm/WebMDecoder.cpp
-        - dom/media/webrtc/jsapi/PeerConnectionMedia.cpp
         - dom/media/webrtc/libwebrtcglue/VideoConduit.cpp
         - dom/media/webrtc/transport/stun_socket_filter.cpp
         - dom/media/webrtc/transport/test/ice_unittest.cpp
@@ -205,6 +206,7 @@ avoid-blacklist-and-whitelist:
         - mfbt/Attributes.h
         - mobile/android/app/geckoview-prefs.js
         - mobile/android/app/mobile.js
+        - modules/libpref/Preferences.cpp
         - modules/libpref/docs/index.md
         - modules/libpref/init/all.js
         - mozglue/baseprofiler/core/platform.cpp
@@ -215,15 +217,9 @@ avoid-blacklist-and-whitelist:
         - netwerk/base/nsURLHelper.cpp
         - netwerk/cookie/CookieCommons.h
         - netwerk/dns/nsHostRecord.cpp
-        - netwerk/dns/nsHostResolver.cpp
         - netwerk/dns/nsIDNService.cpp
         - netwerk/dns/nsIDNService.h
         - netwerk/dns/TRR.cpp
-        - netwerk/dns/TRR.h
-        - netwerk/dns/TRRServiceChild.cpp
-        - netwerk/dns/TRRService.cpp
-        - netwerk/dns/TRRService.h
-        - netwerk/dns/TRRServiceParent.cpp
         - netwerk/ipc/DocumentLoadListener.cpp
         - netwerk/protocol/about/nsAboutProtocolHandler.cpp
         - netwerk/protocol/http/Http2Session.cpp
@@ -240,21 +236,13 @@ avoid-blacklist-and-whitelist:
         - netwerk/protocol/websocket/BaseWebSocketChannel.cpp
         - netwerk/socket/nsSOCKSSocketProvider.cpp
         - netwerk/test/gtest/TestCookie.cpp
-        - netwerk/test/unit/head_trr.js
-        - netwerk/test/unit_ipc/test_dns_by_type_resolve_wrap.js
-        - netwerk/test/unit_ipc/test_trr_httpssvc_wrap.js
         - netwerk/test/unit/test_bug396389.js
         - netwerk/test/unit/test_bug427957.js
         - netwerk/test/unit/test_bug464591.js
         - netwerk/test/unit/test_bug479413.js
         - netwerk/test/unit/test_cookie_blacklist.js
-        - netwerk/test/unit/test_dns_by_type_resolve.js
         - netwerk/test/unit/test_idn_blacklist.js
         - netwerk/test/unit/test_idn_urls.js
-        - netwerk/test/unit/test_odoh.js
-        - netwerk/test/unit/test_trr_httpssvc.js
-        - netwerk/test/unit/test_trr.js
-        - netwerk/test/unit/test_use_httpssvc.js
         - netwerk/url-classifier/AsyncUrlChannelClassifier.cpp
         - netwerk/url-classifier/nsChannelClassifier.cpp
         - netwerk/url-classifier/nsChannelClassifier.h
@@ -270,7 +258,6 @@ avoid-blacklist-and-whitelist:
         - netwerk/url-classifier/UrlClassifierFeatureFactory.h
         - netwerk/url-classifier/UrlClassifierFeatureFingerprintingAnnotation.cpp
         - netwerk/url-classifier/UrlClassifierFeatureFingerprintingProtection.cpp
-        - netwerk/url-classifier/UrlClassifierFeatureFlash.cpp
         - netwerk/url-classifier/UrlClassifierFeatureLoginReputation.cpp
         - netwerk/url-classifier/UrlClassifierFeaturePhishingProtection.cpp
         - netwerk/url-classifier/UrlClassifierFeatureSocialTrackingAnnotation.cpp
@@ -306,11 +293,10 @@ avoid-blacklist-and-whitelist:
         - services/fxaccounts/FxAccounts.jsm
         - services/sync/modules/engines/addons.js
         - taskcluster/ci/docker-image/kind.yml
-        - taskcluster/taskgraph/actions/create_interactive.py
-        - taskcluster/taskgraph/target_tasks.py
-        - taskcluster/taskgraph/transforms/tests.py
-        - taskcluster/taskgraph/try_option_syntax.py
-        - taskcluster/taskgraph/util/schema.py
+        - taskcluster/gecko_taskgraph/actions/create_interactive.py
+        - taskcluster/gecko_taskgraph/target_tasks.py
+        - taskcluster/gecko_taskgraph/transforms/test/other.py
+        - taskcluster/gecko_taskgraph/try_option_syntax.py
         - taskcluster/test/test_mach_try_auto.py
         - testing/condprofile/condprof/client.py
         - testing/condprofile/condprof/tests/profile/prefs.js
@@ -337,14 +323,14 @@ avoid-blacklist-and-whitelist:
         - toolkit/actors/RemotePageChild.jsm
         - toolkit/actors/WebChannelChild.jsm
         - toolkit/components/aboutperformance/content/aboutPerformance.js
-        - toolkit/components/antitracking/ContentBlocking.cpp
+        - toolkit/components/antitracking/StorageAccessAPIHelper.cpp
         - toolkit/components/antitracking/PurgeTrackerService.jsm
         - toolkit/components/antitracking/StorageAccess.cpp
         - toolkit/components/antitracking/test/browser/antitracking_head.js
         - toolkit/components/antitracking/test/browser/browser_siteSpecificWorkArounds.js
         - toolkit/components/antitracking/test/browser/browser_socialtracking_save_image.js
         - toolkit/components/antitracking/test/xpcshell/test_rejectForeignAllowList.js
-        - toolkit/components/crashes/CrashManager.jsm
+        - toolkit/components/crashes/CrashManager.in.jsm
         - toolkit/components/crashes/tests/xpcshell/test_crash_manager.js
         - toolkit/components/extensions/Extension.jsm
         - toolkit/components/extensions/test/xpcshell/test_WebExtensionPolicy.js
@@ -360,8 +346,6 @@ avoid-blacklist-and-whitelist:
         - toolkit/components/reputationservice/test/unit/test_app_rep_windows.js
         - toolkit/components/reputationservice/test/unit/test_login_rep.js
         - toolkit/components/satchel/test/test_form_autocomplete.html
-        - toolkit/components/search/SearchService.jsm
-        - toolkit/components/search/tests/xpcshell/test_override_allowlist.js
         - toolkit/components/telemetry/docs/data/environment.rst
         - toolkit/components/url-classifier/LookupCache.cpp
         - toolkit/components/url-classifier/LookupCache.h
@@ -436,12 +420,10 @@ avoid-blacklist-and-whitelist:
         - toolkit/mozapps/extensions/test/xpinstall/browser_localfile3.js
         - toolkit/mozapps/extensions/test/xpinstall/browser_localfile4.js
         - toolkit/mozapps/extensions/test/xpinstall/browser_localfile4_postDownload.js
-        - toolkit/mozapps/extensions/test/xpinstall/browser_whitelist.js
         - toolkit/mozapps/extensions/test/xpinstall/head.js
         - toolkit/xre/nsAppRunner.cpp
         - toolkit/xre/nsEmbedFunctions.cpp
         - toolkit/xre/nsXREDirProvider.cpp
-        - tools/crashreporter/system-symbols/win/symsrv-fetch.py
         - tools/fuzzing/faulty/Faulty.cpp
         - tools/fuzzing/faulty/Faulty.h
         - tools/fuzzing/ipc/ProtocolFuzzer.cpp

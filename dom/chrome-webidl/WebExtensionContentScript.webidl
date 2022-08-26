@@ -21,23 +21,26 @@ interface MozDocumentMatcher {
   boolean matchesURI(URI uri);
 
   /**
-   * Returns true if the the given URI and LoadInfo objects match.
-   * This should be used to determine whether to begin pre-loading a content
-   * script based on network events.
+   * Returns true if the given window matches. This should be used to
+   * determine whether to run a script in a window at load time. Use
+   * ignorePermissions to match without origin permissions in MV3.
    */
-  boolean matchesLoadInfo(URI uri, LoadInfo loadInfo);
-
-  /**
-   * Returns true if the given window matches. This should be used
-   * to determine whether to run a script in a window at load time.
-   */
-  boolean matchesWindowGlobal(WindowGlobalChild windowGlobal);
+  boolean matchesWindowGlobal(WindowGlobalChild windowGlobal,
+                              optional boolean ignorePermissions = false);
 
   /**
    * If true, match all frames. If false, match only top-level frames.
    */
   [Constant]
   readonly attribute boolean allFrames;
+
+  /**
+   * If we can't check extension has permissions to access the URI upfront,
+   * set the flag to perform the origin check at runtime, upon matching.
+   * This is always true in MV3, where host permissions are optional.
+   */
+  [Constant]
+  readonly attribute boolean checkPermissions;
 
   /**
    * If true, this (misleadingly-named, but inherited from Chrome) attribute
@@ -87,6 +90,12 @@ interface MozDocumentMatcher {
   readonly attribute sequence<MatchGlob>? excludeGlobs;
 
   /**
+   * The originAttributesPattern for which this script should be enabled for.
+   */
+  [Constant, Throws]
+  readonly attribute any originAttributesPatterns;
+
+  /**
    * The policy object for the extension that this matcher belongs to.
    */
   [Constant]
@@ -95,6 +104,10 @@ interface MozDocumentMatcher {
 
 dictionary MozDocumentMatcherInit {
   boolean allFrames = false;
+
+  boolean checkPermissions = false;
+
+  sequence<OriginAttributesPatternDictionary>? originAttributesPatterns = null;
 
   boolean matchAboutBlank = false;
 

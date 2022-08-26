@@ -49,9 +49,12 @@ var DEBUG = false; // non-const *only* so tweakable in server tests
 /** True if debugging output should be timestamped. */
 var DEBUG_TIMESTAMP = false; // non-const so tweakable in server tests
 
-var gGlobalObject = Cu.getGlobalForObject(this);
+// httpd.js is loaded by Android hostutils that's not up to date.
+// Fallback to Services.jsm if `Services` global variable isn't yet available.
+const Services =
+  globalThis.Services ||
+  ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -157,6 +160,8 @@ const HIDDEN_CHAR = "^";
  * a requested file.
  */
 const HEADERS_SUFFIX = HIDDEN_CHAR + "headers" + HIDDEN_CHAR;
+const INFORMATIONAL_RESPONSE_SUFFIX =
+  HIDDEN_CHAR + "informationalResponse" + HIDDEN_CHAR;
 
 /** Type used to denote SJS scripts for CGI-like functionality. */
 const SJS_TYPE = "sjs";
@@ -212,6 +217,11 @@ const ServerSocketIPv6 = CC(
   "@mozilla.org/network/server-socket;1",
   "nsIServerSocket",
   "initIPv6"
+);
+const ServerSocketDualStack = CC(
+  "@mozilla.org/network/server-socket;1",
+  "nsIServerSocket",
+  "initDualStack"
 );
 const ScriptableInputStream = CC(
   "@mozilla.org/scriptableinputstream;1",
@@ -523,7 +533,11 @@ nsHttpServer.prototype = {
     this._start(port, "[::1]");
   },
 
-  _start(port, host) {
+  start_dualStack(port) {
+    this._start(port, "[::1]", true);
+  },
+
+  _start(port, host, dualStack) {
     if (this._socket) {
       throw Components.Exception("", Cr.NS_ERROR_ALREADY_INITIALIZED);
     }
@@ -567,7 +581,9 @@ nsHttpServer.prototype = {
       var socket;
       for (var i = 100; i; i--) {
         var temp = null;
-        if (this._host.includes(":")) {
+        if (dualStack) {
+          temp = new ServerSocketDualStack(this._port, maxConnections);
+        } else if (this._host.includes(":")) {
           temp = new ServerSocketIPv6(
             this._port,
             loopback, // true = localhost, false = everybody
@@ -608,7 +624,7 @@ nsHttpServer.prototype = {
 
       socket.asyncListen(this);
       this._port = socket.port;
-      this._identity._initialize(socket.port, host, true);
+      this._identity._initialize(socket.port, host, true, dualStack);
       this._socket = socket;
       dumpn(
         ">>> listening on port " +
@@ -1170,7 +1186,7 @@ ServerIdentity.prototype = {
    * Initializes the primary name for the corresponding server, based on the
    * provided port number.
    */
-  _initialize(port, host, addSecondaryDefault) {
+  _initialize(port, host, addSecondaryDefault, dualStack) {
     this._host = host;
     if (this._primaryPort !== -1) {
       this.add("http", host, port);
@@ -1183,6 +1199,9 @@ ServerIdentity.prototype = {
     if (addSecondaryDefault && host != "127.0.0.1") {
       if (host.includes(":")) {
         this.add("http", "[::1]", port);
+        if (dualStack) {
+          this.add("http", "127.0.0.1", port);
+        }
       } else {
         this.add("http", "127.0.0.1", port);
       }
@@ -2274,14 +2293,23 @@ const PERMS_READONLY = (4 << 6) | (4 << 3) | 4;
  * @throws HTTP_500
  *   if an error occurred while processing custom-specified headers
  */
-function maybeAddHeaders(file, metadata, response) {
+function maybeAddHeadersInternal(
+  file,
+  metadata,
+  response,
+  informationalResponse
+) {
   var name = file.leafName;
   if (name.charAt(name.length - 1) == HIDDEN_CHAR) {
     name = name.substring(0, name.length - 1);
   }
 
   var headerFile = file.parent;
-  headerFile.append(name + HEADERS_SUFFIX);
+  if (!informationalResponse) {
+    headerFile.append(name + HEADERS_SUFFIX);
+  } else {
+    headerFile.append(name + INFORMATIONAL_RESPONSE_SUFFIX);
+  }
 
   if (!headerFile.exists()) {
     return;
@@ -2321,14 +2349,25 @@ function maybeAddHeaders(file, metadata, response) {
         description = status.substring(space + 1, status.length);
       }
 
-      response.setStatusLine(
-        metadata.httpVersion,
-        parseInt(code, 10),
-        description
-      );
+      if (!informationalResponse) {
+        response.setStatusLine(
+          metadata.httpVersion,
+          parseInt(code, 10),
+          description
+        );
+      } else {
+        response.setInformationalResponseStatusLine(
+          metadata.httpVersion,
+          parseInt(code, 10),
+          description
+        );
+      }
 
       line.value = "";
       more = lis.readLine(line);
+    } else if (informationalResponse) {
+      // An informational response must have a status line.
+      return;
     }
 
     // headers
@@ -2336,11 +2375,19 @@ function maybeAddHeaders(file, metadata, response) {
       var header = line.value;
       var colon = header.indexOf(":");
 
-      response.setHeader(
-        header.substring(0, colon),
-        header.substring(colon + 1, header.length),
-        false
-      ); // allow overriding server-set headers
+      if (!informationalResponse) {
+        response.setHeader(
+          header.substring(0, colon),
+          header.substring(colon + 1, header.length),
+          false
+        ); // allow overriding server-set headers
+      } else {
+        response.setInformationalResponseHeader(
+          header.substring(0, colon),
+          header.substring(colon + 1, header.length),
+          false
+        ); // allow overriding server-set headers
+      }
 
       line.value = "";
       more = lis.readLine(line);
@@ -2351,6 +2398,14 @@ function maybeAddHeaders(file, metadata, response) {
   } finally {
     fis.close();
   }
+}
+
+function maybeAddHeaders(file, metadata, response) {
+  maybeAddHeadersInternal(file, metadata, response, false);
+}
+
+function maybeAddInformationalResponse(file, metadata, response) {
+  maybeAddHeadersInternal(file, metadata, response, true);
 }
 
 /**
@@ -2838,10 +2893,15 @@ ServerHandler.prototype = {
       );
 
       try {
-        var s = Cu.Sandbox(gGlobalObject);
+        // If you update the list of imports, please update the list in
+        // tools/lint/eslint/eslint-plugin-mozilla/lib/environments/sjs.js
+        // as well.
+        var s = Cu.Sandbox(globalThis);
         s.importFunction(dump, "dump");
         s.importFunction(atob, "atob");
         s.importFunction(btoa, "btoa");
+        s.importFunction(ChromeUtils, "ChromeUtils");
+        s.importFunction(Services, "Services");
 
         // Define a basic key-value state-preservation API across requests, with
         // keys initially corresponding to the empty string.
@@ -2917,6 +2977,7 @@ ServerHandler.prototype = {
       }
 
       response.setHeader("Content-Type", type, false);
+      maybeAddInformationalResponse(file, metadata, response);
       maybeAddHeaders(file, metadata, response);
       response.setHeader("Content-Length", "" + count, false);
 
@@ -3758,6 +3819,16 @@ function Response(connection) {
   this._headers = new nsHttpHeaders();
 
   /**
+   * Informational response:
+   * For example 103 Early Hint
+   **/
+  this._informationalResponseHttpVersion = nsHttpVersion.HTTP_1_1;
+  this._informationalResponseHttpCode = 0;
+  this._informationalResponseHttpDescription = "";
+  this._informationalResponseHeaders = new nsHttpHeaders();
+  this._informationalResponseSet = false;
+
+  /**
    * Set to true when this response is ended (completely constructed if possible
    * and the connection closed); further actions on this will then fail.
    */
@@ -3848,8 +3919,16 @@ Response.prototype = {
   //
   // see nsIHttpResponse.setStatusLine
   //
-  setStatusLine(httpVersion, code, description) {
-    if (!this._headers || this._finished || this._powerSeized) {
+  setStatusLineInternal(httpVersion, code, description, informationalResponse) {
+    if (this._finished || this._powerSeized) {
+      throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
+    }
+
+    if (!informationalResponse) {
+      if (!this._headers) {
+        throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
+      }
+    } else if (!this._informationalResponseHeaders) {
       throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
     }
     this._ensureAlive();
@@ -3887,9 +3966,27 @@ Response.prototype = {
     }
 
     // set the values only after validation to preserve atomicity
-    this._httpDescription = description;
-    this._httpCode = code;
-    this._httpVersion = httpVer;
+    if (!informationalResponse) {
+      this._httpDescription = description;
+      this._httpCode = code;
+      this._httpVersion = httpVer;
+    } else {
+      this._informationalResponseSet = true;
+      this._informationalResponseHttpDescription = description;
+      this._informationalResponseHttpCode = code;
+      this._informationalResponseHttpVersion = httpVer;
+    }
+  },
+
+  //
+  // see nsIHttpResponse.setStatusLine
+  //
+  setStatusLine(httpVersion, code, description) {
+    this.setStatusLineInternal(httpVersion, code, description, false);
+  },
+
+  setInformationalResponseStatusLine(httpVersion, code, description) {
+    this.setStatusLineInternal(httpVersion, code, description, true);
   },
 
   //
@@ -3904,6 +4001,19 @@ Response.prototype = {
     this._headers.setHeader(name, value, merge);
   },
 
+  setInformationalResponseHeader(name, value, merge) {
+    if (
+      !this._informationalResponseHeaders ||
+      this._finished ||
+      this._powerSeized
+    ) {
+      throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
+    }
+    this._ensureAlive();
+
+    this._informationalResponseHeaders.setHeader(name, value, merge);
+  },
+
   setHeaderNoCheck(name, value) {
     if (!this._headers || this._finished || this._powerSeized) {
       throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
@@ -3911,6 +4021,15 @@ Response.prototype = {
     this._ensureAlive();
 
     this._headers.setHeaderNoCheck(name, value);
+  },
+
+  setInformationalHeaderNoCheck(name, value) {
+    if (!this._headers || this._finished || this._powerSeized) {
+      throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
+    }
+    this._ensureAlive();
+
+    this._informationalResponseHeaders.setHeaderNoCheck(name, value);
   },
 
   //
@@ -4220,7 +4339,39 @@ Response.prototype = {
     dumpn("*** _sendHeaders()");
 
     NS_ASSERT(this._headers);
+    NS_ASSERT(this._informationalResponseHeaders);
     NS_ASSERT(!this._powerSeized);
+
+    var preambleData = [];
+
+    // Informational response, e.g. 103
+    if (this._informationalResponseSet) {
+      // request-line
+      let statusLine =
+        "HTTP/" +
+        this._informationalResponseHttpVersion +
+        " " +
+        this._informationalResponseHttpCode +
+        " " +
+        this._informationalResponseHttpDescription +
+        "\r\n";
+      preambleData.push(statusLine);
+
+      // headers
+      let headEnum = this._informationalResponseHeaders.enumerator;
+      while (headEnum.hasMoreElements()) {
+        let fieldName = headEnum.getNext().QueryInterface(Ci.nsISupportsString)
+          .data;
+        let values = this._informationalResponseHeaders.getHeaderValues(
+          fieldName
+        );
+        for (let i = 0, sz = values.length; i < sz; i++) {
+          preambleData.push(fieldName + ": " + values[i] + "\r\n");
+        }
+      }
+      // end request-line/headers
+      preambleData.push("\r\n");
+    }
 
     // request-line
     var statusLine =
@@ -4261,7 +4412,7 @@ Response.prototype = {
     dumpn("*** header post-processing completed, sending response head...");
 
     // request-line
-    var preambleData = [statusLine];
+    preambleData.push(statusLine);
 
     // headers
     var headEnum = headers.enumerator;

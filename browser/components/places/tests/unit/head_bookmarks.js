@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 // Import common head.
 /* import-globals-from ../../../../../toolkit/components/places/tests/head_common.js */
 var commonFile = do_get_file(
@@ -18,11 +16,9 @@ if (commonFile) {
 
 // Put any other stuff relative to this test folder below.
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 
 // Needed by some test that relies on having an app registered.
 const { updateAppInfo } = ChromeUtils.import(
@@ -47,11 +43,11 @@ function checkItemHasAnnotation(guid, name) {
 }
 
 var createCorruptDB = async function() {
-  let dbPath = OS.Path.join(OS.Constants.Path.profileDir, "places.sqlite");
+  let dbPath = PathUtils.join(PathUtils.profileDir, "places.sqlite");
   await IOUtils.remove(dbPath);
 
   // Create a corrupt database.
-  let src = OS.Path.join(do_get_cwd().path, "corruptDB.sqlite");
+  let src = PathUtils.join(do_get_cwd().path, "corruptDB.sqlite");
   await IOUtils.copy(src, dbPath);
 
   // Check there's a DB now.

@@ -15,7 +15,6 @@ const fs = require("fs");
 const ini = require("multi-ini");
 const recommendedConfig = require("./configs/recommended");
 
-var gModules = null;
 var gRootDir = null;
 var directoryManifests = new Map();
 
@@ -46,12 +45,10 @@ const callExpressionMultiDefinitions = [
   "XPCOMUtils.defineLazyModuleGetters(globalThis,",
   "XPCOMUtils.defineLazyServiceGetters(this,",
   "XPCOMUtils.defineLazyServiceGetters(globalThis,",
+  "ChromeUtils.defineESModuleGetters(this,",
+  "ChromeUtils.defineESModuleGetters(globalThis,",
   "loader.lazyRequireGetter(this,",
   "loader.lazyRequireGetter(globalThis,",
-];
-
-const imports = [
-  /^(?:Cu|Components\.utils|ChromeUtils)\.import\(".*\/((.*?)\.jsm?)", (?:globalThis|this)\)/,
 ];
 
 const workerImportFilenameMatch = /(.*\/)*((.*?)\.jsm?)/;
@@ -62,24 +59,6 @@ module.exports = {
       this._iniParser = new ini.Parser();
     }
     return this._iniParser;
-  },
-
-  get modulesGlobalData() {
-    if (!gModules) {
-      if (this.isMozillaCentralBased()) {
-        gModules = require(path.join(
-          this.rootDir,
-          "tools",
-          "lint",
-          "eslint",
-          "modules.json"
-        ));
-      } else {
-        gModules = require("./modules.json");
-      }
-    }
-
-    return gModules;
   },
 
   get servicesData() {
@@ -96,15 +75,17 @@ module.exports = {
    * @param  {Object} astOptions
    *         Extra configuration to pass to the espree parser, these will override
    *         the configuration from getPermissiveConfig().
+   * @param  {Object} configOptions
+   *         Extra options for getPermissiveConfig().
    *
    * @return {Object}
    *         Returns an object containing `ast`, `scopeManager` and
    *         `visitorKeys`
    */
-  parseCode(sourceText, astOptions = {}) {
+  parseCode(sourceText, astOptions = {}, configOptions = {}) {
     // Use a permissive config file to allow parsing of anything that Espree
     // can parse.
-    let config = { ...this.getPermissiveConfig(), ...astOptions };
+    let config = { ...this.getPermissiveConfig(configOptions), ...astOptions };
 
     let parseResult =
       "parseForESLint" in parser
@@ -176,6 +157,8 @@ module.exports = {
           " " +
           this.getASTSource(node.right)
         );
+      case "UnaryExpression":
+        return node.operator + " " + this.getASTSource(node.argument);
       default:
         throw new Error("getASTSource unsupported node type: " + node.type);
     }
@@ -237,8 +220,6 @@ module.exports = {
   convertWorkerExpressionToGlobals(node, isGlobal, dirname) {
     var getGlobalsForFile = require("./globals").getGlobalsForFile;
 
-    let globalModules = this.modulesGlobalData;
-
     let results = [];
     let expr = node.expression;
 
@@ -257,15 +238,9 @@ module.exports = {
               let additionalGlobals = getGlobalsForFile(filePath);
               results = results.concat(additionalGlobals);
             }
-          } else if (match[2] in globalModules) {
-            results = results.concat(
-              globalModules[match[2]].map(name => {
-                return { name, writable: true };
-              })
-            );
-          } else {
-            results.push({ name: match[3], writable: true, explicit: true });
           }
+          // Import with relative/absolute path should explicitly use
+          // `import-globals-from` comment.
         }
       }
     }
@@ -305,7 +280,7 @@ module.exports = {
 
   /**
    * Attempts to convert an CallExpressions that look like module imports
-   * into global variable definitions, using modules.json data if appropriate.
+   * into global variable definitions.
    *
    * @param  {Object} node
    *         The AST node to convert.
@@ -345,33 +320,6 @@ module.exports = {
       source = this.getASTSource(node);
     } catch (e) {
       return [];
-    }
-
-    for (let reg of imports) {
-      let match = source.match(reg);
-      if (match) {
-        // The two argument form is only acceptable in the global scope
-        if (node.expression.arguments.length > 1 && !isGlobal) {
-          return [];
-        }
-
-        let globalModules = this.modulesGlobalData;
-
-        if (match[1] in globalModules) {
-          // XXX We mark as explicit when there is only one exported symbol from
-          // the module. For now this avoids no-unused-vars complaining in the
-          // cases where we import everything from a module but only use one
-          // of them.
-          let explicit = globalModules[match[1]].length == 1;
-          return globalModules[match[1]].map(name => ({
-            name,
-            writable: true,
-            explicit,
-          }));
-        }
-
-        return [{ name: match[2], writable: true, explicit: true }];
-      }
     }
 
     // The definition matches below must be in the global scope for us to define
@@ -449,7 +397,11 @@ module.exports = {
     variable.eslintExplicitGlobal = false;
     variable.writeable = writable;
     if (node) {
-      variable.defs.push({ node, name: { name } });
+      variable.defs.push({
+        type: "Variable",
+        node,
+        name: { name, parent: node.parent },
+      });
       variable.identifiers.push(node);
     }
 
@@ -492,10 +444,14 @@ module.exports = {
    * To allow espree to parse almost any JavaScript we need as many features as
    * possible turned on. This method returns that config.
    *
+   * @param {Object} options
+   *        {
+   *          useBabel: {boolean} whether to set babelOptions.
+   *        }
    * @return {Object}
    *         Espree compatible permissive config.
    */
-  getPermissiveConfig() {
+  getPermissiveConfig({ useBabel = true } = {}) {
     const config = {
       range: true,
       requireConfigFile: false,
@@ -516,7 +472,7 @@ module.exports = {
       sourceType: "script",
     };
 
-    if (this.isMozillaCentralBased()) {
+    if (useBabel && this.isMozillaCentralBased()) {
       config.babelOptions.configFile = path.join(
         gRootDir,
         ".babel-eslint.rc.js"
@@ -535,26 +491,7 @@ module.exports = {
   },
 
   /**
-   * Check whether a node is a function.
-   *
-   * @param {Object} node
-   *        The AST node to check
-   *
-   * @return {Boolean}
-   *         True or false
-   */
-  getIsFunctionNode(node) {
-    switch (node.type) {
-      case "ArrowFunctionExpression":
-      case "FunctionDeclaration":
-      case "FunctionExpression":
-        return true;
-    }
-    return false;
-  },
-
-  /**
-   * Check whether the context is the global scope.
+   * Check whether it's inside top-level script.
    *
    * @param {Array} ancestors
    *        The parents of the current node.
@@ -562,10 +499,92 @@ module.exports = {
    * @return {Boolean}
    *         True or false
    */
-  getIsGlobalScope(ancestors) {
+  getIsTopLevelScript(ancestors) {
     for (let parent of ancestors) {
-      if (this.getIsFunctionNode(parent)) {
-        return false;
+      switch (parent.type) {
+        case "ArrowFunctionExpression":
+        case "FunctionDeclaration":
+        case "FunctionExpression":
+        case "PropertyDefinition":
+        case "StaticBlock":
+          return false;
+      }
+    }
+    return true;
+  },
+
+  /**
+   * Check whether `this` expression points the global this.
+   *
+   * @param {Array} ancestors
+   *        The parents of the current node.
+   *
+   * @return {Boolean}
+   *         True or false
+   */
+  getIsGlobalThis(ancestors) {
+    for (let parent of ancestors) {
+      switch (parent.type) {
+        case "FunctionDeclaration":
+        case "FunctionExpression":
+        case "PropertyDefinition":
+        case "StaticBlock":
+          return false;
+      }
+    }
+    return true;
+  },
+
+  /**
+   * Check whether the node is evaluated at top-level script unconditionally.
+   *
+   * @param {Array} ancestors
+   *        The parents of the current node.
+   *
+   * @return {Boolean}
+   *         True or false
+   */
+  getIsTopLevelAndUnconditionallyExecuted(ancestors) {
+    for (let parent of ancestors) {
+      switch (parent.type) {
+        // Control flow
+        case "IfStatement":
+        case "SwitchStatement":
+        case "TryStatement":
+        case "WhileStatement":
+        case "DoWhileStatement":
+        case "ForStatement":
+        case "ForInStatement":
+        case "ForOfStatement":
+          return false;
+
+        // Function
+        case "FunctionDeclaration":
+        case "FunctionExpression":
+        case "ArrowFunctionExpression":
+        case "ClassBody":
+          return false;
+
+        // Branch
+        case "LogicalExpression":
+        case "ConditionalExpression":
+        case "ChainExpression":
+          return false;
+
+        case "AssignmentExpression":
+          switch (parent.operator) {
+            // Branch
+            case "||=":
+            case "&&=":
+            case "??=":
+              return false;
+          }
+          break;
+
+        // Implicit branch (default value)
+        case "ObjectPattern":
+        case "ArrayPattern":
+          return false;
       }
     }
     return true;
@@ -704,6 +723,15 @@ module.exports = {
     }
 
     return !!this.getTestType(scope);
+  },
+
+  /*
+   * Check if this is an .sjs file.
+   */
+  getIsSjs(scope) {
+    let filepath = this.cleanUpPath(scope.getFilename());
+
+    return path.extname(filepath) == ".sjs";
   },
 
   /**
@@ -898,6 +926,25 @@ module.exports = {
       node.arguments[2].type == "Literal"
     ) {
       return node.arguments[2].value;
+    }
+    return null;
+  },
+
+  /**
+   * Returns property name from MemberExpression. Also accepts Identifier for consistency.
+   * @param {import("estree").MemberExpression | import("estree").Identifier} node
+   * @returns {string | null}
+   *
+   * @example `foo` gives "foo"
+   * @example `foo.bar` gives "bar"
+   * @example `foo.bar.baz` gives "baz"
+   */
+  maybeGetMemberPropertyName(node) {
+    if (node.type === "MemberExpression") {
+      return node.property.name;
+    }
+    if (node.type === "Identifier") {
+      return node.name;
     }
     return null;
   },

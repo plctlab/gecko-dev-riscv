@@ -43,6 +43,12 @@ class nsIPrincipal;
 #  include "GpsdLocationProvider.h"
 #endif
 
+#ifdef MOZ_ENABLE_DBUS
+#  include "mozilla/WidgetUtilsGtk.h"
+#  include "GeoclueLocationProvider.h"
+#  include "PortalLocationProvider.h"
+#endif
+
 #ifdef MOZ_WIDGET_COCOA
 #  include "CoreLocationLocationProvider.h"
 #endif
@@ -83,7 +89,7 @@ class nsGeolocationRequest final : public ContentPermissionRequestBase,
 
   // nsIContentPermissionRequest
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD Cancel(void) override;
-  MOZ_CAN_RUN_SCRIPT NS_IMETHOD Allow(JS::HandleValue choices) override;
+  MOZ_CAN_RUN_SCRIPT NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
   void Shutdown();
 
@@ -247,7 +253,7 @@ nsGeolocationRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-nsGeolocationRequest::Allow(JS::HandleValue aChoices) {
+nsGeolocationRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(aChoices.isUndefined());
 
   if (mLocator->ClearPendingRequest(this)) {
@@ -260,7 +266,7 @@ nsGeolocationRequest::Allow(JS::HandleValue aChoices) {
   bool canUseCache = false;
   CachedPositionAndAccuracy lastPosition = gs->GetCachedPosition();
   if (lastPosition.position) {
-    DOMTimeStamp cachedPositionTime_ms;
+    EpochTimeStamp cachedPositionTime_ms;
     lastPosition.position->GetTimestamp(&cachedPositionTime_ms);
     // check to see if we can use a cached value
     // if the user has specified a maximumAge, return a cached value.
@@ -269,7 +275,7 @@ nsGeolocationRequest::Allow(JS::HandleValue aChoices) {
       bool isCachedWithinRequestedAccuracy =
           WantsHighAccuracy() <= lastPosition.isHighAccuracy;
       bool isCachedWithinRequestedTime =
-          DOMTimeStamp(PR_Now() / PR_USEC_PER_MSEC - maximumAge_ms) <=
+          EpochTimeStamp(PR_Now() / PR_USEC_PER_MSEC - maximumAge_ms) <=
           cachedPositionTime_ms;
       canUseCache =
           isCachedWithinRequestedAccuracy && isCachedWithinRequestedTime;
@@ -298,8 +304,7 @@ nsGeolocationRequest::Allow(JS::HandleValue aChoices) {
   }
 
   // Kick off the geo device, if it isn't already running
-  nsCOMPtr<nsIPrincipal> principal = GetPrincipal();
-  nsresult rv = gs->StartDevice(principal);
+  nsresult rv = gs->StartDevice();
 
   if (NS_FAILED(rv)) {
     // Location provider error
@@ -344,11 +349,11 @@ void nsGeolocationRequest::SendLocation(nsIDOMGeoPosition* aPosition) {
   }
 
   if (mOptions && mOptions->mMaximumAge > 0) {
-    DOMTimeStamp positionTime_ms;
+    EpochTimeStamp positionTime_ms;
     aPosition->GetTimestamp(&positionTime_ms);
     const uint32_t maximumAge_ms = mOptions->mMaximumAge;
-    const bool isTooOld = DOMTimeStamp(PR_Now() / PR_USEC_PER_MSEC -
-                                       maximumAge_ms) > positionTime_ms;
+    const bool isTooOld = EpochTimeStamp(PR_Now() / PR_USEC_PER_MSEC -
+                                         maximumAge_ms) > positionTime_ms;
     if (isTooOld) {
       return;
     }
@@ -490,10 +495,24 @@ nsresult nsGeolocationService::Init() {
 #endif
 
 #ifdef MOZ_WIDGET_GTK
-#  ifdef MOZ_GPSD
-  if (Preferences::GetBool("geo.provider.use_gpsd", false)) {
+#  ifdef MOZ_ENABLE_DBUS
+  if (!mProvider && widget::ShouldUsePortal(widget::PortalKind::Location)) {
+    mProvider = new PortalLocationProvider();
+  }
+  // Geoclue includes GPS data so it has higher priority than raw GPSD
+  if (!mProvider && StaticPrefs::geo_provider_use_geoclue()) {
+    nsCOMPtr<nsIGeolocationProvider> gcProvider = new GeoclueLocationProvider();
+    // The Startup() method will only succeed if Geoclue is available on D-Bus
+    if (NS_SUCCEEDED(gcProvider->Startup())) {
+      gcProvider->Shutdown();
+      mProvider = std::move(gcProvider);
+    }
+  }
+#    ifdef MOZ_GPSD
+  if (!mProvider && Preferences::GetBool("geo.provider.use_gpsd", false)) {
     mProvider = new GpsdLocationProvider();
   }
+#    endif
 #  endif
 #endif
 
@@ -601,7 +620,7 @@ CachedPositionAndAccuracy nsGeolocationService::GetCachedPosition() {
   return mLastPosition;
 }
 
-nsresult nsGeolocationService::StartDevice(nsIPrincipal* aPrincipal) {
+nsresult nsGeolocationService::StartDevice() {
   if (!StaticPrefs::geo_enabled()) {
     return NS_ERROR_NOT_AVAILABLE;
   }

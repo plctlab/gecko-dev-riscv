@@ -3,11 +3,9 @@
  * See pwmgr_common.js for the content process companion.
  */
 
-"use strict";
+/* eslint-env mozilla/chrome-script */
 
-// assert is available to chrome scripts loaded via SpecialPowers.loadChromeScript.
-/* global assert */
-/* eslint-env mozilla/frame-script */
+"use strict";
 
 var { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
@@ -35,7 +33,6 @@ if (LoginHelper.improvedPasswordRulesEnabled) {
     await rsPromise;
   };
 }
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 /**
  * Init with a common login
@@ -225,16 +222,16 @@ addMessageListener("isLoggedIn", () => {
   return Services.logins.isLoggedIn;
 });
 
-addMessageListener("setMasterPassword", ({ enable }) => {
+addMessageListener("setPrimaryPassword", ({ enable }) => {
   if (enable) {
-    LoginTestUtils.masterPassword.enable();
+    LoginTestUtils.primaryPassword.enable();
   } else {
-    LoginTestUtils.masterPassword.disable();
+    LoginTestUtils.primaryPassword.disable();
   }
 });
 
 LoginManagerParent.setListenerForTests((msg, { origin, data }) => {
-  if (msg == "FormSubmit") {
+  if (msg == "ShowDoorhanger") {
     sendAsyncMessage("formSubmissionProcessed", { origin, data });
   } else if (msg == "PasswordEditedOrGenerated") {
     sendAsyncMessage("passwordEditedOrGenerated", { origin, data });

@@ -24,6 +24,7 @@ def options(request):
         "app": "firefox",
         "binary": "path/to/dummy/browser",
         "browsertime_visualmetrics": False,
+        "extra_prefs": {},
     }
 
     if hasattr(request.module, "OPTIONS"):
@@ -106,6 +107,7 @@ def create_args():
         cold=False,
         live_sites=False,
         enable_marionette_trace=False,
+        collect_perfstats=False,
     )
 
     def inner(**kwargs):

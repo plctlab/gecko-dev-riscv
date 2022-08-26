@@ -7,36 +7,32 @@
 
 var EXPORTED_SYMBOLS = ["PromptParent"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PromptUtils",
   "resource://gre/modules/SharedPromptUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "tabChromePromptSubDialog",
   "prompts.tabChromePromptSubDialog",
   false
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "contentPromptSubDialog",
   "prompts.contentPromptSubDialog",
   false
 );
 
-XPCOMUtils.defineLazyGetter(this, "gTabBrowserLocalization", () => {
+XPCOMUtils.defineLazyGetter(lazy, "gTabBrowserLocalization", () => {
   return new Localization(["browser/tabbrowser.ftl"], true);
 });
 
@@ -145,9 +141,9 @@ class PromptParent extends JSWindowActorParent {
       case "Prompt:Open": {
         if (
           (args.modalType === Ci.nsIPrompt.MODAL_TYPE_CONTENT &&
-            !contentPromptSubDialog) ||
+            !lazy.contentPromptSubDialog) ||
           (args.modalType === Ci.nsIPrompt.MODAL_TYPE_TAB &&
-            !tabChromePromptSubDialog) ||
+            !lazy.tabChromePromptSubDialog) ||
           this.isAboutAddonsOptionsPage(this.browsingContext)
         ) {
           return this.openContentPrompt(args, id);
@@ -212,7 +208,7 @@ class PromptParent extends JSWindowActorParent {
 
       this.unregisterPrompt(id);
 
-      PromptUtils.fireDialogEvent(
+      lazy.PromptUtils.fireDialogEvent(
         window,
         "DOMModalDialogClosed",
         browser,
@@ -224,7 +220,7 @@ class PromptParent extends JSWindowActorParent {
 
     try {
       browser.enterModalState();
-      PromptUtils.fireDialogEvent(
+      lazy.PromptUtils.fireDialogEvent(
         window,
         "DOMWillOpenModalDialog",
         browser,
@@ -299,7 +295,7 @@ class PromptParent extends JSWindowActorParent {
     try {
       if (browser) {
         browser.enterModalState();
-        PromptUtils.fireDialogEvent(
+        lazy.PromptUtils.fireDialogEvent(
           win,
           "DOMWillOpenModalDialog",
           browser,
@@ -321,7 +317,7 @@ class PromptParent extends JSWindowActorParent {
           this.addTabSwitchCheckboxToArgs(dialogBox, args);
         }
 
-        bag = PromptUtils.objectToPropBag(args);
+        bag = lazy.PromptUtils.objectToPropBag(args);
         await dialogBox.open(
           uri,
           {
@@ -336,7 +332,7 @@ class PromptParent extends JSWindowActorParent {
         // If we use window prompts as a fallback it may not be set.
         args.modalType = Services.prompt.MODAL_TYPE_WINDOW;
         // Window prompt
-        bag = PromptUtils.objectToPropBag(args);
+        bag = lazy.PromptUtils.objectToPropBag(args);
         Services.ww.openWindow(
           win,
           uri,
@@ -346,11 +342,11 @@ class PromptParent extends JSWindowActorParent {
         );
       }
 
-      PromptUtils.propBagToObject(bag, args);
+      lazy.PromptUtils.propBagToObject(bag, args);
     } finally {
       if (browser) {
         browser.maybeLeaveModalState();
-        PromptUtils.fireDialogEvent(
+        lazy.PromptUtils.fireDialogEvent(
           win,
           "DOMModalDialogClosed",
           browser,
@@ -411,7 +407,7 @@ class PromptParent extends JSWindowActorParent {
       }
       // If it's still empty, use `prePath` so we have *something* to show:
       domain ||= allowTabFocusByPromptPrincipal.URI.prePath;
-      let [allowFocusMsg] = gTabBrowserLocalization.formatMessagesSync([
+      let [allowFocusMsg] = lazy.gTabBrowserLocalization.formatMessagesSync([
         {
           id: "tabbrowser-allow-dialogs-to-get-focus",
           args: { domain },

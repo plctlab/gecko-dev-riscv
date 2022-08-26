@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/remote-page */
 
 /**
  * Determines whether a given value is a fluent id or plain text and adds it to an element
@@ -31,16 +31,16 @@ async function translateElements(container, items) {
 }
 
 async function renderInfo({
-  infoEnabled,
+  infoEnabled = false,
   infoTitle,
   infoTitleEnabled,
   infoBody,
   infoLinkText,
   infoLinkUrl,
   infoIcon,
-}) {
+} = {}) {
   const container = document.querySelector(".info");
-  if (infoEnabled === false) {
+  if (!infoEnabled) {
     container.remove();
     return;
   }
@@ -68,6 +68,7 @@ async function renderInfo({
     infoLinkUrl ||
       RPMGetFormatURLPref("app.support.baseURL") + "private-browsing-myths"
   );
+  linkEl.setAttribute("target", "_blank");
 
   linkEl.addEventListener("click", () => {
     window.PrivateBrowsingRecordClick("info_link");
@@ -75,54 +76,74 @@ async function renderInfo({
 }
 
 async function renderPromo({
-  promoEnabled,
+  messageId = null,
+  promoEnabled = false,
+  promoType = "VPN",
   promoTitle,
   promoTitleEnabled,
   promoLinkText,
-  promoLinkUrl,
   promoLinkType,
   promoSectionStyle,
   promoHeader,
   promoImageLarge,
   promoImageSmall,
-}) {
+  promoButton = null,
+} = {}) {
+  const shouldShow = await RPMSendQuery("ShouldShowPromo", { type: promoType });
   const container = document.querySelector(".promo");
-  if (promoEnabled === false) {
+
+  if (!promoEnabled || !shouldShow) {
     container.remove();
-    return;
+    return false;
   }
 
-  // Check the current geo and remove if we're in the wrong one.
-  RPMSendQuery("ShouldShowVPNPromo", {}).then(shouldShow => {
-    if (!shouldShow) {
-      container.remove();
-    }
-  });
-
-  const titleEl = document.getElementById("private-browsing-vpn-text");
-  let linkEl = document.getElementById("private-browsing-vpn-link");
+  const titleEl = document.getElementById("private-browsing-promo-text");
+  const linkEl = document.getElementById("private-browsing-promo-link");
   const promoHeaderEl = document.getElementById("promo-header");
   const infoContainerEl = document.querySelector(".info");
   const promoImageLargeEl = document.querySelector(".promo-image-large img");
   const promoImageSmallEl = document.querySelector(".promo-image-small img");
+  const dismissBtn = document.querySelector("#dismiss-btn");
 
-  // Setup the private browsing VPN link.
-  const vpnPromoUrl =
-    promoLinkUrl || RPMGetFormatURLPref("browser.privatebrowsing.vpnpromourl");
-
-  if (promoLinkType === "button") {
-    linkEl.classList.add("button");
+  if (promoLinkType === "link") {
+    linkEl.classList.remove("primary");
+    linkEl.classList.add("text-link", "promo-link");
   }
 
-  if (vpnPromoUrl) {
-    linkEl.setAttribute("href", vpnPromoUrl);
-    linkEl.addEventListener("click", () => {
-      window.PrivateBrowsingRecordClick("promo_link");
+  if (promoButton?.action) {
+    linkEl.addEventListener("click", async event => {
+      event.preventDefault();
+
+      // Record promo click telemetry and set metrics as allow for spotlight
+      // modal opened on promo click if user is enrolled in an experiment
+      let isExperiment = window.PrivateBrowsingRecordClick("promo_link");
+      const promoButtonData = promoButton?.action?.data;
+      if (
+        promoButton?.action?.type === "SHOW_SPOTLIGHT" &&
+        promoButtonData?.content
+      ) {
+        promoButtonData.content.metrics = isExperiment ? "allow" : "block";
+      }
+
+      await RPMSendQuery("SpecialMessageActionDispatch", promoButton.action);
     });
   } else {
-    // If the link is undefined, remove the promo completely
+    // If the action doesn't exist, remove the promo completely
     container.remove();
-    return;
+    return false;
+  }
+
+  const onDismissBtnClick = () => {
+    window.ASRouterMessage({
+      type: "BLOCK_MESSAGE_BY_ID",
+      data: { id: messageId },
+    });
+    window.PrivateBrowsingRecordClick("dismiss_button");
+    container.remove();
+  };
+
+  if (dismissBtn && messageId) {
+    dismissBtn.addEventListener("click", onDismissBtnClick, { once: true });
   }
 
   if (promoSectionStyle) {
@@ -164,44 +185,87 @@ async function renderPromo({
     [linkEl, promoLinkText],
     [promoHeaderEl, promoHeader],
   ]);
+
+  // Only make promo section visible after adding content
+  // and translations to prevent layout shifting in page
+  container.classList.add("promo-visible");
+  return true;
 }
 
-const DEFAULT_PRIVATE_BROWSING_CONTENT = {
-  promoEnabled: true,
-  infoEnabled: true,
-  infoIcon: "",
-  infoTitle: "",
-  infoBody: "fluent:about-private-browsing-info-description-private-window",
-  infoLinkText: "fluent:about-private-browsing-learn-more-link",
-  infoTitleEnabled: false,
-  promoLinkType: "button",
-  promoLinkText: "fluent:about-private-browsing-prominent-cta",
-  promoSectionStyle: "below-search",
-  promoHeader: "fluent:about-private-browsing-get-privacy",
-  promoTitle: "fluent:about-private-browsing-hide-activity-1",
-  promoTitleEnabled: true,
-  promoImageLarge: "chrome://browser/content/assets/moz-vpn.svg",
-};
+/**
+ * For every PB newtab loaded, a second is pre-rendered in the background.
+ * We need to guard against invalid impressions by checking visibility state.
+ * If visible, record. Otherwise, listen for visibility change and record later.
+ */
+function recordOnceVisible(message) {
+  const recordImpression = () => {
+    if (document.visibilityState === "visible") {
+      window.ASRouterMessage({
+        type: "IMPRESSION",
+        data: message,
+      });
+      // Similar telemetry, but for Nimbus experiments
+      window.PrivateBrowsingExposureTelemetry();
+      document.removeEventListener("visibilitychange", recordImpression);
+    }
+  };
 
-async function setupFeatureConfig() {
-  // Setup experiment data
-  let config = {};
+  if (document.visibilityState === "visible") {
+    window.ASRouterMessage({
+      type: "IMPRESSION",
+      data: message,
+    });
+    // Similar telemetry, but for Nimbus experiments
+    window.PrivateBrowsingExposureTelemetry();
+  } else {
+    document.addEventListener("visibilitychange", recordImpression);
+  }
+}
+
+// The PB newtab may be pre-rendered. Once the tab is visible, check to make sure the message wasn't blocked after the initial render. If it was, remove the promo.
+async function handlePromoOnPreload(message) {
+  async function removePromoIfBlocked() {
+    if (document.visibilityState === "visible") {
+      let blocked = await RPMSendQuery("IsPromoBlocked", message);
+      if (blocked) {
+        const container = document.querySelector(".promo");
+        container.remove();
+      }
+    }
+    document.removeEventListener("visibilitychange", removePromoIfBlocked);
+  }
+  // Only add the listener to pre-rendered tabs that aren't visible
+  if (document.visibilityState !== "visible") {
+    document.addEventListener("visibilitychange", removePromoIfBlocked);
+  }
+}
+
+async function setupMessageConfig() {
+  let config = null;
+  let message = null;
+
+  let hideDefault = window.PrivateBrowsingShouldHideDefault();
   try {
-    config = window.PrivateBrowsingFeatureConfig(
-      DEFAULT_PRIVATE_BROWSING_CONTENT
-    );
+    let response = await window.ASRouterMessage({
+      type: "PBNEWTAB_MESSAGE_REQUEST",
+      data: { hideDefault: !!hideDefault },
+    });
+    message = response?.message;
+    config = message?.content;
+    config.messageId = message?.id;
   } catch (e) {}
 
   await renderInfo(config);
-  await renderPromo(config);
-
+  let hasRendered = await renderPromo(config);
+  if (hasRendered && message) {
+    recordOnceVisible(message);
+    await handlePromoOnPreload(message);
+  }
   // For tests
   document.documentElement.setAttribute("PrivateBrowsingRenderComplete", true);
 }
 
 document.addEventListener("DOMContentLoaded", function() {
-  setupFeatureConfig();
-
   if (!RPMIsWindowPrivate()) {
     document.documentElement.classList.remove("private");
     document.documentElement.classList.add("normal");
@@ -212,6 +276,19 @@ document.addEventListener("DOMContentLoaded", function() {
       });
     return;
   }
+
+  let newLogoEnabled = RPMGetBoolPref(
+    "browser.privatebrowsing.enable-new-logo",
+    false
+  );
+
+  document
+    .getElementById("about-private-browsing-logo")
+    .toggleAttribute("legacy", !newLogoEnabled);
+
+  // We don't do this setup until now, because we don't want to record any impressions until we're
+  // sure we're actually running a private window, not just about:privatebrowsing in a normal window.
+  setupMessageConfig();
 
   // Set up the private search banner.
   const privateSearchBanner = document.getElementById("search-banner");

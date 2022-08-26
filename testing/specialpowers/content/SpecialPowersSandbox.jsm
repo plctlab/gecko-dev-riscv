@@ -12,8 +12,10 @@
 
 var EXPORTED_SYMBOLS = ["SpecialPowersSandbox"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Assert",
   "resource://testing-common/Assert.jsm"
 );
@@ -31,7 +33,6 @@ const SANDBOX_GLOBALS = [
 ];
 const EXTRA_IMPORTS = {
   EventUtils: "resource://specialpowers/SpecialPowersEventUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 };
 
 let expectFail = false;
@@ -106,7 +107,7 @@ class SpecialPowersSandbox {
 
   get Assert() {
     if (!this._Assert) {
-      this._Assert = new Assert((err, message, stack) => {
+      this._Assert = new lazy.Assert((err, message, stack) => {
         this.report(err, message, stack);
       });
     }

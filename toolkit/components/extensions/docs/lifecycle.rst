@@ -14,7 +14,7 @@ APIs that allocate any resources (e.g., adding elements to the browser's
 user interface, setting up internal event listeners, etc.) must free
 these resources when the extension for which they are allocated is
 shut down.  An API does this by using the ``callOnClose()``
-method on an `Extension <reference.html#extension-class>`_ object. 
+method on an `Extension <reference.html#extension-class>`_ object.
 
 Extension Uninstall and Update
 ------------------------------
@@ -54,7 +54,7 @@ Note that these events can be triggered on extensions that are inactive.
 For that reason, these events can only be handled by extension APIs that
 are built into the browser.  Or, in other words, these events cannot be
 handled by APIs that are implemented in WebExtension experiments.  If the
-implementation of an API relies on these events for corectness, the API
+implementation of an API relies on these events for correctness, the API
 must be built into the browser and not delievered via an experiment.
 
 .. Should we even document onStartup()?  I think no...

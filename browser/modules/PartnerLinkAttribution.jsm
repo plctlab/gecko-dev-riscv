@@ -4,26 +4,25 @@
 
 "use strict";
 
-Cu.importGlobalProperties(["fetch"]);
-
 var EXPORTED_SYMBOLS = [
   "PartnerLinkAttribution",
   "CONTEXTUAL_SERVICES_PING_TYPES",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Region: "resource://gre/modules/Region.jsm",
   PingCentre: "resource:///modules/PingCentre.jsm",
 });
 
 // Endpoint base URL for Structured Ingestion
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "structuredIngestionEndpointBase",
   "browser.newtabpage.activity-stream.telemetry.structuredIngestion.endpoint",
   ""
@@ -31,13 +30,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
 const NAMESPACE_CONTEXUAL_SERVICES = "contextual-services";
 
 // PingCentre client to send custom pings
-XPCOMUtils.defineLazyGetter(this, "pingcentre", () => {
-  return new PingCentre({ topic: "contextual-services" });
+XPCOMUtils.defineLazyGetter(lazy, "pingcentre", () => {
+  return new lazy.PingCentre({ topic: "contextual-services" });
 });
 
 // `contextId` is a unique identifier used by Contextual Services
 const CONTEXT_ID_PREF = "browser.contextual-services.contextId";
-XPCOMUtils.defineLazyGetter(this, "contextId", () => {
+XPCOMUtils.defineLazyGetter(lazy, "contextId", () => {
   let _contextId = Services.prefs.getStringPref(CONTEXT_ID_PREF, null);
   if (!_contextId) {
     _contextId = String(Services.uuid.generateUUID());
@@ -49,6 +48,7 @@ XPCOMUtils.defineLazyGetter(this, "contextId", () => {
 const CONTEXTUAL_SERVICES_PING_TYPES = {
   TOPSITES_IMPRESSION: "topsites-impression",
   TOPSITES_SELECTION: "topsites-click",
+  QS_BLOCK: "quicksuggest-block",
   QS_IMPRESSION: "quicksuggest-impression",
   QS_SELECTION: "quicksuggest-click",
 };
@@ -175,21 +175,21 @@ var PartnerLinkAttribution = {
     }
 
     const endpoint = makeEndpointUrl(pingType, "1");
-    payload.context_id = contextId;
-    pingcentre.sendStructuredIngestionPing(payload, endpoint);
+    payload.context_id = lazy.contextId;
+    lazy.pingcentre.sendStructuredIngestionPing(payload, endpoint);
   },
 
   /**
    * Gets the underlying PingCentre client, only used for tests.
    */
   get _pingCentre() {
-    return pingcentre;
+    return lazy.pingcentre;
   },
 };
 
 async function sendRequest(attributionUrl, source, targetURL) {
   const request = new Request(attributionUrl);
-  request.headers.set("X-Region", Region.home);
+  request.headers.set("X-Region", lazy.Region.home);
   request.headers.set("X-Source", source);
   request.headers.set("X-Target-URL", targetURL);
   const response = await fetch(request);
@@ -221,5 +221,5 @@ function makeEndpointUrl(pingType, version) {
     .toString()
     .slice(1, -1);
   const extension = `${NAMESPACE_CONTEXUAL_SERVICES}/${pingType}/${version}/${docID}`;
-  return `${structuredIngestionEndpointBase}/${extension}`;
+  return `${lazy.structuredIngestionEndpointBase}/${extension}`;
 }

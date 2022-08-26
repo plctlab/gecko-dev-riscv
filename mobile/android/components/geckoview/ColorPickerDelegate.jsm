@@ -9,11 +9,13 @@ const { GeckoViewUtils } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewUtils.jsm"
 );
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.jsm",
 });
 
@@ -21,7 +23,7 @@ const { debug, warn } = GeckoViewUtils.initLogging("ColorPickerDelegate");
 
 class ColorPickerDelegate {
   init(aParent, aTitle, aInitialColor) {
-    this._prompt = new GeckoViewPrompter(aParent);
+    this._prompt = new lazy.GeckoViewPrompter(aParent);
     this._msg = {
       type: "color",
       title: aTitle,
@@ -38,9 +40,6 @@ class ColorPickerDelegate {
   }
 }
 
-ColorPickerDelegate.prototype.classID = Components.ID(
-  "{aa0dd6fc-73dd-4621-8385-c0b377e02cee}"
-);
 ColorPickerDelegate.prototype.QueryInterface = ChromeUtils.generateQI([
   "nsIColorPicker",
 ]);

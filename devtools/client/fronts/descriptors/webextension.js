@@ -36,6 +36,10 @@ class WebExtensionDescriptorFront extends DescriptorMixin(
     this.traits = json.traits || {};
   }
 
+  get backgroundScriptStatus() {
+    return this._form.backgroundScriptStatus;
+  }
+
   get debuggable() {
     return this._form.debuggable;
   }
@@ -76,6 +80,10 @@ class WebExtensionDescriptorFront extends DescriptorMixin(
     return this._form.name;
   }
 
+  get persistentBackgroundScript() {
+    return this._form.persistentBackgroundScript;
+  }
+
   get temporarilyInstalled() {
     return this._form.temporarilyInstalled;
   }
@@ -86,6 +94,24 @@ class WebExtensionDescriptorFront extends DescriptorMixin(
 
   get warnings() {
     return this._form.warnings;
+  }
+
+  isServerTargetSwitchingEnabled() {
+    // For now, we don't expose any target out of the WatcherActor.
+    // And the top level target is still manually instantiated by the descriptor.
+    // We most likely need to wait for full enabling of EFT before being able to spawn
+    // the extension target from the server side as doing this would most likely break
+    // the iframe dropdown. It would break it as spawning the targets from the server
+    // would probably mean getting rid of the usage of WindowGlobalTargetActor._setWindow
+    // and instead spawn one target per extension document.
+    // That, instead of having a unique target for all the documents.
+    return false;
+  }
+
+  getWatcher() {
+    return super.getWatcher({
+      isServerTargetSwitchingEnabled: this.isServerTargetSwitchingEnabled(),
+    });
   }
 
   _createWebExtensionTarget(form) {
@@ -127,7 +153,6 @@ class WebExtensionDescriptorFront extends DescriptorMixin(
       try {
         const targetForm = await super.getTarget();
         targetFront = this._createWebExtensionTarget(targetForm);
-        await targetFront.attach();
       } catch (e) {
         console.log(
           `Request to connect to WebExtensionDescriptor "${this.id}" failed: ${e}`

@@ -166,6 +166,12 @@ ARCHIVE_FILES = {
         },
         {
             "source": buildconfig.topsrcdir,
+            "base": "xpcom/geckoprocesstypes_generator",
+            "pattern": "**",
+            "dest": "tools/geckoprocesstypes_generator",
+        },
+        {
+            "source": buildconfig.topsrcdir,
             "base": "third_party/python/six",
             "pattern": "**",
             "dest": "tools/six",
@@ -324,6 +330,11 @@ ARCHIVE_FILES = {
             "base": "third_party/python/distro",
             "pattern": "distro.py",
         },
+        {
+            "source": buildconfig.topsrcdir,
+            "base": "third_party/python/packaging",
+            "pattern": "**",
+        },
     ],
     "reftest": [
         {"source": buildconfig.topobjdir, "base": "_tests", "pattern": "reftest/**"},
@@ -385,15 +396,15 @@ ARCHIVE_FILES = {
         {"source": buildconfig.topsrcdir, "pattern": "build/mach_initialize.py"},
         {
             "source": buildconfig.topsrcdir,
-            "pattern": "build/build_virtualenv_packages.txt",
+            "pattern": "python/sites/build.txt",
         },
         {
             "source": buildconfig.topsrcdir,
-            "pattern": "build/common_virtualenv_packages.txt",
+            "pattern": "python/sites/common.txt",
         },
         {
             "source": buildconfig.topsrcdir,
-            "pattern": "build/mach_virtualenv_packages.txt",
+            "pattern": "python/sites/mach.txt",
         },
         {"source": buildconfig.topsrcdir, "pattern": "mach/**"},
         {
@@ -527,6 +538,7 @@ ARCHIVE_FILES = {
                 "moz-http2/**",
                 "node-http2/**",
                 "node-ip/**",
+                "node-ws/**",
                 "dns-packet/**",
                 "odoh-wasm/**",
                 "remotexpcshelltests.py",

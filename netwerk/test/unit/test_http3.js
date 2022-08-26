@@ -69,13 +69,14 @@ function run_test() {
 
   h3Route = "foo.example.com:" + h3Port;
   do_get_profile();
-  prefs = Cc["@mozilla.org/preferences-service;1"].getService(Ci.nsIPrefBranch);
+  prefs = Services.prefs;
 
-  prefs.setBoolPref("network.http.http3.enabled", true);
+  prefs.setBoolPref("network.http.http3.enable", true);
   prefs.setCharPref("network.dns.localDomains", "foo.example.com");
   // We always resolve elements of localDomains as it's hardcoded without the
   // following pref:
   prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
+  prefs.setBoolPref("network.http.altsvc.oe", true);
 
   // The certificate for the http3server server is for foo.example.com and
   // is signed by http2-ca.pem so add that cert to the trust list as a
@@ -561,9 +562,10 @@ function test_version_fallback() {
 }
 
 function testsDone() {
-  prefs.clearUserPref("network.http.http3.enabled");
+  prefs.clearUserPref("network.http.http3.enable");
   prefs.clearUserPref("network.dns.localDomains");
   prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
+  prefs.clearUserPref("network.http.altsvc.oe");
   dump("testDone\n");
   do_test_pending();
   h1Server.stop(do_test_finished);

@@ -138,14 +138,16 @@ class Accessible extends Component {
     this.update = this.update.bind(this);
   }
 
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     window.on(
       EVENTS.NEW_ACCESSIBLE_FRONT_INSPECTED,
       this.onAccessibleInspected
     );
   }
 
-  componentWillReceiveProps({ accessibleFront }) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps({ accessibleFront }) {
     const oldAccessibleFront = this.props.accessibleFront;
 
     if (oldAccessibleFront) {
@@ -292,6 +294,10 @@ class Accessible extends Component {
       valueProps.onDOMNodeMouseOut = () => this.hideHighlighter();
       valueProps.onDOMNodeMouseOver = () =>
         this.showHighlighter(this.props.nodeFront);
+
+      valueProps.inspectIconTitle = L10N.getStr(
+        "accessibility.accessible.selectNodeInInspector.title"
+      );
       valueProps.onInspectIconClick = () =>
         this.selectNode(this.props.nodeFront);
     } else if (isAccessibleFront(object)) {
@@ -301,6 +307,9 @@ class Accessible extends Component {
         this.hideAccessibleHighlighter(target);
       valueProps.onAccessibleMouseOver = () =>
         this.showAccessibleHighlighter(target);
+      valueProps.inspectIconTitle = L10N.getStr(
+        "accessibility.accessible.selectElement.title"
+      );
       valueProps.onInspectIconClick = (obj, e) => {
         e.stopPropagation();
         this.selectAccessible(target);

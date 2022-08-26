@@ -13,6 +13,7 @@ const actionTypes = {
   AUTOCOMPLETE_TOGGLE: "AUTOCOMPLETE_TOGGLE",
   BATCH_ACTIONS: "BATCH_ACTIONS",
   CLEAR_HISTORY: "CLEAR_HISTORY",
+  ENABLE_NETWORK_MONITORING: "ENABLE_NETWORK_MONITORING",
   EDITOR_TOGGLE: "EDITOR_TOGGLE",
   EDITOR_ONBOARDING_DISMISS: "EDITOR_ONBOARDING_DISMISS",
   EDITOR_PRETTY_PRINT: "EDITOR_PRETTY_PRINT",
@@ -27,10 +28,11 @@ const actionTypes = {
   INITIALIZE: "INITIALIZE",
   MESSAGE_CLOSE: "MESSAGE_CLOSE",
   MESSAGE_OPEN: "MESSAGE_OPEN",
-  MESSAGE_UPDATE_PAYLOAD: "MESSAGE_UPDATE_PAYLOAD",
+  CSS_MESSAGE_ADD_MATCHING_ELEMENTS: "CSS_MESSAGE_ADD_MATCHING_ELEMENTS",
   MESSAGE_REMOVE: "MESSAGE_REMOVE",
   MESSAGES_ADD: "MESSAGES_ADD",
   MESSAGES_CLEAR: "MESSAGES_CLEAR",
+  MESSAGES_DISABLE: "MESSAGES_DISABLE",
   NETWORK_MESSAGES_UPDATE: "NETWORK_MESSAGES_UPDATE",
   NETWORK_UPDATES_REQUEST: "NETWORK_UPDATES_REQUEST",
   PERSIST_TOGGLE: "PERSIST_TOGGLE",
@@ -43,6 +45,7 @@ const actionTypes = {
   SHOW_CONTENT_MESSAGES_TOGGLE: "SHOW_CONTENT_MESSAGES_TOGGLE",
   SIDEBAR_CLOSE: "SIDEBAR_CLOSE",
   SPLIT_CONSOLE_CLOSE_BUTTON_TOGGLE: "SPLIT_CONSOLE_CLOSE_BUTTON_TOGGLE",
+  TARGET_MESSAGES_REMOVE: "TARGET_MESSAGES_REMOVE",
   TIMESTAMPS_TOGGLE: "TIMESTAMPS_TOGGLE",
   UPDATE_HISTORY_POSITION: "UPDATE_HISTORY_POSITION",
   REVERSE_SEARCH_INPUT_CHANGE: "REVERSE_SEARCH_INPUT_CHANGE",
@@ -52,7 +55,6 @@ const actionTypes = {
   WARNING_GROUPS_TOGGLE: "WARNING_GROUPS_TOGGLE",
   WILL_NAVIGATE: "WILL_NAVIGATE",
   EDITOR_SET_WIDTH: "EDITOR_SET_WIDTH",
-  TARGET_AVAILABLE: "TARGET_AVAILABLE",
 };
 
 const prefs = {
@@ -84,11 +86,11 @@ const prefs = {
       EDITOR_WIDTH: "input.editorWidth",
       // Show the Editor onboarding UI
       EDITOR_ONBOARDING: "devtools.webconsole.input.editorOnboarding",
-      // Show the Input Context the selector in the browser toolbox
-      CONTEXT_SELECTOR_BROWSER_TOOLBOX: "devtools.webconsole.input.context",
-      // Show the Input Context the selector in the content toolbox
-      CONTEXT_SELECTOR_CONTENT_TOOLBOX:
-        "devtools.contenttoolbox.webconsole.input.context",
+      // Show the Input Context the selector
+      CONTEXT_SELECTOR: "devtools.webconsole.input.context",
+      // Persist the "enable network monitoring" option
+      ENABLE_NETWORK_MONITORING:
+        "devtools.browserconsole.enableNetworkMonitoring",
     },
     FEATURES: {
       // We use the same pref to enable the sidebar on webconsole and browser console.

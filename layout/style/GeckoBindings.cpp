@@ -46,7 +46,6 @@
 #include "mozilla/DeclarationBlock.h"
 #include "mozilla/EffectCompositor.h"
 #include "mozilla/EffectSet.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/Keyframe.h"
 #include "mozilla/Mutex.h"
@@ -66,6 +65,7 @@
 #include "mozilla/RWLock.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ElementInlines.h"
+#include "mozilla/dom/HTMLImageElement.h"
 #include "mozilla/dom/HTMLTableCellElement.h"
 #include "mozilla/dom/HTMLBodyElement.h"
 #include "mozilla/dom/HTMLSelectElement.h"
@@ -90,29 +90,24 @@ ServoTraversalStatistics ServoTraversalStatistics::sSingleton;
 
 static StaticAutoPtr<RWLock> sServoFFILock;
 
-static const nsFont* ThreadSafeGetDefaultFontHelper(
-    const Document& aDocument, nsAtom* aLanguage,
-    StyleGenericFontFamily aGenericId) {
+static const LangGroupFontPrefs* ThreadSafeGetLangGroupFontPrefs(
+    const Document& aDocument, nsAtom* aLanguage) {
   bool needsCache = false;
-  const nsFont* retval;
-
-  auto GetDefaultFont = [&](bool* aNeedsToCache) {
-    auto* prefs = aDocument.GetFontPrefsForLang(aLanguage, aNeedsToCache);
-    return prefs ? prefs->GetDefaultFont(aGenericId) : nullptr;
-  };
-
   {
     AutoReadLock guard(*sServoFFILock);
-    retval = GetDefaultFont(&needsCache);
+    if (auto* prefs = aDocument.GetFontPrefsForLang(aLanguage, &needsCache)) {
+      return prefs;
+    }
   }
-  if (!needsCache) {
-    return retval;
-  }
-  {
-    AutoWriteLock guard(*sServoFFILock);
-    retval = GetDefaultFont(nullptr);
-  }
-  return retval;
+  MOZ_ASSERT(needsCache);
+  AutoWriteLock guard(*sServoFFILock);
+  return aDocument.GetFontPrefsForLang(aLanguage);
+}
+
+static const nsFont& ThreadSafeGetDefaultVariableFont(const Document& aDocument,
+                                                      nsAtom* aLanguage) {
+  return ThreadSafeGetLangGroupFontPrefs(aDocument, aLanguage)
+      ->mDefaultVariableFont;
 }
 
 /*
@@ -258,21 +253,12 @@ bool Gecko_VisitedStylesEnabled(const Document* aDoc) {
   return true;
 }
 
-EventStates::ServoType Gecko_ElementState(const Element* aElement) {
-  return aElement->StyleState().ServoValue();
+ElementState::InternalType Gecko_ElementState(const Element* aElement) {
+  return aElement->StyleState().GetInternalValue();
 }
 
 bool Gecko_IsRootElement(const Element* aElement) {
   return aElement->OwnerDoc()->GetRootElement() == aElement;
-}
-
-// Dirtiness tracking.
-void Gecko_SetNodeFlags(const nsINode* aNode, uint32_t aFlags) {
-  const_cast<nsINode*>(aNode)->SetFlags(aFlags);
-}
-
-void Gecko_UnsetNodeFlags(const nsINode* aNode, uint32_t aFlags) {
-  const_cast<nsINode*>(aNode)->UnsetFlags(aFlags);
 }
 
 void Gecko_NoteDirtyElement(const Element* aElement) {
@@ -383,14 +369,15 @@ Gecko_GetHTMLPresentationAttrDeclarationBlock(const Element* aElement) {
 
 const StyleStrong<RawServoDeclarationBlock>*
 Gecko_GetExtraContentStyleDeclarations(const Element* aElement) {
-  if (!aElement->IsAnyOfHTMLElements(nsGkAtoms::td, nsGkAtoms::th)) {
-    return nullptr;
-  }
-  const HTMLTableCellElement* cell =
-      static_cast<const HTMLTableCellElement*>(aElement);
-  if (nsMappedAttributes* attrs =
-          cell->GetMappedAttributesInheritedFromTable()) {
-    return AsRefRawStrong(attrs->GetServoStyle());
+  if (const auto* cell = HTMLTableCellElement::FromNode(aElement)) {
+    if (nsMappedAttributes* attrs =
+            cell->GetMappedAttributesInheritedFromTable()) {
+      return AsRefRawStrong(attrs->GetServoStyle());
+    }
+  } else if (const auto* img = HTMLImageElement::FromNode(aElement)) {
+    if (const auto* attrs = img->GetMappedAttributesFromSource()) {
+      return AsRefRawStrong(attrs->GetServoStyle());
+    }
   }
   return nullptr;
 }
@@ -654,9 +641,8 @@ double Gecko_GetProgressFromComputedTiming(const ComputedTiming* aTiming) {
   return aTiming->mProgress.Value();
 }
 
-double Gecko_GetPositionInSegment(
-    const AnimationPropertySegment* aSegment, double aProgress,
-    ComputedTimingFunction::BeforeFlag aBeforeFlag) {
+double Gecko_GetPositionInSegment(const AnimationPropertySegment* aSegment,
+                                  double aProgress, bool aBeforeFlag) {
   MOZ_ASSERT(aSegment->mFromKey < aSegment->mToKey,
              "The segment from key should be less than to key");
 
@@ -666,8 +652,8 @@ double Gecko_GetPositionInSegment(
                              // denominator using double precision.
                              (double(aSegment->mToKey) - aSegment->mFromKey);
 
-  return ComputedTimingFunction::GetPortion(aSegment->mTimingFunction,
-                                            positionInSegment, aBeforeFlag);
+  return StyleComputedTimingFunction::GetPortion(
+      aSegment->mTimingFunction, positionInSegment, aBeforeFlag);
 }
 
 const RawServoAnimationValue* Gecko_AnimationGetBaseStyle(
@@ -687,31 +673,42 @@ bool Gecko_IsDocumentBody(const Element* aElement) {
   return doc && doc->GetBodyElement() == aElement;
 }
 
-nscolor Gecko_GetLookAndFeelSystemColor(int32_t aId, const Document* aDoc,
-                                        StyleSystemColorScheme aColorScheme,
-                                        const StyleColorScheme* aStyle) {
-  auto colorId = static_cast<LookAndFeel::ColorID>(aId);
-  auto useStandins = LookAndFeel::ShouldUseStandins(*aDoc, colorId);
-  auto colorScheme = [&] {
-    switch (aColorScheme) {
-      case StyleSystemColorScheme::Default:
-        break;
-      case StyleSystemColorScheme::Light:
-        return LookAndFeel::ColorScheme::Light;
-      case StyleSystemColorScheme::Dark:
-        return LookAndFeel::ColorScheme::Dark;
-    }
-    return LookAndFeel::ColorSchemeForStyle(*aDoc, aStyle->bits);
-  }();
+nscolor Gecko_ComputeSystemColor(StyleSystemColor aColor, const Document* aDoc,
+                                 const StyleColorScheme* aStyle) {
+  auto colorScheme = LookAndFeel::ColorSchemeForStyle(*aDoc, aStyle->bits);
+
+  const auto& colors = PreferenceSheet::PrefsFor(*aDoc).ColorsFor(colorScheme);
+  switch (aColor) {
+    case StyleSystemColor::Canvastext:
+      return colors.mDefault;
+    case StyleSystemColor::Canvas:
+      return colors.mDefaultBackground;
+    case StyleSystemColor::Linktext:
+      return colors.mLink;
+    case StyleSystemColor::Activetext:
+      return colors.mActiveLink;
+    case StyleSystemColor::Visitedtext:
+      return colors.mVisitedLink;
+    default:
+      break;
+  }
+
+  auto useStandins = LookAndFeel::ShouldUseStandins(*aDoc, aColor);
 
   AutoWriteLock guard(*sServoFFILock);
-  return LookAndFeel::Color(colorId, colorScheme, useStandins);
+  return LookAndFeel::Color(aColor, colorScheme, useStandins);
 }
 
 int32_t Gecko_GetLookAndFeelInt(int32_t aId) {
   auto intId = static_cast<LookAndFeel::IntID>(aId);
   AutoWriteLock guard(*sServoFFILock);
   return LookAndFeel::GetInt(intId);
+}
+
+float Gecko_GetLookAndFeelFloat(int32_t aId) {
+  auto id = static_cast<LookAndFeel::FloatID>(aId);
+  AutoWriteLock guard(*sServoFFILock);
+  return LookAndFeel::GetFloat(id);
 }
 
 bool Gecko_MatchLang(const Element* aElement, nsAtom* aOverrideLang,
@@ -765,10 +762,6 @@ nsAtom* Gecko_GetXMLLangValue(const Element* aElement) {
   return atom.forget().take();
 }
 
-Document::DocumentTheme Gecko_GetDocumentLWTheme(const Document* aDocument) {
-  return aDocument->ThreadSafeGetDocumentLWTheme();
-}
-
 const PreferenceSheet::Prefs* Gecko_GetPrefSheetPrefs(const Document* aDoc) {
   return &PreferenceSheet::PrefsFor(*aDoc);
 }
@@ -817,10 +810,10 @@ static bool DoMatch(Implementor* aElement, nsAtom* aNS, nsAtom* aName,
   if (MOZ_LIKELY(aNS)) {
     int32_t ns = aNS == nsGkAtoms::_empty
                      ? kNameSpaceID_None
-                     : nsContentUtils::NameSpaceManager()->GetNameSpaceID(
+                     : nsNameSpaceManager::GetInstance()->GetNameSpaceID(
                            aNS, aElement->IsInChromeDocument());
 
-    MOZ_ASSERT(ns == nsContentUtils::NameSpaceManager()->GetNameSpaceID(
+    MOZ_ASSERT(ns == nsNameSpaceManager::GetInstance()->GetNameSpaceID(
                          aNS, aElement->IsInChromeDocument()));
     NS_ENSURE_TRUE(ns != kNameSpaceID_Unknown, false);
     const nsAttrValue* value = aElement->GetParsedAttr(aName, ns);
@@ -971,14 +964,14 @@ void Gecko_ReleaseAtom(nsAtom* aAtom) { NS_RELEASE(aAtom); }
 void Gecko_nsFont_InitSystem(nsFont* aDest, StyleSystemFont aFontId,
                              const nsStyleFont* aFont,
                              const Document* aDocument) {
-  const nsFont* defaultVariableFont = ThreadSafeGetDefaultFontHelper(
-      *aDocument, aFont->mLanguage, StyleGenericFontFamily::None);
+  const nsFont& defaultVariableFont =
+      ThreadSafeGetDefaultVariableFont(*aDocument, aFont->mLanguage);
 
   // We have passed uninitialized memory to this function,
   // initialize it. We can't simply return an nsFont because then
   // we need to know its size beforehand. Servo cannot initialize nsFont
   // itself, so this will do.
-  new (aDest) nsFont(*defaultVariableFont);
+  new (aDest) nsFont(defaultVariableFont);
 
   AutoWriteLock guard(*sServoFFILock);
   nsLayoutUtils::ComputeSystemFont(aDest, aFontId, defaultVariableFont,
@@ -987,12 +980,9 @@ void Gecko_nsFont_InitSystem(nsFont* aDest, StyleSystemFont aFontId,
 
 void Gecko_nsFont_Destroy(nsFont* aDest) { aDest->~nsFont(); }
 
-StyleGenericFontFamily Gecko_nsStyleFont_ComputeDefaultFontType(
-    const Document* aDoc, StyleGenericFontFamily aGenericId,
-    nsAtom* aLanguage) {
-  const nsFont* defaultFont =
-      ThreadSafeGetDefaultFontHelper(*aDoc, aLanguage, aGenericId);
-  return defaultFont->family.families.fallback;
+StyleGenericFontFamily Gecko_nsStyleFont_ComputeFallbackFontTypeForLanguage(
+    const Document* aDoc, nsAtom* aLanguage) {
+  return ThreadSafeGetLangGroupFontPrefs(*aDoc, aLanguage)->GetDefaultGeneric();
 }
 
 gfxFontFeatureValueSet* Gecko_ConstructFontFeatureValueSet() {
@@ -1005,47 +995,6 @@ nsTArray<uint32_t>* Gecko_AppendFeatureValueHashEntry(
   MOZ_ASSERT(NS_IsMainThread());
   return aFontFeatureValues->AppendFeatureValueHashEntry(nsAtomCString(aFamily),
                                                          aName, aAlternate);
-}
-
-float Gecko_FontStretch_ToFloat(FontStretch aStretch) {
-  // Servo represents percentages with 1. being 100%.
-  return aStretch.Percentage() / 100.0f;
-}
-
-void Gecko_FontStretch_SetFloat(FontStretch* aStretch, float aFloat) {
-  // Servo represents percentages with 1. being 100%.
-  //
-  // Also, the font code assumes a given maximum that style doesn't really need
-  // to know about. So clamp here at the boundary.
-  *aStretch = FontStretch(std::min(aFloat * 100.0f, float(FontStretch::kMax)));
-}
-
-void Gecko_FontSlantStyle_SetNormal(FontSlantStyle* aStyle) {
-  *aStyle = FontSlantStyle::Normal();
-}
-
-void Gecko_FontSlantStyle_SetItalic(FontSlantStyle* aStyle) {
-  *aStyle = FontSlantStyle::Italic();
-}
-
-void Gecko_FontSlantStyle_SetOblique(FontSlantStyle* aStyle,
-                                     float aAngleInDegrees) {
-  *aStyle = FontSlantStyle::Oblique(aAngleInDegrees);
-}
-
-void Gecko_FontSlantStyle_Get(FontSlantStyle aStyle, bool* aNormal,
-                              bool* aItalic, float* aObliqueAngle) {
-  *aNormal = aStyle.IsNormal();
-  *aItalic = aStyle.IsItalic();
-  if (aStyle.IsOblique()) {
-    *aObliqueAngle = aStyle.ObliqueAngle();
-  }
-}
-
-float Gecko_FontWeight_ToFloat(FontWeight aWeight) { return aWeight.ToFloat(); }
-
-void Gecko_FontWeight_SetFloat(FontWeight* aWeight, float aFloat) {
-  *aWeight = FontWeight(aFloat);
 }
 
 void Gecko_CounterStyle_ToPtr(const StyleCounterStyle* aStyle,
@@ -1146,11 +1095,12 @@ enum class KeyframeInsertPosition {
   LastForOffset,
 };
 
-static Keyframe* GetOrCreateKeyframe(nsTArray<Keyframe>* aKeyframes,
-                                     float aOffset,
-                                     const nsTimingFunction* aTimingFunction,
-                                     KeyframeSearchDirection aSearchDirection,
-                                     KeyframeInsertPosition aInsertPosition) {
+static Keyframe* GetOrCreateKeyframe(
+    nsTArray<Keyframe>* aKeyframes, float aOffset,
+    const StyleComputedTimingFunction* aTimingFunction,
+    const CompositeOperationOrAuto aComposition,
+    KeyframeSearchDirection aSearchDirection,
+    KeyframeInsertPosition aInsertPosition) {
   MOZ_ASSERT(aKeyframes, "The keyframe array should be valid");
   MOZ_ASSERT(aTimingFunction, "The timing function should be valid");
   MOZ_ASSERT(aOffset >= 0. && aOffset <= 1.,
@@ -1160,14 +1110,15 @@ static Keyframe* GetOrCreateKeyframe(nsTArray<Keyframe>* aKeyframes,
   switch (aSearchDirection) {
     case KeyframeSearchDirection::Forwards:
       if (nsAnimationManager::FindMatchingKeyframe(
-              *aKeyframes, aOffset, *aTimingFunction, keyframeIndex)) {
+              *aKeyframes, aOffset, *aTimingFunction, aComposition,
+              keyframeIndex)) {
         return &(*aKeyframes)[keyframeIndex];
       }
       break;
     case KeyframeSearchDirection::Backwards:
-      if (nsAnimationManager::FindMatchingKeyframe(Reversed(*aKeyframes),
-                                                   aOffset, *aTimingFunction,
-                                                   keyframeIndex)) {
+      if (nsAnimationManager::FindMatchingKeyframe(
+              Reversed(*aKeyframes), aOffset, *aTimingFunction, aComposition,
+              keyframeIndex)) {
         return &(*aKeyframes)[aKeyframes->Length() - 1 - keyframeIndex];
       }
       keyframeIndex = aKeyframes->Length() - 1;
@@ -1177,37 +1128,42 @@ static Keyframe* GetOrCreateKeyframe(nsTArray<Keyframe>* aKeyframes,
   Keyframe* keyframe = aKeyframes->InsertElementAt(
       aInsertPosition == KeyframeInsertPosition::Prepend ? 0 : keyframeIndex);
   keyframe->mOffset.emplace(aOffset);
-  if (!aTimingFunction->IsLinear()) {
-    keyframe->mTimingFunction.emplace();
-    keyframe->mTimingFunction->Init(*aTimingFunction);
+  if (!aTimingFunction->IsLinearKeyword()) {
+    keyframe->mTimingFunction.emplace(*aTimingFunction);
   }
+  keyframe->mComposite = aComposition;
 
   return keyframe;
 }
 
 Keyframe* Gecko_GetOrCreateKeyframeAtStart(
     nsTArray<Keyframe>* aKeyframes, float aOffset,
-    const nsTimingFunction* aTimingFunction) {
+    const StyleComputedTimingFunction* aTimingFunction,
+    const CompositeOperationOrAuto aComposition) {
   MOZ_ASSERT(aKeyframes->IsEmpty() ||
                  aKeyframes->ElementAt(0).mOffset.value() >= aOffset,
              "The offset should be less than or equal to the first keyframe's "
              "offset if there are exisiting keyframes");
 
-  return GetOrCreateKeyframe(aKeyframes, aOffset, aTimingFunction,
+  return GetOrCreateKeyframe(aKeyframes, aOffset, aTimingFunction, aComposition,
                              KeyframeSearchDirection::Forwards,
                              KeyframeInsertPosition::Prepend);
 }
 
 Keyframe* Gecko_GetOrCreateInitialKeyframe(
-    nsTArray<Keyframe>* aKeyframes, const nsTimingFunction* aTimingFunction) {
-  return GetOrCreateKeyframe(aKeyframes, 0., aTimingFunction,
+    nsTArray<Keyframe>* aKeyframes,
+    const StyleComputedTimingFunction* aTimingFunction,
+    const CompositeOperationOrAuto aComposition) {
+  return GetOrCreateKeyframe(aKeyframes, 0., aTimingFunction, aComposition,
                              KeyframeSearchDirection::Forwards,
                              KeyframeInsertPosition::LastForOffset);
 }
 
 Keyframe* Gecko_GetOrCreateFinalKeyframe(
-    nsTArray<Keyframe>* aKeyframes, const nsTimingFunction* aTimingFunction) {
-  return GetOrCreateKeyframe(aKeyframes, 1., aTimingFunction,
+    nsTArray<Keyframe>* aKeyframes,
+    const StyleComputedTimingFunction* aTimingFunction,
+    const CompositeOperationOrAuto aComposition) {
+  return GetOrCreateKeyframe(aKeyframes, 1., aTimingFunction, aComposition,
                              KeyframeSearchDirection::Backwards,
                              KeyframeInsertPosition::LastForOffset);
 }
@@ -1232,7 +1188,12 @@ void Gecko_GetComputedURLSpec(const StyleComputedUrl* aURL, nsCString* aOut) {
 
 void Gecko_GetComputedImageURLSpec(const StyleComputedUrl* aURL,
                                    nsCString* aOut) {
-  // Image URIs don't serialize local refs as local.
+  if (aURL->IsLocalRef() &&
+      StaticPrefs::layout_css_computed_style_dont_resolve_image_local_refs()) {
+    aOut->Assign(aURL->SpecifiedSerialization());
+    return;
+  }
+
   if (nsIURI* uri = aURL->GetURI()) {
     nsresult rv = uri->GetSpec(*aOut);
     if (NS_SUCCEEDED(rv)) {
@@ -1422,20 +1383,22 @@ GeckoFontMetrics Gecko_GetFontMetrics(const nsPresContext* aPresContext,
   // ArrayBuffer-backed FontFace objects are handled synchronously.
 
   nsPresContext* presContext = const_cast<nsPresContext*>(aPresContext);
-  presContext->SetUsesExChUnits(true);
+  presContext->SetUsesFontMetricDependentFontUnits(true);
 
   RefPtr<nsFontMetrics> fm = nsLayoutUtils::GetMetricsFor(
       presContext, aIsVertical, aFont, aFontSize, aUseUserFontSet);
-  const auto& metrics =
-      fm->GetThebesFontGroup()->GetFirstValidFont()->GetMetrics(
-          fm->Orientation());
+  RefPtr<gfxFont> font = fm->GetThebesFontGroup()->GetFirstValidFont();
+  const auto& metrics = font->GetMetrics(fm->Orientation());
 
   int32_t d2a = aPresContext->AppUnitsPerDevPixel();
   auto ToLength = [](nscoord aLen) {
     return Length::FromPixels(CSSPixel::FromAppUnits(aLen));
   };
   return {ToLength(NS_round(metrics.xHeight * d2a)),
-          ToLength(NS_round(metrics.zeroWidth * d2a))};
+          ToLength(NS_round(metrics.zeroWidth * d2a)),
+          ToLength(NS_round(metrics.capHeight * d2a)),
+          ToLength(NS_round(metrics.ideographicWidth * d2a)),
+          ToLength(NS_round(metrics.maxAscent * d2a))};
 }
 
 NS_IMPL_THREADSAFE_FFI_REFCOUNTING(SheetLoadDataHolder, SheetLoadDataHolder);
@@ -1452,8 +1415,7 @@ void Gecko_StyleSheet_FinishAsyncParse(
                  counters = std::move(useCounters)]() mutable {
         MOZ_ASSERT(NS_IsMainThread());
         SheetLoadData* data = d->get();
-        data->mUseCounters = std::move(counters);
-        data->mSheet->FinishAsyncParse(contents.forget());
+        data->mSheet->FinishAsyncParse(contents.forget(), std::move(counters));
       }));
 }
 

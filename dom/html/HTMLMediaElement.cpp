@@ -181,12 +181,6 @@ static const uint32_t STALL_MS = 3000;
 static const double MIN_PLAYBACKRATE = 1.0 / 16;
 // Maximum playbackRate for a media
 static const double MAX_PLAYBACKRATE = 16.0;
-// These are the limits beyonds which SoundTouch does not perform too well and
-// when speech is hard to understand anyway. Threshold above which audio is
-// muted
-static const double THRESHOLD_HIGH_PLAYBACKRATE_AUDIO = 4.0;
-// Threshold under which audio is muted
-static const double THRESHOLD_LOW_PLAYBACKRATE_AUDIO = 0.25;
 
 static double ClampPlaybackRate(double aPlaybackRate) {
   MOZ_ASSERT(aPlaybackRate >= 0.0);
@@ -2081,8 +2075,8 @@ bool HTMLMediaElement::IsVideoDecodingSuspended() const {
   return mDecoder && mDecoder->IsVideoDecodingSuspended();
 }
 
-double HTMLMediaElement::TotalPlayTime() const {
-  return mDecoder ? mDecoder->GetTotalPlayTimeInSeconds() : -1.0;
+double HTMLMediaElement::TotalVideoPlayTime() const {
+  return mDecoder ? mDecoder->GetTotalVideoPlayTimeInSeconds() : -1.0;
 }
 
 double HTMLMediaElement::VisiblePlayTime() const {
@@ -2091,6 +2085,22 @@ double HTMLMediaElement::VisiblePlayTime() const {
 
 double HTMLMediaElement::InvisiblePlayTime() const {
   return mDecoder ? mDecoder->GetInvisibleVideoPlayTimeInSeconds() : -1.0;
+}
+
+double HTMLMediaElement::TotalAudioPlayTime() const {
+  return mDecoder ? mDecoder->GetTotalAudioPlayTimeInSeconds() : -1.0;
+}
+
+double HTMLMediaElement::AudiblePlayTime() const {
+  return mDecoder ? mDecoder->GetAudiblePlayTimeInSeconds() : -1.0;
+}
+
+double HTMLMediaElement::InaudiblePlayTime() const {
+  return mDecoder ? mDecoder->GetInaudiblePlayTimeInSeconds() : -1.0;
+}
+
+double HTMLMediaElement::MutedPlayTime() const {
+  return mDecoder ? mDecoder->GetMutedPlayTimeInSeconds() : -1.0;
 }
 
 double HTMLMediaElement::VideoDecodeSuspendedTime() const {
@@ -2268,6 +2278,7 @@ void HTMLMediaElement::AbortExistingLoads() {
   bool hadVideo = HasVideo();
   mErrorSink->ResetError();
   mCurrentPlayRangeStart = -1.0;
+  mPlayed = new TimeRanges(ToSupports(OwnerDoc()));
   mLoadedDataFired = false;
   mAutoplaying = true;
   mIsLoadingFromSourceChildren = false;
@@ -2289,6 +2300,9 @@ void HTMLMediaElement::AbortExistingLoads() {
   if (mNetworkState != NETWORK_EMPTY) {
     NS_ASSERTION(!mDecoder && !mSrcStream,
                  "How did someone setup a new stream/decoder already?");
+
+    DispatchAsyncEvent(u"emptied"_ns);
+
     // ChangeNetworkState() will call UpdateAudioChannelPlayingState()
     // indirectly which depends on mPaused. So we need to update mPaused first.
     if (!mPaused) {
@@ -2313,7 +2327,6 @@ void HTMLMediaElement::AbortExistingLoads() {
       // change will be reflected in the controls.
       FireTimeUpdate(TimeupdateType::eMandatory);
     }
-    DispatchAsyncEvent(u"emptied"_ns);
     UpdateAudioChannelPlayingState();
   }
 
@@ -2344,14 +2357,14 @@ void HTMLMediaElement::NoSupportedMediaSourceError(
     ShutdownDecoder();
   }
 
-  bool isThirdPartyLoad = false;
+  bool isSameOriginLoad = false;
   nsresult rv = NS_ERROR_NOT_AVAILABLE;
   if (mSrcAttrTriggeringPrincipal && mLoadingSrc) {
-    rv = mSrcAttrTriggeringPrincipal->IsThirdPartyURI(mLoadingSrc,
-                                                      &isThirdPartyLoad);
+    rv = mSrcAttrTriggeringPrincipal->IsSameOrigin(mLoadingSrc,
+                                                   &isSameOriginLoad);
   }
 
-  if (NS_SUCCEEDED(rv) && isThirdPartyLoad) {
+  if (NS_SUCCEEDED(rv) && !isSameOriginLoad) {
     // aErrorDetails can include sensitive details like MimeType or HTTP Status
     // Code. In case we're loading a 3rd party resource we should not leak this
     // and pass a Generic Error Message
@@ -2448,13 +2461,12 @@ static nsCString DocumentOrigin(Document* aDoc) {
 void HTMLMediaElement::Load() {
   LOG(LogLevel::Debug,
       ("%p Load() hasSrcAttrStream=%d hasSrcAttr=%d hasSourceChildren=%d "
-       "handlingInput=%d hasAutoplayAttr=%d IsAllowedToPlay=%d "
+       "handlingInput=%d hasAutoplayAttr=%d AllowedToPlay=%d "
        "ownerDoc=%p (%s) ownerDocUserActivated=%d "
        "muted=%d volume=%f",
        this, !!mSrcAttrStream, HasAttr(kNameSpaceID_None, nsGkAtoms::src),
        HasSourceChildren(this), UserActivation::IsHandlingUserInput(),
-       HasAttr(kNameSpaceID_None, nsGkAtoms::autoplay),
-       AutoplayPolicy::IsAllowedToPlay(*this), OwnerDoc(),
+       HasAttr(nsGkAtoms::autoplay), AllowedToPlay(), OwnerDoc(),
        DocumentOrigin(OwnerDoc()).get(),
        OwnerDoc()->HasBeenUserGestureActivated(), mMuted, mVolume));
 
@@ -2484,9 +2496,9 @@ void HTMLMediaElement::DoLoad() {
     // intent to play by calling load() in the click handler of a "catalog
     // view" of a gallery of videos.
     mIsBlessed = true;
-    // Mark the channel as urgent-start when autopaly so that it will play the
+    // Mark the channel as urgent-start when autoplay so that it will play the
     // media from src after loading enough resource.
-    if (HasAttr(kNameSpaceID_None, nsGkAtoms::autoplay)) {
+    if (HasAttr(nsGkAtoms::autoplay)) {
       mUseUrgentStartForChannel = true;
     }
   }
@@ -2921,9 +2933,7 @@ void HTMLMediaElement::UpdatePreloadAction() {
   PreloadAction nextAction = PRELOAD_UNDEFINED;
   // If autoplay is set, or we're playing, we should always preload data,
   // as we'll need it to play.
-  if ((AutoplayPolicy::IsAllowedToPlay(*this) &&
-       HasAttr(kNameSpaceID_None, nsGkAtoms::autoplay)) ||
-      !mPaused) {
+  if ((AllowedToPlay() && HasAttr(nsGkAtoms::autoplay)) || !mPaused) {
     nextAction = HTMLMediaElement::PRELOAD_ENOUGH;
   } else {
     // Find the appropriate preload action by looking at the attribute.
@@ -3416,7 +3426,7 @@ void HTMLMediaElement::PauseIfShouldNotBePlaying() {
   if (GetPaused()) {
     return;
   }
-  if (!AutoplayPolicy::IsAllowedToPlay(*this)) {
+  if (!AllowedToPlay()) {
     AUTOPLAY_LOG("pause because not allowed to play, element=%p", this);
     ErrorResult rv;
     Pause(rv);
@@ -3790,7 +3800,7 @@ already_AddRefed<DOMMediaStream> HTMLMediaElement::CaptureStreamInternal(
     MediaTrackGraph* aGraph) {
   MOZ_ASSERT(CanBeCaptured(aStreamCaptureType));
 
-  MarkAsContentSource(CallerAPI::CAPTURE_STREAM);
+  LogVisibility(CallerAPI::CAPTURE_STREAM);
   MarkAsTainted();
 
   if (mTracksCaptured.Ref() &&
@@ -3891,7 +3901,7 @@ RefPtr<GenericNonExclusivePromise> HTMLMediaElement::GetAllowedToPlayPromise() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mOutputStreams.IsEmpty(),
              "This method should only be called during stream capturing!");
-  if (AutoplayPolicy::IsAllowedToPlay(*this)) {
+  if (AllowedToPlay()) {
     AUTOPLAY_LOG("MediaElement %p has allowed to play, resolve promise", this);
     return GenericNonExclusivePromise::CreateAndResolve(true, __func__);
   }
@@ -4404,7 +4414,7 @@ already_AddRefed<Promise> HTMLMediaElement::Play(ErrorResult& aRv) {
   const bool handlingUserInput = UserActivation::IsHandlingUserInput();
   mPendingPlayPromises.AppendElement(promise);
 
-  if (AutoplayPolicy::IsAllowedToPlay(*this)) {
+  if (AllowedToPlay()) {
     AUTOPLAY_LOG("allow MediaElement %p to play", this);
     mAllowedToPlayPromise.ResolveIfExists(true, __func__);
     PlayInternal(handlingUserInput);
@@ -4421,9 +4431,11 @@ void HTMLMediaElement::DispatchEventsWhenPlayWasNotAllowed() {
     DispatchAsyncEvent(u"blocked"_ns);
   }
   DispatchBlockEventForVideoControl();
-  MaybeNotifyAutoplayBlocked();
-  ReportToConsole(nsIScriptError::warningFlag, "BlockAutoplayError");
-  mHasEverBeenBlockedForAutoplay = true;
+  if (!mHasEverBeenBlockedForAutoplay) {
+    MaybeNotifyAutoplayBlocked();
+    ReportToConsole(nsIScriptError::warningFlag, "BlockAutoplayError");
+    mHasEverBeenBlockedForAutoplay = true;
+  }
 }
 
 void HTMLMediaElement::MaybeNotifyAutoplayBlocked() {
@@ -4609,9 +4621,6 @@ void HTMLMediaElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
     return;
   }
 
-  HTMLInputElement* el = nullptr;
-  nsCOMPtr<nsINode> node;
-
   // We will need to trap pointer, touch, and mouse events within the media
   // element, allowing media control exclusive consumption on these events,
   // and preventing the content from handling them.
@@ -4633,12 +4642,17 @@ void HTMLMediaElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
     // The *move events however are only comsumed when the range input is being
     // dragged.
     case ePointerMove:
-    case eMouseMove:
-      node = do_QueryInterface(aVisitor.mEvent->mOriginalTarget);
+    case eMouseMove: {
+      nsINode* node =
+          nsINode::FromEventTargetOrNull(aVisitor.mEvent->mOriginalTarget);
+      if (MOZ_UNLIKELY(!node)) {
+        return;
+      }
+      HTMLInputElement* el = nullptr;
       if (node->IsInNativeAnonymousSubtree() || node->IsInUAWidget()) {
         if (node->IsHTMLElement(nsGkAtoms::input)) {
           // The node is a <input type="range">
-          el = static_cast<HTMLInputElement*>(node.get());
+          el = static_cast<HTMLInputElement*>(node);
         } else if (node->GetParentNode() &&
                    node->GetParentNode()->IsHTMLElement(nsGkAtoms::input)) {
           // The node is a child of <input type="range">
@@ -4651,7 +4665,7 @@ void HTMLMediaElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
       }
       nsGenericHTMLElement::GetEventTargetParent(aVisitor);
       return;
-
+    }
     default:
       nsGenericHTMLElement::GetEventTargetParent(aVisitor);
       return;
@@ -5954,7 +5968,7 @@ void HTMLMediaElement::ChangeReadyState(nsMediaReadyState aState) {
     DispatchAsyncEvent(u"canplay"_ns);
     if (!mPaused) {
       if (mDecoder && !mSuspendedByInactiveDocOrDocshell) {
-        MOZ_ASSERT(AutoplayPolicy::IsAllowedToPlay(*this));
+        MOZ_ASSERT(AllowedToPlay());
         mDecoder->Play();
       }
       NotifyAboutPlaying();
@@ -6057,7 +6071,7 @@ void HTMLMediaElement::CheckAutoplayDataReady() {
     return;
   }
 
-  if (!AutoplayPolicy::IsAllowedToPlay(*this)) {
+  if (!AllowedToPlay()) {
     DispatchEventsWhenPlayWasNotAllowed();
     return;
   }
@@ -6135,7 +6149,7 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
   }
 
   mVideoFrameContainer = new VideoFrameContainer(
-      this, LayerManager::CreateImageContainer(ImageContainer::ASYNCHRONOUS));
+      this, MakeAndAddRef<ImageContainer>(ImageContainer::ASYNCHRONOUS));
 
   return mVideoFrameContainer;
 }
@@ -6383,8 +6397,7 @@ void HTMLMediaElement::SuspendOrResumeElement(bool aSuspendElement) {
     // when it comes back from the bfcache, we would notify front end to show
     // the blocking icon in order to inform user that the site is still being
     // blocked.
-    if (mHasEverBeenBlockedForAutoplay &&
-        !AutoplayPolicy::IsAllowedToPlay(*this)) {
+    if (mHasEverBeenBlockedForAutoplay && !AllowedToPlay()) {
       MaybeNotifyAutoplayBlocked();
     }
     StartMediaControlKeyListenerIfNeeded();
@@ -6745,10 +6758,10 @@ void HTMLMediaElement::SetPlaybackRate(double aPlaybackRate, ErrorResult& aRv) {
   }
 
   mPlaybackRate = aPlaybackRate;
-
+  // Playback rate threshold above which audio is muted.
+  uint32_t threshold = StaticPrefs::media_audio_playbackrate_muting_threshold();
   if (mPlaybackRate != 0.0 &&
-      (mPlaybackRate > THRESHOLD_HIGH_PLAYBACKRATE_AUDIO ||
-       mPlaybackRate < THRESHOLD_LOW_PLAYBACKRATE_AUDIO)) {
+      (mPlaybackRate > threshold || mPlaybackRate < 1. / threshold)) {
     SetMutedInternal(mMuted | MUTED_BY_INVALID_PLAYBACK_RATE);
   } else {
     SetMutedInternal(mMuted & ~MUTED_BY_INVALID_PLAYBACK_RATE);
@@ -6760,7 +6773,7 @@ void HTMLMediaElement::SetPlaybackRate(double aPlaybackRate, ErrorResult& aRv) {
   DispatchAsyncEvent(u"ratechange"_ns);
 }
 
-void HTMLMediaElement::SetMozPreservesPitch(bool aPreservesPitch) {
+void HTMLMediaElement::SetPreservesPitch(bool aPreservesPitch) {
   mPreservesPitch = aPreservesPitch;
   if (mDecoder) {
     mDecoder->SetPreservesPitch(mPreservesPitch);
@@ -6811,7 +6824,7 @@ void HTMLMediaElement::OnVisibilityChange(Visibility aNewVisibility) {
 
 MediaKeys* HTMLMediaElement::GetMediaKeys() const { return mMediaKeys; }
 
-bool HTMLMediaElement::ContainsRestrictedContent() {
+bool HTMLMediaElement::ContainsRestrictedContent() const {
   return GetMediaKeys() != nullptr;
 }
 
@@ -7276,18 +7289,15 @@ void HTMLMediaElement::NotifyCueDisplayStatesChanged() {
   mTextTrackManager->DispatchUpdateCueDisplay();
 }
 
-void HTMLMediaElement::MarkAsContentSource(CallerAPI aAPI) {
+void HTMLMediaElement::LogVisibility(CallerAPI aAPI) {
   const bool isVisible = mVisibilityState == Visibility::ApproximatelyVisible;
 
-  LOG(LogLevel::Debug,
-      ("%p Log VIDEO_AS_CONTENT_SOURCE: visibility = %u, API: '%d' and 'All'",
-       this, isVisible, static_cast<int>(aAPI)));
+  LOG(LogLevel::Debug, ("%p visibility = %u, API: '%d' and 'All'", this,
+                        isVisible, static_cast<int>(aAPI)));
 
   if (!isVisible) {
-    LOG(LogLevel::Debug,
-        ("%p Log VIDEO_AS_CONTENT_SOURCE_IN_TREE_OR_NOT: inTree = %u, API: "
-         "'%d' and 'All'",
-         this, IsInComposedDoc(), static_cast<int>(aAPI)));
+    LOG(LogLevel::Debug, ("%p inTree = %u, API: '%d' and 'All'", this,
+                          IsInComposedDoc(), static_cast<int>(aAPI)));
   }
 }
 
@@ -7372,6 +7382,8 @@ void HTMLMediaElement::AsyncRejectPendingPlayPromises(nsresult aError) {
 }
 
 void HTMLMediaElement::GetEMEInfo(dom::EMEDebugInfo& aInfo) {
+  MOZ_ASSERT(NS_IsMainThread(),
+             "MediaKeys expects to be interacted with on main thread!");
   if (!mMediaKeys) {
     return;
   }
@@ -7650,7 +7662,7 @@ void HTMLMediaElement::NotifyMediaControlPlaybackStateChanged() {
 }
 
 bool HTMLMediaElement::IsInFullScreen() const {
-  return State().HasState(NS_EVENT_STATE_FULLSCREEN);
+  return State().HasState(ElementState::FULLSCREEN);
 }
 
 bool HTMLMediaElement::IsPlayable() const {

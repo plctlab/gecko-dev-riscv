@@ -6,9 +6,8 @@
 
 var EXPORTED_SYMBOLS = ["SyncedTabs"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { Weave } = ChromeUtils.import("resource://services-sync/main.js");
@@ -16,8 +15,10 @@ const { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
 
+const lazy = {};
+
 // The Sync XPCOM service
-XPCOMUtils.defineLazyGetter(this, "weaveXPCService", function() {
+XPCOMUtils.defineLazyGetter(lazy, "weaveXPCService", function() {
   return Cc["@mozilla.org/weave/service;1"].getService(
     Ci.nsISupports
   ).wrappedJSObject;
@@ -36,9 +37,9 @@ const TOPIC_TABS_CHANGED = "services.sync.tabs.changed";
 
 // The interval, in seconds, before which we consider the existing list
 // of tabs "fresh enough" and don't force a new sync.
-const TABS_FRESH_ENOUGH_INTERVAL = 30;
+const TABS_FRESH_ENOUGH_INTERVAL_SECONDS = 30;
 
-XPCOMUtils.defineLazyGetter(this, "log", function() {
+XPCOMUtils.defineLazyGetter(lazy, "log", function() {
   let log = Log.repository.getLogger("Sync.RemoteTabs");
   log.manageLevelFromPref("services.sync.log.logger.tabs");
   return log;
@@ -86,12 +87,12 @@ let SyncedTabsInternal = {
   },
 
   async getTabClients(filter) {
-    log.info("Generating tab list with filter", filter);
+    lazy.log.info("Generating tab list with filter", filter);
     let result = [];
 
     // If Sync isn't ready, don't try and get anything.
-    if (!weaveXPCService.ready) {
-      log.debug("Sync isn't yet ready, so returning an empty tab list");
+    if (!lazy.weaveXPCService.ready) {
+      lazy.log.debug("Sync isn't yet ready, so returning an empty tab list");
       return result;
     }
 
@@ -110,11 +111,11 @@ let SyncedTabsInternal = {
         continue;
       }
       let clientRepr = await this._makeClient(client);
-      log.debug("Processing client", clientRepr);
+      lazy.log.debug("Processing client", clientRepr);
 
       for (let tab of client.tabs) {
         let url = tab.urlHistory[0];
-        log.trace("remote tab", url);
+        lazy.log.trace("remote tab", url);
 
         if (!url) {
           continue;
@@ -130,7 +131,9 @@ let SyncedTabsInternal = {
       ntabs += clientRepr.tabs.length;
       result.push(clientRepr);
     }
-    log.info(`Final tab list has ${result.length} clients with ${ntabs} tabs.`);
+    lazy.log.info(
+      `Final tab list has ${result.length} clients with ${ntabs} tabs.`
+    );
     return result;
   },
 
@@ -139,8 +142,8 @@ let SyncedTabsInternal = {
       // Don't bother refetching tabs if we already did so recently
       let lastFetch = Preferences.get("services.sync.lastTabFetch", 0);
       let now = Math.floor(Date.now() / 1000);
-      if (now - lastFetch < TABS_FRESH_ENOUGH_INTERVAL) {
-        log.info("_refetchTabs was done recently, do not doing it again");
+      if (now - lastFetch < TABS_FRESH_ENOUGH_INTERVAL_SECONDS) {
+        lazy.log.info("_refetchTabs was done recently, do not doing it again");
         return false;
       }
     }
@@ -148,22 +151,24 @@ let SyncedTabsInternal = {
     // If Sync isn't configured don't try and sync, else we will get reports
     // of a login failure.
     if (Weave.Status.checkSetup() == Weave.CLIENT_NOT_CONFIGURED) {
-      log.info("Sync client is not configured, so not attempting a tab sync");
+      lazy.log.info(
+        "Sync client is not configured, so not attempting a tab sync"
+      );
       return false;
     }
     // Ask Sync to just do the tabs engine if it can.
     try {
-      log.info("Doing a tab sync.");
+      lazy.log.info("Doing a tab sync.");
       await Weave.Service.sync({ why: "tabs", engines: ["tabs"] });
       return true;
     } catch (ex) {
-      log.error("Sync failed", ex);
+      lazy.log.error("Sync failed", ex);
       throw ex;
     }
   },
 
   observe(subject, topic, data) {
-    log.trace(`observed topic=${topic}, data=${data}, subject=${subject}`);
+    lazy.log.trace(`observed topic=${topic}, data=${data}, subject=${subject}`);
     switch (topic) {
       case "weave:engine:sync:finish":
         if (data != "tabs") {
@@ -193,8 +198,8 @@ let SyncedTabsInternal = {
 
   // Returns true if Sync is configured to Sync tabs, false otherwise
   get isConfiguredToSyncTabs() {
-    if (!weaveXPCService.ready) {
-      log.debug("Sync isn't yet ready; assuming tab engine is enabled");
+    if (!lazy.weaveXPCService.ready) {
+      lazy.log.debug("Sync isn't yet ready; assuming tab engine is enabled");
       return true;
     }
 
@@ -222,6 +227,9 @@ var SyncedTabs = {
 
   // We make the topic for the observer notification public.
   TOPIC_TABS_CHANGED,
+
+  // Expose the interval used to determine if synced tabs data needs a new sync
+  TABS_FRESH_ENOUGH_INTERVAL_SECONDS,
 
   // Returns true if Sync is configured to Sync tabs, false otherwise
   get isConfiguredToSyncTabs() {
@@ -272,5 +280,31 @@ var SyncedTabs = {
       }
       return b.tabs[0].lastUsed - a.tabs[0].lastUsed;
     });
+  },
+
+  recordSyncedTabsTelemetry(object, tabEvent, extraOptions) {
+    Services.telemetry.setEventRecordingEnabled("synced_tabs", true);
+    Services.telemetry.recordEvent(
+      "synced_tabs",
+      tabEvent,
+      object,
+      null,
+      extraOptions
+    );
+  },
+
+  async getRecentTabs(maxCount) {
+    let tabs = [];
+    let clients = await this.getTabClients();
+
+    for (let client of clients) {
+      for (let tab of client.tabs) {
+        tab.device = client.name;
+        tab.deviceType = client.clientType;
+      }
+      tabs = [...tabs, ...client.tabs.reverse()];
+    }
+    tabs = tabs.sort((a, b) => b.lastUsed - a.lastUsed).slice(0, maxCount);
+    return tabs;
   },
 };

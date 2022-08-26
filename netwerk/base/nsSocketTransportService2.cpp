@@ -5,7 +5,6 @@
 
 #include "nsSocketTransportService2.h"
 
-#include "GeckoProfiler.h"
 #include "IOActivityMonitor.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/ChaosMode.h"
@@ -14,9 +13,11 @@
 #include "mozilla/PodOperations.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ProfilerMarkers.h"
+#include "mozilla/ProfilerThreadSleep.h"
 #include "mozilla/PublicSSL.h"
 #include "mozilla/ReverseIterator.h"
 #include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Telemetry.h"
 #include "nsASocketHandler.h"
 #include "nsError.h"
@@ -296,6 +297,18 @@ NS_IMETHODIMP
 nsSocketTransportService::DelayedDispatch(already_AddRefed<nsIRunnable>,
                                           uint32_t) {
   return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsSocketTransportService::RegisterShutdownTask(nsITargetShutdownTask* task) {
+  nsCOMPtr<nsIThread> thread = GetThreadSafely();
+  return thread ? thread->RegisterShutdownTask(task) : NS_ERROR_UNEXPECTED;
+}
+
+NS_IMETHODIMP
+nsSocketTransportService::UnregisterShutdownTask(nsITargetShutdownTask* task) {
+  nsCOMPtr<nsIThread> thread = GetThreadSafely();
+  return thread ? thread->UnregisterShutdownTask(task) : NS_ERROR_UNEXPECTED;
 }
 
 NS_IMETHODIMP
@@ -686,7 +699,7 @@ int32_t nsSocketTransportService::Poll(TimeDuration* pollDuration,
     if (pollTimeout != PR_INTERVAL_NO_WAIT) {
       profiler_thread_wake();
     }
-    if (profiler_can_accept_markers()) {
+    if (profiler_thread_is_being_profiled_for_markers()) {
       PROFILER_MARKER_TEXT(
           "SocketTransportService::Poll", NETWORK,
           MarkerTiming::IntervalUntilNowFrom(startTime),
@@ -756,9 +769,26 @@ nsSocketTransportService::Init() {
   }
 
   nsCOMPtr<nsIThread> thread;
-  nsresult rv =
-      NS_NewNamedThread("Socket Thread", getter_AddRefs(thread), this);
-  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (!XRE_IsContentProcess() ||
+      StaticPrefs::network_allow_raw_sockets_in_content_processes_AtStartup()) {
+    nsresult rv =
+        NS_NewNamedThread("Socket Thread", getter_AddRefs(thread), this);
+    NS_ENSURE_SUCCESS(rv, rv);
+  } else {
+    // In the child process, we just want a regular nsThread with no socket
+    // polling. So we don't want to run the nsSocketTransportService runnable on
+    // it.
+    nsresult rv =
+        NS_NewNamedThread("Socket Thread", getter_AddRefs(thread), nullptr);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // Set up some of the state that nsSocketTransportService::Run would set.
+    PRThread* prthread = nullptr;
+    thread->GetPRThread(&prthread);
+    gSocketThread = prthread;
+    mRawThread = thread;
+  }
 
   {
     MutexAutoLock lock(mLock);

@@ -12,8 +12,8 @@ var EXPORTED_SYMBOLS = [
   "DownloadTracker",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { GeckoViewUtils } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewUtils.jsm"
@@ -21,14 +21,15 @@ const { GeckoViewUtils } = ChromeUtils.import(
 const { EventEmitter } = ChromeUtils.import(
   "resource://gre/modules/EventEmitter.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const PRIVATE_BROWSING_PERMISSION = {
   permissions: ["internal:privateBrowsingAllowed"],
   origins: [],
 };
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
   Extension: "resource://gre/modules/Extension.jsm",
@@ -40,32 +41,13 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "mimeService",
   "@mozilla.org/mime;1",
   "nsIMIMEService"
 );
 
 const { debug, warn } = GeckoViewUtils.initLogging("Console");
-
-// Allows to |await| for AddonManager to startup
-// mostly useful in tests that run super-early when AddonManager is not
-// available yet.
-XPCOMUtils.defineLazyGetter(this, "gAddonManagerStartup", function() {
-  if (AddonManager.isReady) {
-    // Already started up, nothing to do
-    return true;
-  }
-
-  // Wait until AddonManager is ready to accept calls
-  return new Promise(resolve => {
-    AddonManager.addManagerListener({
-      onStartup() {
-        resolve(true);
-      },
-    });
-  });
-});
 
 const DOWNLOAD_CHANGED_MESSAGE = "GeckoView:WebExtension:DownloadChanged";
 
@@ -153,10 +135,10 @@ class ExtensionActionHelper {
 
   eventDispatcherFor(aTabId) {
     if (!aTabId) {
-      return EventDispatcher.instance;
+      return lazy.EventDispatcher.instance;
     }
 
-    const windowId = GeckoViewTabBridge.tabIdToWindowId(aTabId);
+    const windowId = lazy.GeckoViewTabBridge.tabIdToWindowId(aTabId);
     const window = this.windowTracker.getWindow(windowId);
     return window.WindowEventDispatcher;
   }
@@ -174,7 +156,7 @@ class EmbedderPort {
   constructor(portId, messenger) {
     this.id = portId;
     this.messenger = messenger;
-    this.dispatcher = EventDispatcher.byName(`port:${portId}`);
+    this.dispatcher = lazy.EventDispatcher.byName(`port:${portId}`);
     this.dispatcher.registerListener(this, [
       "GeckoView:WebExtension:PortMessageFromApp",
       "GeckoView:WebExtension:PortDisconnect",
@@ -243,7 +225,7 @@ class GeckoViewConnection {
 
       // No dispatcher means this message is coming from a background script,
       // use the global event handler
-      return EventDispatcher.instance;
+      return lazy.EventDispatcher.instance;
     } else if (
       this.sender.envType === "content_child" &&
       this.allowContentMessaging
@@ -296,7 +278,7 @@ async function filterPromptPermissions(aPermissions) {
   }
   const promptPermissions = [];
   for (const permission of aPermissions) {
-    if (!(await Extension.shouldPromptFor(permission))) {
+    if (!(await lazy.Extension.shouldPromptFor(permission))) {
       continue;
     }
     promptPermissions.push(permission);
@@ -352,7 +334,8 @@ async function exportExtension(aAddon, aPermissions, aSourceURI) {
     creatorName = name;
     creatorURL = url;
   }
-  const openOptionsPageInTab = optionsType === AddonManager.OPTIONS_TYPE_TAB;
+  const openOptionsPageInTab =
+    optionsType === lazy.AddonManager.OPTIONS_TYPE_TAB;
   const disabledFlags = [];
   if (userDisabled) {
     disabledFlags.push("userDisabled");
@@ -403,11 +386,11 @@ class ExtensionInstallListener {
     this.installId = aInstallId;
     this.resolve = result => {
       aResolve(result);
-      EventDispatcher.instance.unregisterListener(this, [
+      lazy.EventDispatcher.instance.unregisterListener(this, [
         "GeckoView:WebExtension:CancelInstall",
       ]);
     };
-    EventDispatcher.instance.registerListener(this, [
+    lazy.EventDispatcher.instance.registerListener(this, [
       "GeckoView:WebExtension:CancelInstall",
     ]);
   }
@@ -490,7 +473,7 @@ class ExtensionInstallListener {
       if (id != addonId) {
         return;
       }
-      Management.off("ready", onReady);
+      lazy.Management.off("ready", onReady);
       const extension = await exportExtension(
         aAddon,
         aAddon.userPermissions,
@@ -498,20 +481,21 @@ class ExtensionInstallListener {
       );
       this.resolve({ extension });
     };
-    Management.on("ready", onReady);
+    lazy.Management.on("ready", onReady);
   }
 }
 
 class ExtensionPromptObserver {
   constructor() {
     Services.obs.addObserver(this, "webextension-permission-prompt");
+    Services.obs.addObserver(this, "webextension-optional-permission-prompt");
   }
 
   async permissionPrompt(aInstall, aAddon, aInfo) {
     const { sourceURI } = aInstall;
     const { permissions } = aInfo;
     const extension = await exportExtension(aAddon, permissions, sourceURI);
-    const response = await EventDispatcher.instance.sendRequestForResult({
+    const response = await lazy.EventDispatcher.instance.sendRequestForResult({
       type: "GeckoView:WebExtension:InstallPrompt",
       extension,
     });
@@ -523,6 +507,15 @@ class ExtensionPromptObserver {
     }
   }
 
+  async optionalPermissionPrompt(aExtensionId, aPermissions, resolve) {
+    const response = await lazy.EventDispatcher.instance.sendRequestForResult({
+      type: "GeckoView:WebExtension:OptionalPrompt",
+      extensionId: aExtensionId,
+      permissions: aPermissions,
+    });
+    resolve(response.allow);
+  }
+
   observe(aSubject, aTopic, aData) {
     debug`observe ${aTopic}`;
 
@@ -531,6 +524,11 @@ class ExtensionPromptObserver {
         const { info } = aSubject.wrappedJSObject;
         const { addon, install } = info;
         this.permissionPrompt(install, addon, info);
+        break;
+      }
+      case "webextension-optional-permission-prompt": {
+        const { id, permissions, resolve } = aSubject.wrappedJSObject;
+        this.optionalPermissionPrompt(id, permissions, resolve);
         break;
       }
     }
@@ -566,7 +564,7 @@ class MobileWindowTracker extends EventEmitter {
 
     if (aActive) {
       this._topWindow = Cu.getWeakReference(aWindow);
-      const isPrivate = PrivateBrowsingUtils.isBrowserPrivate(browser);
+      const isPrivate = lazy.PrivateBrowsingUtils.isBrowserPrivate(browser);
       if (!isPrivate) {
         this._topNonPBWindow = this._topWindow;
       }
@@ -590,7 +588,7 @@ async function updatePromptHandler(aInfo) {
 
   const newPerms = aInfo.addon.userPermissions;
 
-  const difference = Extension.comparePermissions(oldPerms, newPerms);
+  const difference = lazy.Extension.comparePermissions(oldPerms, newPerms);
 
   // We only care about permissions that we can prompt the user for
   const newPermissions = await filterPromptPermissions(difference.permissions);
@@ -606,7 +604,7 @@ async function updatePromptHandler(aInfo) {
     oldPerms
   );
   const updatedExtension = await exportExtension(aInfo.addon, newPerms);
-  const response = await EventDispatcher.instance.sendRequestForResult({
+  const response = await lazy.EventDispatcher.instance.sendRequestForResult({
     type: "GeckoView:WebExtension:UpdatePrompt",
     currentlyInstalled,
     updatedExtension,
@@ -629,14 +627,14 @@ var GeckoViewWebExtension = {
         // We pretend devtools installed/uninstalled this addon so we don't
         // have to add an API just for internal testing.
         // TODO: assert this is under a test
-        EventDispatcher.instance.sendRequest({
+        lazy.EventDispatcher.instance.sendRequest({
           type: "GeckoView:WebExtension:DebuggerListUpdated",
         });
         break;
       }
 
       case "devtools-installed-addon": {
-        EventDispatcher.instance.sendRequest({
+        lazy.EventDispatcher.instance.sendRequest({
           type: "GeckoView:WebExtension:DebuggerListUpdated",
         });
         break;
@@ -645,7 +643,7 @@ var GeckoViewWebExtension = {
   },
 
   async extensionById(aId) {
-    const addon = await AddonManager.getAddonByID(aId);
+    const addon = await lazy.AddonManager.getAddonByID(aId);
     if (!addon) {
       debug`Could not find extension with id=${aId}`;
       return null;
@@ -654,8 +652,11 @@ var GeckoViewWebExtension = {
   },
 
   async ensureBuiltIn(aUri, aId) {
-    await gAddonManagerStartup;
-    const extensionData = new ExtensionData(aUri);
+    await lazy.AddonManager.readyPromise;
+    // Although the add-on is privileged in practice due to it being installed
+    // as a built-in extension, we pass isPrivileged=false since the exact flag
+    // doesn't matter as we are only using ExtensionData to read the version.
+    const extensionData = new lazy.ExtensionData(aUri, false);
     const [extensionVersion, extension] = await Promise.all([
       extensionData.getExtensionVersionWithoutValidation(),
       this.extensionById(aId),
@@ -674,14 +675,14 @@ var GeckoViewWebExtension = {
   },
 
   async installBuiltIn(aUri) {
-    await gAddonManagerStartup;
-    const addon = await AddonManager.installBuiltinAddon(aUri.spec);
+    await lazy.AddonManager.readyPromise;
+    const addon = await lazy.AddonManager.installBuiltinAddon(aUri.spec);
     const exported = await exportExtension(addon, addon.userPermissions, aUri);
     return { extension: exported };
   },
 
   async installWebExtension(aInstallId, aUri) {
-    const install = await AddonManager.getInstallForURL(aUri.spec, {
+    const install = await lazy.AddonManager.getInstallForURL(aUri.spec, {
       telemetryInfo: {
         source: "geckoview-app",
       },
@@ -693,8 +694,8 @@ var GeckoViewWebExtension = {
     });
 
     const systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
-    const mimeType = mimeService.getTypeFromURI(aUri);
-    AddonManager.installAddonFromWebpage(
+    const mimeType = lazy.mimeService.getTypeFromURI(aUri);
+    lazy.AddonManager.installAddonFromWebpage(
       mimeType,
       null,
       systemPrincipal,
@@ -706,9 +707,9 @@ var GeckoViewWebExtension = {
 
   async setPrivateBrowsingAllowed(aId, aAllowed) {
     if (aAllowed) {
-      await ExtensionPermissions.add(aId, PRIVATE_BROWSING_PERMISSION);
+      await lazy.ExtensionPermissions.add(aId, PRIVATE_BROWSING_PERMISSION);
     } else {
-      await ExtensionPermissions.remove(aId, PRIVATE_BROWSING_PERMISSION);
+      await lazy.ExtensionPermissions.remove(aId, PRIVATE_BROWSING_PERMISSION);
     }
 
     // Reload the extension if it is already enabled.  This ensures any change
@@ -822,7 +823,10 @@ var GeckoViewWebExtension = {
           resolve(null);
         },
       };
-      aAddon.findUpdates(listener, AddonManager.UPDATE_WHEN_USER_REQUESTED);
+      aAddon.findUpdates(
+        listener,
+        lazy.AddonManager.UPDATE_WHEN_USER_REQUESTED
+      );
     });
   },
 
@@ -1049,8 +1053,10 @@ var GeckoViewWebExtension = {
 
       case "GeckoView:WebExtension:List": {
         try {
-          await gAddonManagerStartup;
-          const addons = await AddonManager.getAddonsByTypes(["extension"]);
+          await lazy.AddonManager.readyPromise;
+          const addons = await lazy.AddonManager.getAddonsByTypes([
+            "extension",
+          ]);
           const extensions = await Promise.all(
             addons.map(addon =>
               exportExtension(addon, addon.userPermissions, null)

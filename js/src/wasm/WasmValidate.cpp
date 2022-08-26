@@ -19,6 +19,7 @@
 #include "wasm/WasmValidate.h"
 
 #include "mozilla/CheckedInt.h"
+#include "mozilla/Span.h"
 #include "mozilla/Utf8.h"
 
 #include "js/Printf.h"
@@ -109,10 +110,6 @@ bool wasm::DecodeLocalEntries(Decoder& d, const TypeContext& types,
       return false;
     }
 
-    if (!type.isDefaultable()) {
-      return d.fail("cannot have a non-defaultable local");
-    }
-
     if (!locals->appendN(type, count)) {
       return false;
     }
@@ -177,7 +174,7 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
                                     const uint8_t* bodyEnd, Decoder* d) {
   ValidatingOpIter iter(env, *d);
 
-  if (!iter.startFunction(funcIndex)) {
+  if (!iter.startFunction(funcIndex, locals)) {
     return false;
   }
 
@@ -222,6 +219,17 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
         CHECK(iter.readCallIndirect(&unusedIndex, &unusedIndex2, &nothing,
                                     &unusedArgs));
       }
+#ifdef ENABLE_WASM_FUNCTION_REFERENCES
+      case uint16_t(Op::CallRef): {
+        if (!env.functionReferencesEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        const FuncType* unusedType;
+        bool unused;
+        NothingVector unusedArgs{};
+        CHECK(iter.readCallRef(&unusedType, &unused, &nothing, &unusedArgs));
+      }
+#endif
       case uint16_t(Op::I32Const): {
         int32_t unused;
         CHECK(iter.readI32Const(&unused));
@@ -238,23 +246,23 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
         double unused;
         CHECK(iter.readF64Const(&unused));
       }
-      case uint16_t(Op::GetLocal): {
+      case uint16_t(Op::LocalGet): {
         uint32_t unused;
         CHECK(iter.readGetLocal(locals, &unused));
       }
-      case uint16_t(Op::SetLocal): {
+      case uint16_t(Op::LocalSet): {
         uint32_t unused;
         CHECK(iter.readSetLocal(locals, &unused, &nothing));
       }
-      case uint16_t(Op::TeeLocal): {
+      case uint16_t(Op::LocalTee): {
         uint32_t unused;
         CHECK(iter.readTeeLocal(locals, &unused, &nothing));
       }
-      case uint16_t(Op::GetGlobal): {
+      case uint16_t(Op::GlobalGet): {
         uint32_t unused;
         CHECK(iter.readGetGlobal(&unused));
       }
-      case uint16_t(Op::SetGlobal): {
+      case uint16_t(Op::GlobalSet): {
         uint32_t unused;
         CHECK(iter.readSetGlobal(&unused, &nothing));
       }
@@ -397,37 +405,37 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
       case uint16_t(Op::I64Eqz):
       case uint16_t(Op::I32WrapI64):
         CHECK(iter.readConversion(ValType::I64, ValType::I32, &nothing));
-      case uint16_t(Op::I32TruncSF32):
-      case uint16_t(Op::I32TruncUF32):
+      case uint16_t(Op::I32TruncF32S):
+      case uint16_t(Op::I32TruncF32U):
       case uint16_t(Op::I32ReinterpretF32):
         CHECK(iter.readConversion(ValType::F32, ValType::I32, &nothing));
-      case uint16_t(Op::I32TruncSF64):
-      case uint16_t(Op::I32TruncUF64):
+      case uint16_t(Op::I32TruncF64S):
+      case uint16_t(Op::I32TruncF64U):
         CHECK(iter.readConversion(ValType::F64, ValType::I32, &nothing));
-      case uint16_t(Op::I64ExtendSI32):
-      case uint16_t(Op::I64ExtendUI32):
+      case uint16_t(Op::I64ExtendI32S):
+      case uint16_t(Op::I64ExtendI32U):
         CHECK(iter.readConversion(ValType::I32, ValType::I64, &nothing));
-      case uint16_t(Op::I64TruncSF32):
-      case uint16_t(Op::I64TruncUF32):
+      case uint16_t(Op::I64TruncF32S):
+      case uint16_t(Op::I64TruncF32U):
         CHECK(iter.readConversion(ValType::F32, ValType::I64, &nothing));
-      case uint16_t(Op::I64TruncSF64):
-      case uint16_t(Op::I64TruncUF64):
+      case uint16_t(Op::I64TruncF64S):
+      case uint16_t(Op::I64TruncF64U):
       case uint16_t(Op::I64ReinterpretF64):
         CHECK(iter.readConversion(ValType::F64, ValType::I64, &nothing));
-      case uint16_t(Op::F32ConvertSI32):
-      case uint16_t(Op::F32ConvertUI32):
+      case uint16_t(Op::F32ConvertI32S):
+      case uint16_t(Op::F32ConvertI32U):
       case uint16_t(Op::F32ReinterpretI32):
         CHECK(iter.readConversion(ValType::I32, ValType::F32, &nothing));
-      case uint16_t(Op::F32ConvertSI64):
-      case uint16_t(Op::F32ConvertUI64):
+      case uint16_t(Op::F32ConvertI64S):
+      case uint16_t(Op::F32ConvertI64U):
         CHECK(iter.readConversion(ValType::I64, ValType::F32, &nothing));
       case uint16_t(Op::F32DemoteF64):
         CHECK(iter.readConversion(ValType::F64, ValType::F32, &nothing));
-      case uint16_t(Op::F64ConvertSI32):
-      case uint16_t(Op::F64ConvertUI32):
+      case uint16_t(Op::F64ConvertI32S):
+      case uint16_t(Op::F64ConvertI32U):
         CHECK(iter.readConversion(ValType::I32, ValType::F64, &nothing));
-      case uint16_t(Op::F64ConvertSI64):
-      case uint16_t(Op::F64ConvertUI64):
+      case uint16_t(Op::F64ConvertI64S):
+      case uint16_t(Op::F64ConvertI64U):
       case uint16_t(Op::F64ReinterpretI64):
         CHECK(iter.readConversion(ValType::I64, ValType::F64, &nothing));
       case uint16_t(Op::F64PromoteF32):
@@ -544,15 +552,14 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           return iter.unrecognizedOpcode(&op);
         }
         switch (op.b1) {
-          case uint32_t(GcOp::StructNewWithRtt): {
+          case uint32_t(GcOp::StructNew): {
             uint32_t unusedUint;
             NothingVector unusedArgs{};
-            CHECK(
-                iter.readStructNewWithRtt(&unusedUint, &nothing, &unusedArgs));
+            CHECK(iter.readStructNew(&unusedUint, &unusedArgs));
           }
-          case uint32_t(GcOp::StructNewDefaultWithRtt): {
+          case uint32_t(GcOp::StructNewDefault): {
             uint32_t unusedUint;
-            CHECK(iter.readStructNewDefaultWithRtt(&unusedUint, &nothing));
+            CHECK(iter.readStructNewDefault(&unusedUint));
           }
           case uint32_t(GcOp::StructGet): {
             uint32_t unusedUint1, unusedUint2;
@@ -574,15 +581,17 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             CHECK(iter.readStructSet(&unusedUint1, &unusedUint2, &nothing,
                                      &nothing));
           }
-          case uint32_t(GcOp::ArrayNewWithRtt): {
+          case uint32_t(GcOp::ArrayNew): {
             uint32_t unusedUint;
-            CHECK(iter.readArrayNewWithRtt(&unusedUint, &nothing, &nothing,
-                                           &nothing));
+            CHECK(iter.readArrayNew(&unusedUint, &nothing, &nothing));
           }
-          case uint32_t(GcOp::ArrayNewDefaultWithRtt): {
+          case uint32_t(GcOp::ArrayNewFixed): {
+            uint32_t unusedUint1, unusedUint2;
+            CHECK(iter.readArrayNewFixed(&unusedUint1, &unusedUint2));
+          }
+          case uint32_t(GcOp::ArrayNewDefault): {
             uint32_t unusedUint;
-            CHECK(iter.readArrayNewDefaultWithRtt(&unusedUint, &nothing,
-                                                  &nothing));
+            CHECK(iter.readArrayNewDefault(&unusedUint, &nothing));
           }
           case uint32_t(GcOp::ArrayGet): {
             uint32_t unusedUint1;
@@ -608,32 +617,18 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             uint32_t unusedUint1;
             CHECK(iter.readArrayLen(&unusedUint1, &nothing));
           }
-          case uint16_t(GcOp::RttCanon): {
-            ValType unusedTy;
-            CHECK(iter.readRttCanon(&unusedTy));
-          }
-          case uint16_t(GcOp::RttSub): {
-            uint32_t unusedRttTypeIndex;
-            CHECK(iter.readRttSub(&nothing, &unusedRttTypeIndex));
-          }
           case uint16_t(GcOp::RefTest): {
-            uint32_t unusedRttTypeIndex;
-            uint32_t unusedRttDepth;
-            CHECK(iter.readRefTest(&nothing, &unusedRttTypeIndex,
-                                   &unusedRttDepth, &nothing));
+            uint32_t typeIndex;
+            CHECK(iter.readRefTest(&typeIndex, &nothing));
           }
           case uint16_t(GcOp::RefCast): {
-            uint32_t unusedRttTypeIndex;
-            uint32_t unusedRttDepth;
-            CHECK(iter.readRefCast(&nothing, &unusedRttTypeIndex,
-                                   &unusedRttDepth, &nothing));
+            uint32_t typeIndex;
+            CHECK(iter.readRefCast(&typeIndex, &nothing));
           }
           case uint16_t(GcOp::BrOnCast): {
             uint32_t unusedRelativeDepth;
-            uint32_t unusedRttTypeIndex;
-            uint32_t unusedRttDepth;
-            CHECK(iter.readBrOnCast(&unusedRelativeDepth, &nothing,
-                                    &unusedRttTypeIndex, &unusedRttDepth,
+            uint32_t typeIndex;
+            CHECK(iter.readBrOnCast(&unusedRelativeDepth, &typeIndex,
                                     &unusedType, &nothings));
           }
           default:
@@ -645,7 +640,7 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
 
 #ifdef ENABLE_WASM_SIMD
       case uint16_t(Op::SimdPrefix): {
-        if (!env.v128Enabled()) {
+        if (!env.simdAvailable()) {
           return iter.unrecognizedOpcode(&op);
         }
         uint32_t noIndex;
@@ -761,21 +756,21 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           case uint32_t(SimdOp::I8x16AvgrU):
           case uint32_t(SimdOp::I16x8AvgrU):
           case uint32_t(SimdOp::I8x16Add):
-          case uint32_t(SimdOp::I8x16AddSaturateS):
-          case uint32_t(SimdOp::I8x16AddSaturateU):
+          case uint32_t(SimdOp::I8x16AddSatS):
+          case uint32_t(SimdOp::I8x16AddSatU):
           case uint32_t(SimdOp::I8x16Sub):
-          case uint32_t(SimdOp::I8x16SubSaturateS):
-          case uint32_t(SimdOp::I8x16SubSaturateU):
+          case uint32_t(SimdOp::I8x16SubSatS):
+          case uint32_t(SimdOp::I8x16SubSatU):
           case uint32_t(SimdOp::I8x16MinS):
           case uint32_t(SimdOp::I8x16MinU):
           case uint32_t(SimdOp::I8x16MaxS):
           case uint32_t(SimdOp::I8x16MaxU):
           case uint32_t(SimdOp::I16x8Add):
-          case uint32_t(SimdOp::I16x8AddSaturateS):
-          case uint32_t(SimdOp::I16x8AddSaturateU):
+          case uint32_t(SimdOp::I16x8AddSatS):
+          case uint32_t(SimdOp::I16x8AddSatU):
           case uint32_t(SimdOp::I16x8Sub):
-          case uint32_t(SimdOp::I16x8SubSaturateS):
-          case uint32_t(SimdOp::I16x8SubSaturateU):
+          case uint32_t(SimdOp::I16x8SubSatS):
+          case uint32_t(SimdOp::I16x8SubSatU):
           case uint32_t(SimdOp::I16x8Mul):
           case uint32_t(SimdOp::I16x8MinS):
           case uint32_t(SimdOp::I16x8MinU):
@@ -803,54 +798,54 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           case uint32_t(SimdOp::F64x2Div):
           case uint32_t(SimdOp::F64x2Min):
           case uint32_t(SimdOp::F64x2Max):
-          case uint32_t(SimdOp::I8x16NarrowSI16x8):
-          case uint32_t(SimdOp::I8x16NarrowUI16x8):
-          case uint32_t(SimdOp::I16x8NarrowSI32x4):
-          case uint32_t(SimdOp::I16x8NarrowUI32x4):
-          case uint32_t(SimdOp::V8x16Swizzle):
+          case uint32_t(SimdOp::I8x16NarrowI16x8S):
+          case uint32_t(SimdOp::I8x16NarrowI16x8U):
+          case uint32_t(SimdOp::I16x8NarrowI32x4S):
+          case uint32_t(SimdOp::I16x8NarrowI32x4U):
+          case uint32_t(SimdOp::I8x16Swizzle):
           case uint32_t(SimdOp::F32x4PMax):
           case uint32_t(SimdOp::F32x4PMin):
           case uint32_t(SimdOp::F64x2PMax):
           case uint32_t(SimdOp::F64x2PMin):
-          case uint32_t(SimdOp::I32x4DotSI16x8):
-          case uint32_t(SimdOp::I16x8ExtMulLowSI8x16):
-          case uint32_t(SimdOp::I16x8ExtMulHighSI8x16):
-          case uint32_t(SimdOp::I16x8ExtMulLowUI8x16):
-          case uint32_t(SimdOp::I16x8ExtMulHighUI8x16):
-          case uint32_t(SimdOp::I32x4ExtMulLowSI16x8):
-          case uint32_t(SimdOp::I32x4ExtMulHighSI16x8):
-          case uint32_t(SimdOp::I32x4ExtMulLowUI16x8):
-          case uint32_t(SimdOp::I32x4ExtMulHighUI16x8):
-          case uint32_t(SimdOp::I64x2ExtMulLowSI32x4):
-          case uint32_t(SimdOp::I64x2ExtMulHighSI32x4):
-          case uint32_t(SimdOp::I64x2ExtMulLowUI32x4):
-          case uint32_t(SimdOp::I64x2ExtMulHighUI32x4):
+          case uint32_t(SimdOp::I32x4DotI16x8S):
+          case uint32_t(SimdOp::I16x8ExtmulLowI8x16S):
+          case uint32_t(SimdOp::I16x8ExtmulHighI8x16S):
+          case uint32_t(SimdOp::I16x8ExtmulLowI8x16U):
+          case uint32_t(SimdOp::I16x8ExtmulHighI8x16U):
+          case uint32_t(SimdOp::I32x4ExtmulLowI16x8S):
+          case uint32_t(SimdOp::I32x4ExtmulHighI16x8S):
+          case uint32_t(SimdOp::I32x4ExtmulLowI16x8U):
+          case uint32_t(SimdOp::I32x4ExtmulHighI16x8U):
+          case uint32_t(SimdOp::I64x2ExtmulLowI32x4S):
+          case uint32_t(SimdOp::I64x2ExtmulHighI32x4S):
+          case uint32_t(SimdOp::I64x2ExtmulLowI32x4U):
+          case uint32_t(SimdOp::I64x2ExtmulHighI32x4U):
           case uint32_t(SimdOp::I16x8Q15MulrSatS):
             CHECK(iter.readBinary(ValType::V128, &nothing, &nothing));
 
           case uint32_t(SimdOp::I8x16Neg):
           case uint32_t(SimdOp::I16x8Neg):
-          case uint32_t(SimdOp::I16x8WidenLowSI8x16):
-          case uint32_t(SimdOp::I16x8WidenHighSI8x16):
-          case uint32_t(SimdOp::I16x8WidenLowUI8x16):
-          case uint32_t(SimdOp::I16x8WidenHighUI8x16):
+          case uint32_t(SimdOp::I16x8ExtendLowI8x16S):
+          case uint32_t(SimdOp::I16x8ExtendHighI8x16S):
+          case uint32_t(SimdOp::I16x8ExtendLowI8x16U):
+          case uint32_t(SimdOp::I16x8ExtendHighI8x16U):
           case uint32_t(SimdOp::I32x4Neg):
-          case uint32_t(SimdOp::I32x4WidenLowSI16x8):
-          case uint32_t(SimdOp::I32x4WidenHighSI16x8):
-          case uint32_t(SimdOp::I32x4WidenLowUI16x8):
-          case uint32_t(SimdOp::I32x4WidenHighUI16x8):
-          case uint32_t(SimdOp::I32x4TruncSSatF32x4):
-          case uint32_t(SimdOp::I32x4TruncUSatF32x4):
+          case uint32_t(SimdOp::I32x4ExtendLowI16x8S):
+          case uint32_t(SimdOp::I32x4ExtendHighI16x8S):
+          case uint32_t(SimdOp::I32x4ExtendLowI16x8U):
+          case uint32_t(SimdOp::I32x4ExtendHighI16x8U):
+          case uint32_t(SimdOp::I32x4TruncSatF32x4S):
+          case uint32_t(SimdOp::I32x4TruncSatF32x4U):
           case uint32_t(SimdOp::I64x2Neg):
-          case uint32_t(SimdOp::I64x2WidenLowSI32x4):
-          case uint32_t(SimdOp::I64x2WidenHighSI32x4):
-          case uint32_t(SimdOp::I64x2WidenLowUI32x4):
-          case uint32_t(SimdOp::I64x2WidenHighUI32x4):
+          case uint32_t(SimdOp::I64x2ExtendLowI32x4S):
+          case uint32_t(SimdOp::I64x2ExtendHighI32x4S):
+          case uint32_t(SimdOp::I64x2ExtendLowI32x4U):
+          case uint32_t(SimdOp::I64x2ExtendHighI32x4U):
           case uint32_t(SimdOp::F32x4Abs):
           case uint32_t(SimdOp::F32x4Neg):
           case uint32_t(SimdOp::F32x4Sqrt):
-          case uint32_t(SimdOp::F32x4ConvertSI32x4):
-          case uint32_t(SimdOp::F32x4ConvertUI32x4):
+          case uint32_t(SimdOp::F32x4ConvertI32x4S):
+          case uint32_t(SimdOp::F32x4ConvertI32x4U):
           case uint32_t(SimdOp::F64x2Abs):
           case uint32_t(SimdOp::F64x2Neg):
           case uint32_t(SimdOp::F64x2Sqrt):
@@ -874,10 +869,10 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           case uint32_t(SimdOp::F64x2ConvertLowI32x4U):
           case uint32_t(SimdOp::I32x4TruncSatF64x2SZero):
           case uint32_t(SimdOp::I32x4TruncSatF64x2UZero):
-          case uint32_t(SimdOp::I16x8ExtAddPairwiseI8x16S):
-          case uint32_t(SimdOp::I16x8ExtAddPairwiseI8x16U):
-          case uint32_t(SimdOp::I32x4ExtAddPairwiseI16x8S):
-          case uint32_t(SimdOp::I32x4ExtAddPairwiseI16x8U):
+          case uint32_t(SimdOp::I16x8ExtaddPairwiseI8x16S):
+          case uint32_t(SimdOp::I16x8ExtaddPairwiseI8x16U):
+          case uint32_t(SimdOp::I32x4ExtaddPairwiseI16x8S):
+          case uint32_t(SimdOp::I32x4ExtaddPairwiseI16x8U):
             CHECK(iter.readUnary(ValType::V128, &nothing));
 
           case uint32_t(SimdOp::I8x16Shl):
@@ -898,7 +893,7 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             CHECK(
                 iter.readTernary(ValType::V128, &nothing, &nothing, &nothing));
 
-          case uint32_t(SimdOp::V8x16Shuffle): {
+          case uint32_t(SimdOp::I8x16Shuffle): {
             V128 mask;
             CHECK(iter.readVectorShuffle(&nothing, &nothing, &mask));
           }
@@ -913,40 +908,40 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             CHECK(iter.readLoad(ValType::V128, 16, &addr));
           }
 
-          case uint32_t(SimdOp::V8x16LoadSplat): {
+          case uint32_t(SimdOp::V128Load8Splat): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadSplat(1, &addr));
           }
 
-          case uint32_t(SimdOp::V16x8LoadSplat): {
+          case uint32_t(SimdOp::V128Load16Splat): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadSplat(2, &addr));
           }
 
-          case uint32_t(SimdOp::V32x4LoadSplat): {
+          case uint32_t(SimdOp::V128Load32Splat): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadSplat(4, &addr));
           }
 
-          case uint32_t(SimdOp::V64x2LoadSplat): {
+          case uint32_t(SimdOp::V128Load64Splat): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadSplat(8, &addr));
           }
 
-          case uint32_t(SimdOp::I16x8LoadS8x8):
-          case uint32_t(SimdOp::I16x8LoadU8x8): {
+          case uint32_t(SimdOp::V128Load8x8S):
+          case uint32_t(SimdOp::V128Load8x8U): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadExtend(&addr));
           }
 
-          case uint32_t(SimdOp::I32x4LoadS16x4):
-          case uint32_t(SimdOp::I32x4LoadU16x4): {
+          case uint32_t(SimdOp::V128Load16x4S):
+          case uint32_t(SimdOp::V128Load16x4U): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadExtend(&addr));
           }
 
-          case uint32_t(SimdOp::I64x2LoadS32x2):
-          case uint32_t(SimdOp::I64x2LoadU32x2): {
+          case uint32_t(SimdOp::V128Load32x2S):
+          case uint32_t(SimdOp::V128Load32x2U): {
             LinearMemoryAddress<Nothing> addr;
             CHECK(iter.readLoadExtend(&addr));
           }
@@ -1010,7 +1005,12 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           case uint32_t(SimdOp::F32x4RelaxedFma):
           case uint32_t(SimdOp::F32x4RelaxedFms):
           case uint32_t(SimdOp::F64x2RelaxedFma):
-          case uint32_t(SimdOp::F64x2RelaxedFms): {
+          case uint32_t(SimdOp::F64x2RelaxedFms):
+          case uint32_t(SimdOp::I8x16RelaxedLaneSelect):
+          case uint32_t(SimdOp::I16x8RelaxedLaneSelect):
+          case uint32_t(SimdOp::I32x4RelaxedLaneSelect):
+          case uint32_t(SimdOp::I64x2RelaxedLaneSelect):
+          case uint32_t(SimdOp::I32x4DotI8x16I7x16AddS): {
             if (!env.v128RelaxedEnabled()) {
               return iter.unrecognizedOpcode(&op);
             }
@@ -1020,7 +1020,9 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
           case uint32_t(SimdOp::F32x4RelaxedMin):
           case uint32_t(SimdOp::F32x4RelaxedMax):
           case uint32_t(SimdOp::F64x2RelaxedMin):
-          case uint32_t(SimdOp::F64x2RelaxedMax): {
+          case uint32_t(SimdOp::F64x2RelaxedMax):
+          case uint32_t(SimdOp::I16x8RelaxedQ15MulrS):
+          case uint32_t(SimdOp::I16x8DotI8x16I7x16S): {
             if (!env.v128RelaxedEnabled()) {
               return iter.unrecognizedOpcode(&op);
             }
@@ -1035,7 +1037,7 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             }
             CHECK(iter.readUnary(ValType::V128, &nothing));
           }
-          case uint32_t(SimdOp::V8x16RelaxedSwizzle): {
+          case uint32_t(SimdOp::I8x16RelaxedSwizzle): {
             if (!env.v128RelaxedEnabled()) {
               return iter.unrecognizedOpcode(&op);
             }
@@ -1052,19 +1054,19 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
 
       case uint16_t(Op::MiscPrefix): {
         switch (op.b1) {
-          case uint32_t(MiscOp::I32TruncSSatF32):
-          case uint32_t(MiscOp::I32TruncUSatF32):
+          case uint32_t(MiscOp::I32TruncSatF32S):
+          case uint32_t(MiscOp::I32TruncSatF32U):
             CHECK(iter.readConversion(ValType::F32, ValType::I32, &nothing));
-          case uint32_t(MiscOp::I32TruncSSatF64):
-          case uint32_t(MiscOp::I32TruncUSatF64):
+          case uint32_t(MiscOp::I32TruncSatF64S):
+          case uint32_t(MiscOp::I32TruncSatF64U):
             CHECK(iter.readConversion(ValType::F64, ValType::I32, &nothing));
-          case uint32_t(MiscOp::I64TruncSSatF32):
-          case uint32_t(MiscOp::I64TruncUSatF32):
+          case uint32_t(MiscOp::I64TruncSatF32S):
+          case uint32_t(MiscOp::I64TruncSatF32U):
             CHECK(iter.readConversion(ValType::F32, ValType::I64, &nothing));
-          case uint32_t(MiscOp::I64TruncSSatF64):
-          case uint32_t(MiscOp::I64TruncUSatF64):
+          case uint32_t(MiscOp::I64TruncSatF64S):
+          case uint32_t(MiscOp::I64TruncSatF64U):
             CHECK(iter.readConversion(ValType::F64, ValType::I64, &nothing));
-          case uint32_t(MiscOp::MemCopy): {
+          case uint32_t(MiscOp::MemoryCopy): {
             uint32_t unusedDestMemIndex;
             uint32_t unusedSrcMemIndex;
             CHECK(iter.readMemOrTableCopy(/*isMem=*/true, &unusedDestMemIndex,
@@ -1075,9 +1077,9 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
             uint32_t unusedSegIndex;
             CHECK(iter.readDataOrElemDrop(/*isData=*/true, &unusedSegIndex));
           }
-          case uint32_t(MiscOp::MemFill):
+          case uint32_t(MiscOp::MemoryFill):
             CHECK(iter.readMemFill(&nothing, &nothing, &nothing));
-          case uint32_t(MiscOp::MemInit): {
+          case uint32_t(MiscOp::MemoryInit): {
             uint32_t unusedSegIndex;
             uint32_t unusedTableIndex;
             CHECK(iter.readMemOrTableInit(/*isMem=*/true, &unusedSegIndex,
@@ -1135,6 +1137,14 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
         CHECK(
             iter.readBrOnNull(&unusedDepth, &unusedType, &nothings, &nothing));
       }
+      case uint16_t(Op::BrOnNonNull): {
+        if (!env.functionReferencesEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        uint32_t unusedDepth;
+        CHECK(iter.readBrOnNonNull(&unusedDepth, &unusedType, &nothings,
+                                   &nothing));
+      }
 #endif
 #ifdef ENABLE_WASM_GC
       case uint16_t(Op::RefEq): {
@@ -1156,7 +1166,6 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
         Nothing nothing;
         CHECK(iter.readRefIsNull(&nothing));
       }
-#ifdef ENABLE_WASM_EXCEPTIONS
       case uint16_t(Op::Try):
         if (!env.exceptionsEnabled()) {
           return iter.unrecognizedOpcode(&op);
@@ -1204,7 +1213,6 @@ static bool DecodeFunctionBodyExprs(const ModuleEnvironment& env,
         uint32_t unusedDepth;
         CHECK(iter.readRethrow(&unusedDepth));
       }
-#endif
       case uint16_t(Op::ThreadPrefix): {
         // Though thread ops can be used on nonshared memories, we make them
         // unavailable if shared memory has been disabled in the prefs, for
@@ -1679,34 +1687,33 @@ static bool DecodeTypeSection(Decoder& d, ModuleEnvironment* env) {
   return d.finishSection(*range, "type");
 }
 
-static UniqueChars DecodeName(Decoder& d) {
+[[nodiscard]] static bool DecodeName(Decoder& d, CacheableName* name) {
   uint32_t numBytes;
   if (!d.readVarU32(&numBytes)) {
-    return nullptr;
+    return false;
   }
 
   if (numBytes > MaxStringBytes) {
-    return nullptr;
+    return false;
   }
 
   const uint8_t* bytes;
   if (!d.readBytes(numBytes, &bytes)) {
-    return nullptr;
+    return false;
   }
 
   if (!IsUtf8(AsChars(Span(bytes, numBytes)))) {
-    return nullptr;
+    return false;
   }
 
-  UniqueChars name(js_pod_malloc<char>(numBytes + 1));
-  if (!name) {
-    return nullptr;
+  UTF8Bytes utf8Bytes;
+  if (!utf8Bytes.resizeUninitialized(numBytes)) {
+    return false;
   }
+  memcpy(utf8Bytes.begin(), bytes, numBytes);
 
-  memcpy(name.get(), bytes, numBytes);
-  name[numBytes] = '\0';
-
-  return name;
+  *name = CacheableName(std::move(utf8Bytes));
+  return true;
 }
 
 static bool DecodeFuncTypeIndex(Decoder& d, const SharedTypeContext& types,
@@ -1873,7 +1880,7 @@ static bool DecodeGlobalType(Decoder& d, const SharedTypeContext& types,
     return d.fail("expected global type");
   }
 
-  if (type->isReference() && !type->isNullable()) {
+  if (type->isRefType() && !type->isNullable()) {
     return d.fail("non-nullable references not supported in globals");
   }
 
@@ -1923,7 +1930,7 @@ static bool DecodeMemoryTypeAndLimits(Decoder& d, ModuleEnvironment* env) {
   return true;
 }
 
-#ifdef ENABLE_WASM_EXCEPTIONS
+#ifdef WASM_PRIVATE_REFTYPES
 static bool TagIsJSCompatible(Decoder& d, const ValTypeVector& type) {
   for (auto t : type) {
     if (t.isTypeIndex()) {
@@ -1933,6 +1940,7 @@ static bool TagIsJSCompatible(Decoder& d, const ValTypeVector& type) {
 
   return true;
 }
+#endif  // WASM_PRIVATE_REFTYPES
 
 static bool DecodeTag(Decoder& d, ModuleEnvironment* env, TagKind* tagKind,
                       uint32_t* funcTypeIndex) {
@@ -1960,17 +1968,16 @@ static bool DecodeTag(Decoder& d, ModuleEnvironment* env, TagKind* tagKind,
   }
   return true;
 }
-#endif
 
 static bool DecodeImport(Decoder& d, ModuleEnvironment* env) {
-  UniqueChars moduleName = DecodeName(d);
-  if (!moduleName) {
+  CacheableName moduleName;
+  if (!DecodeName(d, &moduleName)) {
     return d.fail("expected valid import module name");
   }
 
-  UniqueChars funcName = DecodeName(d);
-  if (!funcName) {
-    return d.fail("expected valid import func name");
+  CacheableName funcName;
+  if (!DecodeName(d, &funcName)) {
+    return d.fail("expected valid import field name");
   }
 
   uint8_t rawImportKind;
@@ -2006,7 +2013,7 @@ static bool DecodeImport(Decoder& d, ModuleEnvironment* env) {
                                     &env->tables)) {
         return false;
       }
-      env->tables.back().importedOrExported = true;
+      env->tables.back().isImportedOrExported = true;
       break;
     }
     case DefinitionKind::Memory: {
@@ -2033,41 +2040,33 @@ static bool DecodeImport(Decoder& d, ModuleEnvironment* env) {
       }
       break;
     }
-#ifdef ENABLE_WASM_EXCEPTIONS
     case DefinitionKind::Tag: {
       TagKind tagKind;
       uint32_t funcTypeIndex;
       if (!DecodeTag(d, env, &tagKind, &funcTypeIndex)) {
         return false;
       }
-      const ValTypeVector& args =
-          (*env->types)[funcTypeIndex].funcType().args();
-#  ifdef WASM_PRIVATE_REFTYPES
+      ValTypeVector args;
+      if (!args.appendAll((*env->types)[funcTypeIndex].funcType().args())) {
+        return false;
+      }
+#ifdef WASM_PRIVATE_REFTYPES
       if (!TagIsJSCompatible(d, args)) {
         return false;
       }
-#  endif
-      ValTypeVector tagArgs;
-      if (!tagArgs.appendAll(args)) {
+#endif
+      MutableTagType tagType = js_new<TagType>();
+      if (!tagType || !tagType->initialize(std::move(args))) {
         return false;
       }
-      TagOffsetVector offsets;
-      if (!offsets.resize(tagArgs.length())) {
-        return false;
-      }
-      TagType type = TagType(std::move(tagArgs), std::move(offsets));
-      if (!env->tags.emplaceBack(tagKind, std::move(type))) {
+      if (!env->tags.emplaceBack(tagKind, tagType)) {
         return false;
       }
       if (env->tags.length() > MaxTags) {
         return d.fail("too many tags");
       }
-      if (!env->tags.back().type.computeLayout()) {
-        return false;
-      }
       break;
     }
-#endif
     default:
       return d.fail("unsupported import kind");
   }
@@ -2242,7 +2241,6 @@ static bool DecodeGlobalSection(Decoder& d, ModuleEnvironment* env) {
   return d.finishSection(*range, "global");
 }
 
-#ifdef ENABLE_WASM_EXCEPTIONS
 static bool DecodeTagSection(Decoder& d, ModuleEnvironment* env) {
   MaybeSectionRange range;
   if (!d.startSection(SectionId::Tag, env, &range, "tag")) {
@@ -2277,53 +2275,41 @@ static bool DecodeTagSection(Decoder& d, ModuleEnvironment* env) {
     if (!DecodeTag(d, env, &tagKind, &funcTypeIndex)) {
       return false;
     }
-    const ValTypeVector& args = (*env->types)[funcTypeIndex].funcType().args();
-    ValTypeVector tagArgs;
-    if (!tagArgs.appendAll(args)) {
+    ValTypeVector args;
+    if (!args.appendAll((*env->types)[funcTypeIndex].funcType().args())) {
       return false;
     }
-    TagOffsetVector offsets;
-    if (!offsets.resize(tagArgs.length())) {
+    MutableTagType tagType = js_new<TagType>();
+    if (!tagType || !tagType->initialize(std::move(args))) {
       return false;
     }
-    TagType type = TagType(std::move(tagArgs), std::move(offsets));
-    env->tags.infallibleEmplaceBack(tagKind, std::move(type));
-    if (!env->tags.back().type.computeLayout()) {
-      return false;
-    }
+    env->tags.infallibleEmplaceBack(tagKind, tagType);
   }
 
   return d.finishSection(*range, "tag");
 }
-#endif
 
-using CStringSet =
-    HashSet<const char*, mozilla::CStringHasher, SystemAllocPolicy>;
+using NameSet = HashSet<Span<char>, NameHasher, SystemAllocPolicy>;
 
-static UniqueChars DecodeExportName(Decoder& d, CStringSet* dupSet) {
-  UniqueChars exportName = DecodeName(d);
-  if (!exportName) {
+[[nodiscard]] static bool DecodeExportName(Decoder& d, NameSet* dupSet,
+                                           CacheableName* exportName) {
+  if (!DecodeName(d, exportName)) {
     d.fail("expected valid export name");
-    return nullptr;
+    return false;
   }
 
-  CStringSet::AddPtr p = dupSet->lookupForAdd(exportName.get());
+  NameSet::AddPtr p = dupSet->lookupForAdd(exportName->utf8Bytes());
   if (p) {
     d.fail("duplicate export");
-    return nullptr;
+    return false;
   }
 
-  if (!dupSet->add(p, exportName.get())) {
-    return nullptr;
-  }
-
-  return exportName;
+  return dupSet->add(p, exportName->utf8Bytes());
 }
 
-static bool DecodeExport(Decoder& d, ModuleEnvironment* env,
-                         CStringSet* dupSet) {
-  UniqueChars fieldName = DecodeExportName(d, dupSet);
-  if (!fieldName) {
+static bool DecodeExport(Decoder& d, ModuleEnvironment* env, NameSet* dupSet) {
+  CacheableName fieldName;
+  if (!DecodeExportName(d, dupSet, &fieldName)) {
     return false;
   }
 
@@ -2362,7 +2348,7 @@ static bool DecodeExport(Decoder& d, ModuleEnvironment* env,
       if (tableIndex >= env->tables.length()) {
         return d.fail("exported table index out of bounds");
       }
-      env->tables[tableIndex].importedOrExported = true;
+      env->tables[tableIndex].isImportedOrExported = true;
       return env->exports.emplaceBack(std::move(fieldName), tableIndex,
                                       DefinitionKind::Table);
     }
@@ -2398,7 +2384,6 @@ static bool DecodeExport(Decoder& d, ModuleEnvironment* env,
       return env->exports.emplaceBack(std::move(fieldName), globalIndex,
                                       DefinitionKind::Global);
     }
-#ifdef ENABLE_WASM_EXCEPTIONS
     case DefinitionKind::Tag: {
       uint32_t tagIndex;
       if (!d.readVarU32(&tagIndex)) {
@@ -2408,17 +2393,16 @@ static bool DecodeExport(Decoder& d, ModuleEnvironment* env,
         return d.fail("exported tag index out of bounds");
       }
 
-#  ifdef WASM_PRIVATE_REFTYPES
-      if (!TagIsJSCompatible(d, env->tags[tagIndex].type.argTypes)) {
+#ifdef WASM_PRIVATE_REFTYPES
+      if (!TagIsJSCompatible(d, env->tags[tagIndex].type->argTypes_)) {
         return false;
       }
-#  endif
+#endif
 
       env->tags[tagIndex].isExport = true;
       return env->exports.emplaceBack(std::move(fieldName), tagIndex,
                                       DefinitionKind::Tag);
     }
-#endif
     default:
       return d.fail("unexpected export kind");
   }
@@ -2435,7 +2419,7 @@ static bool DecodeExportSection(Decoder& d, ModuleEnvironment* env) {
     return true;
   }
 
-  CStringSet dupSet;
+  NameSet dupSet;
 
   uint32_t numExports;
   if (!d.readVarU32(&numExports)) {
@@ -2649,7 +2633,7 @@ static bool DecodeElemSection(Decoder& d, ModuleEnvironment* env) {
     // segments either. But this is a temporary restriction.
     bool exportedTable = kind == ElemSegmentKind::Passive ||
                          kind == ElemSegmentKind::Declared ||
-                         env->tables[seg->tableIndex].importedOrExported;
+                         env->tables[seg->tableIndex].isImportedOrExported;
 #endif
     bool isAsmJS = seg->active() && env->tables[seg->tableIndex].isAsmJS;
 
@@ -2796,11 +2780,9 @@ bool wasm::DecodeModuleEnvironment(Decoder& d, ModuleEnvironment* env) {
     return false;
   }
 
-#ifdef ENABLE_WASM_EXCEPTIONS
   if (!DecodeTagSection(d, env)) {
     return false;
   }
-#endif
 
   if (!DecodeGlobalSection(d, env)) {
     return false;

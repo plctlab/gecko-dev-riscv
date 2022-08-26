@@ -11,9 +11,6 @@ const { MockRegistrar } = ChromeUtils.import(
   "resource://testing-common/MockRegistrar.jsm"
 );
 
-const certService = Cc["@mozilla.org/security/local-cert-service;1"].getService(
-  Ci.nsILocalCertService
-);
 const certOverrideService = Cc[
   "@mozilla.org/security/certoverride;1"
 ].getService(Ci.nsICertOverrideService);
@@ -118,7 +115,19 @@ function startServer(cert) {
 
 let server;
 
-add_task(async function setup() {
+function getTestServerCertificate() {
+  const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
+  );
+  for (const cert of certDB.getCerts()) {
+    if (cert.commonName == "Mochitest client") {
+      return cert;
+    }
+  }
+  return null;
+}
+
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.urlbar.autoFill", true],
@@ -139,17 +148,7 @@ add_task(async function setup() {
     clientAuthDialogs
   );
 
-  let cert = await new Promise((resolve, reject) => {
-    certService.getOrCreateCert("speculative-connect", {
-      handleCert(c, rv) {
-        if (!Components.isSuccessCode(rv)) {
-          reject(rv);
-          return;
-        }
-        resolve(c);
-      },
-    });
-  });
+  let cert = getTestServerCertificate();
   server = startServer(cert);
   uri = `https://${host}:${server.port}/`;
   info(`running tls server at ${uri}`);

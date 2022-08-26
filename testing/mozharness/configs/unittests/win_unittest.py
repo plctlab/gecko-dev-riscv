@@ -15,6 +15,10 @@ NODEJS_PATH = None
 if "MOZ_FETCHES_DIR" in os.environ:
     NODEJS_PATH = os.path.join(os.environ["MOZ_FETCHES_DIR"], "node/node.exe")
 
+REQUIRE_GPU = False
+if "REQUIRE_GPU" in os.environ:
+    REQUIRE_GPU = os.environ["REQUIRE_GPU"] == "1"
+
 PYWIN32 = "pypiwin32==219"
 if sys.version_info > (3, 0):
     PYWIN32 = "pywin32==300"
@@ -167,6 +171,7 @@ config = {
             "--subsuite=devtools",
             "--chunk-by-runtime",
         ],
+        "mochitest-browser-a11y": ["--flavor=browser", "--subsuite=a11y"],
         "mochitest-a11y": ["--flavor=a11y", "--disable-e10s"],
         "mochitest-remote": ["--flavor=browser", "--subsuite=remote"],
     },
@@ -238,6 +243,9 @@ config = {
                     "external_tools",
                     "machine-configuration.json",
                 ),
+                "--platform=win10-vm"
+                if REQUIRE_GPU and (platform.release() == "10")
+                else "--platform=win7",
             ],
             "architectures": ["32bit", "64bit"],
             "halt_on_failure": True,
@@ -252,7 +260,7 @@ config = {
             ],
             "architectures": ["32bit", "64bit"],
             "halt_on_failure": True,
-            "enabled": (platform.release() == 10),
+            "enabled": (platform.release() == "10"),
         },
         {
             "name": "set windows VisualFX",

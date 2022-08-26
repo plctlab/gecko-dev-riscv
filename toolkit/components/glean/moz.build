@@ -31,6 +31,7 @@ EXPORTS.mozilla.glean.bindings += [
     "bindings/GleanPings.h",
     "bindings/MetricTypes.h",
     "bindings/private/Boolean.h",
+    "bindings/private/Common.h",
     "bindings/private/Counter.h",
     "bindings/private/CustomDistribution.h",
     "bindings/private/Datetime.h",
@@ -47,7 +48,12 @@ EXPORTS.mozilla.glean.bindings += [
     "bindings/private/StringList.h",
     "bindings/private/Timespan.h",
     "bindings/private/TimingDistribution.h",
+    "bindings/private/Url.h",
     "bindings/private/Uuid.h",
+]
+
+EXPORTS.mozilla.glean.bindings.jog += [
+    "bindings/jog/JOG.h",
 ]
 
 if CONFIG["COMPILE_ENVIRONMENT"]:
@@ -55,12 +61,20 @@ if CONFIG["COMPILE_ENVIRONMENT"]:
         "!fog_ffi_generated.h",
     ]
 
+    EXPORTS.mozilla.glean.bindings.jog += [
+        "!jog_ffi_generated.h",
+    ]
+
     CbindgenHeader("fog_ffi_generated.h", inputs=["/toolkit/components/glean"])
+    CbindgenHeader(
+        "jog_ffi_generated.h", inputs=["/toolkit/components/glean/bindings/jog"]
+    )
 
 UNIFIED_SOURCES += [
     "bindings/Category.cpp",
     "bindings/Glean.cpp",
     "bindings/GleanPings.cpp",
+    "bindings/jog/JOG.cpp",
     "bindings/private/Boolean.cpp",
     "bindings/private/Common.cpp",
     "bindings/private/Counter.cpp",
@@ -78,6 +92,7 @@ UNIFIED_SOURCES += [
     "bindings/private/StringList.cpp",
     "bindings/private/Timespan.cpp",
     "bindings/private/TimingDistribution.cpp",
+    "bindings/private/Url.cpp",
     "bindings/private/Uuid.cpp",
     "ipc/FOGIPC.cpp",
     "ipc/Support.cpp",
@@ -93,6 +108,7 @@ include("metrics_index.py")
 # The yamls arrays are relative to topsrcdir, so we need to transform:
 metrics_yamls = ["../../../" + x for x in metrics_yamls]
 pings_yamls = ["../../../" + x for x in pings_yamls]
+tags_yamls = ["../../../" + x for x in tags_yamls]
 # If you change the length of this deps list, update DEPS_LEN in run_glean_parser.py
 deps = [
     "metrics_index.py",
@@ -106,6 +122,7 @@ deps = [
     "build_scripts/glean_parser_ext/templates/cpp_pings.jinja2",
     "build_scripts/glean_parser_ext/templates/gifft.jinja2",
     "build_scripts/glean_parser_ext/templates/gifft_events.jinja2",
+    "build_scripts/glean_parser_ext/templates/jog_factory.jinja2",
     "build_scripts/glean_parser_ext/templates/js.jinja2",
     "build_scripts/glean_parser_ext/templates/js_pings.jinja2",
     "build_scripts/glean_parser_ext/templates/rust.jinja2",
@@ -116,7 +133,7 @@ GeneratedFile(
     "api/src/metrics.rs",
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -124,7 +141,7 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="cpp_metrics",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -132,14 +149,14 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="js_metrics",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
 
 GeneratedFile(
     "api/src/pings.rs",
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + pings_yamls,
+    inputs=deps + pings_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -147,7 +164,7 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="cpp_metrics",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + pings_yamls,
+    inputs=deps + pings_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -155,7 +172,7 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="js_metrics",
     flags=[CONFIG["MOZ_APP_VERSION"]],
-    inputs=deps + pings_yamls,
+    inputs=deps + pings_yamls + tags_yamls,
 )
 
 # Glean Interface For Firefox Telemetry Maps from Glean MetricId to Telemetry ProbeId
@@ -165,7 +182,7 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="gifft_map",
     flags=[CONFIG["MOZ_APP_VERSION"], "Event"],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -173,7 +190,7 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="gifft_map",
     flags=[CONFIG["MOZ_APP_VERSION"], "Histogram"],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
 
 GeneratedFile(
@@ -181,8 +198,36 @@ GeneratedFile(
     script="build_scripts/glean_parser_ext/run_glean_parser.py",
     entry_point="gifft_map",
     flags=[CONFIG["MOZ_APP_VERSION"], "Scalar"],
-    inputs=deps + metrics_yamls,
+    inputs=deps + metrics_yamls + tags_yamls,
 )
+
+# JOG provides both the Rust factory for building runtime-registered metrics
+# and the YAML file used at runtime to register metrics for Artefact Builds.
+# The factory lives inside the `fog` crate to avoid a circular dependency.
+GeneratedFile(
+    "api/src/factory.rs",
+    script="build_scripts/glean_parser_ext/run_glean_parser.py",
+    entry_point="jog_factory",
+    flags=[CONFIG["MOZ_APP_VERSION"]],
+    inputs=deps + metrics_yamls + tags_yamls,
+)
+
+# Only generate artefact_metrics.yaml in Artefact Builds since
+# its presence triggers main-thread I/O (!MOZILLA_OFFICIAL builds only).
+if not CONFIG["COMPILE_ENVIRONMENT"]:
+    GeneratedFile(
+        "artefact_metrics.yaml",
+        script="build_scripts/glean_parser_ext/run_glean_parser.py",
+        entry_point="jog_yaml",
+        flags=[CONFIG["MOZ_APP_VERSION"]],
+        inputs=deps + metrics_yamls + tags_yamls,
+    )
+else:
+    # TODO: Remove artefact_metrics.yaml if exists?
+    # Otherwise a single artefact build will build artefact_metrics.yaml,
+    # meaning all subsequent builds (Artefact or not) will treat the list of
+    # metrics in artefact_metrics.yaml as authoritative.
+    pass
 
 DIRS += [
     "tests",  # Must be in DIRS, not TEST_DIRS or python-test won't find it.

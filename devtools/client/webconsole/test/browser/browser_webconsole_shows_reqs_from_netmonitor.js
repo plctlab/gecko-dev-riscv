@@ -4,7 +4,7 @@
 "use strict";
 
 const TEST_URI =
-  "data:text/html;charset=utf8,Test that the netmonitor " +
+  "data:text/html;charset=utf8,<!DOCTYPE html>Test that the netmonitor " +
   "displays requests that have been recorded in the " +
   "web console, even if the netmonitor hadn't opened yet.";
 
@@ -35,14 +35,7 @@ add_task(async function task() {
   const currentTab = gBrowser.selectedTab;
   info("Web console is open");
 
-  const onMessageAdded = waitForMessages({
-    hud,
-    messages: [
-      {
-        text: TEST_PATH,
-      },
-    ],
-  });
+  const onMessageAdded = waitForMessageByType(hud, TEST_PATH, ".network");
 
   await navigateTo(TEST_PATH);
   info("Document loaded.");

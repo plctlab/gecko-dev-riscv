@@ -108,9 +108,15 @@ class nsDeviceContext final {
   }
 
   /**
+   * Get the ratio of app units to dev pixels that would be used in a top-level
+   * chrome page such as browser.xhtml.
+   */
+  int32_t AppUnitsPerDevPixelInTopLevelChromePage() const;
+
+  /**
    * Return the bit depth of the device.
    */
-  nsresult GetDepth(uint32_t& aDepth);
+  uint32_t GetDepth();
 
   /**
    * Get the size of the displayable area of the output device
@@ -202,17 +208,11 @@ class nsDeviceContext final {
 
   /**
    * Check to see if the DPI has changed, or impose a new DPI scale value.
-   * @param  aScale - If non-null, the default (unzoomed) CSS to device pixel
-   *                  scale factor will be returned here; and if it is > 0.0
-   *                  on input, the given value will be used instead of
-   *                  getting it from the widget (if any). This is used to
-   *                  allow subdocument contexts to inherit the resolution
-   *                  setting of their parent.
    * @return whether there was actually a change in the DPI (whether
    *         AppUnitsPerDevPixel() or AppUnitsPerPhysicalInch()
    *         changed)
    */
-  bool CheckDPIChange(double* aScale = nullptr);
+  bool CheckDPIChange();
 
   /**
    * Set the full zoom factor: all lengths are multiplied by this factor
@@ -229,13 +229,9 @@ class nsDeviceContext final {
   /**
    * True if this device context was created for printing.
    */
-  bool IsPrinterContext();
+  bool IsPrinterContext() const { return !!mPrintTarget; }
 
   mozilla::DesktopToLayoutDeviceScale GetDesktopToDeviceScale();
-
-  bool IsSyncPagePrinting() const;
-  void RegisterPageDoneCallback(PrintTarget::PageDoneCallback&& aCallback);
-  void UnregisterPageDoneCallback();
 
  private:
   // Private destructor, to discourage deletion outside of Release():
@@ -248,7 +244,7 @@ class nsDeviceContext final {
   already_AddRefed<gfxContext> CreateRenderingContextCommon(
       bool aWantReferenceContext);
 
-  void SetDPI(double* aScale = nullptr);
+  void SetDPI();
   void ComputeClientRectUsingScreen(nsRect* outRect);
   void ComputeFullAreaUsingScreen(nsRect* outRect);
   void FindScreen(nsIScreen** outScreen);

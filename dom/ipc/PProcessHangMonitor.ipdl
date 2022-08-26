@@ -23,6 +23,7 @@ struct SlowScriptData
   double duration;
 };
 
+[ManualDealloc, ChildImpl=virtual, ParentImpl=virtual]
 protocol PProcessHangMonitor
 {
 parent:
@@ -31,6 +32,7 @@ parent:
 
 child:
   async TerminateScript();
+  async RequestContentJSInterrupt();
 
   async BeginStartingDebugger();
   async EndStartingDebugger();

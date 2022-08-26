@@ -4,12 +4,12 @@
 
 "use strict";
 const EventEmitter = require("devtools/shared/event-emitter");
-const { LocalizationHelper, ELLIPSIS } = require("devtools/shared/l10n");
+const { ELLIPSIS } = require("devtools/shared/l10n");
 const KeyShortcuts = require("devtools/client/shared/key-shortcuts");
 const { parseItemValue } = require("devtools/shared/storage/utils");
 const { KeyCodes } = require("devtools/client/shared/keycodes");
 const { getUnicodeHostname } = require("devtools/client/shared/unicode-url");
-const getStorageTypeURL = require("devtools/client/storage/utils/mdn-utils");
+const getStorageTypeURL = require("devtools/client/storage/utils/doc-utils");
 
 // GUID to be used as a separator in compound keys. This must match the same
 // constant in devtools/server/actors/storage.js,
@@ -29,27 +29,12 @@ loader.lazyRequireGetter(
   "devtools/client/shared/widgets/TableWidget",
   true
 );
+loader.lazyRequireGetter(this, "debounce", "devtools/shared/debounce", true);
 loader.lazyImporter(
   this,
   "VariablesView",
   "resource://devtools/client/storage/VariablesView.jsm"
 );
-
-/**
- * Localization convenience methods.
- */
-const STORAGE_STRINGS = "devtools/client/locales/storage.properties";
-const L10N = new LocalizationHelper(STORAGE_STRINGS, true);
-
-const GENERIC_VARIABLES_VIEW_SETTINGS = {
-  lazyEmpty: true,
-  // ms
-  lazyEmptyDelay: 10,
-  searchEnabled: true,
-  contextMenuId: "variable-view-popup",
-  searchPlaceholder: L10N.getStr("storage.search.placeholder"),
-  preventDescriptorModifiers: true,
-};
 
 const REASON = {
   NEW_ROW: "new-row",
@@ -58,50 +43,72 @@ const REASON = {
   UPDATE: "update",
 };
 
+// How long we wait to debounce resize events
+const LAZY_RESIZE_INTERVAL_MS = 200;
+
 // Maximum length of item name to show in context menu label - will be
 // trimmed with ellipsis if it's longer.
 const ITEM_NAME_MAX_LENGTH = 32;
 
-// We only localize certain table headers. The headers that we do not localize
-// along with their English translation are stored in this Map for easy
-// reference.
-const NON_L10N_STRINGS = new Map([
-  ["Cache.url", "URL"],
-  ["cookies.host", "Domain"],
-  ["cookies.hostOnly", "HostOnly"],
-  ["cookies.isHttpOnly", "HttpOnly"],
-  ["cookies.isSecure", "Secure"],
-  ["cookies.path", "Path"],
-  ["cookies.sameSite", "SameSite"],
-  ["cookies.uniqueKey", "Unique key"],
-  ["extensionStorage.name", "Key"],
-  ["extensionStorage.value", "Value"],
-  ["indexedDB.autoIncrement", "Auto Increment"],
-  ["indexedDB.db", "Database Name"],
-  ["indexedDB.indexes", "Indexes"],
-  ["indexedDB.keyPath", "Key Path"],
-  ["indexedDB.name", "Key"],
-  ["indexedDB.objectStore", "Object Store Name"],
-  ["indexedDB.objectStores", "Object Stores"],
-  ["indexedDB.origin", "Origin"],
-  ["indexedDB.storage", "Storage"],
-  ["indexedDB.uniqueKey", "Unique key"],
-  ["indexedDB.value", "Value"],
-  ["indexedDB.version", "Version"],
-  ["localStorage.name", "Key"],
-  ["localStorage.value", "Value"],
-  ["sessionStorage.name", "Key"],
-  ["sessionStorage.value", "Value"],
-]);
+const HEADERS_L10N_IDS = {
+  Cache: {
+    status: "storage-table-headers-cache-status",
+  },
+  cookies: {
+    creationTime: "storage-table-headers-cookies-creation-time",
+    expires: "storage-table-headers-cookies-expires",
+    lastAccessed: "storage-table-headers-cookies-last-accessed",
+    name: "storage-table-headers-cookies-name",
+    size: "storage-table-headers-cookies-size",
+    value: "storage-table-headers-cookies-value",
+  },
+  extensionStorage: {
+    area: "storage-table-headers-extension-storage-area",
+  },
+};
 
-// If a l10n ID has been changed since it was created we store it in this map
-// along with it's new value for easy reference.
-const NON_ORIGINAL_L10N_IDS = new Map([
-  ["cookies.expires", "cookies.expires2"],
-  ["cookies.lastAccessed", "cookies.lastAccessed2"],
-  ["cookies.creationTime", "cookies.creationTime2"],
-  ["indexedDB.keyPath", "indexedDB.keyPath2"],
-]);
+// We only localize certain table headers. The headers that we do not localize
+// along with their label are stored in this dictionary for easy reference.
+const HEADERS_NON_L10N_STRINGS = {
+  Cache: {
+    url: "URL",
+  },
+  cookies: {
+    host: "Domain",
+    hostOnly: "HostOnly",
+    isHttpOnly: "HttpOnly",
+    isSecure: "Secure",
+    path: "Path",
+    sameSite: "SameSite",
+    uniqueKey: "Unique key",
+  },
+  extensionStorage: {
+    name: "Key",
+    value: "Value",
+  },
+  indexedDB: {
+    autoIncrement: "Auto Increment",
+    db: "Database Name",
+    indexes: "Indexes",
+    keyPath: "Key Path",
+    name: "Key",
+    objectStore: "Object Store Name",
+    objectStores: "Object Stores",
+    origin: "Origin",
+    storage: "Storage",
+    uniqueKey: "Unique key",
+    value: "Value",
+    version: "Version",
+  },
+  localStorage: {
+    name: "Key",
+    value: "Value",
+  },
+  sessionStorage: {
+    name: "Key",
+    value: "Value",
+  },
+};
 
 /**
  * StorageUI is controls and builds the UI of the Storage Inspector.
@@ -140,7 +147,7 @@ class StorageUI {
     this.updateObjectSidebar = this.updateObjectSidebar.bind(this);
     this.table.on(TableWidget.EVENTS.ROW_SELECTED, this.updateObjectSidebar);
 
-    this.handleScrollEnd = this.handleScrollEnd.bind(this);
+    this.handleScrollEnd = this.loadMoreItems.bind(this);
     this.table.on(TableWidget.EVENTS.SCROLL_END, this.handleScrollEnd);
 
     this.editItem = this.editItem.bind(this);
@@ -148,23 +155,18 @@ class StorageUI {
 
     this.sidebar = this._panelDoc.getElementById("storage-sidebar");
     this.sidebar.setAttribute("width", "300");
-    this.view = new VariablesView(
-      this.sidebar.firstChild,
-      GENERIC_VARIABLES_VIEW_SETTINGS
-    );
+    this.view = new VariablesView(this.sidebar.firstChild, {
+      lazyEmpty: true,
+      // ms
+      lazyEmptyDelay: 10,
+      searchEnabled: true,
+      contextMenuId: "variable-view-popup",
+      preventDescriptorModifiers: true,
+    });
 
     this.filterItems = this.filterItems.bind(this);
     this.onPaneToggleButtonClicked = this.onPaneToggleButtonClicked.bind(this);
     this.setupToolbar();
-
-    const shortcuts = new KeyShortcuts({
-      window: this._panelDoc.defaultView,
-    });
-    const key = L10N.getStr("storage.filter.key");
-    shortcuts.on(key, event => {
-      event.preventDefault();
-      this.searchBox.focus();
-    });
 
     this.handleKeypress = this.handleKeypress.bind(this);
     this._panelDoc.addEventListener("keypress", this.handleKeypress);
@@ -191,6 +193,11 @@ class StorageUI {
     this.onRefreshTable = this.onRefreshTable.bind(this);
     this.onAddItem = this.onAddItem.bind(this);
     this.onCopyItem = this.onCopyItem.bind(this);
+    this.onPanelWindowResize = debounce(
+      this.#onLazyPanelResize,
+      LAZY_RESIZE_INTERVAL_MS,
+      this
+    );
     this.onRemoveItem = this.onRemoveItem.bind(this);
     this.onRemoveAllFrom = this.onRemoveAllFrom.bind(this);
     this.onRemoveAll = this.onRemoveAll.bind(this);
@@ -199,13 +206,11 @@ class StorageUI {
 
     this._refreshButton = this._panelDoc.getElementById("refresh-button");
     this._refreshButton.addEventListener("click", this.onRefreshTable);
-    this._refreshButton.setAttribute(
-      "title",
-      L10N.getFormatStr("storage.popupMenu.refreshItemLabel")
-    );
 
     this._addButton = this._panelDoc.getElementById("add-button");
     this._addButton.addEventListener("click", this.onAddItem);
+
+    this._window.addEventListener("resize", this.onPanelWindowResize, true);
 
     this._variableViewPopupCopy = this._panelDoc.getElementById(
       "variable-view-popup-copy"
@@ -267,20 +272,32 @@ class StorageUI {
   }
 
   async init() {
-    // This is a distionarry of arrays, keyed by storage key
+    // This is a distionary of arrays, keyed by storage key
     // - Keys are storage keys, available on each storage resource, via ${resource.resourceKey}
     //   and are typically "Cache", "cookies", "indexedDB", "localStorage", ...
     // - Values are arrays of storage fronts. This isn't the deprecated global storage front (target.getFront(storage), only used by legacy listener),
     //   but rather the storage specific front, i.e. a storage resource. Storage resources are fronts.
     this.storageResources = {};
 
+    await this._initL10NStringsMap();
+
+    // This can only be done after l10n strings were retrieved as we're using "storage-filter-key"
+    const shortcuts = new KeyShortcuts({
+      window: this._panelDoc.defaultView,
+    });
+    const key = this._l10nStrings.get("storage-filter-key");
+    shortcuts.on(key, event => {
+      event.preventDefault();
+      this.searchBox.focus();
+    });
+
     this._onTargetAvailable = this._onTargetAvailable.bind(this);
     this._onTargetDestroyed = this._onTargetDestroyed.bind(this);
-    await this._commands.targetCommand.watchTargets(
-      [this._commands.targetCommand.TYPES.FRAME],
-      this._onTargetAvailable,
-      this._onTargetDestroyed
-    );
+    await this._commands.targetCommand.watchTargets({
+      types: [this._commands.targetCommand.TYPES.FRAME],
+      onAvailable: this._onTargetAvailable,
+      onDestroyed: this._onTargetDestroyed,
+    });
 
     this._onResourceListAvailable = this._onResourceListAvailable.bind(this);
 
@@ -300,6 +317,32 @@ class StorageUI {
         onAvailable: this._onResourceListAvailable,
       }
     );
+  }
+
+  async _initL10NStringsMap() {
+    const ids = [
+      "storage-filter-key",
+      "storage-table-headers-cookies-name",
+      "storage-table-headers-cookies-value",
+      "storage-table-headers-cookies-expires",
+      "storage-table-headers-cookies-size",
+      "storage-table-headers-cookies-last-accessed",
+      "storage-table-headers-cookies-creation-time",
+      "storage-table-headers-cache-status",
+      "storage-table-headers-extension-storage-area",
+      "storage-tree-labels-cookies",
+      "storage-tree-labels-local-storage",
+      "storage-tree-labels-session-storage",
+      "storage-tree-labels-indexed-db",
+      "storage-tree-labels-cache",
+      "storage-tree-labels-extension-storage",
+      "storage-expires-session",
+    ];
+    const results = await this._panelDoc.l10n.formatValues(
+      ids.map(s => ({ id: s }))
+    );
+
+    this._l10nStrings = new Map(ids.map((id, i) => [id, results[i]]));
   }
 
   async _onTargetAvailable({ targetFront }) {
@@ -381,6 +424,11 @@ class StorageUI {
   }
 
   destroy() {
+    if (this._destroyed) {
+      return;
+    }
+    this._destroyed = true;
+
     const { resourceCommand } = this._toolbox;
     resourceCommand.unwatchResources(
       [
@@ -397,7 +445,7 @@ class StorageUI {
     );
 
     this.table.off(TableWidget.EVENTS.ROW_SELECTED, this.updateObjectSidebar);
-    this.table.off(TableWidget.EVENTS.SCROLL_END, this.handleScrollEnd);
+    this.table.off(TableWidget.EVENTS.SCROLL_END, this.loadMoreItems);
     this.table.off(TableWidget.EVENTS.CELL_EDIT, this.editItem);
     this.table.destroy();
 
@@ -410,6 +458,8 @@ class StorageUI {
       this.onPaneToggleButtonClicked
     );
     this.sidebarToggleBtn = null;
+
+    this._window.removeEventListener("resize", this.#onLazyPanelResize, true);
 
     this._treePopup.removeEventListener(
       "popupshowing",
@@ -467,18 +517,18 @@ class StorageUI {
   }
 
   updateSidebarToggleButton() {
-    let title;
+    let dataL10nId;
     this.sidebarToggleBtn.hidden = !this.table.hasSelectedRow;
 
     if (this.sidebar.hidden) {
       this.sidebarToggleBtn.classList.add("pane-collapsed");
-      title = L10N.getStr("storage.expandPane");
+      dataL10nId = "storage-expand-pane";
     } else {
       this.sidebarToggleBtn.classList.remove("pane-collapsed");
-      title = L10N.getStr("storage.collapsePane");
+      dataL10nId = "storage-collapse-pane";
     }
 
-    this.sidebarToggleBtn.setAttribute("title", title);
+    this._panelDoc.l10n.setAttributes(this.sidebarToggleBtn, dataL10nId);
   }
 
   /**
@@ -642,6 +692,47 @@ class StorageUI {
   }
 
   /**
+   * If the panel is resized we need to check if we should load the next batch of
+   * storage items.
+   */
+  async #onLazyPanelResize() {
+    // We can be called on a closed window or destroyed toolbox because of the
+    // deferred task.
+    if (this._window.closed || this._destroyed || this.table.hasScrollbar) {
+      return;
+    }
+
+    await this.loadMoreItems();
+    this.emit("storage-resize");
+  }
+
+  /**
+   * Get a string for a column name automatically choosing whether or not the
+   * string should be localized.
+   *
+   * @param {String} type
+   *        The storage type.
+   * @param {String} name
+   *        The field name that may need to be localized.
+   */
+  _getColumnName(type, name) {
+    // If the ID exists in HEADERS_NON_L10N_STRINGS then we do not translate it
+    const columnName = HEADERS_NON_L10N_STRINGS[type]?.[name];
+    if (columnName) {
+      return columnName;
+    }
+
+    // otherwise we get it from the L10N Map (populated during init)
+    const l10nId = HEADERS_L10N_IDS[type]?.[name];
+    if (l10nId && this._l10nStrings.has(l10nId)) {
+      return this._l10nStrings.get(l10nId);
+    }
+
+    // If the string isn't localized, we will just use the field name.
+    return name;
+  }
+
+  /**
    * Handle added items received by onEdit
    *
    * @param {object} See onEdit docs
@@ -650,7 +741,7 @@ class StorageUI {
     for (const type in added) {
       for (const host in added[type]) {
         const label = this.getReadableLabelFromHostname(host);
-        this.tree.add([type, { id: host, label: label, type: "url" }]);
+        this.tree.add([type, { id: host, label, type: "url" }]);
         for (let name of added[type][host]) {
           try {
             name = JSON.parse(name);
@@ -841,9 +932,13 @@ class StorageUI {
         await this.resetColumns(type, host, subType);
       }
 
-      const { data } = await storage.getStoreObjects(host, names, fetchOpts);
+      const { data, total } = await storage.getStoreObjects(
+        host,
+        names,
+        fetchOpts
+      );
       if (data.length) {
-        await this.populateTable(data, reason);
+        await this.populateTable(data, reason, total);
       } else if (reason === REASON.POPULATE) {
         await this.clearHeaders();
       }
@@ -886,18 +981,7 @@ class StorageUI {
     const [type, host] = item;
 
     // Add is only supported if the selected item has a host.
-    const canAdd = this.supportsAddItem(type, host) && host;
-
-    if (canAdd) {
-      this._addButton.hidden = false;
-      this._addButton.setAttribute(
-        "title",
-        L10N.getFormatStr("storage.popupMenu.addItemLabel")
-      );
-    } else {
-      this._addButton.hidden = true;
-      this._addButton.removeAttribute("title");
-    }
+    this._addButton.hidden = !host || !this.supportsAddItem(type, host);
   }
 
   /**
@@ -908,7 +992,7 @@ class StorageUI {
     const populateTreeFromResource = (type, resource) => {
       for (const host in resource.hosts) {
         const label = this.getReadableLabelFromHostname(host);
-        this.tree.add([type, { id: host, label: label, type: "url" }]);
+        this.tree.add([type, { id: host, label, type: "url" }]);
         for (const name of resource.hosts[host]) {
           try {
             const names = JSON.parse(name);
@@ -942,7 +1026,7 @@ class StorageUI {
     for (const [type, resources] of Object.entries(this.storageResources)) {
       let typeLabel = type;
       try {
-        typeLabel = L10N.getStr("tree.labels." + type);
+        typeLabel = this.getStorageTypeLabel(type);
       } catch (e) {
         console.error("Unable to localize tree label type:" + type);
       }
@@ -959,6 +1043,35 @@ class StorageUI {
     if (initialSelectedItem !== this.tree.selectedItem) {
       await onStoresObjectsUpdated;
     }
+  }
+
+  getStorageTypeLabel(type) {
+    let dataL10nId;
+
+    switch (type) {
+      case "cookies":
+        dataL10nId = "storage-tree-labels-cookies";
+        break;
+      case "localStorage":
+        dataL10nId = "storage-tree-labels-local-storage";
+        break;
+      case "sessionStorage":
+        dataL10nId = "storage-tree-labels-session-storage";
+        break;
+      case "indexedDB":
+        dataL10nId = "storage-tree-labels-indexed-db";
+        break;
+      case "Cache":
+        dataL10nId = "storage-tree-labels-cache";
+        break;
+      case "extensionStorage":
+        dataL10nId = "storage-tree-labels-extension-storage";
+        break;
+      default:
+        throw new Error("Unknown storage type");
+    }
+
+    return this._l10nStrings.get(dataL10nId);
   }
 
   /**
@@ -994,7 +1107,7 @@ class StorageUI {
 
     this.updateSidebarToggleButton();
     this.view.empty();
-    const mainScope = this.view.addScope(L10N.getStr("storage.data.label"));
+    const mainScope = this.view.addScope("storage-data");
     mainScope.expanded = true;
 
     if (value) {
@@ -1025,7 +1138,7 @@ class StorageUI {
             continue;
           }
 
-          const fieldName = getColumnName(this.table.datatype, prop);
+          const fieldName = this._getColumnName(this.table.datatype, prop);
           rawObject[fieldName] = item[prop];
         }
         itemVar.populate(rawObject, { sorted: true });
@@ -1091,8 +1204,7 @@ class StorageUI {
     const view = this.view;
     jsonObject[name] = obj;
     const valueScope =
-      view.getScopeAtIndex(1) ||
-      view.addScope(L10N.getStr("storage.parsedValue.label"));
+      view.getScopeAtIndex(1) || view.addScope("storage-parsed-value");
     valueScope.expanded = true;
     const jsonVar = valueScope.addItem("", Object.create(null), {
       relaxed: true,
@@ -1150,8 +1262,7 @@ class StorageUI {
       }
       this.table.setPlaceholder(
         storageTypeHintL10nId,
-        getStorageTypeURL(this.table.datatype) +
-          "?utm_source=devtools&utm_medium=storage-inspector"
+        getStorageTypeURL(this.table.datatype)
       );
 
       // If selected item has no host then reset table headers
@@ -1161,8 +1272,9 @@ class StorageUI {
     if (item.length > 2) {
       names = [JSON.stringify(item.slice(2))];
     }
-    await this.fetchStorageObjects(type, host, names, REASON.POPULATE);
+
     this.itemOffset = 0;
+    await this.fetchStorageObjects(type, host, names, REASON.POPULATE);
   }
 
   /**
@@ -1212,7 +1324,7 @@ class StorageUI {
         privateFields.push(f.name);
       }
 
-      const columnName = getColumnName(type, f.name);
+      const columnName = this._getColumnName(type, f.name);
       if (columnName) {
         columns[f.name] = columnName;
       } else if (!f.private) {
@@ -1220,7 +1332,7 @@ class StorageUI {
         // need to log an error if they are not localized.
         columns[f.name] = f.name;
         console.error(
-          `No string defined in NON_L10N_STRINGS for '${type}.${f.name}'`
+          `No string defined in HEADERS_NON_L10N_STRINGS for '${type}.${f.name}'`
         );
       }
     });
@@ -1238,8 +1350,10 @@ class StorageUI {
    *        Array of objects to be populated in the storage table
    * @param {Constant} reason
    *        See REASON constant at top of file.
+   * @param {number} totalAvailable
+   *        The total number of items available in the current storage type.
    */
-  async populateTable(data, reason) {
+  async populateTable(data, reason, totalAvailable) {
     for (const item of data) {
       if (item.value) {
         item.valueActor = item.value;
@@ -1248,7 +1362,7 @@ class StorageUI {
       if (item.expires != null) {
         item.expires = item.expires
           ? new Date(item.expires).toUTCString()
-          : L10N.getStr("label.expires.session");
+          : this._l10nStrings.get("storage-expires-session");
       }
       if (item.creationTime != null) {
         item.creationTime = new Date(item.creationTime).toUTCString();
@@ -1276,6 +1390,14 @@ class StorageUI {
       }
 
       this.shouldLoadMoreItems = true;
+    }
+
+    if (
+      (reason === REASON.POPULATE || reason === REASON.NEXT_50_ITEMS) &&
+      this.table.items.size < totalAvailable &&
+      !this.table.hasScrollbar
+    ) {
+      await this.loadMoreItems();
     }
   }
 
@@ -1316,10 +1438,14 @@ class StorageUI {
   }
 
   /**
-   * Handles endless scrolling for the table
+   * Load the next batch of 50 items
    */
-  async handleScrollEnd() {
-    if (!this.shouldLoadMoreItems) {
+  async loadMoreItems() {
+    if (
+      !this.shouldLoadMoreItems ||
+      this._toolbox.currentToolId !== "storage" ||
+      !this.tree.selectedItem
+    ) {
       return;
     }
     this.shouldLoadMoreItems = false;
@@ -1361,21 +1487,19 @@ class StorageUI {
       const separatorRegex = new RegExp(SEPARATOR_GUID, "g");
       const label = addEllipsis((name + "").replace(separatorRegex, "-"));
 
-      this._tablePopupDelete.hidden = false;
       this._tablePopupDelete.setAttribute(
-        "label",
-        L10N.getFormatStr("storage.popupMenu.deleteLabel", label)
+        "data-l10n-args",
+        JSON.stringify({
+          itemName: label,
+        })
       );
+      this._tablePopupDelete.hidden = false;
     } else {
       this._tablePopupDelete.hidden = true;
     }
 
     if (this.supportsAddItem(type, host)) {
       this._tablePopupAddItem.hidden = false;
-      this._tablePopupAddItem.setAttribute(
-        "label",
-        L10N.getFormatStr("storage.popupMenu.addItemLabel")
-      );
     } else {
       this._tablePopupAddItem.hidden = true;
     }
@@ -1392,11 +1516,13 @@ class StorageUI {
     if (type === "cookies") {
       const hostString = addEllipsis(data.host);
 
-      this._tablePopupDeleteAllFrom.hidden = false;
       this._tablePopupDeleteAllFrom.setAttribute(
-        "label",
-        L10N.getFormatStr("storage.popupMenu.deleteAllFromLabel", hostString)
+        "data-l10n-args",
+        JSON.stringify({
+          host: hostString,
+        })
       );
+      this._tablePopupDeleteAllFrom.hidden = false;
     } else {
       this._tablePopupDeleteAllFrom.hidden = true;
     }
@@ -1450,8 +1576,8 @@ class StorageUI {
       if (showDelete) {
         const itemName = addEllipsis(selectedItem[selectedItem.length - 1]);
         this._treePopupDelete.setAttribute(
-          "label",
-          L10N.getFormatStr("storage.popupMenu.deleteLabel", itemName)
+          "data-l10n-args",
+          JSON.stringify({ itemName })
         );
       }
 
@@ -1574,31 +1700,38 @@ class StorageUI {
     }
   }
 
-  removeDatabase(host, dbName) {
+  async removeDatabase(host, dbName) {
     const front = this.getCurrentFront();
 
-    front
-      .removeDatabase(host, dbName)
-      .then(result => {
-        if (result.blocked) {
-          const notificationBox = this._toolbox.getNotificationBox();
-          notificationBox.appendNotification(
-            L10N.getFormatStr("storage.idb.deleteBlocked", dbName),
-            "storage-idb-delete-blocked",
-            null,
-            notificationBox.PRIORITY_WARNING_LOW
-          );
-        }
-      })
-      .catch(error => {
+    try {
+      const result = await front.removeDatabase(host, dbName);
+      if (result.blocked) {
         const notificationBox = this._toolbox.getNotificationBox();
-        notificationBox.appendNotification(
-          L10N.getFormatStr("storage.idb.deleteError", dbName),
-          "storage-idb-delete-error",
-          null,
-          notificationBox.PRIORITY_CRITICAL_LOW
+        const message = await this._panelDoc.l10n.formatValue(
+          "storage-idb-delete-blocked",
+          { dbName }
         );
-      });
+
+        notificationBox.appendNotification(
+          message,
+          "storage-idb-delete-blocked",
+          null,
+          notificationBox.PRIORITY_WARNING_LOW
+        );
+      }
+    } catch (error) {
+      const notificationBox = this._toolbox.getNotificationBox();
+      const message = await this._panelDoc.l10n.formatValue(
+        "storage-idb-delete-error",
+        { dbName }
+      );
+      notificationBox.appendNotification(
+        message,
+        "storage-idb-delete-error",
+        null,
+        notificationBox.PRIORITY_CRITICAL_LOW
+      );
+    }
   }
 
   removeCache(host, cacheName) {
@@ -1633,34 +1766,4 @@ function addEllipsis(name) {
   }
 
   return name;
-}
-
-/**
- * Get a string for a column name automatically choosing whether or not the
- * string should be localized.
- *
- * @param {String} type
- *        The storage type.
- * @param {String} name
- *        The field name that may need to be localized.
- */
-function getColumnName(type, name) {
-  // Check if a l10n ID has been changed since it was created and map it to
-  // its new value if it has.
-  let id = `${type}.${name}`;
-  id = NON_ORIGINAL_L10N_IDS.get(id) || id;
-
-  // If the ID exists in NON_L10N_STRINGS then we do not translate it
-  // otherwise we get it from the L10N database. If it doesn't exist in the
-  // database we will just use the field name.
-  let columnName = NON_L10N_STRINGS.get(id);
-  if (!columnName) {
-    try {
-      columnName = L10N.getStr(`table.headers.${id}`);
-    } catch (e) {
-      columnName = name;
-    }
-  }
-
-  return columnName;
 }

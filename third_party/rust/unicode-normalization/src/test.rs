@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
-use std::char;
-use super::UnicodeNormalization;
 use super::char::is_combining_mark;
+use super::UnicodeNormalization;
+use core::char;
 
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 
 #[test]
 fn test_nfd() {
@@ -21,8 +22,11 @@ fn test_nfd() {
             assert_eq!($input.nfd().to_string(), $expected);
             // A dummy iterator that is not std::str::Chars directly;
             // note that `id_func` is used to ensure `Clone` implementation
-            assert_eq!($input.chars().map(|c| c).nfd().collect::<String>(), $expected);
-        }
+            assert_eq!(
+                $input.chars().map(|c| c).nfd().collect::<String>(),
+                $expected
+            );
+        };
     }
     t!("abc", "abc");
     t!("\u{1e0b}\u{1c4}", "d\u{307}\u{1c4}");
@@ -41,7 +45,7 @@ fn test_nfkd() {
     macro_rules! t {
         ($input: expr, $expected: expr) => {
             assert_eq!($input.nfkd().to_string(), $expected);
-        }
+        };
     }
     t!("abc", "abc");
     t!("\u{1e0b}\u{1c4}", "d\u{307}DZ\u{30c}");
@@ -60,7 +64,7 @@ fn test_nfc() {
     macro_rules! t {
         ($input: expr, $expected: expr) => {
             assert_eq!($input.nfc().to_string(), $expected);
-        }
+        };
     }
     t!("abc", "abc");
     t!("\u{1e0b}\u{1c4}", "\u{1e0b}\u{1c4}");
@@ -72,7 +76,10 @@ fn test_nfc() {
     t!("\u{301}a", "\u{301}a");
     t!("\u{d4db}", "\u{d4db}");
     t!("\u{ac1c}", "\u{ac1c}");
-    t!("a\u{300}\u{305}\u{315}\u{5ae}b", "\u{e0}\u{5ae}\u{305}\u{315}b");
+    t!(
+        "a\u{300}\u{305}\u{315}\u{5ae}b",
+        "\u{e0}\u{5ae}\u{305}\u{315}b"
+    );
 }
 
 #[test]
@@ -80,7 +87,7 @@ fn test_nfkc() {
     macro_rules! t {
         ($input: expr, $expected: expr) => {
             assert_eq!($input.nfkc().to_string(), $expected);
-        }
+        };
     }
     t!("abc", "abc");
     t!("\u{1e0b}\u{1c4}", "\u{1e0b}D\u{17d}");
@@ -92,74 +99,16 @@ fn test_nfkc() {
     t!("\u{301}a", "\u{301}a");
     t!("\u{d4db}", "\u{d4db}");
     t!("\u{ac1c}", "\u{ac1c}");
-    t!("a\u{300}\u{305}\u{315}\u{5ae}b", "\u{e0}\u{5ae}\u{305}\u{315}b");
+    t!(
+        "a\u{300}\u{305}\u{315}\u{5ae}b",
+        "\u{e0}\u{5ae}\u{305}\u{315}b"
+    );
 }
 
 #[test]
-fn test_official() {
-    use testdata::TEST_NORM;
-    macro_rules! normString {
-        ($method: ident, $input: expr) => { $input.$method().collect::<String>() }
-    }
-
-    for &(s1, s2, s3, s4, s5) in TEST_NORM {
-        // these invariants come from the CONFORMANCE section of
-        // http://www.unicode.org/Public/UNIDATA/NormalizationTest.txt
-        {
-            let r1 = normString!(nfc, s1);
-            let r2 = normString!(nfc, s2);
-            let r3 = normString!(nfc, s3);
-            let r4 = normString!(nfc, s4);
-            let r5 = normString!(nfc, s5);
-            assert_eq!(s2, &r1[..]);
-            assert_eq!(s2, &r2[..]);
-            assert_eq!(s2, &r3[..]);
-            assert_eq!(s4, &r4[..]);
-            assert_eq!(s4, &r5[..]);
-        }
-
-        {
-            let r1 = normString!(nfd, s1);
-            let r2 = normString!(nfd, s2);
-            let r3 = normString!(nfd, s3);
-            let r4 = normString!(nfd, s4);
-            let r5 = normString!(nfd, s5);
-            assert_eq!(s3, &r1[..]);
-            assert_eq!(s3, &r2[..]);
-            assert_eq!(s3, &r3[..]);
-            assert_eq!(s5, &r4[..]);
-            assert_eq!(s5, &r5[..]);
-        }
-
-        {
-            let r1 = normString!(nfkc, s1);
-            let r2 = normString!(nfkc, s2);
-            let r3 = normString!(nfkc, s3);
-            let r4 = normString!(nfkc, s4);
-            let r5 = normString!(nfkc, s5);
-            assert_eq!(s4, &r1[..]);
-            assert_eq!(s4, &r2[..]);
-            assert_eq!(s4, &r3[..]);
-            assert_eq!(s4, &r4[..]);
-            assert_eq!(s4, &r5[..]);
-        }
-
-        {
-            let r1 = normString!(nfkd, s1);
-            let r2 = normString!(nfkd, s2);
-            let r3 = normString!(nfkd, s3);
-            let r4 = normString!(nfkd, s4);
-            let r5 = normString!(nfkd, s5);
-            assert_eq!(s5, &r1[..]);
-            assert_eq!(s5, &r2[..]);
-            assert_eq!(s5, &r3[..]);
-            assert_eq!(s5, &r4[..]);
-            assert_eq!(s5, &r5[..]);
-        }
-    }
+fn test_normalize_char() {
+    assert_eq!('\u{2126}'.nfd().to_string(), "\u{3a9}")
 }
-
-
 
 #[test]
 fn test_is_combining_mark_ascii() {

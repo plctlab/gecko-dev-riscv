@@ -4,7 +4,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const FileUtils = ChromeUtils.import("resource://gre/modules/FileUtils.jsm")
   .FileUtils;
 const gEnv = Cc["@mozilla.org/process/environment;1"].getService(
@@ -112,6 +111,7 @@ function displayDns(data) {
   trr_url_tbody.id = "dns_trr_url";
   let trr_url = document.createElement("tr");
   trr_url.appendChild(col(gDNSService.currentTrrURI));
+  trr_url.appendChild(col(gDNSService.currentTrrMode));
   trr_url_tbody.appendChild(trr_url);
   let prevURL = document.getElementById("dns_trr_url");
   prevURL.parentNode.replaceChild(trr_url_tbody, prevURL);
@@ -136,6 +136,7 @@ function displayDns(data) {
     row.appendChild(column);
     row.appendChild(col(data.entries[i].expiration));
     row.appendChild(col(data.entries[i].originAttributesSuffix));
+    row.appendChild(col(data.entries[i].flags));
     new_cont.appendChild(row);
   }
 
@@ -377,6 +378,11 @@ function updateLogModules() {
         activeLogModules.push("sync");
       }
     } catch (e) {}
+    try {
+      if (Services.prefs.getBoolPref("logging.config.profilermarkers")) {
+        activeLogModules.push("profilermarkers");
+      }
+    } catch (e) {}
 
     let children = Services.prefs.getBranch("logging.").getChildList("");
 
@@ -443,6 +449,8 @@ function setLogModules() {
       // XXX: append is not yet supported.
     } else if (module == "sync") {
       Services.prefs.setBoolPref("logging.config.sync", true);
+    } else if (module == "profilermarkers") {
+      Services.prefs.setBoolPref("logging.config.profilermarkers", true);
     } else {
       let lastColon = module.lastIndexOf(":");
       let key = module.slice(0, lastColon);

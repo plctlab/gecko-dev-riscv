@@ -14,6 +14,7 @@
 #include "nsEscape.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIAsyncOutputStream.h"
+#include "nsIPipe.h"
 #include "nsAboutProtocolUtils.h"
 #include "nsContentUtils.h"
 #include "nsInputStreamPump.h"
@@ -148,9 +149,11 @@ nsresult nsAboutCacheEntry::Channel::GetContentStream(nsIURI* uri,
       "<head>\n"
       "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src "
       "chrome:; object-src 'none'\" />\n"
+      "  <meta name=\"color-scheme\" content=\"light dark\" />\n"
       "  <title>Cache entry information</title>\n"
       "  <link rel=\"stylesheet\" "
-      "href=\"chrome://global/skin/about.css\" type=\"text/css\"/>\n"
+      "href=\"chrome://global/skin/in-content/info-pages.css\" "
+      "type=\"text/css\"/>\n"
       "  <link rel=\"stylesheet\" "
       "href=\"chrome://global/skin/aboutCacheEntry.css\" type=\"text/css\"/>\n"
       "</head>\n"
@@ -356,13 +359,12 @@ nsresult nsAboutCacheEntry::Channel::WriteCacheEntryDescription(
   // temp vars for reporting
   char timeBuf[255];
   uint32_t u = 0;
-  int32_t i = 0;
   nsAutoCString s;
 
   // Fetch Count
   s.Truncate();
-  entry->GetFetchCount(&i);
-  s.AppendInt(i);
+  entry->GetFetchCount(&u);
+  s.AppendInt(u);
   APPEND_ROW("fetch count", s);
 
   // Last Fetched

@@ -5,14 +5,16 @@
 
 const EXPORTED_SYMBOLS = ["BrowsingDataDelegate"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
 });
 
@@ -25,7 +27,7 @@ class BrowsingDataDelegate {
 
   async sendRequestForResult(type, data) {
     try {
-      const result = await EventDispatcher.instance.sendRequestForResult({
+      const result = await lazy.EventDispatcher.instance.sendRequestForResult({
         type,
         extensionId: this.extension.id,
         ...data,

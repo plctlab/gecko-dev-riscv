@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+@import url("chrome://global/skin/menu-scrolling.css");
+
 /* ===== menu.css =======================================================
   == Styles used by XUL menu-related elements.
   ======================================================================= */
@@ -51,18 +53,9 @@ menuitem[_moz-menuactive="true"][disabled="true"] {
 }
 
 @media (-moz-windows-non-native-menus) {
-  menu[disabled="true"],
-  menuitem[disabled="true"],
   menu[_moz-menuactive="true"][disabled="true"],
   menuitem[_moz-menuactive="true"][disabled="true"] {
-    color: var(--menu-disabled-color);
-    /* override the default hover disabled style: */
-    background-color: transparent;
-  }
-
-  menu[_moz-menuactive="true"][disabled="true"],
-  menuitem[_moz-menuactive="true"][disabled="true"] {
-    background-color: var(--menuitem-disabled-hover-background-color);
+    background-color: -moz-menuhoverdisabled;
   }
 }
 
@@ -79,6 +72,10 @@ menuitem[default="true"],
 menuitem.spell-suggestion,
 menucaption {
   font-weight: bold;
+}
+
+menubar > menu:-moz-window-inactive {
+  color: ThreeDShadow;
 }
 
 /* ..... Internal content .... */
@@ -187,12 +184,12 @@ menubar > menu:-moz-lwtheme {
 }
 
 menubar > menu:-moz-lwtheme:not([disabled="true"]) {
-  color: inherit !important;
+  color: inherit;
 }
 
 menubar > menu:-moz-lwtheme[_moz-menuactive="true"]:not([disabled="true"]) {
   background-color: SelectedItem;
-  color: SelectedItemText !important;
+  color: SelectedItemText;
   text-shadow: none;
 }
 
@@ -207,12 +204,6 @@ menubar > menu:-moz-lwtheme[_moz-menuactive="true"]:not([disabled="true"]) {
     text-shadow: inherit;
   }
 }
-
-%ifdef XP_WIN
-menubar > menu:-moz-window-inactive {
-  color: ThreeDShadow;
-}
-%endif
 
 /* ..... internal content .... */
 
@@ -234,20 +225,7 @@ menuitem[_moz-menuactive="true"] {
   color: -moz-menuhovertext;
 }
 
-@media (-moz-windows-non-native-menus) {
-  menu[_moz-menuactive="true"]:not([disabled="true"]),
-  menuitem[_moz-menuactive="true"]:not([disabled="true"]) {
-    background-color: var(--menuitem-hover-background-color);
-    color: var(--menu-color);
-  }
-}
-
 /* ::::: menu/menuitems in menulist popups ::::: */
-
-menulist > menupopup {
-  font: inherit;
-  color: FieldText;
-}
 
 menulist > menupopup > menuitem,
 menulist > menupopup > menucaption,
@@ -263,12 +241,12 @@ menulist > menupopup > menu {
     border: 1px solid transparent;
     padding-inline: 5px;
   }
-}
 
-menulist > menupopup > menuitem[_moz-menuactive="true"],
-menulist > menupopup > menu[_moz-menuactive="true"] {
-  background-color: highlight;
-  color: highlighttext;
+  menulist > menupopup > menuitem[_moz-menuactive="true"],
+  menulist > menupopup > menu[_moz-menuactive="true"] {
+    background-color: highlight;
+    color: highlighttext;
+  }
 }
 
 menulist > menupopup > menuitem > .menu-iconic-left,
@@ -302,21 +280,14 @@ menulist > menupopup > :is(menuitem, menucaption):not(.menuitem-iconic) > .menu-
   margin: 0 !important;
 }
 
-@media (-moz-windows-non-native-menus) {
-  menulist > menupopup {
-    color: var(--menu-color);
-  }
-}
-
 /* ::::: checkbox and radio menuitems ::::: */
 
-menuitem[type="checkbox"],
-menuitem[checked="true"] {
+menuitem:is([type="checkbox"], [checked="true"]) {
   appearance: auto;
   -moz-default-appearance: checkmenuitem;
 }
-menuitem[type="checkbox"] > .menu-iconic-left,
-menuitem[checked="true"] > .menu-iconic-left {
+
+menuitem:is([type="checkbox"], [checked="true"]) > .menu-iconic-left {
   appearance: auto;
   -moz-default-appearance: menucheckbox;
   padding-top: 0;
@@ -326,15 +297,14 @@ menuitem[type="radio"] {
   appearance: auto;
   -moz-default-appearance: radiomenuitem;
 }
+
 menuitem[type="radio"] > .menu-iconic-left {
   appearance: auto;
   -moz-default-appearance: menuradio;
   padding-top: 0;
 }
 
-menuitem[type="checkbox"] > .menu-iconic-left > .menu-iconic-icon,
-menuitem[checked="true"] > .menu-iconic-left > .menu-iconic-icon,
-menuitem[type="radio"] > .menu-iconic-left > .menu-iconic-icon {
+menuitem:is([type="checkbox"], [checked="true"], [type="radio"]) > .menu-iconic-left > .menu-iconic-icon {
   /* prevent .menu-iconic-icon from enforcing a minimal height of 16px (see bug 411064)
      XXXzeniko apply that .menu-iconic-icon rule only for children of .menu-iconic */
   display: none;
@@ -404,13 +374,9 @@ menuseparator {
   menuseparator {
     appearance: none;
 
-    border-top: 1px solid var(--menu-border-color);
     border-bottom: none;
-
     padding: 0;
     /* The side margins should align with the start of the menu item text. */
     margin: 2px 1em;
   }
 }
-
-%include ../../shared/menu-scrolling.inc.css

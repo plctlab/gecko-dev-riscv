@@ -16,14 +16,6 @@ if (DEBUG) {
 
 var EXPORTED_SYMBOLS = ["IndexedDBHelper"];
 
-Cu.importGlobalProperties(["indexedDB"]);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-
 function getErrorName(err) {
   return (err && err.name) || "UnknownError";
 }

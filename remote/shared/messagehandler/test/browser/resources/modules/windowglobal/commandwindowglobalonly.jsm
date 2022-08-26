@@ -10,7 +10,7 @@ const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class CommandWindowGlobalOnly extends Module {
+class CommandWindowGlobalOnlyModule extends Module {
   destroy() {}
 
   /**
@@ -32,6 +32,16 @@ class CommandWindowGlobalOnly extends Module {
   testError() {
     throw new Error("error-from-module");
   }
+
+  testMissingIntermediaryMethod(params, destination) {
+    // Spawn a new internal command, but with a commandName which doesn't match
+    // any method.
+    return this.messageHandler.handleCommand({
+      moduleName: "commandwindowglobalonly",
+      commandName: "missingMethod",
+      destination,
+    });
+  }
 }
 
-const commandwindowglobalonly = CommandWindowGlobalOnly;
+const commandwindowglobalonly = CommandWindowGlobalOnlyModule;

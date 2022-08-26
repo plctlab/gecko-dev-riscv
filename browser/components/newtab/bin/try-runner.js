@@ -129,6 +129,10 @@ function karma() {
 
   logErrors("karma", errors);
 
+  console.log("-----karma stdout below this line---");
+  console.log(out);
+  console.log("-----karma stdout above this line---");
+
   // Pass if there's no detected errors and nothing unexpected.
   return errors.length === 0 && !exitCode;
 }
@@ -169,8 +173,25 @@ function sasslint() {
   return errors.length === 0 && !exitCode;
 }
 
+function zipCodeCoverage() {
+  logStart("zipCodeCoverage");
+  const { exitCode, out } = execOut("zip", [
+    "-j",
+    "logs/coverage/code-coverage-grcov",
+    "logs/coverage/lcov.info",
+  ]);
+
+  console.log("zipCodeCoverage log output: ", out);
+
+  if (!exitCode) {
+    return true;
+  }
+
+  return false;
+}
+
 const tests = {};
-const success = [checkBundles, karma, sasslint].every(
+const success = [checkBundles, karma, zipCodeCoverage, sasslint].every(
   t => (tests[t.name] = t())
 );
 console.log(tests);

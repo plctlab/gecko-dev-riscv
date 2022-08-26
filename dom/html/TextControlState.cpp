@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TextControlState.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/TextInputListener.h"
 
 #include "nsCOMPtr.h"
@@ -33,6 +34,7 @@
 #include "nsIScrollableFrame.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/InputEventOptions.h"
+#include "mozilla/NativeKeyBindingsType.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/dom/Event.h"
@@ -41,6 +43,7 @@
 #include "mozilla/dom/HTMLTextAreaElement.h"
 #include "mozilla/dom/Text.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_ui.h"
 #include "nsFrameSelection.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Telemetry.h"
@@ -54,6 +57,7 @@ namespace mozilla {
 using namespace dom;
 using ValueSetterOption = TextControlState::ValueSetterOption;
 using ValueSetterOptions = TextControlState::ValueSetterOptions;
+using SelectionDirection = nsITextControlFrame::SelectionDirection;
 
 /*****************************************************************************
  * TextControlElement
@@ -182,11 +186,12 @@ class RestoreSelectionState : public Runnable {
         mFrame->GetConstFrameSelection());
 
     if (mFrame) {
-      // SetSelectionRange leads to
+      // EnsureEditorInitialized and SetSelectionRange leads to
       // Selection::AddRangeAndSelectFramesAndNotifyListeners which flushes
       // Layout - need to block script to avoid nested PrepareEditor calls (bug
       // 642800).
       nsAutoScriptBlocker scriptBlocker;
+      mFrame->EnsureEditorInitialized();
       TextControlState::SelectionProperties& properties =
           mTextControlState->GetSelectionProperties();
       if (properties.IsDirty()) {
@@ -859,9 +864,13 @@ void TextInputListener::OnSelectionChange(Selection& aSelection,
   // Mozilla: If we have non-empty selection we will fire a new event for each
   //          keypress (or mouseup) if the selection changed. Mozilla will also
   //          create the event each time select all is called, even if
-  //          everything was previously selected, becase technically select all
+  //          everything was previously selected, because technically select all
   //          will first collapse and then extend. Mozilla will never create an
   //          event if the selection collapses to nothing.
+  // FYI: If you want to skip dispatching eFormSelect event and if there are no
+  //      event listeners, you can refer
+  //      nsPIDOMWindow::HasFormSelectEventListeners(), but be careful about
+  //      some C++ event handlers, e.g., HTMLTextAreaElement::PostHandleEvent().
   bool collapsed = aSelection.IsCollapsed();
   if (!collapsed && (aReason & (nsISelectionListener::MOUSEUP_REASON |
                                 nsISelectionListener::KEYPRESS_REASON |
@@ -963,58 +972,79 @@ TextInputListener::HandleEvent(Event* aEvent) {
     }
   }
 
-  KeyEventHandler* keyHandlers = ShortcutKeys::GetHandlers(
-      mTxtCtrlElement->IsTextArea() ? HandlerType::eTextArea
-                                    : HandlerType::eInput);
+  auto ExecuteOurShortcutKeys = [&](TextControlElement& aTextControlElement)
+                                    MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION -> bool {
+    KeyEventHandler* keyHandlers = ShortcutKeys::GetHandlers(
+        aTextControlElement.IsTextArea() ? HandlerType::eTextArea
+                                         : HandlerType::eInput);
 
-  RefPtr<nsAtom> eventTypeAtom =
-      ShortcutKeys::ConvertEventToDOMEventType(widgetKeyEvent);
-  for (KeyEventHandler* handler = keyHandlers; handler;
-       handler = handler->GetNextHandler()) {
-    if (!handler->EventTypeEquals(eventTypeAtom)) {
-      continue;
+    RefPtr<nsAtom> eventTypeAtom =
+        ShortcutKeys::ConvertEventToDOMEventType(widgetKeyEvent);
+    for (KeyEventHandler* handler = keyHandlers; handler;
+         handler = handler->GetNextHandler()) {
+      if (!handler->EventTypeEquals(eventTypeAtom)) {
+        continue;
+      }
+
+      if (!handler->KeyEventMatched(keyEvent, 0, IgnoreModifierState())) {
+        continue;
+      }
+
+      // XXX Do we execute only one handler even if the handler neither stops
+      //     propagation nor prevents default of the event?
+      nsresult rv = handler->ExecuteHandler(&aTextControlElement, aEvent);
+      if (NS_SUCCEEDED(rv)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto ExecuteNativeKeyBindings =
+      [&](TextControlElement& aTextControlElement)
+          MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION -> bool {
+    if (widgetKeyEvent->mMessage != eKeyPress) {
+      return false;
     }
 
-    if (!handler->KeyEventMatched(keyEvent, 0, IgnoreModifierState())) {
-      continue;
+    NativeKeyBindingsType nativeKeyBindingsType =
+        aTextControlElement.IsTextArea()
+            ? NativeKeyBindingsType::MultiLineEditor
+            : NativeKeyBindingsType::SingleLineEditor;
+
+    nsIWidget* widget = widgetKeyEvent->mWidget;
+    // If the event is created by chrome script, the widget is nullptr.
+    if (MOZ_UNLIKELY(!widget)) {
+      widget = mFrame->GetNearestWidget();
+      if (MOZ_UNLIKELY(NS_WARN_IF(!widget))) {
+        return false;
+      }
     }
 
-    // XXX Do we execute only one handler even if the handler neither stops
-    //     propagation nor prevents default of the event?
-    RefPtr<TextControlElement> textControlElement(mTxtCtrlElement);
-    nsresult rv = handler->ExecuteHandler(textControlElement, aEvent);
-    if (NS_SUCCEEDED(rv)) {
-      return rv;
+    // WidgetKeyboardEvent::ExecuteEditCommands() requires non-nullptr mWidget.
+    // If the event is created by chrome script, it is nullptr but we need to
+    // execute native key bindings.  Therefore, we need to set widget to
+    // WidgetEvent::mWidget temporarily.
+    AutoRestore<nsCOMPtr<nsIWidget>> saveWidget(widgetKeyEvent->mWidget);
+    widgetKeyEvent->mWidget = widget;
+    if (widgetKeyEvent->ExecuteEditCommands(nativeKeyBindingsType,
+                                            DoCommandCallback, mFrame)) {
+      aEvent->PreventDefault();
+      return true;
     }
-  }
+    return false;
+  };
 
-  if (widgetKeyEvent->mMessage != eKeyPress) {
-    return NS_OK;
-  }
-
-  nsIWidget::NativeKeyBindingsType nativeKeyBindingsType =
-      mTxtCtrlElement->IsTextArea()
-          ? nsIWidget::NativeKeyBindingsForMultiLineEditor
-          : nsIWidget::NativeKeyBindingsForSingleLineEditor;
-
-  nsIWidget* widget = widgetKeyEvent->mWidget;
-  // If the event is created by chrome script, the widget is nullptr.
-  if (!widget) {
-    widget = mFrame->GetNearestWidget();
-    if (NS_WARN_IF(!widget)) {
-      return NS_OK;
+  OwningNonNull<TextControlElement> textControlElement(*mTxtCtrlElement);
+  if (StaticPrefs::
+          ui_key_textcontrol_prefer_native_key_bindings_over_builtin_shortcut_key_definitions()) {
+    if (!ExecuteNativeKeyBindings(textControlElement)) {
+      ExecuteOurShortcutKeys(textControlElement);
     }
-  }
-
-  // WidgetKeyboardEvent::ExecuteEditCommands() requires non-nullptr mWidget.
-  // If the event is created by chrome script, it is nullptr but we need to
-  // execute native key bindings.  Therefore, we need to set widget to
-  // WidgetEvent::mWidget temporarily.
-  AutoRestore<nsCOMPtr<nsIWidget>> saveWidget(widgetKeyEvent->mWidget);
-  widgetKeyEvent->mWidget = widget;
-  if (widgetKeyEvent->ExecuteEditCommands(nativeKeyBindingsType,
-                                          DoCommandCallback, mFrame)) {
-    aEvent->PreventDefault();
+  } else {
+    if (!ExecuteOurShortcutKeys(textControlElement)) {
+      ExecuteNativeKeyBindings(textControlElement);
+    }
   }
   return NS_OK;
 }
@@ -1054,7 +1084,13 @@ void TextInputListener::HandleValueChanged() {
   }
 
   if (!mSettingValue) {
+    // NOTE(emilio): execCommand might get here even though it might not be a
+    // "proper" user-interactive change. Might be worth reconsidering which
+    // ValueChangeKind are we passing down.
     mTxtCtrlElement->OnValueChanged(ValueChangeKind::UserInteraction);
+    if (mTextControlState) {
+      mTextControlState->ClearLastInteractiveValue();
+    }
   }
 }
 
@@ -1087,7 +1123,6 @@ nsresult TextInputListener::UpdateTextInputCommands(
  *****************************************************************************/
 
 enum class TextControlAction {
-  CacheForReuse,
   CommitComposition,
   Destructor,
   PrepareEditor,
@@ -1176,8 +1211,7 @@ class MOZ_STACK_CLASS AutoTextControlHandlingState {
   }
 
   void OnDestroyTextControlState() {
-    if (IsHandling(TextControlAction::Destructor) ||
-        IsHandling(TextControlAction::CacheForReuse)) {
+    if (IsHandling(TextControlAction::Destructor)) {
       // Do nothing since mTextContrlState.DeleteOrCacheForReuse() has
       // already been called.
       return;
@@ -1380,13 +1414,20 @@ class MOZ_STACK_CLASS AutoTextControlHandlingState {
  * mozilla::TextControlState
  *****************************************************************************/
 
-AutoTArray<TextControlState*, TextControlState::kMaxCountOfCacheToReuse>*
-    TextControlState::sReleasedInstances = nullptr;
-bool TextControlState::sHasShutDown = false;
+/**
+ * For avoiding allocation cost of the instance, we should reuse instances
+ * as far as possible.
+ *
+ * FYI: `25` is just a magic number considered without enough investigation,
+ *      but at least, this value must not make damage for footprint.
+ *      Feel free to change it if you find better number.
+ */
+static constexpr size_t kMaxCountOfCacheToReuse = 25;
+static AutoTArray<void*, kMaxCountOfCacheToReuse>* sReleasedInstances = nullptr;
+static bool sHasShutDown = false;
 
 TextControlState::TextControlState(TextControlElement* aOwningElement)
     : mTextCtrlElement(aOwningElement),
-      mBoundFrame(nullptr),
       mEverInited(false),
       mEditorInitialized(false),
       mValueTransferInProgress(false),
@@ -1401,21 +1442,14 @@ TextControlState::TextControlState(TextControlElement* aOwningElement)
 
 TextControlState* TextControlState::Construct(
     TextControlElement* aOwningElement) {
+  void* mem;
   if (sReleasedInstances && !sReleasedInstances->IsEmpty()) {
-    TextControlState* state = sReleasedInstances->PopLastElement();
-    state->mTextCtrlElement = aOwningElement;
-    state->mBoundFrame = nullptr;
-    state->mSelectionProperties = SelectionProperties();
-    state->mEverInited = false;
-    state->mEditorInitialized = false;
-    state->mValueTransferInProgress = false;
-    state->mSelectionCached = true;
-    // When adding more member variable initializations here, add the same
-    // also to the constructor.
-    return state;
+    mem = sReleasedInstances->PopLastElement();
+  } else {
+    mem = moz_xmalloc(sizeof(TextControlState));
   }
 
-  return new TextControlState(aOwningElement);
+  return new (mem) TextControlState(aOwningElement);
 }
 
 TextControlState::~TextControlState() {
@@ -1429,8 +1463,8 @@ TextControlState::~TextControlState() {
 void TextControlState::Shutdown() {
   sHasShutDown = true;
   if (sReleasedInstances) {
-    for (TextControlState* textControlState : *sReleasedInstances) {
-      textControlState->DeleteOrCacheForReuse();
+    for (void* mem : *sReleasedInstances) {
+      free(mem);
     }
     delete sReleasedInstances;
   }
@@ -1450,29 +1484,22 @@ void TextControlState::Destroy() {
 void TextControlState::DeleteOrCacheForReuse() {
   MOZ_ASSERT(!IsBusy());
 
+  void* mem = this;
+  this->~TextControlState();
+
   // If we can cache this instance, we should do it instead of deleting it.
   if (!sHasShutDown && (!sReleasedInstances || sReleasedInstances->Length() <
                                                    kMaxCountOfCacheToReuse)) {
-    AutoTextControlHandlingState handlingCacheForReuse(
-        *this, TextControlAction::CacheForReuse);
-
-    // Prepare for reuse, unlink and release any refcountable objects.
-    UnlinkInternal();
-    mValue.reset();
-    mTextCtrlElement = nullptr;
-
     // Put this instance to the cache.  Note that now, the array may be full,
     // but it's not problem to cache more instances than kMaxCountOfCacheToReuse
     // because it just requires reallocation cost of the array buffer.
     if (!sReleasedInstances) {
-      sReleasedInstances =
-          new AutoTArray<TextControlState*, kMaxCountOfCacheToReuse>;
+      sReleasedInstances = new AutoTArray<void*, kMaxCountOfCacheToReuse>;
     }
-    sReleasedInstances->AppendElement(this);
-
-    return;
+    sReleasedInstances->AppendElement(mem);
+  } else {
+    free(mem);
   }
-  delete this;
 }
 
 nsresult TextControlState::OnEditActionHandled() {
@@ -1490,7 +1517,6 @@ Element* TextControlState::GetPreviewNode() {
 void TextControlState::Clear() {
   MOZ_ASSERT(mHandlingState);
   MOZ_ASSERT(mHandlingState->Is(TextControlAction::Destructor) ||
-             mHandlingState->Is(TextControlAction::CacheForReuse) ||
              mHandlingState->Is(TextControlAction::Unlink));
   if (mTextEditor) {
     mTextEditor->SetTextInputListener(nullptr);
@@ -1519,8 +1545,7 @@ void TextControlState::Unlink() {
 
 void TextControlState::UnlinkInternal() {
   MOZ_ASSERT(mHandlingState);
-  MOZ_ASSERT(mHandlingState->Is(TextControlAction::Unlink) ||
-             mHandlingState->Is(TextControlAction::CacheForReuse));
+  MOZ_ASSERT(mHandlingState->Is(TextControlAction::Unlink));
   TextControlState* tmp = this;
   tmp->Clear();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSelCon)
@@ -2039,8 +2064,7 @@ void TextControlState::GetSelectionRange(uint32_t* aSelectionStart,
                                             *aSelectionEnd);
 }
 
-nsITextControlFrame::SelectionDirection TextControlState::GetSelectionDirection(
-    ErrorResult& aRv) {
+SelectionDirection TextControlState::GetSelectionDirection(ErrorResult& aRv) {
   MOZ_ASSERT(IsSelectionCached() || GetSelectionController(),
              "How can we not have a cached selection if we have no selection "
              "controller?");
@@ -2054,22 +2078,22 @@ nsITextControlFrame::SelectionDirection TextControlState::GetSelectionDirection(
   Selection* sel = mSelCon->GetSelection(SelectionType::eNormal);
   if (NS_WARN_IF(!sel)) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return nsITextControlFrame::eForward;  // Doesn't really matter
+    return SelectionDirection::Forward;
   }
 
   nsDirection direction = sel->GetDirection();
   if (direction == eDirNext) {
-    return nsITextControlFrame::eForward;
+    return SelectionDirection::Forward;
   }
 
   MOZ_ASSERT(direction == eDirPrevious);
-  return nsITextControlFrame::eBackward;
+  return SelectionDirection::Backward;
 }
 
-void TextControlState::SetSelectionRange(
-    uint32_t aStart, uint32_t aEnd,
-    nsITextControlFrame::SelectionDirection aDirection, ErrorResult& aRv,
-    ScrollAfterSelection aScroll) {
+void TextControlState::SetSelectionRange(uint32_t aStart, uint32_t aEnd,
+                                         SelectionDirection aDirection,
+                                         ErrorResult& aRv,
+                                         ScrollAfterSelection aScroll) {
   MOZ_ASSERT(IsSelectionCached() || mBoundFrame,
              "How can we have a non-cached selection but no frame?");
 
@@ -2140,7 +2164,7 @@ void TextControlState::SetSelectionStart(const Nullable<uint32_t>& aStart,
     return;
   }
 
-  nsITextControlFrame::SelectionDirection dir = GetSelectionDirection(aRv);
+  SelectionDirection dir = GetSelectionDirection(aRv);
   if (aRv.Failed()) {
     return;
   }
@@ -2166,7 +2190,7 @@ void TextControlState::SetSelectionEnd(const Nullable<uint32_t>& aEnd,
     return;
   }
 
-  nsITextControlFrame::SelectionDirection dir = GetSelectionDirection(aRv);
+  SelectionDirection dir = GetSelectionDirection(aRv);
   if (aRv.Failed()) {
     return;
   }
@@ -2175,49 +2199,42 @@ void TextControlState::SetSelectionEnd(const Nullable<uint32_t>& aEnd,
   // The instance may have already been deleted here.
 }
 
-static void DirectionToName(nsITextControlFrame::SelectionDirection dir,
-                            nsAString& aDirection) {
+static void DirectionToName(SelectionDirection dir, nsAString& aDirection) {
   switch (dir) {
-    case nsITextControlFrame::eNone:
+    case SelectionDirection::None:
       // TODO(mbrodesser): this should be supported, see
       // https://bugzilla.mozilla.org/show_bug.cgi?id=1541454.
       NS_WARNING("We don't actually support this... how did we get it?");
-      aDirection.AssignLiteral("none");
-      break;
-    case nsITextControlFrame::eForward:
-      aDirection.AssignLiteral("forward");
-      break;
-    case nsITextControlFrame::eBackward:
-      aDirection.AssignLiteral("backward");
-      break;
-    default:
-      MOZ_ASSERT_UNREACHABLE("Invalid SelectionDirection value");
+      return aDirection.AssignLiteral("none");
+    case SelectionDirection::Forward:
+      return aDirection.AssignLiteral("forward");
+    case SelectionDirection::Backward:
+      return aDirection.AssignLiteral("backward");
   }
+  MOZ_ASSERT_UNREACHABLE("Invalid SelectionDirection value");
 }
 
 void TextControlState::GetSelectionDirectionString(nsAString& aDirection,
                                                    ErrorResult& aRv) {
-  nsITextControlFrame::SelectionDirection dir = GetSelectionDirection(aRv);
+  SelectionDirection dir = GetSelectionDirection(aRv);
   if (aRv.Failed()) {
     return;
   }
   DirectionToName(dir, aDirection);
 }
 
-static nsITextControlFrame::SelectionDirection
-DirectionStringToSelectionDirection(const nsAString& aDirection) {
+static SelectionDirection DirectionStringToSelectionDirection(
+    const nsAString& aDirection) {
   if (aDirection.EqualsLiteral("backward")) {
-    return nsITextControlFrame::eBackward;
+    return SelectionDirection::Backward;
   }
-
   // We don't support directionless selections, see bug 1541454.
-  return nsITextControlFrame::eForward;
+  return SelectionDirection::Forward;
 }
 
 void TextControlState::SetSelectionDirection(const nsAString& aDirection,
                                              ErrorResult& aRv) {
-  nsITextControlFrame::SelectionDirection dir =
-      DirectionStringToSelectionDirection(aDirection);
+  SelectionDirection dir = DirectionStringToSelectionDirection(aDirection);
 
   uint32_t start, end;
   GetSelectionRange(&start, &end, aRv);
@@ -2229,11 +2246,11 @@ void TextControlState::SetSelectionDirection(const nsAString& aDirection,
   // The instance may have already been deleted here.
 }
 
-static nsITextControlFrame::SelectionDirection
-DirectionStringToSelectionDirection(const Optional<nsAString>& aDirection) {
+static SelectionDirection DirectionStringToSelectionDirection(
+    const Optional<nsAString>& aDirection) {
   if (!aDirection.WasPassed()) {
     // We don't support directionless selections.
-    return nsITextControlFrame::eForward;
+    return SelectionDirection::Forward;
   }
 
   return DirectionStringToSelectionDirection(aDirection.Value());
@@ -2244,8 +2261,7 @@ void TextControlState::SetSelectionRange(uint32_t aSelectionStart,
                                          const Optional<nsAString>& aDirection,
                                          ErrorResult& aRv,
                                          ScrollAfterSelection aScroll) {
-  nsITextControlFrame::SelectionDirection dir =
-      DirectionStringToSelectionDirection(aDirection);
+  SelectionDirection dir = DirectionStringToSelectionDirection(aDirection);
 
   SetSelectionRange(aSelectionStart, aSelectionEnd, dir, aRv, aScroll);
   // The instance may have already been deleted here.
@@ -2306,7 +2322,8 @@ void TextControlState::SetRangeText(const nsAString& aReplacement,
   Selection* selection =
       mSelCon ? mSelCon->GetSelection(SelectionType::eNormal) : nullptr;
   SelectionBatcher selectionBatcher(
-      selection, nsISelectionListener::JS_REASON);  // no-op if nullptr
+      selection, __FUNCTION__,
+      nsISelectionListener::JS_REASON);  // no-op if nullptr
 
   MOZ_ASSERT(aStart <= aEnd);
   value.Replace(aStart, aEnd - aStart, aReplacement);
@@ -2558,7 +2575,7 @@ void TextControlState::GetValue(nsAString& aValue, bool aIgnoreWrap) const {
       mBoundFrame->ClearCachedValue();
     }
   } else {
-    if (!mTextCtrlElement->ValueChanged() || !mValue) {
+    if (!mTextCtrlElement->ValueChanged() || mValue.IsVoid()) {
       // Use nsString to avoid copying string buffer at setting aValue.
       nsString value;
       mTextCtrlElement->GetDefaultValueFromContent(value);
@@ -2566,7 +2583,7 @@ void TextControlState::GetValue(nsAString& aValue, bool aIgnoreWrap) const {
       nsContentUtils::PlatformToDOMLineBreaks(value);
       aValue = value;
     } else {
-      aValue = *mValue;
+      aValue = mValue;
       MOZ_ASSERT(aValue.FindChar(u'\r') == -1);
     }
   }
@@ -2621,6 +2638,27 @@ bool TextControlState::SetValue(const nsAString& aValue,
     MOZ_ASSERT(error.ErrorCodeIs(NS_ERROR_OUT_OF_MEMORY));
     error.SuppressException();
     return false;
+  }
+
+  const auto changeKind = [&] {
+    if (aOptions.contains(ValueSetterOption::ByInternalAPI)) {
+      return ValueChangeKind::Internal;
+    }
+    if (aOptions.contains(ValueSetterOption::BySetUserInputAPI)) {
+      return ValueChangeKind::UserInteraction;
+    }
+    return ValueChangeKind::Script;
+  }();
+
+  if (changeKind == ValueChangeKind::Script) {
+    // This value change will not be interactive. If we're an input that was
+    // interactively edited, save the last interactive value now before it goes
+    // away.
+    if (auto* input = HTMLInputElement::FromNode(mTextCtrlElement)) {
+      if (input->LastValueChangeWasInteractive()) {
+        GetValue(mLastInteractiveValue, /* aIgnoreWrap = */ true);
+      }
+    }
   }
 
   // Note that if this may be called during reframe of the editor.  In such
@@ -2703,11 +2741,6 @@ bool TextControlState::SetValue(const nsAString& aValue,
   // If we were handling SetValue() before, don't update the DOM state twice,
   // just let the outer call do so.
   if (!wasHandlingSetValue) {
-    // TODO(emilio): It seems wrong to pass ValueChangeKind::Script if
-    // BySetUserInput is in aOptions.
-    auto changeKind = aOptions.contains(ValueSetterOption::ByInternalAPI)
-                          ? ValueChangeKind::Internal
-                          : ValueChangeKind::Script;
     handlingSetValue.GetTextControlElement()->OnValueChanged(changeKind);
   }
   return true;
@@ -2759,7 +2792,7 @@ bool TextControlState::SetValueWithTextEditor(
   // FYI: It's safe to use raw pointer for selection here because
   //      SelectionBatcher will grab it with RefPtr.
   Selection* selection = mSelCon->GetSelection(SelectionType::eNormal);
-  SelectionBatcher selectionBatcher(selection);
+  SelectionBatcher selectionBatcher(selection, __FUNCTION__);
 
   // get the flags, remove readonly, disabled and max-length,
   // set the value, restore flags
@@ -2853,13 +2886,13 @@ bool TextControlState::SetValueWithoutTextEditor(
                        "Failed to commit composition before setting value.  "
                        "Investigate the cause!");
 
-  if (!mValue) {
-    mValue.emplace();
+  if (mValue.IsVoid()) {
+    mValue.SetIsVoid(false);
   }
 
   // We can't just early-return here, because OnValueChanged below still need to
   // be called.
-  if (!mValue->Equals(aHandlingSetValue.GetSettingValue()) ||
+  if (!mValue.Equals(aHandlingSetValue.GetSettingValue()) ||
       !StaticPrefs::dom_input_skip_cursor_move_for_same_value_set()) {
     bool handleSettingValue = true;
     // If `SetValue()` call is nested, `GetSettingValue()` result will be
@@ -2919,7 +2952,7 @@ bool TextControlState::SetValueWithoutTextEditor(
     }
 
     if (handleSettingValue) {
-      if (!mValue->Assign(aHandlingSetValue.GetSettingValue(), fallible)) {
+      if (!mValue.Assign(aHandlingSetValue.GetSettingValue(), fallible)) {
         return false;
       }
 
@@ -2940,13 +2973,13 @@ bool TextControlState::SetValueWithoutTextEditor(
                 ValueSetterOption::MoveCursorToEndIfValueChanged)) {
           props.SetStart(aHandlingSetValue.GetSettingValue().Length());
           props.SetEnd(aHandlingSetValue.GetSettingValue().Length());
-          props.SetDirection(nsITextControlFrame::eForward);
+          props.SetDirection(SelectionDirection::Forward);
         } else if (aHandlingSetValue.ValueSetterOptionsRef().contains(
                        ValueSetterOption::
                            MoveCursorToBeginSetSelectionDirectionForward)) {
           props.SetStart(0);
           props.SetEnd(0);
-          props.SetDirection(nsITextControlFrame::eForward);
+          props.SetDirection(SelectionDirection::Forward);
         }
       }
 
@@ -2971,6 +3004,8 @@ bool TextControlState::SetValueWithoutTextEditor(
       // listeners like `EditorBase::NotifyEditorObservers()`.
       aHandlingSetValue.GetTextControlElement()->OnValueChanged(
           ValueChangeKind::UserInteraction);
+
+      ClearLastInteractiveValue();
 
       MOZ_ASSERT(!aHandlingSetValue.GetSettingValue().IsVoid());
       DebugOnly<nsresult> rvIgnored = nsContentUtils::DispatchInputEvent(

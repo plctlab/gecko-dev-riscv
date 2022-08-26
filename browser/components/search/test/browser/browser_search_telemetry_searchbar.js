@@ -2,11 +2,9 @@
 
 const SCALAR_SEARCHBAR = "browser.engagement.navigation.searchbar";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "UrlbarTestUtils",
-  "resource://testing-common/UrlbarTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+});
 
 let suggestionEngine;
 
@@ -48,7 +46,7 @@ function clickSearchbarSuggestion(entryName, clickOptions = {}) {
   EventUtils.synthesizeMouseAtCenter(richlistitem, clickOptions);
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   await gCUITestUtils.addSearchBar();
   const url = getRootDirectory(gTestPath) + "telemetrySearchSuggestions.xml";
   suggestionEngine = await SearchTestUtils.promiseNewSearchEngine(url, "");

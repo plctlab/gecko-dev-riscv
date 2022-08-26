@@ -10,24 +10,89 @@
 /* import-globals-from privacy.js */
 /* import-globals-from sync.js */
 /* import-globals-from experimental.js */
+/* import-globals-from moreFromMozilla.js */
 /* import-globals-from findInPage.js */
-/* import-globals-from ../../base/content/utilityOverlay.js */
-/* import-globals-from ../../../toolkit/content/preferencesBindings.js */
+/* import-globals-from /browser/base/content/utilityOverlay.js */
+/* import-globals-from /toolkit/content/preferencesBindings.js */
 
 "use strict";
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+var { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AMTelemetry",
-  "resource://gre/modules/AddonManager.jsm"
+var { Downloads } = ChromeUtils.import("resource://gre/modules/Downloads.jsm");
+var { Integration } = ChromeUtils.import(
+  "resource://gre/modules/Integration.jsm"
 );
-ChromeUtils.defineModuleGetter(
+/* global DownloadIntegration */
+Integration.downloads.defineModuleGetter(
   this,
-  "formAutofillParent",
-  "resource://formautofill/FormAutofillParent.jsm"
+  "DownloadIntegration",
+  "resource://gre/modules/DownloadIntegration.jsm"
 );
+
+var { PrivateBrowsingUtils } = ChromeUtils.import(
+  "resource://gre/modules/PrivateBrowsingUtils.jsm"
+);
+
+var { Weave } = ChromeUtils.import("resource://services-sync/main.js");
+
+var { FxAccounts, getFxAccountsSingleton } = ChromeUtils.import(
+  "resource://gre/modules/FxAccounts.jsm"
+);
+var fxAccounts = getFxAccountsSingleton();
+
+XPCOMUtils.defineLazyServiceGetters(this, {
+  gApplicationUpdateService: [
+    "@mozilla.org/updates/update-service;1",
+    "nsIApplicationUpdateService",
+  ],
+
+  listManager: [
+    "@mozilla.org/url-classifier/listmanager;1",
+    "nsIUrlListManager",
+  ],
+  gHandlerService: [
+    "@mozilla.org/uriloader/handler-service;1",
+    "nsIHandlerService",
+  ],
+  gMIMEService: ["@mozilla.org/mime;1", "nsIMIMEService"],
+});
+
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+  UrlbarProviderQuickActions:
+    "resource:///modules/UrlbarProviderQuickActions.sys.mjs",
+  UrlbarProviderQuickSuggest:
+    "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  AMTelemetry: "resource://gre/modules/AddonManager.jsm",
+  BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
+  ContextualIdentityService:
+    "resource://gre/modules/ContextualIdentityService.jsm",
+  DownloadUtils: "resource://gre/modules/DownloadUtils.jsm",
+  ExtensionPreferencesManager:
+    "resource://gre/modules/ExtensionPreferencesManager.jsm",
+  ExtensionSettingsStore: "resource://gre/modules/ExtensionSettingsStore.jsm",
+  FileUtils: "resource://gre/modules/FileUtils.jsm",
+  FeatureGate: "resource://featuregates/FeatureGate.jsm",
+  HomePage: "resource:///modules/HomePage.jsm",
+  LangPackMatcher: "resource://gre/modules/LangPackMatcher.jsm",
+  LoginHelper: "resource://gre/modules/LoginHelper.jsm",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
+  OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
+  SelectionChangedMenulist: "resource:///modules/SelectionChangedMenulist.jsm",
+  ShortcutUtils: "resource://gre/modules/ShortcutUtils.jsm",
+  SiteDataManager: "resource:///modules/SiteDataManager.jsm",
+  TransientPrefs: "resource:///modules/TransientPrefs.jsm",
+  UpdateUtils: "resource://gre/modules/UpdateUtils.jsm",
+  UIState: "resource://services-sync/UIState.jsm",
+});
 
 XPCOMUtils.defineLazyGetter(this, "gSubDialog", function() {
   const { SubDialogManager } = ChromeUtils.import(
@@ -41,12 +106,15 @@ XPCOMUtils.defineLazyGetter(this, "gSubDialog", function() {
         "chrome://browser/skin/preferences/dialog.css",
         "chrome://browser/skin/preferences/preferences.css",
       ],
-      resizeCallback: ({ title, frame }) => {
+      resizeCallback: async ({ title, frame }) => {
         // Search within main document and highlight matched keyword.
-        gSearchResultsPane.searchWithinNode(title, gSearchResultsPane.query);
+        await gSearchResultsPane.searchWithinNode(
+          title,
+          gSearchResultsPane.query
+        );
 
         // Search within sub-dialog document and highlight matched keyword.
-        gSearchResultsPane.searchWithinNode(
+        await gSearchResultsPane.searchWithinNode(
           frame.contentDocument.firstElementChild,
           gSearchResultsPane.query
         );
@@ -122,6 +190,7 @@ function init_all() {
   // Asks Preferences to queue an update of the attribute values of
   // the entire document.
   Preferences.queueUpdateOfAllElements();
+  Services.telemetry.setEventRecordingEnabled("aboutpreferences", true);
 
   register_module("paneGeneral", gMainPane);
   register_module("paneHome", gHomePane);
@@ -137,6 +206,15 @@ function init_all() {
       false
     );
     register_module("paneExperimental", gExperimentalPane);
+  }
+
+  NimbusFeatures.moreFromMozilla.recordExposureEvent({ once: true });
+  if (NimbusFeatures.moreFromMozilla.getVariable("enabled")) {
+    document.getElementById("category-more-from-mozilla").hidden = false;
+    gMoreFromMozillaPane.option = NimbusFeatures.moreFromMozilla.getVariable(
+      "template"
+    );
+    register_module("paneMoreFromMozilla", gMoreFromMozillaPane);
   }
   // The Sync category needs to be the last of the "real" categories
   // registered and inititalized since many tests wait for the
@@ -165,6 +243,10 @@ function init_all() {
 
   window.addEventListener("hashchange", onHashChange);
 
+  document.getElementById("focusSearch1").addEventListener("command", () => {
+    gSearchResultsPane.searchInput.focus();
+  });
+
   gotoPref().then(() => {
     let helpButton = document.getElementById("helpButton");
     let helpUrl =
@@ -173,6 +255,7 @@ function init_all() {
     helpButton.setAttribute("href", helpUrl);
 
     document.getElementById("addonsButton").addEventListener("click", e => {
+      e.preventDefault();
       if (e.button >= 2) {
         // Ignore right clicks.
         return;
@@ -211,16 +294,19 @@ function telemetryBucketForCategory(category) {
 }
 
 function onHashChange() {
-  gotoPref();
+  gotoPref(null, "hash");
 }
 
-async function gotoPref(aCategory) {
+async function gotoPref(
+  aCategory,
+  aShowReason = aCategory ? "click" : "initial"
+) {
   let categories = document.getElementById("categories");
   const kDefaultCategoryInternalName = "paneGeneral";
   const kDefaultCategory = "general";
   let hash = document.location.hash;
-
   let category = aCategory || hash.substr(1) || kDefaultCategoryInternalName;
+
   let breakIndex = category.indexOf("-");
   // Subcategories allow for selecting smaller sections of the preferences
   // until proper search support is enabled (bug 1353954).
@@ -267,7 +353,14 @@ async function gotoPref(aCategory) {
     subcategory
   ) {
     let friendlyName = internalPrefCategoryNameToFriendlyName(category);
-    document.location.hash = friendlyName;
+    // Overwrite the hash, unless there is no hash and we're switching to the
+    // default category, e.g. by using the 'back' button after navigating to
+    // a different category.
+    if (
+      !(!document.location.hash && category == kDefaultCategoryInternalName)
+    ) {
+      document.location.hash = friendlyName;
+    }
   }
   // Need to set the gLastCategory before setting categories.selectedItem since
   // the categories 'select' event will re-enter the gotoPref codepath.
@@ -302,10 +395,19 @@ async function gotoPref(aCategory) {
 
   search(category, "data-category");
 
-  let mainContent = document.querySelector(".main-content");
-  mainContent.scrollTop = 0;
+  if (aShowReason != "initial") {
+    document.querySelector(".main-content").scrollTop = 0;
+  }
 
   spotlight(subcategory, category);
+
+  // Record which category is shown
+  Services.telemetry.recordEvent(
+    "aboutpreferences",
+    "show",
+    aShowReason,
+    category
+  );
 }
 
 function search(aQuery, aAttribute) {
@@ -520,30 +622,25 @@ function appendSearchKeywords(aId, keywords) {
   element.setAttribute("searchkeywords", keywords.join(" "));
 }
 
+async function ensureScrollPadding() {
+  let stickyContainer = document.querySelector(".sticky-container");
+  let height = await window.browsingContext.topChromeWindow
+    .promiseDocumentFlushed(() => stickyContainer.clientHeight)
+    .catch(err => Cu.reportError); // Can reject if the window goes away.
+
+  // Make it a bit more, to ensure focus rectangles etc. don't get cut off.
+  // This being 8px causes us to end up with 90px if the policies container
+  // is not visible (the common case), which matches the CSS and thus won't
+  // cause a style change, repaint, or other changes.
+  height += 8;
+  stickyContainer
+    .closest(".main-content")
+    .style.setProperty("scroll-padding-top", height + "px");
+}
+
 function maybeDisplayPoliciesNotice() {
   if (Services.policies.status == Services.policies.ACTIVE) {
     document.getElementById("policies-container").removeAttribute("hidden");
+    ensureScrollPadding();
   }
-}
-
-/**
- * Filter the lastFallbackLocale from availableLocales if it doesn't have all
- * of the needed strings.
- *
- * When the lastFallbackLocale isn't the defaultLocale, then by default only
- * fluent strings are included. To fully use that locale you need the langpack
- * to be installed, so if it isn't installed remove it from availableLocales.
- */
-async function getAvailableLocales() {
-  let { availableLocales, defaultLocale, lastFallbackLocale } = Services.locale;
-  // If defaultLocale isn't lastFallbackLocale, then we still need the langpack
-  // for lastFallbackLocale for it to be useful.
-  if (defaultLocale != lastFallbackLocale) {
-    let lastFallbackId = `langpack-${lastFallbackLocale}@firefox.mozilla.org`;
-    let lastFallbackInstalled = await AddonManager.getAddonByID(lastFallbackId);
-    if (!lastFallbackInstalled) {
-      return availableLocales.filter(locale => locale != lastFallbackLocale);
-    }
-  }
-  return availableLocales;
 }

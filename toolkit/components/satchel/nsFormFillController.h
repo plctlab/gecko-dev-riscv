@@ -21,7 +21,6 @@
 #include "nsILoginAutoCompleteSearch.h"
 #include "nsIMutationObserver.h"
 #include "nsIObserver.h"
-#include "nsTArray.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsILoginReputation.h"
 
@@ -142,6 +141,7 @@ class nsFormFillController final : public nsIFormFillController,
   bool mSuppressOnInput;
   bool mPasswordPopupAutomaticallyOpened;
   bool mAutoCompleteActive = false;
+  bool mInvalidatePreviousResult = false;
 };
 
 #endif  // __nsFormFillController__

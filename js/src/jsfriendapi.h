@@ -31,7 +31,7 @@ class JSJitInfo;
  * required.
  */
 extern JS_PUBLIC_API void JS_SetGrayGCRootsTracer(JSContext* cx,
-                                                  JSTraceDataOp traceOp,
+                                                  JSGrayRootsTracer traceOp,
                                                   void* data);
 
 extern JS_PUBLIC_API JSObject* JS_FindCompilationScope(JSContext* cx,
@@ -159,6 +159,8 @@ extern JS_PUBLIC_API void SetRealmPrincipals(JS::Realm* realm,
                                              JSPrincipals* principals);
 
 extern JS_PUBLIC_API bool GetIsSecureContext(JS::Realm* realm);
+
+extern JS_PUBLIC_API bool GetDebuggerObservesWasm(JS::Realm* realm);
 
 }  // namespace JS
 

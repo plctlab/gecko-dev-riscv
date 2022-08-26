@@ -5,8 +5,12 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 """
-Utitlity functions for the glean_parser-based code generator
+Utility functions for the glean_parser-based code generator
 """
+import copy
+
+from glean_parser import util
+from typing import Dict, List, Tuple
 
 
 def generate_ping_ids(objs):
@@ -52,3 +56,47 @@ def generate_metric_ids(objs):
             metric_id += 1
 
     return lambda metric: metric_id_mapping[(metric.category, metric.name)]
+
+
+def get_metrics(objs):
+    """
+    Returns *just* the metrics in a set of Glean objects
+    """
+    ret = copy.copy(objs)
+    for category in ["pings", "tags"]:
+        if ret.get(category):
+            del ret[category]
+    return ret
+
+
+def type_ids_and_categories(objs) -> Tuple[Dict[str, Tuple[int, List[str]]], List[str]]:
+    """
+    Iterates over the metrics in objs, constructing two metadata structures:
+     - metric_types: Dict[str, Tuple[int, List[str]]] - map from a metric
+       type (snake_case) to its metric type id and ordered list of arguments.
+     - categories: List[str] - category names (snake_case)
+
+    Is stable across invocations: Will generate same ids for same objs.
+    (If it doesn't, JOG's factory disagreeing with GleanJSMetricsLookup
+    will break the build).
+    Uses the same order of metric args set out in glean_parser.util's
+    common_metric_args and extra_metric_args.
+    (If it didn't, it would supply args in the wrong order to metric type
+    constructors with multiple extra args (e.g. custom_distribution)).
+    """
+    metric_type_ids = {}
+    categories = []
+
+    for category_name, objs in get_metrics(objs).items():
+        categories.append(category_name)
+
+        for metric in objs.values():
+            if metric.type not in metric_type_ids:
+                type_id = len(metric_type_ids) + 1
+                args = util.common_metric_args.copy()
+                for arg_name in util.extra_metric_args:
+                    if hasattr(metric, arg_name) and arg_name != "allowed_extra_keys":
+                        args.append(arg_name)
+                metric_type_ids[metric.type] = {"id": type_id, "args": args}
+
+    return (metric_type_ids, categories)

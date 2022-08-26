@@ -35,11 +35,11 @@ function expectDuration(marker) {
     "number",
     "startTime should be a number"
   );
-  // Floats can cause rounding issues. We've seen up to a 1e-6 difference in
-  // intermittent failures, so we are permissive and accept up to 1e-5.
+  // Floats can cause rounding issues. We've seen up to a 4.17e-5 difference in
+  // intermittent failures, so we are permissive and accept up to 5e-5.
   Assert.less(
     Math.abs(marker.startTime - startTime),
-    1e-5,
+    5e-5,
     "startTime should be the expected time"
   );
   Assert.equal(typeof marker.endTime, "number", "endTime should be a number");
@@ -198,7 +198,7 @@ add_task(async () => {
   testCategory([{ category: "does not exist" }], "Other");
 
   info("Capture the profile");
-  const profile = await stopAndGetProfile();
+  const profile = await stopNowAndGetProfile();
   const mainThread = profile.threads.find(({ name }) => name === "GeckoMain");
   const markers = getInflatedMarkerData(mainThread).filter(m =>
     m.name.startsWith(markerNamePrefix)

@@ -9,8 +9,10 @@
 add_task(async function() {
   registerCleanupFunction(async () => {
     Services.prefs.clearUserPref("browser.urlbar.suggest.searches");
+    Services.prefs.clearUserPref("browser.urlbar.suggest.quickactions");
   });
   Services.prefs.setBoolPref("browser.urlbar.suggest.searches", false);
+  Services.prefs.setBoolPref("browser.urlbar.suggest.quickactions", false);
 
   let host = "example.com";
   // Add a bookmark to the http version, but ensure the https version has an
@@ -54,10 +56,11 @@ add_task(async function() {
       context,
       autofilled: `${host}/`,
       completed: `https://${host}/`,
+      hasAutofillTitle: true,
       matches: [
         makeVisitResult(context, {
           uri: `https://${host}/`,
-          title: `https://${host}`,
+          title: `test visit for https://${host}/`,
           heuristic: true,
         }),
         makeVisitResult(context, {
@@ -109,6 +112,7 @@ add_task(async function test_www() {
     context,
     autofilled: `www.${host}/`,
     completed: `http://www.${host}/`,
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: `http://www.${host}/`,
@@ -123,6 +127,7 @@ add_task(async function test_www() {
     context,
     autofilled: `www.${host}/`,
     completed: `http://www.${host}/`,
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: `http://www.${host}/`,
@@ -137,6 +142,7 @@ add_task(async function test_www() {
     context,
     autofilled: `${host}/`,
     completed: `http://www.${host}/`,
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: `http://www.${host}/`,

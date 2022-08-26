@@ -17,9 +17,19 @@ typedef void* EGLSyncKHR;
 
 #define DMABUF_BUFFER_PLANES 4
 
+#ifndef VA_FOURCC_NV12
+#  define VA_FOURCC_NV12 0x3231564E
+#endif
+#ifndef VA_FOURCC_YV12
+#  define VA_FOURCC_YV12 0x32315659
+#endif
+#ifndef VA_FOURCC_P010
+#  define VA_FOURCC_P010 0x30313050
+#endif
+
 namespace mozilla {
 namespace gfx {
-class SourceSurface;
+class DataSourceSurface;
 }
 namespace layers {
 class SurfaceDescriptor;
@@ -84,11 +94,19 @@ class DMABufSurface {
 
   virtual DMABufSurfaceRGBA* GetAsDMABufSurfaceRGBA() { return nullptr; }
   virtual DMABufSurfaceYUV* GetAsDMABufSurfaceYUV() { return nullptr; }
+  virtual already_AddRefed<mozilla::gfx::DataSourceSurface>
+  GetAsSourceSurface() {
+    return nullptr;
+  }
 
   virtual mozilla::gfx::YUVColorSpace GetYUVColorSpace() {
     return mozilla::gfx::YUVColorSpace::Default;
   };
-  virtual bool IsFullRange() { return false; };
+
+  bool IsFullRange() { return mColorRange == mozilla::gfx::ColorRange::FULL; };
+  void SetColorRange(mozilla::gfx::ColorRange aColorRange) {
+    mColorRange = aColorRange;
+  };
 
   void FenceSet();
   void FenceWait();
@@ -133,9 +151,13 @@ class DMABufSurface {
 
  protected:
   virtual bool Create(const mozilla::layers::SurfaceDescriptor& aDesc) = 0;
-  bool FenceImportFromFd();
 
+  // Import global ref count from IPC by file descriptor.
   void GlobalRefCountImport(int aFd);
+  // Export global ref count by file descriptor. This adds global ref count
+  // reference to the surface.
+  // It's used when dmabuf surface is shared with another process via. IPC.
+  int GlobalRefCountExport();
   void GlobalRefCountDelete();
 
   void ReleaseDMABuf();
@@ -158,13 +180,13 @@ class DMABufSurface {
   virtual ~DMABufSurface();
 
   SurfaceType mSurfaceType;
-  uint64_t mBufferModifier;
+  uint64_t mBufferModifiers[DMABUF_BUFFER_PLANES];
 
   int mBufferPlaneCount;
   int mDmabufFds[DMABUF_BUFFER_PLANES];
-  uint32_t mDrmFormats[DMABUF_BUFFER_PLANES];
-  uint32_t mStrides[DMABUF_BUFFER_PLANES];
-  uint32_t mOffsets[DMABUF_BUFFER_PLANES];
+  int32_t mDrmFormats[DMABUF_BUFFER_PLANES];
+  int32_t mStrides[DMABUF_BUFFER_PLANES];
+  int32_t mOffsets[DMABUF_BUFFER_PLANES];
 
   struct gbm_bo* mGbmBufferObject[DMABUF_BUFFER_PLANES];
   void* mMappedRegion[DMABUF_BUFFER_PLANES];
@@ -177,13 +199,19 @@ class DMABufSurface {
 
   int mGlobalRefCountFd;
   uint32_t mUID;
-  mozilla::Mutex mSurfaceLock;
+  mozilla::Mutex mSurfaceLock MOZ_UNANNOTATED;
+
+  mozilla::gfx::ColorRange mColorRange = mozilla::gfx::ColorRange::LIMITED;
 };
 
 class DMABufSurfaceRGBA : public DMABufSurface {
  public:
   static already_AddRefed<DMABufSurfaceRGBA> CreateDMABufSurface(
       int aWidth, int aHeight, int aDMABufSurfaceFlags);
+
+  static already_AddRefed<DMABufSurface> CreateDMABufSurface(
+      mozilla::gl::GLContext* aGLContext, const EGLImageKHR aEGLImage,
+      int aWidth, int aHeight);
 
   bool Serialize(mozilla::layers::SurfaceDescriptor& aOutDescriptor);
 
@@ -234,6 +262,8 @@ class DMABufSurfaceRGBA : public DMABufSurface {
 
   bool Create(int aWidth, int aHeight, int aDMABufSurfaceFlags);
   bool Create(const mozilla::layers::SurfaceDescriptor& aDesc);
+  bool Create(mozilla::gl::GLContext* aGLContext, const EGLImageKHR aEGLImage,
+              int aWidth, int aHeight);
 
   bool ImportSurfaceDescriptor(const mozilla::layers::SurfaceDescriptor& aDesc);
 
@@ -262,11 +292,12 @@ class DMABufSurfaceYUV : public DMABufSurface {
       int* aLineSizes = nullptr);
 
   static already_AddRefed<DMABufSurfaceYUV> CreateYUVSurface(
-      const VADRMPRIMESurfaceDescriptor& aDesc);
+      const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight);
 
   bool Serialize(mozilla::layers::SurfaceDescriptor& aOutDescriptor);
 
   DMABufSurfaceYUV* GetAsDMABufSurfaceYUV() { return this; };
+  already_AddRefed<mozilla::gfx::DataSourceSurface> GetAsSourceSurface();
 
   int GetWidth(int aPlane = 0) { return mWidth[aPlane]; }
   int GetHeight(int aPlane = 0) { return mHeight[aPlane]; }
@@ -288,12 +319,13 @@ class DMABufSurfaceYUV : public DMABufSurface {
   }
   mozilla::gfx::YUVColorSpace GetYUVColorSpace() { return mColorSpace; }
 
-  bool IsFullRange() { return true; }
-
   DMABufSurfaceYUV();
 
   bool UpdateYUVData(void** aPixelData, int* aLineSizes);
-  bool UpdateYUVData(const VADRMPRIMESurfaceDescriptor& aDesc);
+  bool UpdateYUVData(const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth,
+                     int aHeight);
+
+  bool VerifyTextureCreation();
 
  private:
   ~DMABufSurfaceYUV();
@@ -311,8 +343,16 @@ class DMABufSurfaceYUV : public DMABufSurface {
   void CloseFileDescriptorForPlane(const mozilla::MutexAutoLock& aProofOfLock,
                                    int aPlane, bool aForceClose);
 
+  bool CreateEGLImage(mozilla::gl::GLContext* aGLContext, int aPlane);
+  void ReleaseEGLImages(mozilla::gl::GLContext* aGLContext);
+
   int mWidth[DMABUF_BUFFER_PLANES];
   int mHeight[DMABUF_BUFFER_PLANES];
+  // Aligned size of the surface imported from VADRMPRIMESurfaceDescriptor.
+  // It's used only internally to create EGLImage as some GL drivers
+  // needs that (Bug 1724385).
+  int mWidthAligned[DMABUF_BUFFER_PLANES];
+  int mHeightAligned[DMABUF_BUFFER_PLANES];
   EGLImageKHR mEGLImage[DMABUF_BUFFER_PLANES];
   GLuint mTexture[DMABUF_BUFFER_PLANES];
   mozilla::gfx::YUVColorSpace mColorSpace =

@@ -13,10 +13,9 @@ const PBKDF2_KEY_BYTES = 16;
 const CRYPTO_COLLECTION = "crypto";
 const KEYS_WBO = "keys";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { Async } = ChromeUtils.import("resource://services-common/async.js");
 const { CommonUtils } = ChromeUtils.import(
@@ -76,9 +75,10 @@ const { DeclinedEngines } = ChromeUtils.import(
 const { Status } = ChromeUtils.import("resource://services-sync/status.js");
 ChromeUtils.import("resource://services-sync/telemetry.js");
 const { Svc, Utils } = ChromeUtils.import("resource://services-sync/util.js");
-const { fxAccounts } = ChromeUtils.import(
+const { getFxAccountsSingleton } = ChromeUtils.import(
   "resource://gre/modules/FxAccounts.jsm"
 );
+const fxAccounts = getFxAccountsSingleton();
 
 function getEngineModules() {
   let result = {
@@ -111,10 +111,12 @@ function getEngineModules() {
   return result;
 }
 
+const lazy = {};
+
 // A unique identifier for this browser session. Used for logging so
 // we can easily see whether 2 logs are in the same browser session or
 // after the browser restarted.
-XPCOMUtils.defineLazyGetter(this, "browserSessionID", Utils.makeGUID);
+XPCOMUtils.defineLazyGetter(lazy, "browserSessionID", Utils.makeGUID);
 
 function Sync11Service() {
   this._notify = Utils.notify("weave:service:");
@@ -461,9 +463,8 @@ Sync11Service.prototype = {
       if (!modInfo.module.includes(":")) {
         modInfo.module = "resource://services-sync/engines/" + modInfo.module;
       }
-      let ns = {};
       try {
-        ChromeUtils.import(modInfo.module, ns);
+        let ns = ChromeUtils.import(modInfo.module);
         if (modInfo.symbol) {
           let symbol = modInfo.symbol;
           if (!(symbol in ns)) {
@@ -1318,7 +1319,7 @@ Sync11Service.prototype = {
     this._log.debug("User-Agent: " + Utils.userAgent);
     await this.promiseInitialized;
     this._log.info(
-      `Starting sync at ${dateStr} in browser session ${browserSessionID}`
+      `Starting sync at ${dateStr} in browser session ${lazy.browserSessionID}`
     );
     return this._catch(async function() {
       // Make sure we're logged in.
@@ -1636,6 +1637,6 @@ Sync11Service.prototype = {
 };
 
 var Service = new Sync11Service();
-this.Service.promiseInitialized = new Promise(resolve => {
-  this.Service.onStartup().then(resolve);
+Service.promiseInitialized = new Promise(resolve => {
+  Service.onStartup().then(resolve);
 });

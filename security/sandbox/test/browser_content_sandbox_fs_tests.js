@@ -3,6 +3,8 @@
 /* import-globals-from browser_content_sandbox_utils.js */
 "use strict";
 
+const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
+
 // Test if the content process can create in $HOME, this should fail
 async function createFileInHome() {
   let browser = gBrowser.selectedBrowser;
@@ -263,9 +265,6 @@ async function testFileAccessMacOnly() {
   // the $TMPDIR to derive the path to the registry.
   let fontRegistryDir = macTempDir.parent.clone();
   fontRegistryDir.appendRelativePath("C/com.apple.FontRegistry");
-
-  // Assume the font registry directory has been created by the system.
-  Assert.ok(fontRegistryDir.exists(), `${fontRegistryDir.path} exists`);
   if (fontRegistryDir.exists()) {
     tests.push({
       desc: `FontRegistry (${fontRegistryDir.path})`,
@@ -279,8 +278,6 @@ async function testFileAccessMacOnly() {
     // exists in the the font registry directory.
     let fontFile = fontRegistryDir.clone();
     fontFile.appendRelativePath("font");
-    // Assume the `font` file has been created by the system.
-    Assert.ok(fontFile.exists(), `${fontFile.path} exists`);
     if (fontFile.exists()) {
       tests.push({
         desc: `FontRegistry file (${fontFile.path})`,
@@ -411,20 +408,8 @@ async function testFileAccessLinuxOnly() {
   let configDir = GetHomeSubdir(".config");
 
   const xdgConfigHome = GetEnvironmentVariable("XDG_CONFIG_HOME");
-  let populateFakeXdgConfigHome = async aPath => {
-    const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-    await OS.File.makeDir(aPath, { unixMode: OS.Constants.S_IRWXU });
-    ok(await OS.File.exists(aPath), `XDG_CONFIG_HOME ${aPath} was created`);
-  };
-
-  let unpopulateFakeXdgConfigHome = async aPath => {
-    const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-    await OS.File.removeDir(aPath);
-  };
 
   if (xdgConfigHome.length > 1) {
-    await populateFakeXdgConfigHome(xdgConfigHome);
-
     configDir = GetDir(xdgConfigHome);
     configDir.normalize();
 
@@ -635,9 +620,43 @@ async function testFileAccessLinuxOnly() {
       file: configDir,
       minLevel: minHomeReadSandboxLevel(),
       func: readDir,
-      cleanup: unpopulateFakeXdgConfigHome,
     });
   }
+
+  await runTestsList(tests);
+}
+
+async function testFileAccessLinuxSnap() {
+  let webBrowser = GetWebBrowser();
+
+  let tests = [];
+
+  // Assert that if we run with SNAP= env, then we allow access to it in the
+  // content process
+  let snap = GetEnvironmentVariable("SNAP");
+  let snapExpectedResult = false;
+  if (snap.length > 1) {
+    snapExpectedResult = true;
+  } else {
+    snap = "/tmp/.snap_firefox_current/";
+  }
+
+  let snapDir = GetDir(snap);
+  snapDir.normalize();
+
+  let snapFile = GetSubdirFile(snapDir);
+  await createFile(snapFile.path);
+  ok(await OS.File.exists(snapFile.path), `SNAP ${snapFile.path} was created`);
+  info(`SNAP (file) ${snapFile.path} was created`);
+
+  tests.push({
+    desc: `$SNAP (${snapDir.path} => ${snapFile.path})`,
+    ok: snapExpectedResult,
+    browser: webBrowser,
+    file: snapFile,
+    minLevel: minHomeReadSandboxLevel(),
+    func: readFile,
+  });
 
   await runTestsList(tests);
 }

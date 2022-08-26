@@ -83,7 +83,7 @@ var HarMenuUtils = {
 
   getDefaultHarOptions(requests, connector) {
     return {
-      connector: connector,
+      connector,
       items: requests,
     };
   },
@@ -93,8 +93,7 @@ var HarMenuUtils = {
 
 function readFile(file) {
   return new Promise(resolve => {
-    const { OS } = Cu.import("resource://gre/modules/osfile.jsm");
-    OS.File.read(file.path).then(data => {
+    IOUtils.read(file.path).then(data => {
       const decoder = new TextDecoder();
       resolve(decoder.decode(data));
     });

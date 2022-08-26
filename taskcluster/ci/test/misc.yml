@@ -4,21 +4,22 @@
 ---
 job-defaults:
     test-manifest-loader: null  # don't load tests in the taskgraph
-    python-3: true
 
 geckoview-junit:
     description: "Geckoview junit run"
     suite: geckoview-junit
-    variants: ["geckoview-e10s-single", "geckoview-fission"]
+    variants: ["geckoview-e10s-single", "geckoview-fission", "fission-no-isolate", "no-fission"]
     treeherder-symbol: gv-junit
     loopback-video: true
-    e10s: true
     target: geckoview-androidTest.apk
     max-run-time: 3600
     run-on-projects:
         by-variant:
+            geckoview-e10s-single: ['trunk']
             geckoview-fission: ['trunk']
-            default: built-projects
+            fission-no-isolate: ['trunk']
+            no-fission: built-projects
+            default: []
     tier: default
     mozharness:
         script: android_emulator_unittest.py
@@ -34,17 +35,7 @@ telemetry-tests-client:
     description: "Telemetry tests client run"
     suite: telemetry-tests-client
     treeherder-symbol: tt(c)
-    variants: [fission]
-    run-on-projects:
-        by-variant:
-            fission:
-                by-test-platform:
-                    linux.*-64-qr/debug: [trunk]
-                    linux.*-64(?:-shippable|-asan)?-qr/opt: [trunk]
-                    windows.*-64-qr/debug: [trunk]
-                    windows.*-64(?:-shippable)?-qr/opt: [trunk]
-                    default: []
-            default: built-projects
+    run-on-projects: built-projects
     max-run-time: 1200
     tier: default
     mozharness:
@@ -63,29 +54,32 @@ test-verify:
     loopback-video: true
     max-run-time: 10800
     allow-software-gl-layers: false
-    variants: ["fission"]
+    variants:
+        - no-fission
     run-on-projects:
         by-variant:
-            fission:
+            no-fission:
                 by-test-platform:
                     # do not run on ccov or asan or shippable
                     .*(-ccov|-asan|-shippable).*: []
-                    # we prefer -qr platforms with fission, no need to run on both
+                    # we prefer -qr platforms with fis, no need to run on both
                     (?!.*(-ccov|-asan|-shippable))(?!.*-qr).*: []
                     # do not run on mozilla-central, beta or release: usually just confirms earlier results
-                    default: ['integration']
+                    android.*: ['integration']
+                    default: []
             default:
                 by-test-platform:
                     # do not run on ccov or asan or shippable
                     .*(-ccov|-asan|-shippable).*: []
-                    # linux / windows -qr skipped because they were previously skipped via test-platforms.yml
-                    .*(linux|windows)(?!.*(-ccov|-asan|-shippable)).*-qr.*: []
+                    # we prefer -qr platforms with fis, no need to run on both
+                    (?!.*(-ccov|-asan|-shippable))(?!.*-qr).*: []
                     # do not run on mozilla-central, beta or release: usually just confirms earlier results
+                    android.*: []
                     default: ['integration']
     built-projects-only: true
     target:
         by-test-platform:
-            android-em-7.*: geckoview-androidTest.apk
+            android-em-7.*: geckoview-test_runner.apk
             default: null
     optimization:
         test-verify: ["test-verify"]
@@ -150,16 +144,14 @@ test-verify-gpu:
     max-run-time: 10800
     allow-software-gl-layers: false
     run-on-projects:
-        by-variant:
-            fission: ['trunk']
-            default:
-                by-test-platform:
-                    # do not run on ccov or asan
-                    .*-ccov.*/.*: []
-                    .*-asan/.*: []
-                    .*shippable.*: []
-                    # do not run on mozilla-central, beta or release: usually just confirms earlier results
-                    default: ['integration']
+        by-test-platform:
+            # do not run on ccov or asan
+            .*-ccov.*/.*: []
+            .*-asan/.*: []
+            .*shippable.*: []
+            # do not run on mozilla-central, beta or release: usually just confirms earlier results
+            linux.*: ['integration']
+            default: []
     built-projects-only: true
     optimization:
         test-verify: ["test-verify-gpu"]
@@ -194,12 +186,9 @@ test-coverage:
     max-run-time: 10800
     allow-software-gl-layers: false
     run-on-projects:
-        by-variant:
-            fission: ['trunk']
-            default:
-                by-test-platform:
-                    .*-ccov.*/.*: built-projects
-                    default: []
+        by-test-platform:
+            .*-ccov.*/.*: built-projects
+            default: []
     tier: 2
     mozharness:
         script:
@@ -260,13 +249,10 @@ test-coverage-gpu:
     max-run-time: 10800
     allow-software-gl-layers: false
     run-on-projects:
-        by-variant:
-            fission: ['trunk']
-            default:
-                by-test-platform:
-                    # only run on mozilla-central and try.
-                    .*-ccov.*/.*: ['mozilla-central']
-                    default: []
+        by-test-platform:
+            # only run on mozilla-central and try.
+            .*-ccov.*/.*: ['mozilla-central']
+            default: []
     tier:
         by-test-platform:
             windows10-64-asan.*: 3

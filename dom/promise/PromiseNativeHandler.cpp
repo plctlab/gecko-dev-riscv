@@ -8,8 +8,7 @@
 #include "mozilla/dom/Promise.h"
 #include "nsISupportsImpl.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS0(DomPromiseListener)
 
@@ -24,7 +23,8 @@ DomPromiseListener::~DomPromiseListener() {
 }
 
 void DomPromiseListener::ResolvedCallback(JSContext* aCx,
-                                          JS::Handle<JS::Value> aValue) {
+                                          JS::Handle<JS::Value> aValue,
+                                          ErrorResult& aRv) {
   if (mResolve) {
     mResolve(aCx, aValue);
   }
@@ -33,7 +33,8 @@ void DomPromiseListener::ResolvedCallback(JSContext* aCx,
 }
 
 void DomPromiseListener::RejectedCallback(JSContext* aCx,
-                                          JS::Handle<JS::Value> aValue) {
+                                          JS::Handle<JS::Value> aValue,
+                                          ErrorResult& aRv) {
   if (mReject) {
     nsresult errorCode;
     if (!aValue.isInt32()) {
@@ -52,5 +53,4 @@ void DomPromiseListener::Clear() {
   mReject = nullptr;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

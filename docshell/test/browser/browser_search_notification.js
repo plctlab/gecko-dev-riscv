@@ -1,8 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { SearchTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SearchTestUtils.jsm"
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
 );
 
 SearchTestUtils.init(this);
@@ -46,9 +46,9 @@ add_task(async function() {
 
   let [subject, data] = await TestUtils.topicObserved("keyword-search");
 
-  let engine = Services.search.defaultEngine;
-  Assert.ok(engine, "Have default search engine.");
-  Assert.equal(engine, subject, "Notification subject is engine.");
+  let engine = subject.QueryInterface(Ci.nsISupportsString).data;
+
+  Assert.equal(engine, kSearchEngineID, "Should be the search engine id");
   Assert.equal(data, "firefox", "Notification data is search term.");
 
   gBrowser.removeTab(tab);

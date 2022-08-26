@@ -7,9 +7,8 @@
 
 /* import-globals-from aboutDialog.js */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 XPCOMUtils.defineLazyModuleGetters(this, {
   AppUpdater: "resource:///modules/AppUpdater.jsm",
@@ -44,11 +43,20 @@ function appUpdater(options = {}) {
     "chrome://browser/locale/browser.properties"
   );
 
-  let manualURL = Services.urlFormatter.formatURLPref("app.update.url.manual");
-  let manualLink = document.getElementById("manualLink");
-  manualLink.textContent = manualURL;
-  manualLink.href = manualURL;
-  document.getElementById("failedLink").href = manualURL;
+  try {
+    let manualURL = new URL(
+      Services.urlFormatter.formatURLPref("app.update.url.manual")
+    );
+
+    let manualLink = document.getElementById("manualLink");
+    // Strip hash and search parameters for display text.
+    manualLink.textContent = manualURL.origin + manualURL.pathname;
+    manualLink.href = manualURL.href;
+
+    document.getElementById("failedLink").href = manualURL.href;
+  } catch (e) {
+    console.error("Invalid manual update url.", e);
+  }
 
   this._appUpdater.check();
 }
@@ -236,9 +244,14 @@ appUpdater.prototype = {
       return;
     }
 
-    Services.startup.quit(
-      Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart
-    );
+    if (
+      !Services.startup.quit(
+        Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart
+      )
+    ) {
+      // Either the user or the hidden window aborted the quit process.
+      gAppUpdater.selectPanel("apply");
+    }
   },
 
   /**

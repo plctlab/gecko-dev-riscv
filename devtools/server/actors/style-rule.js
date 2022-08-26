@@ -8,7 +8,6 @@ const protocol = require("devtools/shared/protocol");
 const { getCSSLexer } = require("devtools/shared/css/lexer");
 const InspectorUtils = require("InspectorUtils");
 const TrackChangeEmitter = require("devtools/server/actors/utils/track-change-emitter");
-
 const {
   getRuleText,
   getTextAtLineColumn,
@@ -44,7 +43,7 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
-  "inactivePropertyHelper",
+  "isPropertyUsed",
   "devtools/server/actors/utils/inactive-property-helper",
   true
 );
@@ -60,6 +59,8 @@ loader.lazyRequireGetter(
   "devtools/server/actors/style-sheet",
   true
 );
+
+loader.lazyRequireGetter(this, "ChromeUtils");
 
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -80,7 +81,7 @@ const SUPPORTED_RULE_TYPES = [
  * with a special rule type (100).
  */
 const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
-  initialize: function(pageStyle, item) {
+  initialize(pageStyle, item) {
     protocol.Actor.prototype.initialize.call(this, null);
     this.pageStyle = pageStyle;
     this.rawStyle = item.style;
@@ -90,6 +91,8 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
     // names and values before tracking changes. Using cached values instead of accessing
     // this.form().declarations on demand because that would cause needless re-parsing.
     this._declarations = [];
+
+    this._pendingDeclarationChanges = [];
 
     if (CSSRule.isInstance(item)) {
       this.type = item.type;
@@ -113,7 +116,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
       this.rawNode = item;
       this.rawRule = {
         style: item.style,
-        toString: function() {
+        toString() {
           return "[element rule " + this.style + "]";
         },
       };
@@ -124,7 +127,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
     return this.pageStyle.conn;
   },
 
-  destroy: function() {
+  destroy() {
     if (!this.rawStyle) {
       return;
     }
@@ -284,30 +287,27 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
     return data;
   },
 
-  getDocument: function(sheet) {
-    if (sheet.ownerNode) {
-      return sheet.ownerNode.nodeType == sheet.ownerNode.DOCUMENT_NODE
-        ? sheet.ownerNode
-        : sheet.ownerNode.ownerDocument;
-    } else if (sheet.parentStyleSheet) {
-      return this.getDocument(sheet.parentStyleSheet);
+  getDocument(sheet) {
+    if (!sheet.associatedDocument) {
+      throw new Error(
+        "Failed trying to get the document of an invalid stylesheet"
+      );
     }
-    throw new Error(
-      "Failed trying to get the document of an invalid stylesheet"
-    );
+    return sheet.associatedDocument;
   },
 
-  toString: function() {
+  toString() {
     return "[StyleRuleActor for " + this.rawRule + "]";
   },
 
   // eslint-disable-next-line complexity
-  form: function() {
+  form() {
     const form = {
       actor: this.actorID,
       type: this.type,
       line: this.line || undefined,
       column: this.column,
+      ancestorData: [],
       traits: {
         // Indicates whether StyleRuleActor implements and can use the setRuleText method.
         // It cannot use it if the stylesheet was programmatically mutated via the CSSOM.
@@ -315,22 +315,27 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
       },
     };
 
-    if (this.rawRule.parentRule) {
-      form.parentRule = this.pageStyle._styleRef(
-        this.rawRule.parentRule
-      ).actorID;
-
-      // CSS rules that we call media rules are STYLE_RULES that are children
-      // of MEDIA_RULEs. We need to check the parentRule to check if a rule is
-      // a media rule so we do this here instead of in the switch statement
-      // below.
-      if (this.rawRule.parentRule.type === CSSRule.MEDIA_RULE) {
-        form.media = [];
-        for (let i = 0, n = this.rawRule.parentRule.media.length; i < n; i++) {
-          form.media.push(this.rawRule.parentRule.media.item(i));
-        }
+    // Go through all ancestor so we can build an array of all the media queries and
+    // layers this rule is in.
+    for (const ancestorRule of this.ancestorRules) {
+      if (
+        ancestorRule.type === CSSRule.MEDIA_RULE &&
+        ancestorRule.rawRule.media?.length
+      ) {
+        form.ancestorData.push({
+          type: "media",
+          value: Array.from(ancestorRule.rawRule.media).join(", "),
+        });
+      } else if (
+        ChromeUtils.getClassName(ancestorRule.rawRule) === "CSSLayerBlockRule"
+      ) {
+        form.ancestorData.push({
+          type: "layer",
+          value: ancestorRule.rawRule.name,
+        });
       }
     }
+
     if (this._parentSheet) {
       if (this.pageStyle.hasStyleSheetWatcherSupport) {
         form.parentStyleSheet = this.pageStyle.styleSheetsManager.getStyleSheetResourceId(
@@ -340,6 +345,18 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
         form.parentStyleSheet = this.pageStyle._sheetRef(
           this._parentSheet
         ).actorID;
+      }
+
+      // If the rule is in a imported stylesheet with a specified layer, put it at the top
+      // of the ancestor data array.
+      if (
+        this._parentSheet.ownerRule &&
+        this._parentSheet.ownerRule.layerName !== null
+      ) {
+        form.ancestorData.unshift({
+          type: "layer",
+          value: this._parentSheet.ownerRule.layerName,
+        });
       }
     }
 
@@ -434,12 +451,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
           supportsOptions
         );
         // TODO: convert from Object to Boolean. See Bug 1574471
-        decl.isUsed = inactivePropertyHelper.isPropertyUsed(
-          el,
-          style,
-          this.rawRule,
-          decl.name
-        );
+        decl.isUsed = isPropertyUsed(el, style, this.rawRule, decl.name);
         // Check property name. All valid CSS properties support "initial" as a value.
         decl.isNameValid = InspectorUtils.supports(
           `${decl.name}:initial`,
@@ -447,6 +459,16 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
         );
         return decl;
       });
+
+      // We have computed the new `declarations` array, before forgetting about
+      // the old declarations compute the CSS changes for pending modifications
+      // applied by the user. Comparing the old and new declarations arrays
+      // ensures we only rely on values understood by the engine and not authored
+      // values. See Bug 1590031.
+      this._pendingDeclarationChanges.forEach(change =>
+        this.logDeclarationChange(change, declarations, this._declarations)
+      );
+      this._pendingDeclarationChanges = [];
 
       // Cache parsed declarations so we don't needlessly re-parse authoredText every time
       // we need to check previous property names and values when tracking changes.
@@ -463,7 +485,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    * @param {Number} line the new line number
    * @param {Number} column the new column number
    */
-  _notifyLocationChanged: function(line, column) {
+  _notifyLocationChanged(line, column) {
     this.emit("location-changed", line, column);
   },
 
@@ -473,7 +495,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    * a given CSS rule in its parent.  A vector is used to support
    * nested rules.
    */
-  _computeRuleIndex: function() {
+  _computeRuleIndex() {
     let rule = this.rawRule;
     const result = [];
 
@@ -514,7 +536,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    * @return {CSSStyleRule} the rule corresponding to
    * |this._ruleIndex|
    */
-  _getRuleFromIndex: function(parentSheet) {
+  _getRuleFromIndex(parentSheet) {
     let currentRule = null;
     for (const i of this._ruleIndex) {
       if (currentRule === null) {
@@ -530,7 +552,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    * This is attached to the parent style sheet actor's
    * "style-applied" event.
    */
-  _onStyleApplied: function(kind) {
+  _onStyleApplied(kind) {
     if (kind === UPDATE_GENERAL) {
       // A general change means that the rule actors are invalidated,
       // so stop listening to events now.
@@ -572,7 +594,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    *        ignore it and parse the stylehseet again. The authoredText
    *        may be outdated if a descendant of this rule has changed.
    */
-  getAuthoredCssText: async function(skipCache = false) {
+  async getAuthoredCssText(skipCache = false) {
     if (!this.canSetRuleText || !SUPPORTED_RULE_TYPES.includes(this.type)) {
       return Promise.resolve("");
     }
@@ -618,7 +640,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    *
    * @return {String}
    */
-  getRuleText: async function() {
+  async getRuleText() {
     // Bail out if the rule is not supported or not an element inline style.
     if (![...SUPPORTED_RULE_TYPES, ELEMENT_STYLE].includes(this.type)) {
       return Promise.resolve("");
@@ -700,9 +722,6 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
       throw new Error("invalid call to setRuleText");
     }
 
-    // Log the changes before applying them so we have access to the previous values.
-    modifications.map(mod => this.logDeclarationChange(mod));
-
     if (this.type === ELEMENT_STYLE) {
       // For element style rules, set the node's style attribute.
       this.rawNode.setAttributeDevtools("style", newText);
@@ -718,11 +737,10 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
         newText +
         cssText.substring(offset + text.length);
 
-      await this.pageStyle.styleSheetsManager.update(
+      await this.pageStyle.styleSheetsManager.setStyleSheetText(
         resourceId,
         cssText,
-        false,
-        UPDATE_PRESERVING_RULES
+        { kind: UPDATE_PRESERVING_RULES }
       );
     } else {
       // For stylesheet rules, set the text in the stylesheet.
@@ -740,6 +758,11 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
 
     this.authoredText = newText;
     this.pageStyle.refreshObservedRules();
+
+    // Add processed modifications to the _pendingDeclarationChanges array,
+    // they will be emitted as CSS_CHANGE resources once `declarations` have
+    // been re-computed in `form`.
+    this._pendingDeclarationChanges.push(...modifications);
 
     // Returning this updated actor over the protocol will update its corresponding front
     // and any references to it.
@@ -764,7 +787,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    *
    * @returns the rule with updated properties
    */
-  modifyProperties: function(modifications) {
+  modifyProperties(modifications) {
     // Use a fresh element for each call to this function to prevent side
     // effects that pop up based on property values that were already set on the
     // element.
@@ -784,7 +807,6 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
     const tempElement = document.createElementNS(XHTML_NS, "div");
 
     for (const mod of modifications) {
-      this.logDeclarationChange(mod);
       if (mod.type === "set") {
         tempElement.style.setProperty(mod.name, mod.value, mod.priority || "");
         this.rawStyle.setProperty(
@@ -798,6 +820,11 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
     }
 
     this.pageStyle.refreshObservedRules();
+
+    // Add processed modifications to the _pendingDeclarationChanges array,
+    // they will be emitted as CSS_CHANGE resources once `declarations` have
+    // been re-computed in `form`.
+    this._pendingDeclarationChanges.push(...modifications);
 
     return this;
   },
@@ -850,11 +877,10 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
           value +
           authoredText.substring(endOffset);
 
-        await this.pageStyle.styleSheetsManager.update(
+        await this.pageStyle.styleSheetsManager.setStyleSheetText(
           resourceId,
           authoredText,
-          false,
-          UPDATE_PRESERVING_RULES
+          { kind: UPDATE_PRESERVING_RULES }
         );
       } else {
         const sheetActor = this.pageStyle._sheetRef(parentStyleSheet);
@@ -903,8 +929,12 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    *
    * @param {Object} change
    *        Data about a modification to a declaration. @see |modifyProperties()|
+   * @param {Object} newDeclarations
+   *        The current declarations array to get the latest values, names...
+   * @param {Object} oldDeclarations
+   *        The previous declarations array to use to fetch old values, names...
    */
-  logDeclarationChange(change) {
+  logDeclarationChange(change, newDeclarations, oldDeclarations) {
     // Position of the declaration within its rule.
     const index = change.index;
     // Destructure properties from the previous CSS declaration at this index, if any,
@@ -914,7 +944,10 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
       name: prevName,
       priority: prevPriority,
       commentOffsets,
-    } = this._declarations[index] || {};
+    } = oldDeclarations[index] || {};
+
+    const { value: currentValue, name: currentName } =
+      newDeclarations[index] || {};
     // A declaration is disabled if it has a `commentOffsets` array.
     // Here we type coerce the value to a boolean with double-bang (!!)
     const prevDisabled = !!commentOffsets;
@@ -929,12 +962,17 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
         data.type = prevValue ? "declaration-add" : "declaration-update";
         // If `change.newName` is defined, use it because the property is being renamed.
         // Otherwise, a new declaration is being created or the value of an existing
-        // declaration is being updated. In that case, use the provided `change.name`.
-        const name = change.newName ? change.newName : change.name;
+        // declaration is being updated. In that case, use the currentName computed
+        // by the engine.
+        const changeName = currentName || change.name;
+        const name = change.newName ? change.newName : changeName;
         // Append the "!important" string if defined in the incoming priority flag.
+
+        const changeValue = currentValue || change.value;
         const newValue = change.priority
-          ? `${change.value} !important`
-          : change.value;
+          ? `${changeValue} !important`
+          : changeValue;
+
         // Reuse the previous value string, when the property is renamed.
         // Otherwise, use the incoming value string.
         const value = change.newName ? prevValue : newValue;
@@ -1024,7 +1062,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
    *        new rule and a boolean indicating whether or not the new selector
    *        matches the current selected element
    */
-  modifySelector: function(node, value, editAuthored = false) {
+  modifySelector(node, value, editAuthored = false) {
     if (this.type === ELEMENT_STYLE || this.rawRule.selectorText === value) {
       return { ruleProps: null, isMatching: true };
     }
@@ -1085,12 +1123,7 @@ const StyleRuleActor = protocol.ActorClassWithSpec(styleRuleSpec, {
 
     for (const decl of this._declarations) {
       // TODO: convert from Object to Boolean. See Bug 1574471
-      const isUsed = inactivePropertyHelper.isPropertyUsed(
-        el,
-        style,
-        this.rawRule,
-        decl.name
-      );
+      const isUsed = isPropertyUsed(el, style, this.rawRule, decl.name);
 
       if (decl.isUsed.used !== isUsed.used) {
         decl.isUsed = isUsed;

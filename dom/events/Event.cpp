@@ -7,6 +7,7 @@
 #include "AccessCheck.h"
 #include "base/basictypes.h"
 #include "ipc/IPCMessageUtils.h"
+#include "ipc/IPCMessageUtilsSpecializations.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ContentEvents.h"
@@ -303,6 +304,36 @@ EventTarget* Event::GetComposedTarget() const {
 
 void Event::SetTrusted(bool aTrusted) { mEvent->mFlags.mIsTrusted = aTrusted; }
 
+bool Event::ShouldIgnoreChromeEventTargetListener() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!XRE_IsParentProcess()) {
+    return false;
+  }
+  if (EventTarget* currentTarget = GetCurrentTarget();
+      NS_WARN_IF(!currentTarget) || !currentTarget->IsRootWindow()) {
+    return false;
+  }
+  EventTarget* et = GetOriginalTarget();
+  if (NS_WARN_IF(!et)) {
+    return false;
+  }
+  nsIGlobalObject* global = et->GetOwnerGlobal();
+  if (NS_WARN_IF(!global)) {
+    return false;
+  }
+  nsPIDOMWindowInner* win = global->AsInnerWindow();
+  if (NS_WARN_IF(!win)) {
+    return false;
+  }
+  BrowsingContext* bc = win->GetBrowsingContext();
+  if (NS_WARN_IF(!bc)) {
+    return false;
+  }
+  // If this is a content event on an nsWindowRoot, then we also handle this in
+  // InProcessBrowserChildMessageManager, so we can ignore this event.
+  return bc->IsContent();
+}
+
 bool Event::Init(mozilla::dom::EventTarget* aGlobal) {
   if (!mIsMainThreadEvent) {
     return IsCurrentThreadRunningChromeWorker();
@@ -414,7 +445,8 @@ void Event::PreventDefaultInternal(bool aCalledByDefaultHandler,
   }
 
   nsIPrincipal* principal = nullptr;
-  nsCOMPtr<nsINode> node = do_QueryInterface(mEvent->mCurrentTarget);
+  nsCOMPtr<nsINode> node =
+      nsINode::FromEventTargetOrNull(mEvent->mCurrentTarget);
   if (node) {
     principal = node->NodePrincipal();
   } else {
@@ -447,8 +479,7 @@ already_AddRefed<EventTarget> Event::EnsureWebAccessibleRelatedTarget(
     EventTarget* aRelatedTarget) {
   nsCOMPtr<EventTarget> relatedTarget = aRelatedTarget;
   if (relatedTarget) {
-    nsCOMPtr<nsIContent> content = do_QueryInterface(relatedTarget);
-
+    nsIContent* content = nsIContent::FromEventTarget(relatedTarget);
     if (content && content->ChromeOnlyAccess() &&
         !nsContentUtils::CanAccessNativeAnon()) {
       content = content->FindFirstNonChromeOnlyAccessContent();
@@ -515,11 +546,11 @@ bool Event::IsDispatchStopped() { return mEvent->PropagationStopped(); }
 WidgetEvent* Event::WidgetEventPtr() { return mEvent; }
 
 // static
-CSSIntPoint Event::GetScreenCoords(nsPresContext* aPresContext,
-                                   WidgetEvent* aEvent,
-                                   LayoutDeviceIntPoint aPoint) {
+Maybe<CSSIntPoint> Event::GetScreenCoords(nsPresContext* aPresContext,
+                                          WidgetEvent* aEvent,
+                                          LayoutDeviceIntPoint aPoint) {
   if (PointerLockManager::IsLocked()) {
-    return EventStateManager::sLastScreenPoint;
+    return Some(EventStateManager::sLastScreenPoint);
   }
 
   if (!aEvent || (aEvent->mClass != eMouseEventClass &&
@@ -529,14 +560,14 @@ CSSIntPoint Event::GetScreenCoords(nsPresContext* aPresContext,
                   aEvent->mClass != eTouchEventClass &&
                   aEvent->mClass != eDragEventClass &&
                   aEvent->mClass != eSimpleGestureEventClass)) {
-    return CSSIntPoint(0, 0);
+    return Nothing();
   }
 
   // Doing a straight conversion from LayoutDeviceIntPoint to CSSIntPoint
   // seem incorrect, but it is needed to maintain legacy functionality.
   WidgetGUIEvent* guiEvent = aEvent->AsGUIEvent();
   if (!aPresContext || !(guiEvent && guiEvent->mWidget)) {
-    return CSSIntPoint(aPoint.x, aPoint.y);
+    return Some(CSSIntPoint(aPoint.x, aPoint.y));
   }
 
   // (Potentially) transform the point from the coordinate space of an
@@ -551,14 +582,13 @@ CSSIntPoint Event::GetScreenCoords(nsPresContext* aPresContext,
   LayoutDeviceIntPoint rounded = RoundedToInt(topLevelPoint);
 
   nsPoint pt = LayoutDevicePixel::ToAppUnits(
-      rounded,
-      aPresContext->DeviceContext()->AppUnitsPerDevPixelAtUnitFullZoom());
+      rounded, aPresContext->DeviceContext()->AppUnitsPerDevPixel());
 
   pt += LayoutDevicePixel::ToAppUnits(
       guiEvent->mWidget->TopLevelWidgetToScreenOffset(),
-      aPresContext->DeviceContext()->AppUnitsPerDevPixelAtUnitFullZoom());
+      aPresContext->DeviceContext()->AppUnitsPerDevPixel());
 
-  return CSSPixel::FromAppUnitsRounded(pt);
+  return Some(CSSPixel::FromAppUnitsRounded(pt));
 }
 
 // static
@@ -626,7 +656,7 @@ CSSIntPoint Event::GetOffsetCoords(nsPresContext* aPresContext,
   if (!aEvent->mTarget) {
     return GetPageCoords(aPresContext, aEvent, aPoint, aDefaultPoint);
   }
-  nsCOMPtr<nsIContent> content = do_QueryInterface(aEvent->mTarget);
+  nsCOMPtr<nsIContent> content = nsIContent::FromEventTarget(aEvent->mTarget);
   if (!content || !aPresContext) {
     return CSSIntPoint();
   }
@@ -751,38 +781,39 @@ double Event::TimeStamp() {
       workerPrivate->CrossOriginIsolated());
 }
 
-void Event::Serialize(IPC::Message* aMsg, bool aSerializeInterfaceType) {
+void Event::Serialize(IPC::MessageWriter* aWriter,
+                      bool aSerializeInterfaceType) {
   if (aSerializeInterfaceType) {
-    IPC::WriteParam(aMsg, u"event"_ns);
+    IPC::WriteParam(aWriter, u"event"_ns);
   }
 
   nsString type;
   GetType(type);
-  IPC::WriteParam(aMsg, type);
+  IPC::WriteParam(aWriter, type);
 
-  IPC::WriteParam(aMsg, Bubbles());
-  IPC::WriteParam(aMsg, Cancelable());
-  IPC::WriteParam(aMsg, IsTrusted());
-  IPC::WriteParam(aMsg, Composed());
+  IPC::WriteParam(aWriter, Bubbles());
+  IPC::WriteParam(aWriter, Cancelable());
+  IPC::WriteParam(aWriter, IsTrusted());
+  IPC::WriteParam(aWriter, Composed());
 
   // No timestamp serialization for now!
 }
 
-bool Event::Deserialize(const IPC::Message* aMsg, PickleIterator* aIter) {
+bool Event::Deserialize(IPC::MessageReader* aReader) {
   nsString type;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &type), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &type), false);
 
   bool bubbles = false;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &bubbles), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &bubbles), false);
 
   bool cancelable = false;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &cancelable), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &cancelable), false);
 
   bool trusted = false;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &trusted), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &trusted), false);
 
   bool composed = false;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &composed), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &composed), false);
 
   InitEvent(type, bubbles, cancelable);
   SetTrusted(trusted);

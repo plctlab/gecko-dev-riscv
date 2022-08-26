@@ -14,23 +14,25 @@ var EXPORTED_SYMBOLS = ["FormAutofillPrompter"];
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
 );
 const { FormAutofillUtils } = ChromeUtils.import(
   "resource://autofill/FormAutofillUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   CreditCard: "resource://gre/modules/CreditCard.jsm",
 });
 
-this.log = null;
-FormAutofill.defineLazyLogGetter(this, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyGetter(lazy, "log", () =>
+  FormAutofill.defineLogGetter(lazy, EXPORTED_SYMBOLS[0])
+);
 
 const GetStringFromName = FormAutofillUtils.stringBundle.GetStringFromName;
 const formatStringFromName =
@@ -75,7 +77,7 @@ const CONTENT = {
         callback(event) {
           let checked = event.target.checked;
           Services.prefs.setBoolPref("services.sync.engine.addresses", checked);
-          log.debug("Set addresses sync to", checked);
+          lazy.log.debug("Set addresses sync to", checked);
         },
       },
       hideClose: true,
@@ -163,10 +165,9 @@ const CONTENT = {
             : null;
         },
         callback(event) {
-          let {
-            secondaryButton,
-            menubutton,
-          } = event.target.parentNode.parentNode.parentNode;
+          let { secondaryButton, menubutton } = event.target.closest(
+            "popupnotification"
+          );
           let checked = event.target.checked;
           Services.prefs.setBoolPref(
             "services.sync.engine.creditcards",
@@ -174,7 +175,7 @@ const CONTENT = {
           );
           secondaryButton.disabled = checked;
           menubutton.disabled = checked;
-          log.debug("Set creditCard sync to", checked);
+          lazy.log.debug("Set creditCard sync to", checked);
         },
       },
     },
@@ -300,6 +301,13 @@ let FormAutofillPrompter = {
 
     if (descriptionIcon) {
       let descriptionIconElement = chromeDoc.createXULElement("image");
+      if (
+        typeof descriptionIcon == "string" &&
+        (descriptionIcon.includes("cc-logo") ||
+          descriptionIcon.includes("icon-credit"))
+      ) {
+        descriptionIconElement.setAttribute("src", descriptionIcon);
+      }
       descriptionWrapper.appendChild(descriptionIconElement);
     }
 
@@ -375,8 +383,19 @@ let FormAutofillPrompter = {
       creditCard.record["cc-number"] ||
       creditCard.record["cc-number-decrypted"];
     let name = creditCard.record["cc-name"];
-    const description = await CreditCard.getLabel({ name, number });
-
+    let month = creditCard.record["cc-exp-month"];
+    let year = creditCard.record["cc-exp-year"];
+    let type = lazy.CreditCard.getType(number);
+    let ccLabelInfo = lazy.CreditCard.getLabelInfo({
+      number,
+      name,
+      month,
+      year,
+      type,
+    });
+    let description = [ccLabelInfo.args.number, ccLabelInfo.args.name].join(
+      ", "
+    );
     const telemetryObject = creditCard.guid
       ? "update_doorhanger"
       : "capture_doorhanger";
@@ -390,7 +409,8 @@ let FormAutofillPrompter = {
     const state = await FormAutofillPrompter._showCCorAddressCaptureDoorhanger(
       browser,
       creditCard.guid ? "updateCreditCard" : "addCreditCard",
-      description
+      description,
+      type
     );
 
     if (state == "cancel") {
@@ -418,7 +438,7 @@ let FormAutofillPrompter = {
     }
 
     if (!(await FormAutofillUtils.ensureLoggedIn()).authenticated) {
-      log.warn("User canceled encryption login");
+      lazy.log.warn("User canceled encryption login");
       return;
     }
 
@@ -463,6 +483,10 @@ let FormAutofillPrompter = {
     changedGUIDs.forEach(guid => storage.creditCards.notifyUsed(guid));
   },
 
+  _getUpdatedCCIcon(network) {
+    return FormAutofillUtils.getCreditCardLogo(network);
+  },
+
   /**
    * Show different types of doorhanger by leveraging PopupNotifications.
    * @param  {XULElement} browser
@@ -471,11 +495,13 @@ let FormAutofillPrompter = {
    *         The type of the doorhanger. There will have first time use/update/credit card.
    * @param  {string} description
    *         The message that provides more information on doorhanger.
+   * @param {string} network
+   *         The network type for credit card doorhangers.
    * @returns {Promise}
               Resolved with action type when action callback is triggered.
    */
-  async _showCCorAddressCaptureDoorhanger(browser, type, description) {
-    log.debug("show doorhanger with type:", type);
+  async _showCCorAddressCaptureDoorhanger(browser, type, description, network) {
+    lazy.log.debug("show doorhanger with type:", type);
     return new Promise(resolve => {
       let {
         notificationId,
@@ -489,10 +515,14 @@ let FormAutofillPrompter = {
         secondaryActions,
         options,
       } = CONTENT[type];
+      // Follow up in Bug 1737329 to make doorhanger types more explicit
+      if (type == "updateCreditCard" || type == "addCreditCard") {
+        descriptionIcon = lazy.CreditCard.getCreditCardLogo(network);
+      }
 
       const { ownerGlobal: chromeWin, ownerDocument: chromeDoc } = browser;
       options.eventCallback = topic => {
-        log.debug("eventCallback:", topic);
+        lazy.log.debug("eventCallback:", topic);
 
         if (topic == "removed" || topic == "dismissed") {
           this._removeCheckboxListener(browser, { notificationId, options });

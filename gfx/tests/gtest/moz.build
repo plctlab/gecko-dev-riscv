@@ -16,7 +16,6 @@ UNIFIED_SOURCES += [
     "TestConfigManager.cpp",
     "TestCoord.cpp",
     "TestGfxWidgets.cpp",
-    "TestLayers.cpp",
     "TestMatrix.cpp",
     "TestMoz2D.cpp",
     "TestPolygon.cpp",
@@ -84,6 +83,3 @@ LOCAL_INCLUDES += [
 ]
 
 FINAL_LIBRARY = "xul-gtest"
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]

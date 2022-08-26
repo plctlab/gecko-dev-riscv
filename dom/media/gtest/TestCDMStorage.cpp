@@ -1076,7 +1076,8 @@ class CDMStorageTest {
   }
 
   void AwaitFinished() {
-    mozilla::SpinEventLoopUntil([&]() -> bool { return mFinished; });
+    mozilla::SpinEventLoopUntil("CDMStorageTest::AwaitFinished"_ns,
+                                [&]() -> bool { return mFinished; });
     mFinished = false;
   }
 
@@ -1149,7 +1150,7 @@ class CDMStorageTest {
   nsTArray<ExpectedMessage> mExpected;
 
   RefPtr<gmp::ChromiumCDMParent> mCDM;
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
   Atomic<bool> mFinished;
   nsCString mNodeId;
 

@@ -3,9 +3,6 @@
 
 "use strict";
 
-const certService = Cc["@mozilla.org/security/local-cert-service;1"].getService(
-  Ci.nsILocalCertService
-);
 const overrideService = Cc["@mozilla.org/security/certoverride;1"].getService(
   Ci.nsICertOverrideService
 );
@@ -27,10 +24,16 @@ add_task(async function() {
 
   ok(cert, "Cert was created");
 
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    0,
-    "Cert should not be used for override yet"
+  Assert.ok(
+    !overrideService.hasMatchingOverride(
+      TEST_URI.asciiHost,
+      TEST_URI.port,
+      {},
+      cert,
+      {},
+      {}
+    ),
+    `Should not have override for ${TEST_URI.asciiHost}:${TEST_URI.port} yet`
   );
 
   overrideService.rememberValidityOverride(
@@ -42,10 +45,16 @@ add_task(async function() {
     false
   );
 
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    1,
-    "Cert should be used for override now"
+  Assert.ok(
+    overrideService.hasMatchingOverride(
+      TEST_URI.asciiHost,
+      TEST_URI.port,
+      {},
+      cert,
+      {},
+      {}
+    ),
+    `Should have override for ${TEST_URI.asciiHost}:${TEST_URI.port} now`
   );
 
   await new Promise(aResolve => {
@@ -60,43 +69,19 @@ add_task(async function() {
     );
   });
 
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    0,
-    "Cert should not be used for override now"
+  Assert.ok(
+    !overrideService.hasMatchingOverride(
+      TEST_URI.asciiHost,
+      TEST_URI.port,
+      {},
+      cert,
+      {},
+      {}
+    ),
+    `Should not have override for ${TEST_URI.asciiHost}:${TEST_URI.port} now`
   );
 
   for (let uri of [TEST_URI, ANOTHER_TEST_URI, YET_ANOTHER_TEST_URI]) {
-    overrideService.rememberValidityOverride(
-      uri.asciiHost,
-      uri.port,
-      {},
-      cert,
-      flags,
-      false
-    );
-    Assert.ok(
-      overrideService.hasMatchingOverride(
-        uri.asciiHost,
-        uri.port,
-        {},
-        cert,
-        {},
-        {}
-      ),
-      `Should have added override for ${uri.asciiHost}:${uri.port}`
-    );
-    Assert.ok(
-      !overrideService.hasMatchingOverride(
-        uri.asciiHost,
-        uri.port,
-        { privateBrowsingId: 1 },
-        cert,
-        {},
-        {}
-      ),
-      `Should not have added override for ${uri.asciiHost}:${uri.port} with private browsing ID`
-    );
     overrideService.rememberValidityOverride(
       uri.asciiHost,
       uri.port,
@@ -126,6 +111,36 @@ add_task(async function() {
         {}
       ),
       `Should not have added override for ${uri.asciiHost}:${uri.port} with private browsing ID 2`
+    );
+    Assert.ok(
+      !overrideService.hasMatchingOverride(
+        uri.asciiHost,
+        uri.port,
+        {},
+        cert,
+        {},
+        {}
+      ),
+      `Should not have added override for ${uri.asciiHost}:${uri.port}`
+    );
+    overrideService.rememberValidityOverride(
+      uri.asciiHost,
+      uri.port,
+      {},
+      cert,
+      flags,
+      false
+    );
+    Assert.ok(
+      overrideService.hasMatchingOverride(
+        uri.asciiHost,
+        uri.port,
+        {},
+        cert,
+        {},
+        {}
+      ),
+      `Should have added override for ${uri.asciiHost}:${uri.port}`
     );
   }
 
@@ -181,17 +196,17 @@ add_task(async function test_deleteByBaseDomain() {
 
   let cert = certDB.constructX509FromBase64(CERT_TEST);
   ok(cert, "Cert was created");
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    0,
-    "Cert should not be used for override yet"
-  );
 
   let overrideBits =
     Ci.nsICertOverrideService.ERROR_UNTRUSTED |
     Ci.nsICertOverrideService.ERROR_MISMATCH;
 
-  all.forEach(({ asciiHost, port }) =>
+  all.forEach(({ asciiHost, port }) => {
+    Assert.ok(
+      !overrideService.hasMatchingOverride(asciiHost, port, {}, cert, {}, {}),
+      `Should not have override for ${asciiHost}:${port} yet`
+    );
+
     overrideService.rememberValidityOverride(
       asciiHost,
       port,
@@ -199,14 +214,13 @@ add_task(async function test_deleteByBaseDomain() {
       cert,
       overrideBits,
       false
-    )
-  );
+    );
 
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    all.length,
-    "Cert should be used for override now"
-  );
+    Assert.ok(
+      overrideService.hasMatchingOverride(asciiHost, port, {}, cert, {}, {}),
+      `Should have override for ${asciiHost}:${port} now`
+    );
+  });
 
   await new Promise(aResolve => {
     Services.clearData.deleteDataFromBaseDomain(
@@ -219,12 +233,6 @@ add_task(async function test_deleteByBaseDomain() {
       }
     );
   });
-
-  Assert.equal(
-    overrideService.isCertUsedForOverrides(cert, true, true),
-    toKeep.length,
-    "Cert should still be used for override"
-  );
 
   toClear.forEach(({ asciiHost, port }) =>
     Assert.ok(

@@ -6,20 +6,56 @@
 
 const EXPORTED_SYMBOLS = ["command"];
 
+const { ContextDescriptorType } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/MessageHandler.jsm"
+);
+
 const { Module } = ChromeUtils.import(
   "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-class Command extends Module {
+class CommandModule extends Module {
   destroy() {}
 
   /**
    * Commands
    */
 
+  testAddSessionData(params) {
+    return this.messageHandler.addSessionData({
+      moduleName: "command",
+      category: "testCategory",
+      contextDescriptor: {
+        type: ContextDescriptorType.All,
+      },
+      values: params.values,
+    });
+  }
+
+  testRemoveSessionData(params) {
+    return this.messageHandler.removeSessionData({
+      moduleName: "command",
+      category: "testCategory",
+      contextDescriptor: {
+        type: ContextDescriptorType.All,
+      },
+      values: params.values,
+    });
+  }
+
   testRootModule() {
     return "root-value";
   }
+
+  testMissingIntermediaryMethod(params, destination) {
+    // Spawn a new internal command, but with a commandName which doesn't match
+    // any method.
+    return this.messageHandler.handleCommand({
+      moduleName: "command",
+      commandName: "missingMethod",
+      destination,
+    });
+  }
 }
 
-const command = Command;
+const command = CommandModule;

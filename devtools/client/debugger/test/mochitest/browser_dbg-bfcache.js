@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-PromiseTestUtils.allowMatchingRejectionsGlobally(/Connection closed/);
-
 // Test the debugger when navigating using the BFCache.
+
+"use strict";
+
+PromiseTestUtils.allowMatchingRejectionsGlobally(/Connection closed/);
 
 add_task(async function() {
   info("Run test with bfcacheInParent DISABLED");
@@ -23,7 +25,9 @@ add_task(async function() {
 });
 
 async function testSourcesOnNavigation() {
-  info("Test that sources appear in the debugger when navigating using the BFCache")
+  info(
+    "Test that sources appear in the debugger when navigating using the BFCache"
+  );
   const dbg = await initDebugger("doc-bfcache1.html");
 
   await navigate(dbg, "doc-bfcache2.html", "doc-bfcache2.html");
@@ -51,22 +55,18 @@ async function testDebuggerPauseStateOnNavigation() {
   await navigate(dbg, "doc-bfcache2.html");
   await waitForSources(dbg, "doc-bfcache2.html");
 
-  await goBack(EXAMPLE_URL + "doc-bfcache1.html");
+  await goBack(`${EXAMPLE_URL}doc-bfcache1.html`);
   await waitForSources(dbg, "doc-bfcache1.html");
 
   await reload(dbg);
   await waitForPaused(dbg);
 
   ok(dbg.toolbox.isHighlighted("jsdebugger"), "Debugger is highlighted");
-  
-  await goForward(EXAMPLE_URL + "doc-bfcache2.html");
 
-  // This check should be removed when Bug 1722305 is fixed, which would cause will-navigate
-  // to start firing properly with fission.
-  if (!Services.appinfo.sessionHistoryInParent) {
-    await waitUntil(() => !dbg.toolbox.isHighlighted("jsdebugger"));
-    ok(true, "Debugger is not highlighted");
-  }
+  await goForward(`${EXAMPLE_URL}doc-bfcache2.html`);
+
+  await waitUntil(() => !dbg.toolbox.isHighlighted("jsdebugger"));
+  ok(true, "Debugger is not highlighted");
 
   dbg.toolbox.closeToolbox();
 }

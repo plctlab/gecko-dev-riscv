@@ -2,7 +2,7 @@ use super::error::Error;
 use num_traits::cast::FromPrimitive;
 use std::convert::TryInto;
 
-pub(super) fn map_binary_operator(word: spirv::Op) -> Result<crate::BinaryOperator, Error> {
+pub(super) const fn map_binary_operator(word: spirv::Op) -> Result<crate::BinaryOperator, Error> {
     use crate::BinaryOperator;
     use spirv::Op;
 
@@ -12,7 +12,7 @@ pub(super) fn map_binary_operator(word: spirv::Op) -> Result<crate::BinaryOperat
         Op::ISub | Op::FSub => Ok(BinaryOperator::Subtract),
         Op::IMul | Op::FMul => Ok(BinaryOperator::Multiply),
         Op::UDiv | Op::SDiv | Op::FDiv => Ok(BinaryOperator::Divide),
-        Op::UMod | Op::SMod | Op::FMod => Ok(BinaryOperator::Modulo),
+        Op::SRem => Ok(BinaryOperator::Modulo),
         // Relational and Logical Instructions
         Op::IEqual | Op::FOrdEqual | Op::FUnordEqual | Op::LogicalEqual => {
             Ok(BinaryOperator::Equal)
@@ -34,11 +34,16 @@ pub(super) fn map_binary_operator(word: spirv::Op) -> Result<crate::BinaryOperat
         | Op::SGreaterThanEqual
         | Op::FOrdGreaterThanEqual
         | Op::FUnordGreaterThanEqual => Ok(BinaryOperator::GreaterEqual),
+        Op::BitwiseOr => Ok(BinaryOperator::InclusiveOr),
+        Op::BitwiseXor => Ok(BinaryOperator::ExclusiveOr),
+        Op::BitwiseAnd => Ok(BinaryOperator::And),
         _ => Err(Error::UnknownBinaryOperator(word)),
     }
 }
 
-pub(super) fn map_relational_fun(word: spirv::Op) -> Result<crate::RelationalFunction, Error> {
+pub(super) const fn map_relational_fun(
+    word: spirv::Op,
+) -> Result<crate::RelationalFunction, Error> {
     use crate::RelationalFunction as Rf;
     use spirv::Op;
 
@@ -53,7 +58,7 @@ pub(super) fn map_relational_fun(word: spirv::Op) -> Result<crate::RelationalFun
     }
 }
 
-pub(super) fn map_vector_size(word: spirv::Word) -> Result<crate::VectorSize, Error> {
+pub(super) const fn map_vector_size(word: spirv::Word) -> Result<crate::VectorSize, Error> {
     match word {
         2 => Ok(crate::VectorSize::Bi),
         3 => Ok(crate::VectorSize::Tri),
@@ -117,10 +122,11 @@ pub(super) fn map_width(word: spirv::Word) -> Result<crate::Bytes, Error> {
         .map_err(|_| Error::InvalidTypeWidth(word))
 }
 
-pub(super) fn map_builtin(word: spirv::Word) -> Result<crate::BuiltIn, Error> {
+pub(super) fn map_builtin(word: spirv::Word, invariant: bool) -> Result<crate::BuiltIn, Error> {
     use spirv::BuiltIn as Bi;
     Ok(match spirv::BuiltIn::from_u32(word) {
-        Some(Bi::Position) | Some(Bi::FragCoord) => crate::BuiltIn::Position,
+        Some(Bi::Position | Bi::FragCoord) => crate::BuiltIn::Position { invariant },
+        Some(Bi::ViewIndex) => crate::BuiltIn::ViewIndex,
         // vertex
         Some(Bi::BaseInstance) => crate::BuiltIn::BaseInstance,
         Some(Bi::BaseVertex) => crate::BuiltIn::BaseVertex,
@@ -150,19 +156,19 @@ pub(super) fn map_storage_class(word: spirv::Word) -> Result<super::ExtendedClas
     use super::ExtendedClass as Ec;
     use spirv::StorageClass as Sc;
     Ok(match Sc::from_u32(word) {
-        Some(Sc::Function) => Ec::Global(crate::StorageClass::Function),
+        Some(Sc::Function) => Ec::Global(crate::AddressSpace::Function),
         Some(Sc::Input) => Ec::Input,
         Some(Sc::Output) => Ec::Output,
-        Some(Sc::Private) => Ec::Global(crate::StorageClass::Private),
-        Some(Sc::UniformConstant) => Ec::Global(crate::StorageClass::Handle),
-        Some(Sc::StorageBuffer) => Ec::Global(crate::StorageClass::Storage {
+        Some(Sc::Private) => Ec::Global(crate::AddressSpace::Private),
+        Some(Sc::UniformConstant) => Ec::Global(crate::AddressSpace::Handle),
+        Some(Sc::StorageBuffer) => Ec::Global(crate::AddressSpace::Storage {
             //Note: this is restricted by decorations later
             access: crate::StorageAccess::all(),
         }),
         // we expect the `Storage` case to be filtered out before calling this function.
-        Some(Sc::Uniform) => Ec::Global(crate::StorageClass::Uniform),
-        Some(Sc::Workgroup) => Ec::Global(crate::StorageClass::WorkGroup),
-        Some(Sc::PushConstant) => Ec::Global(crate::StorageClass::PushConstant),
+        Some(Sc::Uniform) => Ec::Global(crate::AddressSpace::Uniform),
+        Some(Sc::Workgroup) => Ec::Global(crate::AddressSpace::WorkGroup),
+        Some(Sc::PushConstant) => Ec::Global(crate::AddressSpace::PushConstant),
         _ => return Err(Error::UnsupportedStorageClass(word)),
     })
 }

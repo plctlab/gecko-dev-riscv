@@ -29,9 +29,7 @@ var prefData = [
 ];
 
 function run_test() {
-  var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-
-  var uri1 = ios.newURI("file:///");
+  var uri1 = Services.io.newURI("file:///");
   Assert.ok(uri1 instanceof Ci.nsIFileURL);
 
   var uri2 = uri1.mutate().finalize();
@@ -43,17 +41,15 @@ function run_test() {
   Assert.ok(uri1.equals(uri3));
 
   // Make sure our prefs are set such that this test actually means something
-  var prefs = Cc["@mozilla.org/preferences-service;1"].getService(
-    Ci.nsIPrefBranch
-  );
-  for (var pref of prefData) {
+  var prefs = Services.prefs;
+  for (let pref of prefData) {
     prefs.setBoolPref(pref.name, pref.newVal);
   }
 
   try {
     // URI stolen from
     // http://lists.w3.org/Archives/Public/public-iri/2004Mar/0012.html
-    var uri4 = ios.newURI("http://xn--jos-dma.example.net.ch/");
+    var uri4 = Services.io.newURI("http://xn--jos-dma.example.net.ch/");
     Assert.equal(uri4.asciiHost, "xn--jos-dma.example.net.ch");
     Assert.equal(uri4.displayHost, "jos\u00e9.example.net.ch");
 
@@ -62,7 +58,7 @@ function run_test() {
     Assert.equal(uri4.displayHost, uri5.displayHost);
     Assert.equal(uri4.asciiHost, uri5.asciiHost);
   } finally {
-    for (var pref of prefData) {
+    for (let pref of prefData) {
       if (prefs.prefHasUserValue(pref.name)) {
         prefs.clearUserPref(pref.name);
       }

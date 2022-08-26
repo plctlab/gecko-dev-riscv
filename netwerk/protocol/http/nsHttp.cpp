@@ -12,6 +12,7 @@
 #include "PLDHashTable.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/HashFunctions.h"
+#include "mozilla/OriginAttributes.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "nsCRT.h"
@@ -21,7 +22,10 @@
 #include "nsHttpHandler.h"
 #include "nsICacheEntry.h"
 #include "nsIRequest.h"
+#include "nsIStandardURL.h"
 #include "nsJSUtils.h"
+#include "nsStandardURL.h"
+#include "sslerr.h"
 #include <errno.h>
 #include <functional>
 #include "nsLiteralString.h"
@@ -49,44 +53,8 @@ enum {
 };
 #undef HTTP_ATOM
 
-class nsCaseInsentitiveHashKey : public PLDHashEntryHdr {
- public:
-  using KeyType = const nsACString&;
-  using KeyTypePointer = const nsACString*;
-
-  explicit nsCaseInsentitiveHashKey(KeyTypePointer aStr) : mStr(*aStr) {
-    // take it easy just deal HashKey
-  }
-
-  nsCaseInsentitiveHashKey(const nsCaseInsentitiveHashKey&) = delete;
-  nsCaseInsentitiveHashKey(nsCaseInsentitiveHashKey&& aToMove) noexcept
-      : PLDHashEntryHdr(std::move(aToMove)), mStr(aToMove.mStr) {}
-  ~nsCaseInsentitiveHashKey() = default;
-
-  KeyType GetKey() const { return mStr; }
-  bool KeyEquals(const KeyTypePointer aKey) const {
-    return mStr.Equals(*aKey, nsCaseInsensitiveCStringComparator);
-  }
-
-  static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
-  static PLDHashNumber HashKey(const KeyTypePointer aKey) {
-    nsAutoCString tmKey(*aKey);
-    ToLowerCase(tmKey);
-    return mozilla::HashString(tmKey);
-  }
-  enum { ALLOW_MEMMOVE = false };
-
-  // To avoid double-counting, only measure the string if it is unshared.
-  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-    return GetKey().SizeOfExcludingThisIfUnshared(aMallocSizeOf);
-  }
-
- private:
-  const nsCString mStr;
-};
-
-static StaticDataMutex<nsTHashtable<nsCaseInsentitiveHashKey>> sAtomTable(
-    "nsHttp::sAtomTable");
+static StaticDataMutex<nsTHashtable<nsCStringASCIICaseInsensitiveHashKey>>
+    sAtomTable("nsHttp::sAtomTable");
 
 // This is set to true in DestroyAtomTable so we don't try to repopulate the
 // table if ResolveAtom gets called during shutdown for some reason.
@@ -95,7 +63,8 @@ static Atomic<bool> sTableDestroyed{false};
 // We put the atoms in a hash table for speedy lookup.. see ResolveAtom.
 namespace nsHttp {
 
-nsresult CreateAtomTable(nsTHashtable<nsCaseInsentitiveHashKey>& base) {
+nsresult CreateAtomTable(
+    nsTHashtable<nsCStringASCIICaseInsensitiveHashKey>& base) {
   if (sTableDestroyed) {
     return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
   }
@@ -309,7 +278,8 @@ bool IsPermanentRedirect(uint32_t httpStatus) {
 bool ValidationRequired(bool isForcedValid,
                         nsHttpResponseHead* cachedResponseHead,
                         uint32_t loadFlags, bool allowStaleCacheContent,
-                        bool isImmutable, bool customConditionalRequest,
+                        bool forceValidateCacheContent, bool isImmutable,
+                        bool customConditionalRequest,
                         nsHttpRequestHead& requestHead, nsICacheEntry* entry,
                         CacheControlParser& cacheControlRequest,
                         bool fromPreviousSession,
@@ -336,7 +306,9 @@ bool ValidationRequired(bool isForcedValid,
 
   // If the VALIDATE_ALWAYS flag is set, any cached data won't be used until
   // it's revalidated with the server.
-  if ((loadFlags & nsIRequest::VALIDATE_ALWAYS) && !isImmutable) {
+  if (((loadFlags & nsIRequest::VALIDATE_ALWAYS) ||
+       forceValidateCacheContent) &&
+      !isImmutable) {
     LOG(("Validating based on VALIDATE_ALWAYS load flag\n"));
     return true;
   }
@@ -620,8 +592,8 @@ static bool IsTokenSymbol(signed char chr) {
 ParsedHeaderPair::ParsedHeaderPair(const char* name, int32_t nameLen,
                                    const char* val, int32_t valLen,
                                    bool isQuotedValue)
-    : mName(nsDependentCSubstring(nullptr, 0u)),
-      mValue(nsDependentCSubstring(nullptr, 0u)),
+    : mName(nsDependentCSubstring(nullptr, size_t(0))),
+      mValue(nsDependentCSubstring(nullptr, size_t(0))),
       mIsQuotedValue(isQuotedValue) {
   if (nameLen > 0) {
     mName.Rebind(name, name + nameLen);
@@ -825,24 +797,42 @@ ParsedHeaderValueListList::ParsedHeaderValueListList(
   Tokenize(mFull.BeginReading(), mFull.Length(), ',', consumer);
 }
 
-void LogCallingScriptLocation(void* instance) {
-  if (!LOG4_ENABLED()) {
-    return;
+Maybe<nsCString> CallingScriptLocationString() {
+  if (!LOG4_ENABLED() && !xpc::IsInAutomation()) {
+    return Nothing();
   }
 
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (!cx) {
-    return;
+    return Nothing();
   }
 
   nsAutoCString fileNameString;
   uint32_t line = 0, col = 0;
   if (!nsJSUtils::GetCallingLocation(cx, fileNameString, &line, &col)) {
+    return Nothing();
+  }
+
+  nsCString logString = ""_ns;
+  logString.AppendPrintf("%s:%u:%u", fileNameString.get(), line, col);
+  return Some(logString);
+}
+
+void LogCallingScriptLocation(void* instance) {
+  Maybe<nsCString> logLocation = CallingScriptLocationString();
+  LogCallingScriptLocation(instance, logLocation);
+}
+
+void LogCallingScriptLocation(void* instance,
+                              const Maybe<nsCString>& aLogLocation) {
+  if (aLogLocation.isNothing()) {
     return;
   }
 
-  LOG(("%p called from script: %s:%u:%u", instance, fileNameString.get(), line,
-       col));
+  nsCString logString;
+  logString.AppendPrintf("%p called from script: ", instance);
+  logString.AppendPrintf("%s", aLogLocation->get());
+  LOG(("%s", logString.get()));
 }
 
 void LogHeaders(const char* lineStart) {
@@ -1001,26 +991,94 @@ nsresult HttpProxyResponseToErrorCode(uint32_t aStatusCode) {
   return rv;
 }
 
-SupportedAlpnType IsAlpnSupported(const nsACString& aAlpn) {
-  if (gHttpHandler->IsHttp3Enabled() &&
-      gHttpHandler->IsHttp3VersionSupported(aAlpn)) {
-    return SupportedAlpnType::HTTP_3;
+SupportedAlpnRank H3VersionToRank(const nsACString& aVersion) {
+  for (uint32_t i = 0; i < kHttp3VersionCount; i++) {
+    if (aVersion.Equals(kHttp3Versions[i])) {
+      return static_cast<SupportedAlpnRank>(
+          static_cast<uint32_t>(SupportedAlpnRank::HTTP_3_DRAFT_29) + i);
+    }
   }
 
-  if (gHttpHandler->IsSpdyEnabled()) {
-    uint32_t spdyIndex;
+  return SupportedAlpnRank::NOT_SUPPORTED;
+}
+
+SupportedAlpnRank IsAlpnSupported(const nsACString& aAlpn) {
+  if (StaticPrefs::network_http_http3_enable() &&
+      gHttpHandler->IsHttp3VersionSupported(aAlpn)) {
+    return H3VersionToRank(aAlpn);
+  }
+
+  if (StaticPrefs::network_http_http2_enabled()) {
     SpdyInformation* spdyInfo = gHttpHandler->SpdyInfo();
-    if (NS_SUCCEEDED(spdyInfo->GetNPNIndex(aAlpn, &spdyIndex)) &&
-        spdyInfo->ProtocolEnabled(spdyIndex)) {
-      return SupportedAlpnType::HTTP_2;
+    if (aAlpn.Equals(spdyInfo->VersionString)) {
+      return SupportedAlpnRank::HTTP_2;
     }
   }
 
   if (aAlpn.LowerCaseEqualsASCII("http/1.1")) {
-    return SupportedAlpnType::HTTP_1_1;
+    return SupportedAlpnRank::HTTP_1_1;
   }
 
-  return SupportedAlpnType::NOT_SUPPORTED;
+  return SupportedAlpnRank::NOT_SUPPORTED;
+}
+
+// On some security error when 0RTT is used we want to restart transactions
+// without 0RTT. Some firewalls do not behave well with 0RTT and cause this
+// errors.
+bool SecurityErrorThatMayNeedRestart(nsresult aReason) {
+  return (aReason ==
+          psm::GetXPCOMFromNSSError(SSL_ERROR_PROTOCOL_VERSION_ALERT)) ||
+         (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_BAD_MAC_ALERT));
+}
+
+nsresult MakeOriginURL(const nsACString& origin, nsCOMPtr<nsIURI>& url) {
+  nsAutoCString scheme;
+  nsresult rv = net_ExtractURLScheme(origin, scheme);
+  NS_ENSURE_SUCCESS(rv, rv);
+  return MakeOriginURL(scheme, origin, url);
+}
+
+nsresult MakeOriginURL(const nsACString& scheme, const nsACString& origin,
+                       nsCOMPtr<nsIURI>& url) {
+  return NS_MutateURI(new nsStandardURL::Mutator())
+      .Apply(&nsIStandardURLMutator::Init, nsIStandardURL::URLTYPE_AUTHORITY,
+             scheme.EqualsLiteral("http") ? NS_HTTP_DEFAULT_PORT
+                                          : NS_HTTPS_DEFAULT_PORT,
+             origin, nullptr, nullptr, nullptr)
+      .Finalize(url);
+}
+
+void CreatePushHashKey(const nsCString& scheme, const nsCString& hostHeader,
+                       const mozilla::OriginAttributes& originAttributes,
+                       uint64_t serial, const nsACString& pathInfo,
+                       nsCString& outOrigin, nsCString& outKey) {
+  nsCString fullOrigin = scheme;
+  fullOrigin.AppendLiteral("://");
+  fullOrigin.Append(hostHeader);
+
+  nsCOMPtr<nsIURI> origin;
+  nsresult rv = MakeOriginURL(scheme, fullOrigin, origin);
+
+  if (NS_SUCCEEDED(rv)) {
+    rv = origin->GetAsciiSpec(outOrigin);
+    outOrigin.Trim("/", false, true, false);
+  }
+
+  if (NS_FAILED(rv)) {
+    // Fallback to plain text copy - this may end up behaving poorly
+    outOrigin = fullOrigin;
+  }
+
+  outKey = outOrigin;
+  outKey.AppendLiteral("/[");
+  nsAutoCString suffix;
+  originAttributes.CreateSuffix(suffix);
+  outKey.Append(suffix);
+  outKey.Append(']');
+  outKey.AppendLiteral("/[http2.");
+  outKey.AppendInt(serial);
+  outKey.Append(']');
+  outKey.Append(pathInfo);
 }
 
 }  // namespace net

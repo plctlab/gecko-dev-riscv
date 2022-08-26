@@ -7,17 +7,17 @@
 
 "use strict";
 
-const { BrowserSearchTelemetry } = ChromeUtils.import(
-  "resource:///modules/BrowserSearchTelemetry.jsm"
+const { BrowserSearchTelemetry } = ChromeUtils.importESModule(
+  "resource:///modules/BrowserSearchTelemetry.sys.mjs"
 );
-const { SearchSERPTelemetry } = ChromeUtils.import(
-  "resource:///modules/SearchSERPTelemetry.jsm"
+const { SearchSERPTelemetry } = ChromeUtils.importESModule(
+  "resource:///modules/SearchSERPTelemetry.sys.mjs"
 );
-const { UrlbarTestUtils } = ChromeUtils.import(
-  "resource://testing-common/UrlbarTestUtils.jsm"
+const { UrlbarTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlbarTestUtils.sys.mjs"
 );
-const { SearchTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SearchTestUtils.jsm"
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
 );
 
 const TEST_PROVIDER_INFO = [
@@ -26,7 +26,7 @@ const TEST_PROVIDER_INFO = [
     searchPageRegexp: /^https:\/\/example.com\/browser\/browser\/components\/search\/test\/browser\/searchTelemetry(?:Ad)?.html/,
     queryParamName: "s",
     codeParamName: "abc",
-    codePrefixes: ["ff"],
+    taggedCodes: ["ff"],
     followOnParamNames: ["a"],
     extraAdServersRegexps: [/^https:\/\/example\.com\/ad2?/],
   },
@@ -70,7 +70,7 @@ UrlbarTestUtils.init(this);
 
 let tab;
 
-add_task(async function setup() {
+add_setup(async function() {
   searchCounts.clear();
   Services.telemetry.clearScalars();
 

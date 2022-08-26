@@ -25,6 +25,8 @@
 #include "mozilla/ResultVariant.h"
 #include "mozilla/Unused.h"
 #include "mozilla/fallible.h"
+#include "mozilla/dom/quota/QuotaTestParent.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "nsCOMPtr.h"
 #include "nsLiteralString.h"
 #include "nsString.h"
@@ -35,6 +37,48 @@ class nsISupports;
 
 using namespace mozilla;
 using namespace mozilla::dom::quota;
+
+mozilla::ipc::IPCResult QuotaTestParent::RecvTry_Success_CustomErr_QmIpcFail(
+    bool* aTryDidNotReturn) {
+  QM_TRY(MOZ_TO_RESULT(NS_OK), QM_IPC_FAIL(this));
+
+  *aTryDidNotReturn = true;
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult QuotaTestParent::RecvTry_Success_CustomErr_IpcFail(
+    bool* aTryDidNotReturn) {
+  QM_TRY(MOZ_TO_RESULT(NS_OK), IPC_FAIL(this, "Custom why"));
+
+  *aTryDidNotReturn = true;
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+QuotaTestParent::RecvTryInspect_Success_CustomErr_QmIpcFail(
+    bool* aTryDidNotReturn) {
+  QM_TRY_INSPECT(const auto& x, (mozilla::Result<int32_t, nsresult>{42}),
+                 QM_IPC_FAIL(this));
+  Unused << x;
+
+  *aTryDidNotReturn = true;
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+QuotaTestParent::RecvTryInspect_Success_CustomErr_IpcFail(
+    bool* aTryDidNotReturn) {
+  QM_TRY_INSPECT(const auto& x, (mozilla::Result<int32_t, nsresult>{42}),
+                 IPC_FAIL(this, "Custom why"));
+  Unused << x;
+
+  *aTryDidNotReturn = true;
+
+  return IPC_OK();
+}
 
 #ifdef __clang__
 #  pragma clang diagnostic push
@@ -55,6 +99,30 @@ TEST(QuotaCommon_Try, Success)
 
   EXPECT_TRUE(tryDidNotReturn);
   EXPECT_EQ(rv, NS_OK);
+}
+
+TEST(QuotaCommon_Try, Success_CustomErr_QmIpcFail)
+{
+  auto foo = MakeRefPtr<QuotaTestParent>();
+
+  bool tryDidNotReturn = false;
+
+  auto res = foo->RecvTry_Success_CustomErr_QmIpcFail(&tryDidNotReturn);
+
+  EXPECT_TRUE(tryDidNotReturn);
+  EXPECT_TRUE(res);
+}
+
+TEST(QuotaCommon_Try, Success_CustomErr_IpcFail)
+{
+  auto foo = MakeRefPtr<QuotaTestParent>();
+
+  bool tryDidNotReturn = false;
+
+  auto res = foo->RecvTry_Success_CustomErr_IpcFail(&tryDidNotReturn);
+
+  EXPECT_TRUE(tryDidNotReturn);
+  EXPECT_TRUE(res);
 }
 
 #ifdef DEBUG
@@ -408,6 +476,30 @@ TEST(QuotaCommon_TryInspect, Success)
 
   EXPECT_TRUE(tryInspectDidNotReturn);
   EXPECT_EQ(rv, NS_OK);
+}
+
+TEST(QuotaCommon_TryInspect, Success_CustomErr_QmIpcFail)
+{
+  auto foo = MakeRefPtr<QuotaTestParent>();
+
+  bool tryDidNotReturn = false;
+
+  auto res = foo->RecvTryInspect_Success_CustomErr_QmIpcFail(&tryDidNotReturn);
+
+  EXPECT_TRUE(tryDidNotReturn);
+  EXPECT_TRUE(res);
+}
+
+TEST(QuotaCommon_TryInspect, Success_CustomErr_IpcFail)
+{
+  auto foo = MakeRefPtr<QuotaTestParent>();
+
+  bool tryDidNotReturn = false;
+
+  auto res = foo->RecvTryInspect_Success_CustomErr_IpcFail(&tryDidNotReturn);
+
+  EXPECT_TRUE(tryDidNotReturn);
+  EXPECT_TRUE(res);
 }
 
 #ifdef DEBUG
@@ -1535,7 +1627,7 @@ TEST_P(StringPairParameterized, AnonymizedOriginString) {
   EXPECT_STREQ(anonymized.get(), expectedAnonymized);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     QuotaCommon, StringPairParameterized,
     ::testing::Values(
         // XXX Do we really want to anonymize about: origins?
@@ -1544,62 +1636,6 @@ INSTANTIATE_TEST_CASE_P(
         std::pair("https://foo.bar.com:8000", "https://aaa.aaa.aaa:DDDD"),
         std::pair("file://UNIVERSAL_FILE_ORIGIN",
                   "file://aaaaaaaaa_aaaa_aaaaaa")));
-
-TEST(QuotaCommon_ToResultGet, Lambda_NoInput)
-{
-  auto res = ToResultGet<int32_t>([](nsresult* aRv) -> int32_t {
-    *aRv = NS_OK;
-    return 42;
-  });
-
-  static_assert(std::is_same_v<decltype(res), Result<int32_t, nsresult>>);
-
-  EXPECT_TRUE(res.isOk());
-  EXPECT_EQ(res.unwrap(), 42);
-}
-
-TEST(QuotaCommon_ToResultGet, Lambda_NoInput_Err)
-{
-  auto res = ToResultGet<int32_t>([](nsresult* aRv) -> int32_t {
-    *aRv = NS_ERROR_FAILURE;
-    return -1;
-  });
-
-  static_assert(std::is_same_v<decltype(res), Result<int32_t, nsresult>>);
-
-  EXPECT_TRUE(res.isErr());
-  EXPECT_EQ(res.unwrapErr(), NS_ERROR_FAILURE);
-}
-
-TEST(QuotaCommon_ToResultGet, Lambda_WithInput)
-{
-  auto res = ToResultGet<int32_t>(
-      [](int32_t aValue, nsresult* aRv) -> int32_t {
-        *aRv = NS_OK;
-        return aValue * 2;
-      },
-      42);
-
-  static_assert(std::is_same_v<decltype(res), Result<int32_t, nsresult>>);
-
-  EXPECT_TRUE(res.isOk());
-  EXPECT_EQ(res.unwrap(), 84);
-}
-
-TEST(QuotaCommon_ToResultGet, Lambda_WithInput_Err)
-{
-  auto res = ToResultGet<int32_t>(
-      [](int32_t aValue, nsresult* aRv) -> int32_t {
-        *aRv = NS_ERROR_FAILURE;
-        return -1;
-      },
-      42);
-
-  static_assert(std::is_same_v<decltype(res), Result<int32_t, nsresult>>);
-
-  EXPECT_TRUE(res.isErr());
-  EXPECT_EQ(res.unwrapErr(), NS_ERROR_FAILURE);
-}
 
 // BEGIN COPY FROM mfbt/tests/TestResult.cpp
 struct Failed {};

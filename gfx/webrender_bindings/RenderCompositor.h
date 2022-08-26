@@ -131,6 +131,8 @@ class RenderCompositor {
                              wr::DeviceIntPoint aVirtualOffset,
                              wr::DeviceIntSize aTileSize, bool aIsOpaque) {}
   virtual void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) {}
+  virtual void CreateBackdropSurface(wr::NativeSurfaceId aId,
+                                     wr::ColorF aColor) {}
   virtual void DestroySurface(NativeSurfaceId aId) {}
   virtual void CreateTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
   virtual void DestroyTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
@@ -152,6 +154,8 @@ class RenderCompositor {
   // Overrides any of the default compositor capabilities for behavior this
   // compositor might require.
   virtual void GetCompositorCapabilities(CompositorCapabilities* aCaps);
+
+  virtual void GetWindowVisibility(WindowVisibility* aVisibility);
 
   // Interface for partial present
   virtual bool UsePartialPresent() { return false; }

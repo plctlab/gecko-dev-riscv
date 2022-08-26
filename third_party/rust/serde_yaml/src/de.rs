@@ -4,7 +4,6 @@ use serde::de::{
     self, Deserialize, DeserializeOwned, DeserializeSeed, Expected, IgnoredAny as Ignore,
     IntoDeserializer, Unexpected, Visitor,
 };
-use serde::serde_if_integer128;
 use std::collections::BTreeMap;
 use std::f64;
 use std::fmt;
@@ -261,13 +260,11 @@ impl<'de> de::Deserializer<'de> for Deserializer<'de> {
         self.de(|state| state.deserialize_i64(visitor))
     }
 
-    serde_if_integer128! {
-        fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: Visitor<'de>,
-        {
-            self.de(|state| state.deserialize_i128(visitor))
-        }
+    fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.de(|state| state.deserialize_i128(visitor))
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
@@ -298,13 +295,11 @@ impl<'de> de::Deserializer<'de> for Deserializer<'de> {
         self.de(|state| state.deserialize_u64(visitor))
     }
 
-    serde_if_integer128! {
-        fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: Visitor<'de>,
-        {
-            self.de(|state| state.deserialize_u128(visitor))
-        }
+    fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.de(|state| state.deserialize_u128(visitor))
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
@@ -687,9 +682,7 @@ fn visit_scalar<'de, V>(
 where
     V: Visitor<'de>,
 {
-    if style != TScalarStyle::Plain {
-        visitor.visit_str(v)
-    } else if let Some(TokenType::Tag(handle, suffix)) = tag {
+    if let Some(TokenType::Tag(handle, suffix)) = tag {
         if handle == "!!" {
             match suffix.as_ref() {
                 "bool" => match v.parse::<bool>() {
@@ -713,8 +706,10 @@ where
         } else {
             visitor.visit_str(v)
         }
-    } else {
+    } else if style == TScalarStyle::Plain {
         visit_untagged_str(visitor, v)
+    } else {
+        visitor.visit_str(v)
     }
 }
 
@@ -956,43 +951,43 @@ where
     if v == "false" {
         return visitor.visit_bool(false);
     }
-    if v.starts_with("0x") || v.starts_with("+0x") {
-        let start = 2 + v.starts_with('+') as usize;
-        if let Ok(n) = u64::from_str_radix(&v[start..], 16) {
+    if let Some(rest) = Option::or(v.strip_prefix("0x"), v.strip_prefix("+0x")) {
+        if let Ok(n) = u64::from_str_radix(rest, 16) {
             return visitor.visit_u64(n);
         }
     }
-    if v.starts_with("-0x") {
-        let negative = format!("-{}", &v[3..]);
+    if let Some(rest) = v.strip_prefix("-0x") {
+        let negative = format!("-{}", rest);
         if let Ok(n) = i64::from_str_radix(&negative, 16) {
             return visitor.visit_i64(n);
         }
     }
-    if v.starts_with("0o") || v.starts_with("+0o") {
-        let start = 2 + v.starts_with('+') as usize;
-        if let Ok(n) = u64::from_str_radix(&v[start..], 8) {
+    if let Some(rest) = Option::or(v.strip_prefix("0o"), v.strip_prefix("+0o")) {
+        if let Ok(n) = u64::from_str_radix(rest, 8) {
             return visitor.visit_u64(n);
         }
     }
-    if v.starts_with("-0o") {
-        let negative = format!("-{}", &v[3..]);
+    if let Some(rest) = v.strip_prefix("-0o") {
+        let negative = format!("-{}", rest);
         if let Ok(n) = i64::from_str_radix(&negative, 8) {
             return visitor.visit_i64(n);
         }
     }
-    if v.starts_with("0b") || v.starts_with("+0b") {
-        let start = 2 + v.starts_with('+') as usize;
-        if let Ok(n) = u64::from_str_radix(&v[start..], 2) {
+    if let Some(rest) = Option::or(v.strip_prefix("0b"), v.strip_prefix("+0b")) {
+        if let Ok(n) = u64::from_str_radix(rest, 2) {
             return visitor.visit_u64(n);
         }
     }
-    if v.starts_with("-0b") {
-        let negative = format!("-{}", &v[3..]);
+    if let Some(rest) = v.strip_prefix("-0b") {
+        let negative = format!("-{}", rest);
         if let Ok(n) = i64::from_str_radix(&negative, 2) {
             return visitor.visit_i64(n);
         }
     }
-    if v.len() > 1 && v.starts_with('0') && v.bytes().all(|b| b.is_ascii_digit()) {
+    if {
+        let v = v.trim_start_matches(&['-', '+'][..]);
+        v.len() > 1 && v.starts_with('0') && v[1..].bytes().all(|b| b.is_ascii_digit())
+    } {
         // After handling the different number encodings above if we are left
         // with leading zero(s) followed by numeric characters this is in fact a
         // string according to the YAML 1.2 spec.
@@ -1002,20 +997,16 @@ where
     if let Ok(n) = v.parse() {
         return visitor.visit_u64(n);
     }
-    serde_if_integer128! {
-        if let Ok(n) = v.parse() {
-            return visitor.visit_u128(n);
-        }
+    if let Ok(n) = v.parse() {
+        return visitor.visit_u128(n);
     }
     if let Ok(n) = v.parse() {
         return visitor.visit_i64(n);
     }
-    serde_if_integer128! {
-        if let Ok(n) = v.parse() {
-            return visitor.visit_i128(n);
-        }
+    if let Ok(n) = v.parse() {
+        return visitor.visit_i128(n);
     }
-    match trim_start_matches(v, '+') {
+    match v.trim_start_matches('+') {
         ".inf" | ".Inf" | ".INF" => return visitor.visit_f64(f64::INFINITY),
         _ => (),
     }
@@ -1031,14 +1022,6 @@ where
         }
     }
     visitor.visit_str(v)
-}
-
-#[allow(deprecated)]
-fn trim_start_matches(s: &str, pat: char) -> &str {
-    // str::trim_start_matches was added in 1.30, trim_left_matches deprecated
-    // in 1.33. We currently support rustc back to 1.17 so we need to continue
-    // to use the deprecated one.
-    s.trim_left_matches(pat)
 }
 
 fn invalid_type(event: &Event, exp: &dyn Expected) -> Error {
@@ -1143,13 +1126,11 @@ impl<'de, 'a, 'r> de::Deserializer<'de> for &'r mut DeserializerFromEvents<'a> {
         self.deserialize_scalar(visitor)
     }
 
-    serde_if_integer128! {
-        fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: Visitor<'de>,
-        {
-            self.deserialize_scalar(visitor)
-        }
+    fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_scalar(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
@@ -1180,13 +1161,11 @@ impl<'de, 'a, 'r> de::Deserializer<'de> for &'r mut DeserializerFromEvents<'a> {
         self.deserialize_scalar(visitor)
     }
 
-    serde_if_integer128! {
-        fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: Visitor<'de>,
-        {
-            self.deserialize_scalar(visitor)
-        }
+    fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_scalar(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>

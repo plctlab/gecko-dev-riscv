@@ -42,16 +42,16 @@ static const char kBackgroundPageHTMLEnd[] =
 </html>";
 
 #define BASE_CSP_PREF_V2 "extensions.webextensions.base-content-security-policy"
-#define DEFAULT_BASE_CSP_V2                                       \
-  "script-src 'self' https://* moz-extension: blob: filesystem: " \
-  "'unsafe-eval' 'unsafe-inline'; "                               \
-  "object-src 'self' https://* moz-extension: blob: filesystem:;"
+#define DEFAULT_BASE_CSP_V2                                            \
+  "script-src 'self' https://* http://localhost:* http://127.0.0.1:* " \
+  "moz-extension: blob: filesystem: 'unsafe-eval' 'wasm-unsafe-eval' " \
+  "'unsafe-inline'; object-src 'self' moz-extension: blob: filesystem:;"
 
 #define BASE_CSP_PREF_V3 \
   "extensions.webextensions.base-content-security-policy.v3"
-#define DEFAULT_BASE_CSP_V3                \
-  "script-src 'self'; object-src 'self'; " \
-  "style-src 'self'; worker-src 'self';"
+#define DEFAULT_BASE_CSP_V3                                  \
+  "script-src 'self' 'wasm-unsafe-eval' http://localhost:* " \
+  "http://127.0.0.1:*; object-src 'self';"
 
 static const char kRestrictedDomainPref[] =
     "extensions.webextensions.restrictedDomains";
@@ -143,12 +143,25 @@ WebAccessibleResource::WebAccessibleResource(
     return;
   }
 
-  if (aInit.mMatches.WasPassed()) {
+  if (!aInit.mMatches.IsNull()) {
     MatchPatternOptions options;
     options.mRestrictSchemes = true;
     mMatches = ParseMatches(aGlobal, aInit.mMatches.Value(), options,
                             ErrorBehavior::CreateEmptyPattern, aRv);
   }
+
+  if (!aInit.mExtension_ids.IsNull()) {
+    mExtensionIDs = new AtomSet(aInit.mExtension_ids.Value());
+  }
+}
+
+bool WebAccessibleResource::IsExtensionMatch(const URLInfo& aURI) {
+  if (!mExtensionIDs) {
+    return false;
+  }
+  WebExtensionPolicy* policy = EPS().GetByHost(aURI.Host());
+  return policy && (mExtensionIDs->Contains(nsGkAtoms::_asterisk) ||
+                    mExtensionIDs->Contains(policy->Id()));
 }
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WebAccessibleResource)
@@ -167,7 +180,6 @@ WebExtensionPolicy::WebExtensionPolicy(GlobalObject& aGlobal,
                                        const WebExtensionInit& aInit,
                                        ErrorResult& aRv)
     : mId(NS_AtomizeMainThread(aInit.mId)),
-      mHostname(aInit.mMozExtensionHostname),
       mName(aInit.mName),
       mManifestVersion(aInit.mManifestVersion),
       mExtensionPageCSP(aInit.mExtensionPageCSP),
@@ -177,6 +189,10 @@ WebExtensionPolicy::WebExtensionPolicy(GlobalObject& aGlobal,
       mPermissions(new AtomSet(aInit.mPermissions)) {
   MatchPatternOptions options;
   options.mRestrictSchemes = !HasPermission(nsGkAtoms::mozillaAddons);
+
+  // In practice this is not necessary, but in tests where the uuid
+  // passed in is not lowercased various tests can fail.
+  ToLowerCase(aInit.mMozExtensionHostname, mHostname);
 
   mHostPermissions = ParseMatches(aGlobal, aInit.mAllowedOrigins, options,
                                   ErrorBehavior::CreateEmptyPattern, aRv);
@@ -196,7 +212,11 @@ WebExtensionPolicy::WebExtensionPolicy(GlobalObject& aGlobal,
   InitializeBaseCSP();
 
   if (mExtensionPageCSP.IsVoid()) {
-    EPS().GetDefaultCSP(mExtensionPageCSP);
+    if (mManifestVersion < 3) {
+      EPS().GetDefaultCSP(mExtensionPageCSP);
+    } else {
+      EPS().GetDefaultCSPV3(mExtensionPageCSP);
+    }
   }
 
   mWebAccessibleResources.SetCapacity(aInit.mWebAccessibleResources.Length());
@@ -254,6 +274,7 @@ void WebExtensionPolicy::InitializeBaseCSP() {
     }
     return;
   }
+
   // Version 3 or higher.
   nsresult rv = Preferences::GetString(BASE_CSP_PREF_V3, mBaseCSP);
   if (NS_FAILED(rv)) {
@@ -533,7 +554,7 @@ void WebExtensionPolicy::Localize(const nsAString& aInput,
 }
 
 JSObject* WebExtensionPolicy::WrapObject(JSContext* aCx,
-                                         JS::HandleObject aGivenProto) {
+                                         JS::Handle<JSObject*> aGivenProto) {
   return WebExtensionPolicy_Binding::Wrap(aCx, this, aGivenProto);
 }
 
@@ -563,7 +584,7 @@ bool WebExtensionPolicy::CanAccessWindow(
 }
 
 void WebExtensionPolicy::GetReadyPromise(
-    JSContext* aCx, JS::MutableHandleObject aResult) const {
+    JSContext* aCx, JS::MutableHandle<JSObject*> aResult) const {
   if (mReadyPromise) {
     aResult.set(mReadyPromise->PromiseObj());
   } else {
@@ -634,6 +655,7 @@ MozDocumentMatcher::MozDocumentMatcher(GlobalObject& aGlobal,
     : mHasActiveTabPermission(aInit.mHasActiveTabPermission),
       mRestricted(aRestricted),
       mAllFrames(aInit.mAllFrames),
+      mCheckPermissions(aInit.mCheckPermissions),
       mFrameID(aInit.mFrameID),
       mMatchAboutBlank(aInit.mMatchAboutBlank) {
   MatchPatternOptions options;
@@ -667,6 +689,17 @@ MozDocumentMatcher::MozDocumentMatcher(GlobalObject& aGlobal,
       return;
     }
   }
+
+  if (!aInit.mOriginAttributesPatterns.IsNull()) {
+    Sequence<OriginAttributesPattern>& arr =
+        mOriginAttributesPatterns.SetValue();
+    for (const auto& pattern : aInit.mOriginAttributesPatterns.Value()) {
+      if (!arr.AppendElement(OriginAttributesPattern(pattern), fallible)) {
+        aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+        return;
+      }
+    }
+  }
 }
 
 WebExtensionContentScript::WebExtensionContentScript(
@@ -679,9 +712,15 @@ WebExtensionContentScript::WebExtensionContentScript(
   mCssPaths.Assign(aInit.mCssPaths);
   mJsPaths.Assign(aInit.mJsPaths);
   mExtension = &aExtension;
+
+  // Origin permissions are optional in mv3, so always check them at runtime.
+  if (mExtension->ManifestVersion() >= 3) {
+    mCheckPermissions = true;
+  }
 }
 
-bool MozDocumentMatcher::Matches(const DocInfo& aDoc) const {
+bool MozDocumentMatcher::Matches(const DocInfo& aDoc,
+                                 bool aIgnorePermissions) const {
   if (!mFrameID.IsNull()) {
     if (aDoc.FrameID() != mFrameID.Value()) {
       return false;
@@ -698,6 +737,21 @@ bool MozDocumentMatcher::Matches(const DocInfo& aDoc) const {
     return false;
   }
 
+  if (loadContext && !mOriginAttributesPatterns.IsNull()) {
+    OriginAttributes docShellAttrs;
+    loadContext->GetOriginAttributes(docShellAttrs);
+    bool patternMatch = false;
+    for (const auto& pattern : mOriginAttributesPatterns.Value()) {
+      if (pattern.Matches(docShellAttrs)) {
+        patternMatch = true;
+        break;
+      }
+    }
+    if (!patternMatch) {
+      return false;
+    }
+  }
+
   if (!mMatchAboutBlank && aDoc.URL().InheritsPrincipal()) {
     return false;
   }
@@ -712,20 +766,31 @@ bool MozDocumentMatcher::Matches(const DocInfo& aDoc) const {
     return true;
   }
 
-  if (mRestricted && mExtension->IsRestrictedDoc(aDoc)) {
+  if (mRestricted && mExtension && mExtension->IsRestrictedDoc(aDoc)) {
     return false;
   }
 
   auto& urlinfo = aDoc.PrincipalURL();
-  if (mHasActiveTabPermission && aDoc.ShouldMatchActiveTabPermission() &&
-      MatchPattern::MatchesAllURLs(urlinfo)) {
-    return true;
+  if (mExtension && mExtension->ManifestVersion() >= 3) {
+    // In MV3, activeTab only allows access to same-origin iframes.
+    if (mHasActiveTabPermission && aDoc.IsSameOriginWithTop() &&
+        MatchPattern::MatchesAllURLs(urlinfo)) {
+      return true;
+    }
+  } else {
+    if (mHasActiveTabPermission && aDoc.ShouldMatchActiveTabPermission() &&
+        MatchPattern::MatchesAllURLs(urlinfo)) {
+      return true;
+    }
   }
 
-  return MatchesURI(urlinfo);
+  return MatchesURI(urlinfo, aIgnorePermissions);
 }
 
-bool MozDocumentMatcher::MatchesURI(const URLInfo& aURL) const {
+bool MozDocumentMatcher::MatchesURI(const URLInfo& aURL,
+                                    bool aIgnorePermissions) const {
+  MOZ_ASSERT((!mRestricted && !mCheckPermissions) || mExtension);
+
   if (!mMatches->Matches(aURL)) {
     return false;
   }
@@ -746,10 +811,16 @@ bool MozDocumentMatcher::MatchesURI(const URLInfo& aURL) const {
     return false;
   }
 
+  if (mCheckPermissions && !aIgnorePermissions &&
+      !mExtension->CanAccessURI(aURL, false, false, true)) {
+    return false;
+  }
+
   return true;
 }
 
-bool MozDocumentMatcher::MatchesWindowGlobal(WindowGlobalChild& aWindow) const {
+bool MozDocumentMatcher::MatchesWindowGlobal(WindowGlobalChild& aWindow,
+                                             bool aIgnorePermissions) const {
   if (aWindow.IsClosed() || !aWindow.IsCurrentGlobal()) {
     return false;
   }
@@ -757,16 +828,24 @@ bool MozDocumentMatcher::MatchesWindowGlobal(WindowGlobalChild& aWindow) const {
   if (!inner || !inner->GetDocShell()) {
     return false;
   }
-  return Matches(inner->GetOuterWindow());
+  return Matches(inner->GetOuterWindow(), aIgnorePermissions);
+}
+
+void MozDocumentMatcher::GetOriginAttributesPatterns(
+    JSContext* aCx, JS::MutableHandle<JS::Value> aVal,
+    ErrorResult& aError) const {
+  if (!ToJSValue(aCx, mOriginAttributesPatterns, aVal)) {
+    aError.NoteJSContextException(aCx);
+  }
 }
 
 JSObject* MozDocumentMatcher::WrapObject(JSContext* aCx,
-                                         JS::HandleObject aGivenProto) {
+                                         JS::Handle<JSObject*> aGivenProto) {
   return MozDocumentMatcher_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-JSObject* WebExtensionContentScript::WrapObject(JSContext* aCx,
-                                                JS::HandleObject aGivenProto) {
+JSObject* WebExtensionContentScript::WrapObject(
+    JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
   return WebExtensionContentScript_Binding::Wrap(aCx, this, aGivenProto);
 }
 
@@ -828,7 +907,7 @@ void DocumentObserver::NotifyMatch(MozDocumentMatcher& aMatcher,
 }
 
 JSObject* DocumentObserver::WrapObject(JSContext* aCx,
-                                       JS::HandleObject aGivenProto) {
+                                       JS::Handle<JSObject*> aGivenProto) {
   return MozDocumentObserver_Binding::Wrap(aCx, this, aGivenProto);
 }
 
@@ -887,6 +966,17 @@ bool WindowShouldMatchActiveTab(nsPIDOMWindowOuter* aWin) {
 bool DocInfo::ShouldMatchActiveTabPermission() const {
   struct Matcher {
     bool operator()(Window aWin) { return WindowShouldMatchActiveTab(aWin); }
+    bool operator()(LoadInfo aLoadInfo) { return false; }
+  };
+  return mObj.match(Matcher());
+}
+
+bool DocInfo::IsSameOriginWithTop() const {
+  struct Matcher {
+    bool operator()(Window aWin) {
+      WindowContext* wc = aWin->GetCurrentInnerWindow()->GetWindowContext();
+      return wc && wc->SameOriginWithTop();
+    }
     bool operator()(LoadInfo aLoadInfo) { return false; }
   };
   return mObj.match(Matcher());

@@ -6,8 +6,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ParentChannelWrapper.h"
+#include "mozilla/net/HttpBaseChannel.h"
 #include "mozilla/net/UrlClassifierCommon.h"
-#include "nsIRedirectChannelRegistrar.h"
+#include "mozilla/net/RedirectChannelRegistrar.h"
+#include "nsIViewSourceChannel.h"
+#include "nsNetUtil.h"
+#include "nsQueryObject.h"
+#include "mozilla/dom/RemoteType.h"
 
 namespace mozilla {
 namespace net {
@@ -40,17 +45,6 @@ void ParentChannelWrapper::Register(uint64_t aRegistrarId) {
 NS_IMETHODIMP
 ParentChannelWrapper::SetParentListener(
     mozilla::net::ParentChannelListener* listener) {
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-ParentChannelWrapper::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
-  // For now, only HttpChannel use this attribute.
-  RefPtr<HttpBaseChannel> httpChannel = do_QueryObject(mChannel);
-  if (httpChannel) {
-    httpChannel->SetFlashPluginState(aState);
-  }
   return NS_OK;
 }
 

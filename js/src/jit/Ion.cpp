@@ -12,7 +12,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ThreadLocal.h"
 
-#include "gc/FreeOp.h"
+#include "gc/GCContext.h"
 #include "gc/PublicIterators.h"
 #include "jit/AliasAnalysis.h"
 #include "jit/AlignmentMaskAnalysis.h"
@@ -59,7 +59,6 @@
 #include "util/WindowsWrapper.h"
 #include "vm/HelperThreads.h"
 #include "vm/Realm.h"
-#include "vm/TraceLogging.h"
 #ifdef MOZ_VTUNE
 #  include "vtune/VTuneWrapper.h"
 #endif
@@ -106,8 +105,7 @@ bool JitRuntime::initialize(JSContext* cx) {
   MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
 
   AutoAllocInAtomsZone az(cx);
-
-  JitContext jctx(cx, nullptr);
+  JitContext jctx(cx);
 
   if (!generateTrampolines(cx)) {
     return false;
@@ -135,37 +133,18 @@ bool JitRuntime::initialize(JSContext* cx) {
 }
 
 bool JitRuntime::generateTrampolines(JSContext* cx) {
-  StackMacroAssembler masm;
+  TempAllocator temp(&cx->tempLifoAlloc());
+  StackMacroAssembler masm(cx, temp);
 
   Label bailoutTail;
   JitSpew(JitSpew_Codegen, "# Emitting bailout tail stub");
   generateBailoutTailStub(masm, &bailoutTail);
 
-  if (JitOptions.supportsFloatingPoint) {
-    JitSpew(JitSpew_Codegen, "# Emitting bailout tables");
+  JitSpew(JitSpew_Codegen, "# Emitting bailout handler");
+  generateBailoutHandler(masm, &bailoutTail);
 
-    // Initialize some Ion-only stubs that require floating-point support.
-    BailoutTableVector& bailoutTables = bailoutTables_.writeRef();
-    if (!bailoutTables.reserve(FrameSizeClass::ClassLimit().classId())) {
-      return false;
-    }
-
-    for (uint32_t id = 0;; id++) {
-      FrameSizeClass class_ = FrameSizeClass::FromClass(id);
-      if (class_ == FrameSizeClass::ClassLimit()) {
-        break;
-      }
-      JitSpew(JitSpew_Codegen, "# Bailout table");
-      bailoutTables.infallibleAppend(
-          generateBailoutTable(masm, &bailoutTail, id));
-    }
-
-    JitSpew(JitSpew_Codegen, "# Emitting bailout handler");
-    generateBailoutHandler(masm, &bailoutTail);
-
-    JitSpew(JitSpew_Codegen, "# Emitting invalidator");
-    generateInvalidator(masm, &bailoutTail);
-  }
+  JitSpew(JitSpew_Codegen, "# Emitting invalidator");
+  generateInvalidator(masm, &bailoutTail);
 
   // The arguments rectifier has to use the same frame layout as the function
   // frames it rectifies.
@@ -219,7 +198,7 @@ bool JitRuntime::generateTrampolines(JSContext* cx) {
   generateProfilerExitFrameTailStub(masm, &profilerExitTail);
 
   JitSpew(JitSpew_Codegen, "# Emitting exception tail stub");
-  generateExceptionTailStub(masm, &profilerExitTail);
+  generateExceptionTailStub(masm, &profilerExitTail, &bailoutTail);
 
   Linker linker(masm);
   trampolineCode_ = linker.newCode(cx, CodeKind::Other);
@@ -316,7 +295,7 @@ static T PopNextBitmaskValue(uint32_t* bitmask) {
 void JitRealm::performStubReadBarriers(uint32_t stubsToBarrier) const {
   while (stubsToBarrier) {
     auto stub = PopNextBitmaskValue<StubIndex>(&stubsToBarrier);
-    const WeakHeapPtrJitCode& jitCode = stubs_[stub];
+    const WeakHeapPtr<JitCode*>& jitCode = stubs_[stub];
     MOZ_ASSERT(jitCode);
     jitCode.get();
   }
@@ -324,11 +303,6 @@ void JitRealm::performStubReadBarriers(uint32_t stubsToBarrier) const {
 
 static bool LinkCodeGen(JSContext* cx, CodeGenerator* codegen,
                         HandleScript script, const WarpSnapshot* snapshot) {
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-  TraceLoggerEvent event(TraceLogger_AnnotateScripts, script);
-  AutoTraceLog logScript(logger, event);
-  AutoTraceLog logLink(logger, TraceLogger_IonLinking);
-
   if (!codegen->link(cx, snapshot)) {
     return false;
   }
@@ -342,26 +316,21 @@ static bool LinkBackgroundCodeGen(JSContext* cx, IonCompileTask* task) {
     return false;
   }
 
-  JitContext jctx(cx, &task->alloc());
+  JitContext jctx(cx);
   RootedScript script(cx, task->script());
   return LinkCodeGen(cx, codegen, script, task->snapshot());
 }
 
 void jit::LinkIonScript(JSContext* cx, HandleScript calleeScript) {
-  IonCompileTask* task;
+  // Get the pending IonCompileTask from the script.
+  MOZ_ASSERT(calleeScript->hasBaselineScript());
+  IonCompileTask* task =
+      calleeScript->baselineScript()->pendingIonCompileTask();
+  calleeScript->baselineScript()->removePendingIonCompileTask(cx->runtime(),
+                                                              calleeScript);
 
-  {
-    AutoLockHelperThreadState lock;
-
-    // Get the pending IonCompileTask from the Ion frame.
-    MOZ_ASSERT(calleeScript->hasBaselineScript());
-    task = calleeScript->baselineScript()->pendingIonCompileTask();
-    calleeScript->baselineScript()->removePendingIonCompileTask(cx->runtime(),
-                                                                calleeScript);
-
-    // Remove from pending.
-    cx->runtime()->jitRuntime()->ionLazyLinkListRemove(cx->runtime(), task);
-  }
+  // Remove from pending.
+  cx->runtime()->jitRuntime()->ionLazyLinkListRemove(cx->runtime(), task);
 
   {
     gc::AutoSuppressGC suppressGC(cx);
@@ -393,8 +362,7 @@ uint8_t* jit::LazyLinkTopActivation(JSContext* cx,
 }
 
 /* static */
-void JitRuntime::TraceAtomZoneRoots(JSTracer* trc,
-                                    const AutoAccessAtomsZone& access) {
+void JitRuntime::TraceAtomZoneRoots(JSTracer* trc) {
   MOZ_ASSERT(!JS::RuntimeHeapIsMinorCollecting());
 
   // Shared stubs are allocated in the atoms zone, so do not iterate
@@ -403,7 +371,7 @@ void JitRuntime::TraceAtomZoneRoots(JSTracer* trc,
     return;
   }
 
-  Zone* zone = trc->runtime()->atomsZone(access);
+  Zone* zone = trc->runtime()->atomsZone();
   for (auto i = zone->cellIterUnsafe<JitCode>(); !i.done(); i.next()) {
     JitCode* code = i;
     TraceRoot(trc, &code, "wrapper");
@@ -435,7 +403,7 @@ void JitRealm::traceWeak(JSTracer* trc, JS::Realm* realm) {
 
   stubCodes_->traceWeak(trc);
 
-  for (WeakHeapPtrJitCode& stub : stubs_) {
+  for (WeakHeapPtr<JitCode*>& stub : stubs_) {
     TraceWeakEdge(trc, &stub, "JitRealm::stubs_");
   }
 }
@@ -555,18 +523,6 @@ void JitZone::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
       optimizedStubSpace_.sizeOfExcludingThis(mallocSizeOf);
 }
 
-TrampolinePtr JitRuntime::getBailoutTable(
-    const FrameSizeClass& frameClass) const {
-  MOZ_ASSERT(frameClass != FrameSizeClass::None());
-  return trampolineCode(bailoutTables_.ref()[frameClass.classId()].startOffset);
-}
-
-uint32_t JitRuntime::getBailoutTableSize(
-    const FrameSizeClass& frameClass) const {
-  MOZ_ASSERT(frameClass != FrameSizeClass::None());
-  return bailoutTables_.ref()[frameClass.classId()].size;
-}
-
 void JitCodeHeader::init(JitCode* jitCode) {
   // As long as JitCode isn't moveable, we can avoid tracing this and
   // mutating executable data.
@@ -636,10 +592,10 @@ void JitCode::traceChildren(JSTracer* trc) {
   }
 }
 
-void JitCode::finalize(JSFreeOp* fop) {
+void JitCode::finalize(JS::GCContext* gcx) {
   // If this jitcode had a bytecode map, it must have already been removed.
 #ifdef DEBUG
-  JSRuntime* rt = fop->runtime();
+  JSRuntime* rt = gcx->runtime();
   if (hasBytecodeMap_) {
     MOZ_ASSERT(rt->jitRuntime()->hasJitcodeGlobalTable());
     MOZ_ASSERT(!rt->jitRuntime()->getJitcodeGlobalTable()->lookup(raw()));
@@ -655,7 +611,7 @@ void JitCode::finalize(JSFreeOp* fop) {
   // With W^X JIT code, reprotecting memory for each JitCode instance is
   // slow, so we record the ranges and poison them later all at once. It's
   // safe to ignore OOM here, it just means we won't poison the code.
-  if (fop->appendJitPoisonRange(JitPoisonRange(pool_, raw() - headerSize_,
+  if (gcx->appendJitPoisonRange(JitPoisonRange(pool_, raw() - headerSize_,
                                                headerSize_ + bufferSize_))) {
     pool_->addRef();
   }
@@ -674,23 +630,22 @@ void JitCode::finalize(JSFreeOp* fop) {
   pool_ = nullptr;
 }
 
-IonScript::IonScript(IonCompilationId compilationId, uint32_t frameSlots,
-                     uint32_t argumentSlots, uint32_t frameSize)
-    : frameSlots_(frameSlots),
-      argumentSlots_(argumentSlots),
+IonScript::IonScript(IonCompilationId compilationId, uint32_t localSlotsSize,
+                     uint32_t argumentSlotsSize, uint32_t frameSize)
+    : localSlotsSize_(localSlotsSize),
+      argumentSlotsSize_(argumentSlotsSize),
       frameSize_(frameSize),
       compilationId_(compilationId) {}
 
 IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
-                          uint32_t frameSlots, uint32_t argumentSlots,
+                          uint32_t localSlotsSize, uint32_t argumentSlotsSize,
                           uint32_t frameSize, size_t snapshotsListSize,
                           size_t snapshotsRVATableSize, size_t recoversSize,
-                          size_t bailoutEntries, size_t constants,
-                          size_t nurseryObjects, size_t safepointIndices,
-                          size_t osiIndices, size_t icEntries,
-                          size_t runtimeSize, size_t safepointsSize) {
-  if (snapshotsListSize >= MAX_BUFFER_SIZE ||
-      (bailoutEntries >= MAX_BUFFER_SIZE / sizeof(uint32_t))) {
+                          size_t constants, size_t nurseryObjects,
+                          size_t safepointIndices, size_t osiIndices,
+                          size_t icEntries, size_t runtimeSize,
+                          size_t safepointsSize) {
+  if (snapshotsListSize >= MAX_BUFFER_SIZE) {
     ReportOutOfMemory(cx);
     return nullptr;
   }
@@ -700,16 +655,13 @@ IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
                 "IonScript has wrong size for OsiIndex");
   static_assert(SizeOf_SafepointIndex == sizeof(SafepointIndex),
                 "IonScript has wrong size for SafepointIndex");
-  static_assert(SizeOf_SnapshotOffset == sizeof(SnapshotOffset),
-                "IonScript has wrong size for SnapshotOffset");
 
   CheckedInt<Offset> allocSize = sizeof(IonScript);
   allocSize += CheckedInt<Offset>(constants) * sizeof(Value);
   allocSize += CheckedInt<Offset>(runtimeSize);
-  allocSize += CheckedInt<Offset>(nurseryObjects) * sizeof(HeapPtrObject);
+  allocSize += CheckedInt<Offset>(nurseryObjects) * sizeof(HeapPtr<JSObject*>);
   allocSize += CheckedInt<Offset>(osiIndices) * sizeof(OsiIndex);
   allocSize += CheckedInt<Offset>(safepointIndices) * sizeof(SafepointIndex);
-  allocSize += CheckedInt<Offset>(bailoutEntries) * sizeof(SnapshotOffset);
   allocSize += CheckedInt<Offset>(icEntries) * sizeof(uint32_t);
   allocSize += CheckedInt<Offset>(safepointsSize);
   allocSize += CheckedInt<Offset>(snapshotsListSize);
@@ -726,8 +678,8 @@ IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
   if (!raw) {
     return nullptr;
   }
-  IonScript* script =
-      new (raw) IonScript(compilationId, frameSlots, argumentSlots, frameSize);
+  IonScript* script = new (raw)
+      IonScript(compilationId, localSlotsSize, argumentSlotsSize, frameSize);
 
   Offset offsetCursor = sizeof(IonScript);
 
@@ -739,10 +691,10 @@ IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
   script->runtimeDataOffset_ = offsetCursor;
   offsetCursor += runtimeSize;
 
-  MOZ_ASSERT(offsetCursor % alignof(HeapPtrObject) == 0);
-  script->initElements<HeapPtrObject>(offsetCursor, nurseryObjects);
+  MOZ_ASSERT(offsetCursor % alignof(HeapPtr<JSObject*>) == 0);
+  script->initElements<HeapPtr<JSObject*>>(offsetCursor, nurseryObjects);
   script->nurseryObjectsOffset_ = offsetCursor;
-  offsetCursor += nurseryObjects * sizeof(HeapPtrObject);
+  offsetCursor += nurseryObjects * sizeof(HeapPtr<JSObject*>);
 
   MOZ_ASSERT(offsetCursor % alignof(OsiIndex) == 0);
   script->osiIndexOffset_ = offsetCursor;
@@ -751,10 +703,6 @@ IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
   MOZ_ASSERT(offsetCursor % alignof(SafepointIndex) == 0);
   script->safepointIndexOffset_ = offsetCursor;
   offsetCursor += safepointIndices * sizeof(SafepointIndex);
-
-  MOZ_ASSERT(offsetCursor % alignof(SnapshotOffset) == 0);
-  script->bailoutTableOffset_ = offsetCursor;
-  offsetCursor += bailoutEntries * sizeof(SnapshotOffset);
 
   MOZ_ASSERT(offsetCursor % alignof(uint32_t) == 0);
   script->icIndexOffset_ = offsetCursor;
@@ -779,7 +727,6 @@ IonScript* IonScript::New(JSContext* cx, IonCompilationId compilationId,
   MOZ_ASSERT(script->numNurseryObjects() == nurseryObjects);
   MOZ_ASSERT(script->numOsiIndices() == osiIndices);
   MOZ_ASSERT(script->numSafepointIndices() == safepointIndices);
-  MOZ_ASSERT(script->numBailoutEntries() == bailoutEntries);
   MOZ_ASSERT(script->numICs() == icEntries);
   MOZ_ASSERT(script->safepointsSize() == safepointsSize);
   MOZ_ASSERT(script->snapshotsListSize() == snapshotsListSize);
@@ -835,10 +782,6 @@ void IonScript::copySafepoints(const SafepointWriter* writer) {
   MOZ_ASSERT(writer->size() == safepointsSize());
   memcpy(offsetToPointer<uint8_t>(safepointsOffset()), writer->buffer(),
          safepointsSize());
-}
-
-void IonScript::copyBailoutTable(const SnapshotOffset* table) {
-  memcpy(bailoutTable(), table, numBailoutEntries() * sizeof(SnapshotOffset));
 }
 
 void IonScript::copyConstants(const Value* vp) {
@@ -942,7 +885,7 @@ const OsiIndex* IonScript::getOsiIndex(uint8_t* retAddr) const {
   return getOsiIndex(disp);
 }
 
-void IonScript::Destroy(JSFreeOp* fop, IonScript* script) {
+void IonScript::Destroy(JS::GCContext* gcx, IonScript* script) {
   // Make sure there are no pointers into the IonScript's nursery objects list
   // in the store buffer. Because this can be called during sweeping when
   // discarding JIT code, we have to lock the store buffer when we find an
@@ -954,18 +897,18 @@ void IonScript::Destroy(JSFreeOp* fop, IonScript* script) {
       continue;
     }
     if (lock.isNothing()) {
-      lock.emplace(&fop->runtime()->gc.storeBuffer());
+      lock.emplace(&gcx->runtime()->gc.storeBuffer());
     }
-    script->nurseryObjects()[i] = HeapPtrObject();
+    script->nurseryObjects()[i] = HeapPtr<JSObject*>();
   }
 
   // This allocation is tracked by JSScript::setIonScriptImpl.
-  fop->deleteUntracked(script);
+  gcx->deleteUntracked(script);
 }
 
 void JS::DeletePolicy<js::jit::IonScript>::operator()(
     const js::jit::IonScript* script) {
-  IonScript::Destroy(rt_->defaultFreeOp(), const_cast<IonScript*>(script));
+  IonScript::Destroy(rt_->gcContext(), const_cast<IonScript*>(script));
 }
 
 void IonScript::purgeICs(Zone* zone) {
@@ -980,7 +923,6 @@ namespace jit {
 bool OptimizeMIR(MIRGenerator* mir) {
   MIRGraph& graph = mir->graph();
   GraphSpewer& gs = mir->graphSpewer();
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
 
   if (mir->shouldCancel("Start")) {
     return false;
@@ -994,7 +936,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
                      "BuildSSA (== input to OptimizeMIR)");
 
   if (!JitOptions.disablePruning && !mir->compilingWasm()) {
-    AutoTraceLog log(logger, TraceLogger_PruneUnusedBranches);
     JitSpewCont(JitSpew_Prune, "\n");
     if (!PruneUnusedBranches(mir, graph)) {
       return false;
@@ -1008,7 +949,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_FoldEmptyBlocks);
     if (!FoldEmptyBlocks(graph)) {
       return false;
     }
@@ -1020,8 +960,21 @@ bool OptimizeMIR(MIRGenerator* mir) {
     }
   }
 
+  // Remove trivially dead resume point operands before folding tests, so the
+  // latter pass can optimize more aggressively.
+  if (!mir->compilingWasm()) {
+    if (!EliminateTriviallyDeadResumePointOperands(mir, graph)) {
+      return false;
+    }
+    gs.spewPass("Eliminate trivially dead resume point operands");
+    AssertBasicGraphCoherency(graph);
+
+    if (mir->shouldCancel("Eliminate trivially dead resume point operands")) {
+      return false;
+    }
+  }
+
   {
-    AutoTraceLog log(logger, TraceLogger_FoldTests);
     if (!FoldTests(graph)) {
       return false;
     }
@@ -1034,7 +987,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_SplitCriticalEdges);
     if (!SplitCriticalEdges(graph)) {
       return false;
     }
@@ -1047,7 +999,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_RenumberBlocks);
     RenumberBlocks(graph);
     gs.spewPass("Renumber Blocks");
     AssertGraphCoherency(graph);
@@ -1058,7 +1009,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_DominatorTree);
     if (!BuildDominatorTree(graph)) {
       return false;
     }
@@ -1070,7 +1020,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_PhiAnalysis);
     // Aggressive phi elimination must occur before any code elimination. If the
     // script contains a try-statement, we only compiled the try block and not
     // the catch or finally blocks, so in this case it's also invalid to use
@@ -1101,7 +1050,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
 
   if (!JitOptions.disableRecoverIns &&
       mir->optimizationInfo().scalarReplacementEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_ScalarReplacement);
     JitSpewCont(JitSpew_Escape, "\n");
     if (!ScalarReplacement(mir, graph)) {
       return false;
@@ -1115,7 +1063,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (!mir->compilingWasm()) {
-    AutoTraceLog log(logger, TraceLogger_ApplyTypes);
     if (!ApplyTypeInformation(mir, graph)) {
       return false;
     }
@@ -1128,7 +1075,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (mir->optimizationInfo().amaEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_AlignmentMaskAnalysis);
     AlignmentMaskAnalysis ama(graph);
     if (!ama.analyze()) {
       return false;
@@ -1144,12 +1090,12 @@ bool OptimizeMIR(MIRGenerator* mir) {
   ValueNumberer gvn(mir, graph);
 
   // Alias analysis is required for LICM and GVN so that we don't move
-  // loads across stores.
+  // loads across stores. We also use alias information when removing
+  // redundant shapeguards.
   if (mir->optimizationInfo().licmEnabled() ||
-      mir->optimizationInfo().gvnEnabled()) {
+      mir->optimizationInfo().gvnEnabled() ||
+      mir->optimizationInfo().eliminateRedundantShapeGuardsEnabled()) {
     {
-      AutoTraceLog log(logger, TraceLogger_AliasAnalysis);
-
       AliasAnalysis analysis(mir, graph);
       JitSpewCont(JitSpew_Alias, "\n");
       if (!analysis.analyze()) {
@@ -1172,6 +1118,9 @@ bool OptimizeMIR(MIRGenerator* mir) {
         return false;
       }
 
+      gs.spewPass("Eliminate dead resume point operands");
+      AssertExtendedGraphCoherency(graph);
+
       if (mir->shouldCancel("Eliminate dead resume point operands")) {
         return false;
       }
@@ -1179,7 +1128,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (mir->optimizationInfo().gvnEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_GVN);
     JitSpewCont(JitSpew_GVN, "\n");
     if (!gvn.run(ValueNumberer::UpdateAliasAnalysis)) {
       return false;
@@ -1197,7 +1145,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   // instruction has previously invalidated this script.
   if (mir->optimizationInfo().licmEnabled() &&
       !mir->outerInfo().hadLICMInvalidation()) {
-    AutoTraceLog log(logger, TraceLogger_LICM);
     JitSpewCont(JitSpew_LICM, "\n");
     if (!LICM(mir, graph)) {
       return false;
@@ -1212,7 +1159,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
 
   RangeAnalysis r(mir, graph);
   if (mir->optimizationInfo().rangeAnalysisEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_RangeAnalysis);
     JitSpewCont(JitSpew_Range, "\n");
     if (!r.addBetaNodes()) {
       return false;
@@ -1283,7 +1229,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (!JitOptions.disableRecoverIns) {
-    AutoTraceLog log(logger, TraceLogger_Sink);
     JitSpewCont(JitSpew_Sink, "\n");
     if (!Sink(mir, graph)) {
       return false;
@@ -1298,7 +1243,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
 
   if (!JitOptions.disableRecoverIns &&
       mir->optimizationInfo().rangeAnalysisEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_RemoveUnnecessaryBitops);
     JitSpewCont(JitSpew_Range, "\n");
     if (!r.removeUnnecessaryBitops()) {
       return false;
@@ -1312,7 +1256,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_FoldLinearArithConstants);
     JitSpewCont(JitSpew_FLAC, "\n");
     if (!FoldLinearArithConstants(mir, graph)) {
       return false;
@@ -1326,7 +1269,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (mir->optimizationInfo().eaaEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_EffectiveAddressAnalysis);
     EffectiveAddressAnalysis eaa(mir, graph);
     JitSpewCont(JitSpew_EAA, "\n");
     if (!eaa.analyze()) {
@@ -1355,7 +1297,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   {
-    AutoTraceLog log(logger, TraceLogger_EliminateDeadCode);
     if (!EliminateDeadCode(mir, graph)) {
       return false;
     }
@@ -1369,7 +1310,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
 
   if (mir->optimizationInfo().instructionReorderingEnabled() &&
       !mir->outerInfo().hadReorderingBailout()) {
-    AutoTraceLog log(logger, TraceLogger_ReorderInstructions);
     if (!ReorderInstructions(graph)) {
       return false;
     }
@@ -1385,7 +1325,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   // Make loops contiguous. We do this after GVN/UCE and range analysis,
   // which can remove CFG edges, exposing more blocks that can be moved.
   {
-    AutoTraceLog log(logger, TraceLogger_MakeLoopsContiguous);
     if (!MakeLoopsContiguous(graph)) {
       return false;
     }
@@ -1417,7 +1356,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   // depend on knowing the final order in which instructions will execute.
 
   if (mir->optimizationInfo().edgeCaseAnalysisEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_EdgeCaseAnalysis);
     EdgeCaseAnalysis edgeCaseAnalysis(mir, graph);
     if (!edgeCaseAnalysis.analyzeLate()) {
       return false;
@@ -1431,7 +1369,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (mir->optimizationInfo().eliminateRedundantChecksEnabled()) {
-    AutoTraceLog log(logger, TraceLogger_EliminateRedundantChecks);
     // Note: check elimination has to run after all other passes that move
     // instructions. Since check uses are replaced with the actual index,
     // code motion after this pass could incorrectly move a load or store
@@ -1443,8 +1380,15 @@ bool OptimizeMIR(MIRGenerator* mir) {
     AssertGraphCoherency(graph);
   }
 
+  if (mir->optimizationInfo().eliminateRedundantShapeGuardsEnabled()) {
+    if (!EliminateRedundantShapeGuards(graph)) {
+      return false;
+    }
+    gs.spewPass("Shape Guard Elimination");
+    AssertGraphCoherency(graph);
+  }
+
   if (!mir->compilingWasm() && !mir->outerInfo().hadUnboxFoldingBailout()) {
-    AutoTraceLog log(logger, TraceLogger_FoldLoadsWithUnbox);
     if (!FoldLoadsWithUnbox(mir, graph)) {
       return false;
     }
@@ -1453,7 +1397,6 @@ bool OptimizeMIR(MIRGenerator* mir) {
   }
 
   if (!mir->compilingWasm()) {
-    AutoTraceLog log(logger, TraceLogger_AddKeepAliveInstructions);
     if (!AddKeepAliveInstructions(graph)) {
       return false;
     }
@@ -1474,8 +1417,6 @@ LIRGraph* GenerateLIR(MIRGenerator* mir) {
   MIRGraph& graph = mir->graph();
   GraphSpewer& gs = mir->graphSpewer();
 
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
-
   LIRGraph* lir = mir->alloc().lifoAlloc()->new_<LIRGraph>(&graph);
   if (!lir || !lir->init()) {
     return nullptr;
@@ -1483,7 +1424,6 @@ LIRGraph* GenerateLIR(MIRGenerator* mir) {
 
   LIRGenerator lirgen(mir, graph, *lir);
   {
-    AutoTraceLog log(logger, TraceLogger_GenerateLIR);
     if (!lirgen.generate()) {
       return nullptr;
     }
@@ -1499,8 +1439,6 @@ LIRGraph* GenerateLIR(MIRGenerator* mir) {
 #endif
 
   {
-    AutoTraceLog log(logger, TraceLogger_RegisterAllocation);
-
     IonRegisterAllocator allocator =
         mir->optimizationInfo().registerAllocator();
 
@@ -1546,9 +1484,6 @@ LIRGraph* GenerateLIR(MIRGenerator* mir) {
 }
 
 CodeGenerator* GenerateCode(MIRGenerator* mir, LIRGraph* lir) {
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
-  AutoTraceLog log(logger, TraceLogger_GenerateCode);
-
   auto codegen = MakeUnique<CodeGenerator>(mir, lir);
   if (!codegen) {
     return nullptr;
@@ -1608,11 +1543,6 @@ static AbortReasonOr<WarpSnapshot*> CreateWarpSnapshot(JSContext* cx,
 
 static AbortReason IonCompile(JSContext* cx, HandleScript script,
                               jsbytecode* osrPc) {
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-  TraceLoggerEvent event(TraceLogger_AnnotateScripts, script);
-  AutoTraceLog logScript(logger, event);
-  AutoTraceLog logCompile(logger, TraceLogger_IonCompilation);
-
   cx->check(script);
 
   auto alloc =
@@ -1621,19 +1551,17 @@ static AbortReason IonCompile(JSContext* cx, HandleScript script,
     return AbortReason::Error;
   }
 
-  TempAllocator* temp = alloc->new_<TempAllocator>(alloc.get());
-  if (!temp) {
-    return AbortReason::Alloc;
-  }
-
-  JitContext jctx(cx, temp);
-
   if (!cx->realm()->ensureJitRealmExists(cx)) {
     return AbortReason::Error;
   }
 
   if (!cx->realm()->jitRealm()->ensureIonStubsExist(cx)) {
     return AbortReason::Error;
+  }
+
+  TempAllocator* temp = alloc->new_<TempAllocator>(alloc.get());
+  if (!temp) {
+    return AbortReason::Alloc;
   }
 
   MIRGraph* graph = alloc->new_<MIRGraph>(temp);
@@ -1686,7 +1614,7 @@ static AbortReason IonCompile(JSContext* cx, HandleScript script,
             ". (Compiled on background thread.)",
             script->filename(), script->lineno(), script->column());
 
-    IonCompileTask* task = alloc->new_<IonCompileTask>(*mirGen, snapshot);
+    IonCompileTask* task = alloc->new_<IonCompileTask>(cx, *mirGen, snapshot);
     if (!task) {
       return AbortReason::Alloc;
     }
@@ -1710,6 +1638,7 @@ static AbortReason IonCompile(JSContext* cx, HandleScript script,
   bool succeeded = false;
   {
     gc::AutoSuppressGC suppressGC(cx);
+    JitContext jctx(cx);
     UniquePtr<CodeGenerator> codegen(CompileBackEnd(mirGen, snapshot));
     if (!codegen) {
       JitSpew(JitSpew_IonAbort, "Failed during back-end compilation.");
@@ -1761,17 +1690,7 @@ static bool CanIonCompileOrInlineScript(JSScript* script, const char** reason) {
     return false;
   }
 
-  if (script->isGenerator() && !JitOptions.warpGenerator) {
-    *reason = "generator script";
-    return false;
-  }
-
   if (script->isAsync()) {
-    if (!JitOptions.warpAsync) {
-      *reason = "async script";
-      return false;
-    }
-
     if (script->isModule()) {
       *reason = "async module";
       return false;
@@ -1784,14 +1703,6 @@ static bool CanIonCompileOrInlineScript(JSScript* script, const char** reason) {
     // object as scope chain, this is not valid when the script has a
     // non-syntactic global scope.
     *reason = "has non-syntactic global scope";
-    return false;
-  }
-
-  if (script->functionHasExtraBodyVarScope() &&
-      script->functionExtraBodyVarScope()->hasEnvironment()) {
-    // This restriction will be lifted when intra-function scope chains
-    // are compilable by Ion. See bug 1273858.
-    *reason = "has extra var environment";
     return false;
   }
 
@@ -2291,7 +2202,7 @@ bool jit::IonCompileScriptForBaselineOSR(JSContext* cx, BaselineFrame* frame,
   return true;
 }
 
-static void InvalidateActivation(JSFreeOp* fop,
+static void InvalidateActivation(JS::GCContext* gcx,
                                  const JitActivationIterator& activations,
                                  bool invalidateAll) {
   JitSpew(JitSpew_IonInvalidate, "BEGIN invalidating activation");
@@ -2455,7 +2366,7 @@ static void InvalidateActivation(JSFreeOp* fop,
   JitSpew(JitSpew_IonInvalidate, "END invalidating activation");
 }
 
-void jit::InvalidateAll(JSFreeOp* fop, Zone* zone) {
+void jit::InvalidateAll(JS::GCContext* gcx, Zone* zone) {
   // The caller should previously have cancelled off thread compilation.
 #ifdef DEBUG
   for (RealmsInZoneIter realm(zone); !realm.done(); realm.next()) {
@@ -2469,7 +2380,7 @@ void jit::InvalidateAll(JSFreeOp* fop, Zone* zone) {
   for (JitActivationIterator iter(cx); !iter.done(); ++iter) {
     if (iter->compartment()->zone() == zone) {
       JitSpew(JitSpew_IonInvalidate, "Invalidating all frames for GC");
-      InvalidateActivation(fop, iter, true);
+      InvalidateActivation(gcx, iter, true);
     }
   }
 }
@@ -2480,7 +2391,7 @@ static void ClearIonScriptAfterInvalidation(JSContext* cx, JSScript* script,
   // Null out the JitScript's IonScript pointer. The caller is responsible for
   // destroying the IonScript using the invalidation count mechanism.
   DebugOnly<IonScript*> clearedIonScript =
-      script->jitScript()->clearIonScript(cx->defaultFreeOp(), script);
+      script->jitScript()->clearIonScript(cx->gcContext(), script);
   MOZ_ASSERT(clearedIonScript == ionScript);
 
   // Wait for the scripts to get warm again before doing another
@@ -2524,9 +2435,9 @@ void jit::Invalidate(JSContext* cx, const RecompileInfoVector& invalid,
     return;
   }
 
-  JSFreeOp* fop = cx->defaultFreeOp();
+  JS::GCContext* gcx = cx->gcContext();
   for (JitActivationIterator iter(cx); !iter.done(); ++iter) {
-    InvalidateActivation(fop, iter, false);
+    InvalidateActivation(gcx, iter, false);
   }
 
   // Drop the references added above. If a script was never active, its
@@ -2546,7 +2457,7 @@ void jit::Invalidate(JSContext* cx, const RecompileInfoVector& invalid,
       ClearIonScriptAfterInvalidation(cx, info.script(), ionScript, resetUses);
     }
 
-    ionScript->decrementInvalidationCount(fop);
+    ionScript->decrementInvalidationCount(gcx);
     numInvalidations--;
   }
 
@@ -2614,18 +2525,18 @@ void jit::Invalidate(JSContext* cx, JSScript* script, bool resetUses,
   Invalidate(cx, scripts, resetUses, cancelOffThread);
 }
 
-void jit::FinishInvalidation(JSFreeOp* fop, JSScript* script) {
+void jit::FinishInvalidation(JS::GCContext* gcx, JSScript* script) {
   if (!script->hasIonScript()) {
     return;
   }
 
   // In all cases, null out jitScript->ionScript_ to avoid re-entry.
-  IonScript* ion = script->jitScript()->clearIonScript(fop, script);
+  IonScript* ion = script->jitScript()->clearIonScript(gcx, script);
 
   // If this script has Ion code on the stack, invalidated() will return
   // true. In this case we have to wait until destroying it.
   if (!ion->invalidated()) {
-    jit::IonScript::Destroy(fop, ion);
+    jit::IonScript::Destroy(gcx, ion);
   }
 }
 

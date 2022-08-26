@@ -9,6 +9,9 @@ import { DiscoveryStreamFeed } from "lib/DiscoveryStreamFeed.jsm";
 import { RecommendationProvider } from "lib/RecommendationProvider.jsm";
 import { reducers } from "common/Reducers.jsm";
 
+import { PersistentCache } from "lib/PersistentCache.jsm";
+import { PersonalityProvider } from "lib/PersonalityProvider/PersonalityProvider.jsm";
+
 const CONFIG_PREF_NAME = "discoverystream.config";
 const DUMMY_ENDPOINT = "https://getpocket.cdn.mozilla.net/dummy";
 const ENDPOINTS_PREF_NAME = "discoverystream.endpoints";
@@ -28,6 +31,7 @@ describe("DiscoveryStreamFeed", () => {
   let fetchStub;
   let clock;
   let fakeNewTabUtils;
+  let fakePktApi;
   let globals;
 
   const setPref = (name, value) => {
@@ -52,7 +56,11 @@ describe("DiscoveryStreamFeed", () => {
     clock = sinon.useFakeTimers();
 
     globals = new GlobalOverrider();
-    globals.set("gUUIDGenerator", { generateUUID: () => FAKE_UUID });
+    globals.set({
+      gUUIDGenerator: { generateUUID: () => FAKE_UUID },
+      PersistentCache,
+      PersonalityProvider,
+    });
 
     sandbox
       .stub(global.Services.prefs, "getBoolPref")
@@ -102,6 +110,13 @@ describe("DiscoveryStreamFeed", () => {
       },
     };
     globals.set("NewTabUtils", fakeNewTabUtils);
+
+    fakePktApi = {
+      isUserLoggedIn: () => false,
+      getRecentSavesCache: () => null,
+      getRecentSaves: () => null,
+    };
+    globals.set("pktApi", fakePktApi);
   });
 
   afterEach(() => {
@@ -204,6 +219,63 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
+  describe("#setupPocketState", () => {
+    it("should setup logged in state and recent saves with cache", async () => {
+      fakePktApi.isUserLoggedIn = () => true;
+      fakePktApi.getRecentSavesCache = () => [1, 2, 3];
+      sandbox.spy(feed.store, "dispatch");
+      await feed.setupPocketState({});
+      assert.calledTwice(feed.store.dispatch);
+      assert.calledWith(
+        feed.store.dispatch.firstCall,
+        ac.OnlyToOneContent(
+          {
+            type: at.DISCOVERY_STREAM_POCKET_STATE_SET,
+            data: { isUserLoggedIn: true },
+          },
+          {}
+        )
+      );
+      assert.calledWith(
+        feed.store.dispatch.secondCall,
+        ac.OnlyToOneContent(
+          {
+            type: at.DISCOVERY_STREAM_RECENT_SAVES,
+            data: { recentSaves: [1, 2, 3] },
+          },
+          {}
+        )
+      );
+    });
+    it("should setup logged in state and recent saves without cache", async () => {
+      fakePktApi.isUserLoggedIn = () => true;
+      fakePktApi.getRecentSaves = ({ success }) => success([1, 2, 3]);
+      sandbox.spy(feed.store, "dispatch");
+      await feed.setupPocketState({});
+      assert.calledTwice(feed.store.dispatch);
+      assert.calledWith(
+        feed.store.dispatch.firstCall,
+        ac.OnlyToOneContent(
+          {
+            type: at.DISCOVERY_STREAM_POCKET_STATE_SET,
+            data: { isUserLoggedIn: true },
+          },
+          {}
+        )
+      );
+      assert.calledWith(
+        feed.store.dispatch.secondCall,
+        ac.OnlyToOneContent(
+          {
+            type: at.DISCOVERY_STREAM_RECENT_SAVES,
+            data: { recentSaves: [1, 2, 3] },
+          },
+          {}
+        )
+      );
+    });
+  });
+
   describe("#getOrCreateImpressionId", () => {
     it("should create impression id in constructor", async () => {
       assert.equal(feed._impressionId, FAKE_UUID);
@@ -226,15 +298,15 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
-  describe("#parseSpocPositions", () => {
+  describe("#parseGridPositions", () => {
     it("should return an equivalent array for an array of non negative integers", async () => {
-      assert.deepEqual(feed.parseSpocPositions([0, 2, 3]), [0, 2, 3]);
+      assert.deepEqual(feed.parseGridPositions([0, 2, 3]), [0, 2, 3]);
     });
     it("should return undefined for an array containing negative integers", async () => {
-      assert.equal(feed.parseSpocPositions([-2, 2, 3]), undefined);
+      assert.equal(feed.parseGridPositions([-2, 2, 3]), undefined);
     });
     it("should return undefined for an undefined input", async () => {
-      assert.equal(feed.parseSpocPositions(undefined), undefined);
+      assert.equal(feed.parseGridPositions(undefined), undefined);
     });
   });
 
@@ -448,13 +520,13 @@ describe("DiscoveryStreamFeed", () => {
         "https://spocs.getpocket.com/spocs"
       );
     });
-    it("should return enough stories to fill a compact layout", async () => {
+    it("should return enough stories to fill a four card layout", async () => {
       feed.config.hardcoded_layout = true;
 
       feed.store = createStore(combineReducers(reducers), {
         Prefs: {
           values: {
-            pocketConfig: { compactLayout: true },
+            pocketConfig: { fourCardLayout: true },
           },
         },
       });
@@ -465,6 +537,31 @@ describe("DiscoveryStreamFeed", () => {
 
       const { layout } = feed.store.getState().DiscoveryStream;
       assert.equal(layout[0].components[2].properties.items, 24);
+    });
+    it("should create a layout with spoc and widget positions", async () => {
+      feed.config.hardcoded_layout = true;
+      feed.store = createStore(combineReducers(reducers), {
+        Prefs: {
+          values: {
+            pocketConfig: {
+              spocPositions: "1, 2",
+              widgetPositions: "3, 4",
+            },
+          },
+        },
+      });
+
+      await feed.loadLayout(feed.store.dispatch);
+
+      const { layout } = feed.store.getState().DiscoveryStream;
+      assert.deepEqual(layout[0].components[2].spocs.positions, [
+        { index: 1 },
+        { index: 2 },
+      ]);
+      assert.deepEqual(layout[0].components[2].widgets.positions, [
+        { index: 3 },
+        { index: 4 },
+      ]);
     });
   });
 
@@ -1970,6 +2067,17 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
+  describe("#onAction: DISCOVERY_STREAM_POCKET_STATE_INIT", async () => {
+    it("should call setupPocketState", async () => {
+      sandbox.spy(feed, "setupPocketState");
+      feed.onAction({
+        type: at.DISCOVERY_STREAM_POCKET_STATE_INIT,
+        meta: { fromTarget: {} },
+      });
+      assert.calledOnce(feed.setupPocketState);
+    });
+  });
+
   describe("#onAction: DISCOVERY_STREAM_CONFIG_RESET", async () => {
     it("should call configReset", async () => {
       sandbox.spy(feed, "configReset");
@@ -2781,9 +2889,13 @@ describe("DiscoveryStreamFeed", () => {
       const fakeDiscoveryStream = {
         Prefs: {
           values: {
-            "discoverystream.spocs.personalized": true,
-            "discoverystream.recs.personalized": true,
+            pocketConfig: {
+              recsPersonalized: true,
+              spocsPersonalized: true,
+            },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
         DiscoveryStream: {
@@ -2791,6 +2903,7 @@ describe("DiscoveryStreamFeed", () => {
           spocs: { loaded: false },
         },
       };
+
       sandbox.stub(feed, "scoreFeeds").resolves();
       sandbox.stub(feed, "scoreSpocs").resolves();
       sandbox.stub(feed, "refreshContent").resolves();
@@ -2821,9 +2934,13 @@ describe("DiscoveryStreamFeed", () => {
       feed.store.getState = () => ({
         Prefs: {
           values: {
-            "discoverystream.spocs.personalized": true,
-            "discoverystream.recs.personalized": true,
+            pocketConfig: {
+              recsPersonalized: true,
+              spocsPersonalized: true,
+            },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });
@@ -2841,19 +2958,31 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
-  describe("#updatePersonalizationScores", () => {
+  describe("#observe", () => {
     it("should call updatePersonalizationScores on idle daily", async () => {
       sandbox.stub(feed, "updatePersonalizationScores").returns();
       feed.observe(null, "idle-daily");
       assert.calledOnce(feed.updatePersonalizationScores);
     });
+    it("should call configReset on Pocket button pref change", async () => {
+      sandbox.stub(feed, "configReset").returns();
+      feed.observe(null, "nsPref:changed", "extensions.pocket.enabled");
+      assert.calledOnce(feed.configReset);
+    });
+  });
+
+  describe("#updatePersonalizationScores", () => {
     it("should update recommendationProvider on updatePersonalizationScores", async () => {
       feed.store.getState = () => ({
         Prefs: {
           values: {
-            "discoverystream.spocs.personalized": true,
-            "discoverystream.recs.personalized": true,
+            pocketConfig: {
+              recsPersonalized: true,
+              spocsPersonalized: true,
+            },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });
@@ -2889,9 +3018,13 @@ describe("DiscoveryStreamFeed", () => {
       feed.store.getState = () => ({
         Prefs: {
           values: {
-            "discoverystream.spocs.personalized": true,
-            "discoverystream.recs.personalized": true,
+            pocketConfig: {
+              recsPersonalized: true,
+              spocsPersonalized: true,
+            },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });

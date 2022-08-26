@@ -105,11 +105,11 @@ Family::Family(FontList* aList, const InitData& aData)
 
 class SetCharMapRunnable : public mozilla::Runnable {
  public:
-  SetCharMapRunnable(uint32_t aListGeneration, Face* aFace,
+  SetCharMapRunnable(uint32_t aListGeneration, Pointer aFacePtr,
                      gfxCharacterMap* aCharMap)
       : Runnable("SetCharMapRunnable"),
         mListGeneration(aListGeneration),
-        mFace(aFace),
+        mFacePtr(aFacePtr),
         mCharMap(aCharMap) {}
 
   NS_IMETHOD Run() override {
@@ -117,26 +117,26 @@ class SetCharMapRunnable : public mozilla::Runnable {
     if (!list || list->GetGeneration() != mListGeneration) {
       return NS_OK;
     }
-    dom::ContentChild::GetSingleton()->SendSetCharacterMap(
-        mListGeneration, list->ToSharedPointer(mFace), *mCharMap);
+    dom::ContentChild::GetSingleton()->SendSetCharacterMap(mListGeneration,
+                                                           mFacePtr, *mCharMap);
     return NS_OK;
   }
 
  private:
   uint32_t mListGeneration;
-  Face* mFace;
+  Pointer mFacePtr;
   RefPtr<gfxCharacterMap> mCharMap;
 };
 
 void Face::SetCharacterMap(FontList* aList, gfxCharacterMap* aCharMap) {
   if (!XRE_IsParentProcess()) {
+    Pointer ptr = aList->ToSharedPointer(this);
     if (NS_IsMainThread()) {
-      Pointer ptr = aList->ToSharedPointer(this);
       dom::ContentChild::GetSingleton()->SendSetCharacterMap(
           aList->GetGeneration(), ptr, *aCharMap);
     } else {
       NS_DispatchToMainThread(
-          new SetCharMapRunnable(aList->GetGeneration(), this, aCharMap));
+          new SetCharMapRunnable(aList->GetGeneration(), ptr, aCharMap));
     }
     return;
   }
@@ -278,7 +278,7 @@ bool Family::FindAllFacesForStyleInternal(FontList* aList,
     // calculate which one we want.
     // Note that we cannot simply return it as not all 4 faces are necessarily
     // present.
-    bool wantBold = aStyle.weight >= FontWeight(600);
+    bool wantBold = aStyle.weight.IsBold();
     bool wantItalic = !aStyle.style.IsNormal();
     uint8_t faceIndex =
         (wantItalic ? kItalicMask : 0) | (wantBold ? kBoldMask : 0);
@@ -649,13 +649,13 @@ FontList::FontList(uint32_t aGeneration) {
     // Initialize using the list of shmem blocks passed by the parent via
     // SetXPCOMProcessAttributes.
     auto& blocks = dom::ContentChild::GetSingleton()->SharedFontListBlocks();
-    for (auto handle : blocks) {
+    for (auto& handle : blocks) {
       auto newShm = MakeUnique<base::SharedMemory>();
       if (!newShm->IsHandleValid(handle)) {
         // Bail out and let UpdateShmBlocks try to do its thing below.
         break;
       }
-      if (!newShm->SetHandle(handle, true)) {
+      if (!newShm->SetHandle(std::move(handle), true)) {
         MOZ_CRASH("failed to set shm handle");
       }
       if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->memory()) {
@@ -746,7 +746,7 @@ void FontList::ShmBlockAdded(uint32_t aGeneration, uint32_t aIndex,
   if (!newShm->IsHandleValid(aHandle)) {
     return;
   }
-  if (!newShm->SetHandle(aHandle, true)) {
+  if (!newShm->SetHandle(std::move(aHandle), true)) {
     MOZ_CRASH("failed to set shm handle");
   }
 
@@ -795,7 +795,7 @@ FontList::ShmBlock* FontList::GetBlockFromParent(uint32_t aIndex) {
   if (!newShm->IsHandleValid(handle)) {
     return nullptr;
   }
-  if (!newShm->SetHandle(handle, true)) {
+  if (!newShm->SetHandle(std::move(handle), true)) {
     MOZ_CRASH("failed to set shm handle");
   }
   if (!newShm->Map(SHM_BLOCK_SIZE) || !newShm->memory()) {
@@ -828,9 +828,8 @@ void FontList::ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
                                     base::ProcessId aPid) {
   MOZ_RELEASE_ASSERT(mReadOnlyShmems.Length() == mBlocks.Length());
   for (auto& shmem : mReadOnlyShmems) {
-    base::SharedMemoryHandle* handle =
-        aBlocks->AppendElement(base::SharedMemory::NULLHandle());
-    if (!shmem->ShareToProcess(aPid, handle)) {
+    auto handle = shmem->CloneHandle();
+    if (!handle) {
       // If something went wrong here, we just bail out; the child will need to
       // request the blocks as needed, at some performance cost. (Although in
       // practice this may mean resources are so constrained the child process
@@ -838,6 +837,7 @@ void FontList::ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
       aBlocks->Clear();
       return;
     }
+    aBlocks->AppendElement(std::move(handle));
   }
 }
 
@@ -847,12 +847,7 @@ base::SharedMemoryHandle FontList::ShareBlockToProcess(uint32_t aIndex,
   MOZ_RELEASE_ASSERT(mReadOnlyShmems.Length() == mBlocks.Length());
   MOZ_RELEASE_ASSERT(aIndex < mReadOnlyShmems.Length());
 
-  base::SharedMemoryHandle handle = base::SharedMemory::NULLHandle();
-  if (mReadOnlyShmems[aIndex]->ShareToProcess(aPid, &handle)) {
-    return handle;
-  }
-
-  return base::SharedMemory::NULLHandle();
+  return mReadOnlyShmems[aIndex]->CloneHandle();
 }
 
 Pointer FontList::Alloc(uint32_t aSize) {
@@ -913,9 +908,8 @@ void FontList::SetFamilyNames(nsTArray<Family::InitData>& aFamilies) {
   // that has the same name as a system-installed one); in this case we keep
   // the bundled one as it will always be exposed.
   if (count > 1) {
-    const nsCString* prevKey = &aFamilies[0].mKey;
     for (size_t i = 1; i < count; ++i) {
-      if (aFamilies[i].mKey.Equals(*prevKey)) {
+      if (aFamilies[i].mKey.Equals(aFamilies[i - 1].mKey)) {
         // Decide whether to discard the current entry or the preceding one
         size_t discard =
             aFamilies[i].mBundled && !aFamilies[i - 1].mBundled ? i - 1 : i;
@@ -1077,7 +1071,8 @@ Family* FontList::FindFamily(const nsCString& aName, bool aPrimaryNameOnly) {
         : mList(aList), mTarget(aTarget) {}
 
     int operator()(const Family& aVal) const {
-      return mTarget.Compare(aVal.Key().BeginReading(mList));
+      return Compare(mTarget,
+                     nsDependentCString(aVal.Key().BeginReading(mList)));
     }
 
    private:
@@ -1121,6 +1116,7 @@ Family* FontList::FindFamily(const nsCString& aName, bool aPrimaryNameOnly) {
   // the "real" family names will have been found in AliasFamilies() above.
   if (aName.Contains(' ')) {
     auto pfl = gfxPlatformFontList::PlatformFontList();
+    pfl->mLock.AssertCurrentThreadIn();
     if (header.mAliasCount) {
       // Aliases have been fully loaded by the parent process, so just discard
       // any stray mAliasTable and mLocalNameTable entries from earlier calls
@@ -1186,7 +1182,8 @@ LocalFaceRec* FontList::FindLocalFace(const nsCString& aName) {
         : mList(aList), mTarget(aTarget) {}
 
     int operator()(const LocalFaceRec& aVal) const {
-      return mTarget.Compare(aVal.mKey.BeginReading(mList));
+      return Compare(mTarget,
+                     nsDependentCString(aVal.mKey.BeginReading(mList)));
     }
 
    private:

@@ -14,12 +14,12 @@
 
 const EXPORTED_SYMBOLS = ["LoginHelper"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "OSKeyStore",
   "resource://gre/modules/OSKeyStore.jsm"
 );
@@ -94,7 +94,7 @@ class ImportRowProcessor {
       });
 
       if (existingLogins.length) {
-        log.debug("maybeImportLogins: Found existing login with GUID");
+        lazy.log.debug("maybeImportLogins: Found existing login with GUID.");
         // There should only be one `guid` match.
         let existingLogin = existingLogins[0].QueryInterface(
           Ci.nsILoginMetaInfo
@@ -357,7 +357,7 @@ class ImportRowProcessor {
 /**
  * Contains functions shared by different Login Manager components.
  */
-this.LoginHelper = {
+const LoginHelper = {
   debug: null,
   enabled: null,
   storageEnabled: null,
@@ -463,9 +463,8 @@ this.LoginHelper = {
         "signon.testOnlyUserHasInteractedWithDocument",
         false
       );
-      log.debug(
-        "updateSignonPrefs, using pref value for testOnlyUserHasInteractedWithDocument",
-        this.testOnlyUserHasInteractedWithDocument
+      lazy.log.debug(
+        `Using pref value for testOnlyUserHasInteractedWithDocument ${this.testOnlyUserHasInteractedWithDocument}.`
       );
     } else {
       this.testOnlyUserHasInteractedWithDocument = null;
@@ -476,6 +475,9 @@ this.LoginHelper = {
     );
     this.usernameOnlyFormEnabled = Services.prefs.getBoolPref(
       "signon.usernameOnlyForm.enabled"
+    );
+    this.usernameOnlyFormLookupThreshold = Services.prefs.getIntPref(
+      "signon.usernameOnlyForm.lookupThreshold"
     );
     this.remoteRecipesEnabled = Services.prefs.getBoolPref(
       "signon.recipes.remoteRecipes.enabled"
@@ -646,19 +648,31 @@ this.LoginHelper = {
   getLoginOrigin(uriString, allowJS = false) {
     let realm = "";
     try {
+      const mozProxyRegex = /^moz-proxy:\/\//i;
+      const isMozProxy = !!uriString.match(mozProxyRegex);
+      if (isMozProxy) {
+        // Special handling because uri.displayHostPort throws on moz-proxy://
+        return (
+          "moz-proxy://" +
+          Services.io.newURI(uriString.replace(mozProxyRegex, "https://"))
+            .displayHostPort
+        );
+      }
+
       let uri = Services.io.newURI(uriString);
 
       if (allowJS && uri.scheme == "javascript") {
         return "javascript:";
       }
-      // TODO: Bug 1559205 - Add support for moz-proxy
 
       // Build this manually instead of using prePath to avoid including the userPass portion.
       realm = uri.scheme + "://" + uri.displayHostPort;
     } catch (e) {
       // bug 159484 - disallow url types that don't support a hostPort.
       // (although we handle "javascript:..." as a special case above.)
-      log.warn("Couldn't parse origin for", uriString, e);
+      lazy.log.warn(
+        `Couldn't parse specified uri ${uriString} with error ${e.name}`
+      );
       realm = null;
     }
 
@@ -1061,9 +1075,8 @@ this.LoginHelper = {
     }
 
     if (!preferredOriginScheme && resolveBy.includes("scheme")) {
-      log.warn(
-        "dedupeLogins: Deduping with a scheme preference but couldn't " +
-          "get the preferred origin scheme."
+      lazy.log.warn(
+        "Deduping with a scheme preference but couldn't get the preferred origin scheme."
       );
     }
 
@@ -1125,15 +1138,15 @@ this.LoginHelper = {
               }
 
               return loginURI.scheme == preferredOriginScheme;
-            } catch (ex) {
+            } catch (e) {
               // Some URLs aren't valid nsIURI (e.g. chrome://FirefoxAccounts)
-              log.debug(
+              lazy.log.debug(
                 "dedupeLogins/shouldReplaceExisting: Error comparing schemes:",
                 existingLogin.origin,
                 login.origin,
                 "preferredOrigin:",
                 preferredOrigin,
-                ex
+                e.name
               );
             }
             break;
@@ -1246,7 +1259,7 @@ this.LoginHelper = {
    *                    be treated as a password input
    */
   isPasswordFieldType(element, { ignoreConnect = false } = {}) {
-    if (ChromeUtils.getClassName(element) !== "HTMLInputElement") {
+    if (!HTMLInputElement.isInstance(element)) {
       return false;
     }
 
@@ -1284,7 +1297,7 @@ this.LoginHelper = {
    *                    of the username types.
    */
   isUsernameFieldType(element, { ignoreConnect = false } = {}) {
-    if (ChromeUtils.getClassName(element) !== "HTMLInputElement") {
+    if (!HTMLInputElement.isInstance(element)) {
       return false;
     }
 
@@ -1474,33 +1487,40 @@ this.LoginHelper = {
    * @returns {Object[]} An entry for each processed row containing how the row was processed and the login data.
    */
   async maybeImportLogins(loginDatas) {
-    const processor = new ImportRowProcessor();
-    for (let rawLoginData of loginDatas) {
-      // Do some sanitization on a clone of the loginData.
-      let loginData = ChromeUtils.shallowClone(rawLoginData);
-      if (processor.checkNonUniqueGuidError(loginData)) {
-        continue;
+    this.importing = true;
+    try {
+      const processor = new ImportRowProcessor();
+      for (let rawLoginData of loginDatas) {
+        // Do some sanitization on a clone of the loginData.
+        let loginData = ChromeUtils.shallowClone(rawLoginData);
+        if (processor.checkNonUniqueGuidError(loginData)) {
+          continue;
+        }
+        if (processor.checkMissingMandatoryFieldsError(loginData)) {
+          continue;
+        }
+        processor.cleanupActionAndRealmFields(loginData);
+        if (await processor.checkExistingEntry(loginData)) {
+          continue;
+        }
+        let login = processor.createNewLogin(loginData);
+        if (processor.checkLoginValuesError(login, loginData)) {
+          continue;
+        }
+        if (processor.checkConflictingOriginWithPreviousRows(login)) {
+          continue;
+        }
+        if (processor.checkConflictingWithExistingLogins(login)) {
+          continue;
+        }
+        processor.addLoginToSummary(login, "added");
       }
-      if (processor.checkMissingMandatoryFieldsError(loginData)) {
-        continue;
-      }
-      processor.cleanupActionAndRealmFields(loginData);
-      if (await processor.checkExistingEntry(loginData)) {
-        continue;
-      }
-      let login = processor.createNewLogin(loginData);
-      if (processor.checkLoginValuesError(login, loginData)) {
-        continue;
-      }
-      if (processor.checkConflictingOriginWithPreviousRows(login)) {
-        continue;
-      }
-      if (processor.checkConflictingWithExistingLogins(login)) {
-        continue;
-      }
-      processor.addLoginToSummary(login, "added");
+      return await processor.processLoginsAndBuildSummary();
+    } finally {
+      this.importing = false;
+
+      Services.obs.notifyObservers(null, "passwordmgr-reload-all");
     }
-    return processor.processLoginsAndBuildSummary();
   },
 
   /**
@@ -1568,9 +1588,9 @@ this.LoginHelper = {
   },
 
   /**
-   * Returns true if the user has a master password set and false otherwise.
+   * Returns true if the user has a primary password set and false otherwise.
    */
-  isMasterPasswordSet() {
+  isPrimaryPasswordSet() {
     let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
       Ci.nsIPK11TokenDB
     );
@@ -1579,7 +1599,7 @@ this.LoginHelper = {
   },
 
   /**
-   * Shows the Master Password prompt if enabled, or the
+   * Shows the Primary Password prompt if enabled, or the
    * OS auth dialog otherwise.
    * @param {Element} browser
    *        The <browser> that the prompt should be shown on
@@ -1598,7 +1618,7 @@ this.LoginHelper = {
     let isAuthorized = false;
     let telemetryEvent;
 
-    // This does no harm if master password isn't set.
+    // This does no harm if primary password isn't set.
     let tokendb = Cc["@mozilla.org/security/pk11tokendb;1"].createInstance(
       Ci.nsIPK11TokenDB
     );
@@ -1618,7 +1638,7 @@ this.LoginHelper = {
       };
     }
 
-    // Default to true if there is no master password and OS reauth is not available
+    // Default to true if there is no primary password and OS reauth is not available
     if (!token.hasPassword && !OSReauthEnabled) {
       isAuthorized = true;
       telemetryEvent = {
@@ -1631,9 +1651,9 @@ this.LoginHelper = {
         telemetryEvent,
       };
     }
-    // Use the OS auth dialog if there is no master password
+    // Use the OS auth dialog if there is no primary password
     if (!token.hasPassword && OSReauthEnabled) {
-      let result = await OSKeyStore.ensureLoggedIn(
+      let result = await lazy.OSKeyStore.ensureLoggedIn(
         messageText,
         captionText,
         browser.ownerGlobal,
@@ -1651,10 +1671,10 @@ this.LoginHelper = {
         telemetryEvent,
       };
     }
-    // We'll attempt to re-auth via Master Password, force a log-out
+    // We'll attempt to re-auth via Primary Password, force a log-out
     token.checkPassword("");
 
-    // If a master password prompt is already open, just exit early and return false.
+    // If a primary password prompt is already open, just exit early and return false.
     // The user can re-trigger it after responding to the already open dialog.
     if (Services.logins.uiBusy) {
       isAuthorized = false;
@@ -1664,9 +1684,9 @@ this.LoginHelper = {
       };
     }
 
-    // So there's a master password. But since checkPassword didn't succeed, we're logged out (per nsIPK11Token.idl).
+    // So there's a primary password. But since checkPassword didn't succeed, we're logged out (per nsIPK11Token.idl).
     try {
-      // Relogin and ask for the master password.
+      // Relogin and ask for the primary password.
       token.login(true); // 'true' means always prompt for token password. User will be prompted until
       // clicking 'Cancel' or entering the correct password.
     } catch (e) {
@@ -1689,6 +1709,10 @@ this.LoginHelper = {
    * Send a notification when stored data is changed.
    */
   notifyStorageChanged(changeType, data) {
+    if (this.importing) {
+      return;
+    }
+
     let dataObject = data;
     // Can't pass a raw JS string or array though notifyObservers(). :-(
     if (Array.isArray(data)) {
@@ -1766,7 +1790,7 @@ this.LoginHelper = {
       // has been used to visit other pages (ie, has a history),
       // assume it'll stick around and *don't* use the opener.
       if (chromeDoc.getAttribute("chromehidden") && !browser.canGoBack) {
-        log.debug("Using opener window for prompt.");
+        lazy.log.debug("Using opener window for prompt.");
         return openerBrowser;
       }
     }
@@ -1775,13 +1799,7 @@ this.LoginHelper = {
   },
 };
 
-XPCOMUtils.defineLazyPreferenceGetter(
-  LoginHelper,
-  "showInsecureFieldWarning",
-  "security.insecure_field_warning.contextual.enabled"
-);
-
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let processName =
     Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT
       ? "Main"

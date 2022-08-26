@@ -4,6 +4,9 @@
 
 "use strict";
 
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 const DUMMY = "browser/browser/base/content/test/siteIdentity/dummy_page.html";
 const INSECURE_ICON_PREF = "security.insecure_connection_icon.enabled";
 const INSECURE_TEXT_PREF = "security.insecure_connection_text.enabled";
@@ -13,10 +16,6 @@ const HTTPS_FIRST_PBM_PREF = "dom.security.https_first_pbm";
 
 function loadNewTab(url) {
   return BrowserTestUtils.openNewForegroundTab(gBrowser, url, true);
-}
-
-function getIdentityMode(aWindow = window) {
-  return aWindow.document.getElementById("identity-box").className;
 }
 
 function getConnectionState() {
@@ -55,6 +54,81 @@ async function getReaderModeURL() {
 
 // This test is slow on Linux debug e10s
 requestLongerTimeout(2);
+
+add_task(async function chromeUITest() {
+  // needs to be set due to bug in ion.js that occurs when testing
+  SpecialPowers.pushPrefEnv({
+    set: [
+      ["toolkit.pioneer.testCachedContent", "[]"],
+      ["toolkit.pioneer.testCachedAddons", "[]"],
+    ],
+  });
+  // Might needs to be extended with new secure chrome pages
+  // about:debugging is a secure chrome UI but is not tested for causing problems.
+  let secureChromePages = [
+    "addons",
+    "cache",
+    "certificate",
+    "compat",
+    "config",
+    "downloads",
+    "ion",
+    "license",
+    "logins",
+    "loginsimportreport",
+    "performance",
+    "plugins",
+    "policies",
+    "preferences",
+    "processes",
+    "profiles",
+    "profiling",
+    "protections",
+    "rights",
+    "sessionrestore",
+    "studies",
+    "support",
+    "telemetry",
+    "welcomeback",
+  ];
+
+  // else skip about:crashes, it is only available with plugin
+  if (AppConstants.MOZ_CRASHREPORTER) {
+    secureChromePages.push("crashes");
+  }
+
+  let nonSecureExamplePages = [
+    "about:about",
+    "about:credits",
+    "about:home",
+    "about:logo",
+    "about:memory",
+    "about:mozilla",
+    "about:networking",
+    "about:privatebrowsing",
+    "about:robots",
+    "about:serviceWorkers",
+    "about:sync-log",
+    "about:unloads",
+    "about:url-classifier",
+    "about:webrtc",
+    "about:welcome",
+    "http://example.com/" + DUMMY,
+  ];
+
+  for (let i = 0; i < secureChromePages.length; i++) {
+    await BrowserTestUtils.withNewTab("about:" + secureChromePages[i], () => {
+      is(getIdentityMode(), "chromeUI", "Identity should be chromeUI");
+    });
+  }
+
+  for (let i = 0; i < nonSecureExamplePages.length; i++) {
+    console.log(nonSecureExamplePages[i]);
+    await BrowserTestUtils.withNewTab(nonSecureExamplePages[i], () => {
+      ok(getIdentityMode() != "chromeUI", "Identity should not be chromeUI");
+    });
+  }
+});
 
 async function webpageTest(secureCheck) {
   await SpecialPowers.pushPrefEnv({ set: [[INSECURE_ICON_PREF, secureCheck]] });
@@ -341,7 +415,7 @@ add_task(async function test_file() {
 async function resourceUriTest(secureCheck) {
   let oldTab = await loadNewTab("about:robots");
   await SpecialPowers.pushPrefEnv({ set: [[INSECURE_ICON_PREF, secureCheck]] });
-  let dataURI = "resource://gre/modules/Services.jsm";
+  let dataURI = "resource://gre/modules/XPCOMUtils.sys.mjs";
 
   let newTab = await loadNewTab(dataURI);
 
@@ -799,33 +873,4 @@ add_task(async function test_pb_mode() {
     [HTTPS_FIRST_PBM_PREF, false],
   ];
   await pbModeTest(prefs, false);
-});
-
-/**
- * Tests that sites opened via the PDF viewer have the correct identity state.
- */
-add_task(async function test_pdf() {
-  const PDF_URI_NOSCHEME =
-    getRootDirectory(gTestPath).replace(
-      "chrome://mochitests/content",
-      "example.com"
-    ) + "file_pdf.pdf";
-
-  const PDF_URI_SECURE = "https://" + PDF_URI_NOSCHEME;
-  const PDF_URI_INSECURE = "http://" + PDF_URI_NOSCHEME;
-
-  await BrowserTestUtils.withNewTab(PDF_URI_INSECURE, async () => {
-    is(
-      getIdentityMode(),
-      "notSecure",
-      "Identity should be notSecure for a PDF served via HTTP."
-    );
-  });
-  await BrowserTestUtils.withNewTab(PDF_URI_SECURE, async () => {
-    is(
-      getIdentityMode(),
-      "verifiedDomain",
-      "Identity should be verifiedDomain for a PDF served via HTTPS."
-    );
-  });
 });

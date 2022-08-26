@@ -14,7 +14,6 @@ import { prefs, features } from "../utils/prefs";
 export const initialUIState = () => ({
   selectedPrimaryPaneTab: "sources",
   activeSearch: null,
-  shownSource: null,
   startPanelCollapsed: prefs.startPanelCollapsed,
   endPanelCollapsed: prefs.endPanelCollapsed,
   frameworkGroupingOn: prefs.frameworkGroupingOn,
@@ -64,10 +63,6 @@ function update(state = initialUIState(), action) {
       return { ...state, orientation: action.orientation };
     }
 
-    case "SHOW_SOURCE": {
-      return { ...state, shownSource: action.source };
-    }
-
     case "TOGGLE_PANE": {
       if (action.position == "start") {
         prefs.startPanelCollapsed = action.paneCollapsed;
@@ -80,8 +75,9 @@ function update(state = initialUIState(), action) {
 
     case "HIGHLIGHT_LINES":
       const { start, end, sourceId } = action.location;
-      let lineRange = {};
+      let lineRange;
 
+      // Lines are one-based so the check below is fine.
       if (start && end && sourceId) {
         lineRange = { start, end, sourceId };
       }
@@ -90,7 +86,7 @@ function update(state = initialUIState(), action) {
 
     case "CLOSE_QUICK_OPEN":
     case "CLEAR_HIGHLIGHT_LINES":
-      return { ...state, highlightedLineRange: {} };
+      return { ...state, highlightedLineRange: undefined };
 
     case "OPEN_CONDITIONAL_PANEL":
       return {
@@ -128,65 +124,6 @@ function update(state = initialUIState(), action) {
       return state;
     }
   }
-}
-
-// NOTE: we'd like to have the app state fully typed
-// https://github.com/firefox-devtools/debugger/blob/master/src/reducers/sources.js#L179-L185
-
-export function getSelectedPrimaryPaneTab(state) {
-  return state.ui.selectedPrimaryPaneTab;
-}
-
-export function getActiveSearch(state) {
-  return state.ui.activeSearch;
-}
-
-export function getFrameworkGroupingState(state) {
-  return state.ui.frameworkGroupingOn;
-}
-
-export function getShownSource(state) {
-  return state.ui.shownSource;
-}
-
-export function getPaneCollapse(state, position) {
-  if (position == "start") {
-    return state.ui.startPanelCollapsed;
-  }
-
-  return state.ui.endPanelCollapsed;
-}
-
-export function getHighlightedLineRange(state) {
-  return state.ui.highlightedLineRange;
-}
-
-export function getConditionalPanelLocation(state) {
-  return state.ui.conditionalPanelLocation;
-}
-
-export function getLogPointStatus(state) {
-  return state.ui.isLogPoint;
-}
-
-export function getOrientation(state) {
-  return state.ui.orientation;
-}
-
-export function getViewport(state) {
-  return state.ui.viewport;
-}
-
-export function getCursorPosition(state) {
-  return state.ui.cursorPosition;
-}
-
-export function getInlinePreview(state) {
-  return state.ui.inlinePreviewEnabled;
-}
-
-export function getEditorWrapping(state) {
-  return state.ui.editorWrappingEnabled;
 }
 
 export default update;

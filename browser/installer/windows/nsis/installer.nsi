@@ -410,12 +410,6 @@ Section "-Application" APP_IDX
     StrCpy $AddDesktopSC "1"
   ${EndIf}
 
-  ${CreateUpdateDir} "Mozilla"
-  ${If} ${Errors}
-    Pop $0
-    ${LogMsg} "** ERROR Failed to create update directory: $0"
-  ${EndIf}
-
   ${LogHeader} "Adding Registry Entries"
   SetShellVarContext current  ; Set SHCTX to HKCU
   ${RegCleanMain} "Software\Mozilla"
@@ -459,17 +453,19 @@ Section "-Application" APP_IDX
   ; it doesn't cause problems always add them.
   ${SetUninstallKeys}
 
-  ; On install always add the FirefoxHTML and FirefoxURL keys.
-  ; An empty string is used for the 5th param because FirefoxHTML is not a
+  ; On install always add the FirefoxHTML-, FirefoxPDF-, and FirefoxURL- keys.
+  ; An empty string is used for the 5th param because FirefoxHTML- is not a
   ; protocol handler.
   ${GetLongPath} "$INSTDIR\${FileMainEXE}" $8
   StrCpy $2 "$\"$8$\" -osint -url $\"%1$\""
 
-  ; In Win8, the delegate execute handler picks up the value in FirefoxURL and
-  ; FirefoxHTML to launch the desktop browser when it needs to.
-  ${AddDisabledDDEHandlerValues} "FirefoxHTML-$AppUserModelID" "$2" "$8,1" \
-                                 "${AppRegName} Document" ""
-  ${AddDisabledDDEHandlerValues} "FirefoxURL-$AppUserModelID" "$2" "$8,1" \
+  ; In Win8, the delegate execute handler picks up the value in FirefoxURL- and
+  ; FirefoxHTML- to launch the desktop browser when it needs to.
+  ${AddDisabledDDEHandlerValues} "FirefoxHTML-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_ZERO_BASED}" \
+                                 "${AppRegName} HTML Document" ""
+  ${AddDisabledDDEHandlerValues} "FirefoxPDF-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_PDF_ZERO_BASED}" \
+                                 "${AppRegName} PDF Document" ""
+  ${AddDisabledDDEHandlerValues} "FirefoxURL-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_ZERO_BASED}" \
                                  "${AppRegName} URL" "true"
 
   ; For pre win8, the following keys should only be set if we can write to HKLM.
@@ -538,6 +534,10 @@ Section "-Application" APP_IDX
   ; majority of cases.
   WriteRegDWORD HKCU ${MOZ_LAUNCHER_SUBKEY} "$INSTDIR\${FileMainEXE}|Telemetry" 1
 !endif
+
+  ${If} ${AtLeastWin10}
+    ${WriteToastNotificationRegistration} $TmpVal
+  ${EndIf}
 
   ; Create shortcuts
   ${LogHeader} "Adding Shortcuts"
@@ -613,6 +613,21 @@ Section "-Application" APP_IDX
         ${LogMsg} "** ERROR Adding Shortcut: $SMPROGRAMS\${BrandShortName}.lnk"
       ${EndIf}
     ${EndIf}
+  ${EndIf}
+
+  ; This is always added if it doesn't already exist to ensure that Windows'
+  ; native "Pin to Taskbar" functionality can find an appropriate shortcut.
+  ; See https://bugzilla.mozilla.org/show_bug.cgi?id=1762994 for additional
+  ; background.
+  ; Pref'ed off until Private Browsing window separation is enabled by default
+  ; to avoid a situation where a user pins the Private Browsing shortcut to
+  ; the Taskbar, which will end up launching into a different Taskbar icon.
+  ClearErrors
+  ReadRegDWORD $2 HKCU \
+      "Software\Mozilla\${AppName}\Installer\$AppUserModelID" \
+      "CreatePrivateBrowsingShortcut"
+  ${IfNot} ${Errors}
+    ${AddPrivateBrowsingShortcut}
   ${EndIf}
 
   ; Update lastwritetime of the Start Menu shortcut to clear the tile cache.
@@ -802,6 +817,11 @@ Section "-InstallEndCleanup"
       ${EndIf}
 
       ${LogHeader} "Setting as the default browser"
+      ; AddTaskbarSC is needed by MigrateTaskBarShortcut, which is called by
+      ; SetAsDefaultAppUserHKCU. If this is called via ExecCodeSegment,
+      ; MigrateTaskBarShortcut will not see the value of AddTaskbarSC, so we
+      ; send it via a register instead.
+      StrCpy $R0 $AddTaskbarSC
       ClearErrors
       ${GetParameters} $0
       ${GetOptions} "$0" "/UAC:" $0
@@ -823,7 +843,7 @@ Section "-InstallEndCleanup"
   ${EndUnless}
 
   ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
-  ${MigrateTaskBarShortcut}
+  ${MigrateTaskBarShortcut} "$AddTaskbarSC"
 
   ; Add the Firewall entries during install
   Call AddFirewallEntries
@@ -1450,11 +1470,7 @@ Function leaveShortcuts
   ${EndIf}
   ${MUI_INSTALLOPTIONS_READ} $AddDesktopSC "shortcuts.ini" "Field 2" "State"
   ${MUI_INSTALLOPTIONS_READ} $AddStartMenuSC "shortcuts.ini" "Field 3" "State"
-
-  ; Don't install the quick launch shortcut on Windows 7
-  ${Unless} ${AtLeastWin7}
-    ${MUI_INSTALLOPTIONS_READ} $AddQuickLaunchSC "shortcuts.ini" "Field 4" "State"
-  ${EndUnless}
+  ${MUI_INSTALLOPTIONS_READ} $AddTaskbarSC "shortcuts.ini" "Field 4" "State"
 
   ${If} $InstallType == ${INSTALLTYPE_CUSTOM}
     Call CheckExistingInstall
@@ -1902,13 +1918,7 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Top    "67"
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Bottom "87"
 
-  ; Setup the shortcuts.ini file for the Custom Shortcuts Page
-  ; Don't offer to install the quick launch shortcut on Windows 7
-  ${If} ${AtLeastWin7}
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "3"
-  ${Else}
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "4"
-  ${EndIf}
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "4"
 
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 1" Type   "label"
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 1" Text   "$(CREATE_ICONS_DESC)"
@@ -1934,16 +1944,13 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" Bottom "50"
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" State  "1"
 
-  ; Don't offer to install the quick launch shortcut on Windows 7
-  ${Unless} ${AtLeastWin7}
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Type   "checkbox"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_QUICKLAUNCH)"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Left   "0"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Right  "-1"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Top    "60"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Bottom "70"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" State  "1"
-  ${EndUnless}
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Type   "checkbox"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_TASKBAR)"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Left   "0"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Right  "-1"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Top    "60"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Bottom "70"
+  WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" State  "1"
 
   ; Setup the components.ini file for the Components Page
   WriteINIStr "$PLUGINSDIR\components.ini" "Settings" NumFields "2"

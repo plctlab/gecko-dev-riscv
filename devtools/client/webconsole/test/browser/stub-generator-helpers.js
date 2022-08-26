@@ -3,9 +3,6 @@
 
 "use strict";
 
-const ChromeUtils = require("ChromeUtils");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-
 const {
   getAdHocFrontOrPrimitiveGrip,
 } = require("devtools/client/fronts/object");
@@ -305,7 +302,7 @@ module.exports = {
 };
 `;
 
-  await OS.File.writeAtomic(filePath, fileContent);
+  await IOUtils.write(filePath, new TextEncoder().encode(fileContent));
 }
 
 function getStubFile(fileName) {
@@ -369,6 +366,10 @@ function getSerializedPacket(
         typeof value === "string"
       ) {
         return actorIdPlaceholder;
+      }
+
+      if (key === "resourceId") {
+        return undefined;
       }
 
       return value;

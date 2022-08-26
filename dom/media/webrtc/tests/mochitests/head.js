@@ -418,6 +418,15 @@ function pushPrefs(...p) {
   return SpecialPowers.pushPrefEnv({ set: p });
 }
 
+async function withPrefs(prefs, func) {
+  await SpecialPowers.pushPrefEnv({ set: prefs });
+  try {
+    return await func();
+  } finally {
+    await SpecialPowers.popPrefEnv();
+  }
+}
+
 function setupEnvironment() {
   var defaultMochitestPrefs = {
     set: [
@@ -426,7 +435,6 @@ function setupEnvironment() {
       ["media.peerconnection.identity.timeout", 120000],
       ["media.peerconnection.ice.stun_client_maximum_transmits", 14],
       ["media.peerconnection.ice.trickle_grace_period", 30000],
-      ["media.peerconnection.rtpsourcesapi.enabled", true],
       ["media.navigator.permission.disabled", true],
       // If either fake audio or video is desired we enable fake streams.
       // If loopback devices are set they will be chosen instead of fakes in gecko.
@@ -445,9 +453,7 @@ function setupEnvironment() {
     ],
   };
 
-  const isAndroid = !!navigator.userAgent.includes("Android");
-
-  if (isAndroid) {
+  if (navigator.userAgent.includes("Android")) {
     defaultMochitestPrefs.set.push(
       ["media.navigator.video.default_width", 320],
       ["media.navigator.video.default_height", 240],
@@ -456,16 +462,14 @@ function setupEnvironment() {
     );
   }
 
-  // All platforms but Linux support MediaDataEncoder and the tryserver Windows
-  // machine doesn't have HW H.264 encoder. In these cases, Fake GMP encoder is
-  // used so the pref needs to stay disabled.
-  // [TODO] re-enable after bug 1509012 is done or platform encoder available.
-  const alwaysHasHW264 =
-    !!navigator.userAgent.includes("Android") ||
-    !!navigator.userAgent.includes("Mac OS X");
+  // Platform codec prefs should be matched because fake H.264 GMP codec doesn't
+  // produce/consume real bitstreams. [TODO] remove after bug 1509012 is fixed.
+  const platformEncoderEnabled = SpecialPowers.getBoolPref(
+    "media.webrtc.platformencoder"
+  );
   defaultMochitestPrefs.set.push([
     "media.navigator.mediadatadecoder_h264_enabled",
-    alwaysHasHW264,
+    platformEncoderEnabled,
   ]);
 
   // Running as a Mochitest.
@@ -476,6 +480,19 @@ function setupEnvironment() {
   // We don't care about waiting for this to complete, we just want to ensure
   // that we don't build up a huge backlog of GC work.
   SpecialPowers.exactGC();
+}
+
+// [TODO] remove after bug 1509012 is fixed.
+async function matchPlatformH264CodecPrefs() {
+  const hasHW264 =
+    SpecialPowers.getBoolPref("media.webrtc.platformencoder") &&
+    (navigator.userAgent.includes("Android") ||
+      navigator.userAgent.includes("Mac OS X"));
+
+  await pushPrefs(
+    ["media.webrtc.platformencoder", hasHW264],
+    ["media.navigator.mediadatadecoder_h264_enabled", hasHW264]
+  );
 }
 
 async function runTestWhenReady(testFunc) {

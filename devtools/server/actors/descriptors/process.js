@@ -8,6 +8,10 @@ const Services = require("Services");
 const { DevToolsServer } = require("devtools/server/devtools-server");
 const { Cc, Ci } = require("chrome");
 
+const {
+  createBrowserSessionContext,
+  createContentProcessSessionContext,
+} = require("devtools/server/actors/watcher/session-context");
 const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
 const {
   processDescriptorSpec,
@@ -57,20 +61,35 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
     return null;
   },
 
-  _parentProcessConnect() {
+  get isWindowlessParent() {
+    return this.isParent && (this.isXpcshell || this.isBackgroundTaskMode);
+  },
+
+  get isXpcshell() {
     const env = Cc["@mozilla.org/process/environment;1"].getService(
       Ci.nsIEnvironment
     );
-    const isXpcshell = env.exists("XPCSHELL_TEST_PROFILE_DIR");
+    return env.exists("XPCSHELL_TEST_PROFILE_DIR");
+  },
+
+  get isBackgroundTaskMode() {
+    const bts = Cc["@mozilla.org/backgroundtasks;1"]?.getService(
+      Ci.nsIBackgroundTasks
+    );
+    return bts && bts.isBackgroundTaskMode;
+  },
+
+  _parentProcessConnect({ isBrowserToolboxFission }) {
     let targetActor;
-    if (isXpcshell) {
-      // Check if we are running on xpcshell.
-      // When running on xpcshell, there is no valid browsing context to attach to
+    if (this.isWindowlessParent) {
+      // Check if we are running on xpcshell or in background task mode.
+      // In these modes, there is no valid browsing context to attach to
       // and so ParentProcessTargetActor doesn't make sense as it inherits from
       // WindowGlobalTargetActor. So instead use ContentProcessTargetActor, which
-      // matches xpcshell needs.
+      // matches the needs of these modes.
       targetActor = new ContentProcessTargetActor(this.conn, {
         isXpcShellTarget: true,
+        sessionContext: createContentProcessSessionContext(),
       });
     } else {
       // Create the target actor for the parent process, which is in the same process
@@ -82,6 +101,9 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
         // the BrowserToolbox and isTopLevelTarget should always be true here.
         // (It isn't the typical behavior of WindowGlobalTargetActor's base class)
         isTopLevelTarget: true,
+        sessionContext: createBrowserSessionContext({
+          isBrowserToolboxFission,
+        }),
       });
       // this is a special field that only parent process with a browsing context
       // have, as they are the only processes at the moment that have child
@@ -129,7 +151,7 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
   /**
    * Connect the a process actor.
    */
-  async getTarget() {
+  async getTarget({ isBrowserToolboxFission }) {
     if (!DevToolsServer.allowChromeProcess) {
       return {
         error: "forbidden",
@@ -137,7 +159,7 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
       };
     }
     if (this.isParent) {
-      return this._parentProcessConnect();
+      return this._parentProcessConnect({ isBrowserToolboxFission });
     }
     // This is a remote process we are connecting to
     return this._childProcessConnect();
@@ -148,9 +170,12 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
    * already exists or will be created. It also helps knowing when they
    * are destroyed.
    */
-  getWatcher() {
+  getWatcher({ isBrowserToolboxFission }) {
     if (!this.watcher) {
-      this.watcher = new WatcherActor(this.conn);
+      this.watcher = new WatcherActor(
+        this.conn,
+        createBrowserSessionContext({ isBrowserToolboxFission })
+      );
       this.manage(this.watcher);
     }
     return this.watcher;
@@ -161,28 +186,40 @@ const ProcessDescriptorActor = ActorClassWithSpec(processDescriptorSpec, {
       actor: this.actorID,
       id: this.id,
       isParent: this.isParent,
+      isWindowlessParent: this.isWindowlessParent,
       traits: {
         // Supports the Watcher actor. Can be removed as part of Bug 1680280.
         watcher: true,
         // ParentProcessTargetActor can be reloaded.
-        supportsReloadDescriptor: this.isParent,
+        supportsReloadDescriptor: this.isParent && !this.isWindowlessParent,
       },
     };
   },
 
-  async reloadDescriptor({ bypassCache }) {
-    if (!this.isParent) {
+  async reloadDescriptor() {
+    if (!this.isParent || this.isWindowlessParent) {
       throw new Error(
-        "reloadDescriptor is not available for content process descriptors"
+        "reloadDescriptor is only available for parent process descriptors"
       );
     }
 
-    // For parent process debugging, we only reload the current top level
-    // browser window.
-    this._windowGlobalTargetActor.browsingContext.reload(
-      bypassCache
-        ? Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE
-        : Ci.nsIWebNavigation.LOAD_FLAGS_NONE
+    // Reload for the parent process will restart the whole browser
+    //
+    // This aims at replicate `DevelopmentHelpers.quickRestart`
+    // This allows a user to do a full firefox restart + session restore
+    // Via Ctrl+Alt+R on the Browser Console/Toolbox
+
+    // Maximize the chance of fetching new source content by clearing the cache
+    Services.obs.notifyObservers(null, "startupcache-invalidate");
+
+    // Avoid safemode popup from appearing on restart
+    const env = Cc["@mozilla.org/process/environment;1"].getService(
+      Ci.nsIEnvironment
+    );
+    env.set("MOZ_DISABLE_SAFE_MODE_KEY", "1");
+
+    Services.startup.quit(
+      Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart
     );
   },
 

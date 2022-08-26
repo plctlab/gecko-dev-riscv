@@ -8,6 +8,7 @@
 #include "DocAccessibleWrap.h"
 #include "nsObjCExceptions.h"
 #include "nsCocoaUtils.h"
+#include "nsUnicharUtils.h"
 
 #include "LocalAccessible-inl.h"
 #include "nsAccUtils.h"
@@ -145,6 +146,11 @@ nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
   nsresult rv = LocalAccessible::HandleAccEvent(aEvent);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  if (IsDefunct()) {
+    // The accessible can become defunct after their events are handled.
+    return NS_OK;
+  }
+
   uint32_t eventType = aEvent->GetEventType();
 
   if (eventType == nsIAccessibleEvent::EVENT_SHOW) {
@@ -221,7 +227,9 @@ nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
       int32_t caretOffset = event->GetCaretOffset();
       MOXTextMarkerDelegate* delegate =
           [MOXTextMarkerDelegate getOrCreateForDoc:aEvent->Document()];
-      [delegate setCaretOffset:eventTarget at:caretOffset];
+      [delegate setCaretOffset:eventTarget
+                            at:caretOffset
+               moveGranularity:event->GetGranularity()];
       if (event->IsSelectionCollapsed()) {
         // If the selection is collapsed, invalidate our text selection cache.
         [delegate setSelectionFrom:eventTarget
@@ -286,7 +294,7 @@ bool AccessibleWrap::ApplyPostFilter(const EWhichPostFilter& aSearchKey,
              "Only search text supported");
   nsAutoString name;
   Name(name);
-  return name.Find(aSearchText, true) != kNotFound;
+  return CaseInsensitiveFindInReadable(aSearchText, name);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -307,6 +315,7 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
 
     case roles::CHECKBUTTON:
     case roles::TOGGLE_BUTTON:
+    case roles::SWITCH:
       return [mozCheckboxAccessible class];
 
     case roles::RADIOBUTTON:

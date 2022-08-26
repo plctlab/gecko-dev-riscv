@@ -6,18 +6,25 @@
 
 var EXPORTED_SYMBOLS = ["CDPConnection", "splitMethod"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const { WebSocketConnection } = ChromeUtils.import(
+  "chrome://remote/content/shared/WebSocketConnection.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Log: "chrome://remote/content/shared/Log.jsm",
   truncate: "chrome://remote/content/shared/Format.jsm",
   UnknownMethodError: "chrome://remote/content/cdp/Error.jsm",
-  WebSocketConnection: "chrome://remote/content/shared/WebSocketConnection.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "logger", () => Log.get(Log.TYPES.CDP));
+XPCOMUtils.defineLazyGetter(lazy, "logger", () =>
+  lazy.Log.get(lazy.Log.TYPES.CDP)
+);
 
 class CDPConnection extends WebSocketConnection {
   /**
@@ -44,6 +51,18 @@ class CDPConnection extends WebSocketConnection {
    *     The session to register.
    */
   registerSession(session) {
+    // CDP is not compatible with Fission by default, check the appropriate
+    // preferences are set to ensure compatibility.
+    if (
+      Services.prefs.getIntPref("fission.webContentIsolationStrategy") !== 0 ||
+      Services.prefs.getBoolPref("fission.bfcacheInParent")
+    ) {
+      lazy.logger.error(
+        `Invalid browser preferences for CDP. Set "fission.webContentIsolationStrategy"` +
+          `to 0 and "fission.bfcacheInParent" to false before Firefox starts.`
+      );
+    }
+
     if (!session.id) {
       if (this.defaultSession) {
         throw new Error(
@@ -64,8 +83,10 @@ class CDPConnection extends WebSocketConnection {
    *     The object to be sent.
    */
   send(data) {
-    const payload = JSON.stringify(data, null, Log.verbose ? "\t" : null);
-    logger.trace(truncate`${this.constructor.name} ${this.id} <- ${payload}`);
+    const payload = JSON.stringify(data, null, lazy.Log.verbose ? "\t" : null);
+    lazy.logger.trace(
+      lazy.truncate`${this.constructor.name} ${this.id} <- ${payload}`
+    );
 
     super.send(data);
   }
@@ -207,8 +228,14 @@ class CDPConnection extends WebSocketConnection {
    *        JSON-serializable object sent by the client.
    */
   async onPacket(packet) {
-    const payload = JSON.stringify(packet, null, Log.verbose ? "\t" : null);
-    logger.trace(truncate`${this.constructor.name} ${this.id} -> ${payload}`);
+    const payload = JSON.stringify(
+      packet,
+      null,
+      lazy.Log.verbose ? "\t" : null
+    );
+    lazy.logger.trace(
+      lazy.truncate`${this.constructor.name} ${this.id} -> ${payload}`
+    );
 
     try {
       const { id, method, params, sessionId } = packet;
@@ -241,7 +268,7 @@ class CDPConnection extends WebSocketConnection {
 
       // Bug 1600317 - Workaround to deny internal methods to be called
       if (command.startsWith("_")) {
-        throw new UnknownMethodError(command);
+        throw new lazy.UnknownMethodError(command);
       }
 
       // Finally, instruct the targeted session to execute the command

@@ -92,6 +92,10 @@ nsMIMEInfoWin::LaunchWithFile(nsIFile* aFile) {
   NS_ASSERTION(mClass == eMIMEInfo,
                "nsMIMEInfoBase should have mClass == eMIMEInfo");
 
+  if (AutomationOnlyCheckIfLaunchStubbed(aFile)) {
+    return NS_OK;
+  }
+
   if (mPreferredAction == useSystemDefault) {
     if (mDefaultApplication &&
         StaticPrefs::browser_pdf_launchDefaultEdgeAsApp()) {
@@ -549,7 +553,7 @@ void nsMIMEInfoWin::ProcessPath(nsCOMPtr<nsIMutableArray>& appList,
   WCHAR exe[MAX_PATH + 1];
   uint32_t len = GetModuleFileNameW(nullptr, exe, MAX_PATH);
   if (len < MAX_PATH && len != 0) {
-    int32_t index = lower.Find(exe);
+    int32_t index = lower.Find(reinterpret_cast<const char16_t*>(exe));
     if (index != -1) return;
   }
 

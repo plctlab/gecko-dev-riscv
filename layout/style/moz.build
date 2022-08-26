@@ -63,7 +63,6 @@ EXPORTS += [
     "nsStyleStructList.h",
     "nsStyleTransformMatrix.h",
     "nsStyleUtil.h",
-    "nsTimingFunction.h",
 ]
 
 EXPORTS.mozilla += [
@@ -108,6 +107,7 @@ EXPORTS.mozilla += [
     "ServoUtils.h",
     "ShadowParts.h",
     "SharedStyleSheetCache.h",
+    "SharedSubResourceCache.h",
     "StyleAnimationValue.h",
     "StyleColorInlines.h",
     "StyleSheet.h",
@@ -120,13 +120,15 @@ EXPORTS.mozilla += [
 
 EXPORTS.mozilla.dom += [
     "CSS.h",
+    "CSSContainerRule.h",
     "CSSCounterStyleRule.h",
     "CSSFontFaceRule.h",
     "CSSFontFeatureValuesRule.h",
     "CSSImportRule.h",
     "CSSKeyframeRule.h",
     "CSSKeyframesRule.h",
-    "CSSLayerRule.h",
+    "CSSLayerBlockRule.h",
+    "CSSLayerStatementRule.h",
     "CSSMediaRule.h",
     "CSSMozDocumentRule.h",
     "CSSNamespaceRule.h",
@@ -137,8 +139,12 @@ EXPORTS.mozilla.dom += [
     "CSSSupportsRule.h",
     "CSSValue.h",
     "FontFace.h",
+    "FontFaceImpl.h",
     "FontFaceSet.h",
+    "FontFaceSetDocumentImpl.h",
+    "FontFaceSetImpl.h",
     "FontFaceSetIterator.h",
+    "FontFaceSetWorkerImpl.h",
     "MediaList.h",
     "MediaQueryList.h",
     "PaintWorkletGlobalScope.h",
@@ -164,13 +170,15 @@ UNIFIED_SOURCES += [
     "ComputedStyle.cpp",
     "CounterStyleManager.cpp",
     "CSS.cpp",
+    "CSSContainerRule.cpp",
     "CSSCounterStyleRule.cpp",
     "CSSFontFaceRule.cpp",
     "CSSFontFeatureValuesRule.cpp",
     "CSSImportRule.cpp",
     "CSSKeyframeRule.cpp",
     "CSSKeyframesRule.cpp",
-    "CSSLayerRule.cpp",
+    "CSSLayerBlockRule.cpp",
+    "CSSLayerStatementRule.cpp",
     "CSSMediaRule.cpp",
     "CSSMozDocumentRule.cpp",
     "CSSNamespaceRule.cpp",
@@ -183,8 +191,12 @@ UNIFIED_SOURCES += [
     "DocumentStyleRootIterator.cpp",
     "ErrorReporter.cpp",
     "FontFace.cpp",
+    "FontFaceImpl.cpp",
     "FontFaceSet.cpp",
+    "FontFaceSetDocumentImpl.cpp",
+    "FontFaceSetImpl.cpp",
     "FontFaceSetIterator.cpp",
+    "FontFaceSetWorkerImpl.cpp",
     "FontPreloader.cpp",
     "GeckoBindings.cpp",
     "GlobalStyleSheetCache.cpp",
@@ -260,6 +272,7 @@ RESOURCE_FILES += [
 CONTENT_ACCESSIBLE_FILES += [
     "ImageDocument.css",
     "res/plaintext.css",
+    "res/searchfield-cancel.svg",
     "res/viewsource.css",
     "TopLevelImageDocument.css",
     "TopLevelVideoDocument.css",
@@ -326,5 +339,3 @@ if CONFIG["COMPILE_ENVIRONMENT"]:
     CONFIGURE_SUBST_FILES += [
         "extra-bindgen-flags",
     ]
-
-REQUIRES_UNIFIED_BUILD = True

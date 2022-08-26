@@ -54,10 +54,10 @@ bool Intrinsic::funcType(FuncType* type) const {
 }
 
 /* static */
-const Intrinsic& Intrinsic::getFromOp(IntrinsicOp op) {
-  switch (op) {
+const Intrinsic& Intrinsic::getFromId(IntrinsicId id) {
+  switch (id) {
 #define OP(op, export, sa_name, abitype, entry, idx) \
-  case IntrinsicOp::op:                              \
+  case IntrinsicId::op:                              \
     return Intrinsic##op;
     FOR_EACH_INTRINSIC(OP)
 #undef OP
@@ -66,18 +66,21 @@ const Intrinsic& Intrinsic::getFromOp(IntrinsicOp op) {
   }
 }
 
-bool EncodeIntrinsicBody(const Intrinsic& intrinsic, IntrinsicOp op,
+bool EncodeIntrinsicBody(const Intrinsic& intrinsic, IntrinsicId id,
                          Bytes* body) {
   Encoder encoder(*body);
   if (!EncodeLocalEntries(encoder, ValTypeVector())) {
     return false;
   }
   for (uint32_t i = 0; i < intrinsic.params.size(); i++) {
-    if (!encoder.writeOp(Op::GetLocal) || !encoder.writeVarU32(i)) {
+    if (!encoder.writeOp(Op::LocalGet) || !encoder.writeVarU32(i)) {
       return false;
     }
   }
-  if (!encoder.writeOp(op)) {
+  if (!encoder.writeOp(MozOp::Intrinsic)) {
+    return false;
+  }
+  if (!encoder.writeVarU32(uint32_t(id))) {
     return false;
   }
   if (!encoder.writeOp(Op::End)) {
@@ -87,16 +90,16 @@ bool EncodeIntrinsicBody(const Intrinsic& intrinsic, IntrinsicOp op,
 }
 
 bool wasm::CompileIntrinsicModule(JSContext* cx,
-                                  const mozilla::Span<IntrinsicOp> ops,
+                                  const mozilla::Span<IntrinsicId> ids,
                                   Shareable sharedMemory,
-                                  MutableHandleWasmModuleObject result) {
+                                  MutableHandle<WasmModuleObject*> result) {
   // Create the options manually, enabling intrinsics
   FeatureOptions featureOptions;
   featureOptions.intrinsics = true;
 
   // Initialize the compiler environment, choosing the best tier possible
   SharedCompileArgs compileArgs =
-      CompileArgs::build(cx, ScriptedCaller(), featureOptions);
+      CompileArgs::buildAndReport(cx, ScriptedCaller(), featureOptions);
   if (!compileArgs) {
     return false;
   }
@@ -109,10 +112,12 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
   ModuleEnvironment moduleEnv(compileArgs->features);
 
   // Add (import (memory 0))
-  UniqueChars emptyString = DuplicateString("");
-  UniqueChars memoryString = DuplicateString("memory");
-  if (!emptyString || !memoryString ||
-      !moduleEnv.imports.append(Import(std::move(emptyString),
+  CacheableName emptyString;
+  CacheableName memoryString;
+  if (!CacheableName::fromUTF8Chars("memory", &memoryString)) {
+    return false;
+  }
+  if (!moduleEnv.imports.append(Import(std::move(emptyString),
                                        std::move(memoryString),
                                        DefinitionKind::Memory))) {
     ReportOutOfMemory(cx);
@@ -121,15 +126,15 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
   moduleEnv.memory = Some(MemoryDesc(Limits(0, Nothing(), sharedMemory)));
 
   // Initialize the type section
-  if (!moduleEnv.initTypes(ops.size())) {
+  if (!moduleEnv.initTypes(ids.size())) {
     return false;
   }
 
   // Add (type (func (params ...))) for each intrinsic. The function types will
   // be deduplicated by the runtime
-  for (uint32_t funcIndex = 0; funcIndex < ops.size(); funcIndex++) {
-    const IntrinsicOp& op = ops[funcIndex];
-    const Intrinsic& intrinsic = Intrinsic::getFromOp(op);
+  for (uint32_t funcIndex = 0; funcIndex < ids.size(); funcIndex++) {
+    const IntrinsicId& id = ids[funcIndex];
+    const Intrinsic& intrinsic = Intrinsic::getFromId(id);
 
     FuncType type;
     if (!intrinsic.funcType(&type)) {
@@ -142,7 +147,7 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
   // Add (func (type $i)) declarations. Do this after all types have been added
   // as the function declaration metadata uses pointers into the type vectors
   // that must be stable.
-  for (uint32_t funcIndex = 0; funcIndex < ops.size(); funcIndex++) {
+  for (uint32_t funcIndex = 0; funcIndex < ids.size(); funcIndex++) {
     FuncDesc decl(&(*moduleEnv.types)[funcIndex].funcType(),
                   &moduleEnv.typeIds[funcIndex], funcIndex);
     if (!moduleEnv.funcs.append(decl)) {
@@ -153,12 +158,12 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
   }
 
   // Add (export "$name" (func $i)) declarations.
-  for (uint32_t funcIndex = 0; funcIndex < ops.size(); funcIndex++) {
-    const Intrinsic& intrinsic = Intrinsic::getFromOp(ops[funcIndex]);
+  for (uint32_t funcIndex = 0; funcIndex < ids.size(); funcIndex++) {
+    const Intrinsic& intrinsic = Intrinsic::getFromId(ids[funcIndex]);
 
-    UniqueChars exportString = DuplicateString(intrinsic.exportName);
-    if (!exportString ||
-        !moduleEnv.exports.append(Export(std::move(exportString), funcIndex,
+    CacheableName exportName;
+    if (!CacheableName::fromUTF8Chars(intrinsic.exportName, &exportName) ||
+        !moduleEnv.exports.append(Export(std::move(exportName), funcIndex,
                                          DefinitionKind::Function))) {
       ReportOutOfMemory(cx);
       return false;
@@ -176,13 +181,13 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
 
   // Prepare and compile function bodies
   Vector<Bytes, 1, SystemAllocPolicy> bodies;
-  if (!bodies.reserve(ops.size())) {
+  if (!bodies.reserve(ids.size())) {
     ReportOutOfMemory(cx);
     return false;
   }
-  for (uint32_t funcIndex = 0; funcIndex < ops.size(); funcIndex++) {
-    IntrinsicOp op = ops[funcIndex];
-    const Intrinsic& intrinsic = Intrinsic::getFromOp(ops[funcIndex]);
+  for (uint32_t funcIndex = 0; funcIndex < ids.size(); funcIndex++) {
+    IntrinsicId id = ids[funcIndex];
+    const Intrinsic& intrinsic = Intrinsic::getFromId(ids[funcIndex]);
 
     // Compilation may be done using other threads, ModuleGenerator requires
     // that function bodies live until after finishFuncDefs().
@@ -191,7 +196,7 @@ bool wasm::CompileIntrinsicModule(JSContext* cx,
 
     // Encode function body that will call the intrinsic using our builtin
     // opcode, and launch a compile task
-    if (!EncodeIntrinsicBody(intrinsic, op, &bytecode) ||
+    if (!EncodeIntrinsicBody(intrinsic, id, &bytecode) ||
         !mg.compileFuncDef(funcIndex, 0, bytecode.begin(),
                            bytecode.begin() + bytecode.length())) {
       // This must be an OOM and will be reported by the caller

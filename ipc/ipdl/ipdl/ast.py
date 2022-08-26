@@ -61,6 +61,8 @@ class Visitor:
     def visitStructDecl(self, struct):
         for f in struct.fields:
             f.accept(self)
+        for a in struct.attributes.values():
+            a.accept(self)
 
     def visitStructField(self, field):
         field.typespec.accept(self)
@@ -68,11 +70,12 @@ class Visitor:
     def visitUnionDecl(self, union):
         for t in union.components:
             t.accept(self)
+        for a in union.attributes.values():
+            a.accept(self)
 
     def visitUsingStmt(self, using):
         for a in using.attributes.values():
             a.accept(self)
-        pass
 
     def visitProtocol(self, p):
         for namespace in p.namespaces:
@@ -83,6 +86,8 @@ class Visitor:
             managed.accept(self)
         for msgDecl in p.messageDecls:
             msgDecl.accept(self)
+        for a in p.attributes.values():
+            a.accept(self)
 
     def visitNamespace(self, ns):
         pass
@@ -98,18 +103,26 @@ class Visitor:
             inParam.accept(self)
         for outParam in md.outParams:
             outParam.accept(self)
+        for a in md.attributes.values():
+            a.accept(self)
 
     def visitParam(self, decl):
-        pass
+        for a in decl.attributes.values():
+            a.accept(self)
 
     def visitTypeSpec(self, ts):
         pass
 
     def visitAttribute(self, a):
+        if isinstance(a.value, Node):
+            a.value.accept(self)
+
+    def visitStringLiteral(self, sl):
         pass
 
     def visitDecl(self, d):
-        pass
+        for a in d.attributes.values():
+            a.accept(self)
 
 
 class Loc:
@@ -236,8 +249,13 @@ class UsingStmt(Node):
     def isRefcounted(self):
         return "RefCounted" in self.attributes
 
-    def isMoveonly(self):
-        return "MoveOnly" in self.attributes
+    def isSendMoveOnly(self):
+        moveonly = self.attributes.get("MoveOnly")
+        return moveonly and moveonly.value in (None, "send")
+
+    def isDataMoveOnly(self):
+        moveonly = self.attributes.get("MoveOnly")
+        return moveonly and moveonly.value in (None, "data")
 
 
 # "singletons"
@@ -297,6 +315,13 @@ class Protocol(NamespacedNode):
             return NOT_NESTED
 
         return NESTED_ATTR_MAP.get(self.attributes["NestedUpTo"].value, NOT_NESTED)
+
+    def implAttribute(self, side):
+        assert side in ("parent", "child")
+        attr = self.attributes.get(side.capitalize() + "Impl")
+        if attr is not None:
+            return attr.value
+        return None
 
 
 class StructField(Node):
@@ -395,6 +420,15 @@ class Attribute(Node):
         Node.__init__(self, loc)
         self.name = name
         self.value = value
+
+
+class StringLiteral(Node):
+    def __init__(self, loc, value):
+        Node.__init__(self, loc)
+        self.value = value
+
+    def __str__(self):
+        return '"%s"' % self.value
 
 
 class QualifiedId:  # FIXME inherit from node?

@@ -502,7 +502,7 @@ impl super::Instruction {
         instruction
     }
 
-    pub(super) fn function_end() -> Self {
+    pub(super) const fn function_end() -> Self {
         Self::new(Op::FunctionEnd)
     }
 
@@ -564,6 +564,33 @@ impl super::Instruction {
         instruction.add_operand(coordinates);
         if let Some(dref) = depth_ref {
             instruction.add_operand(dref);
+        }
+
+        instruction
+    }
+
+    pub(super) fn image_gather(
+        result_type_id: Word,
+        id: Word,
+        sampled_image: Word,
+        coordinates: Word,
+        component_id: Word,
+        depth_ref: Option<Word>,
+    ) -> Self {
+        let op = match depth_ref {
+            None => Op::ImageGather,
+            Some(_) => Op::ImageDrefGather,
+        };
+
+        let mut instruction = Self::new(op);
+        instruction.set_type(result_type_id);
+        instruction.set_result(id);
+        instruction.add_operand(sampled_image);
+        instruction.add_operand(coordinates);
+        if let Some(dref) = depth_ref {
+            instruction.add_operand(dref);
+        } else {
+            instruction.add_operand(component_id);
         }
 
         instruction
@@ -700,6 +727,42 @@ impl super::Instruction {
         instruction.set_result(id);
         instruction.add_operand(operand_1);
         instruction.add_operand(operand_2);
+        instruction
+    }
+
+    pub(super) fn ternary(
+        op: Op,
+        result_type_id: Word,
+        id: Word,
+        operand_1: Word,
+        operand_2: Word,
+        operand_3: Word,
+    ) -> Self {
+        let mut instruction = Self::new(op);
+        instruction.set_type(result_type_id);
+        instruction.set_result(id);
+        instruction.add_operand(operand_1);
+        instruction.add_operand(operand_2);
+        instruction.add_operand(operand_3);
+        instruction
+    }
+
+    pub(super) fn quaternary(
+        op: Op,
+        result_type_id: Word,
+        id: Word,
+        operand_1: Word,
+        operand_2: Word,
+        operand_3: Word,
+        operand_4: Word,
+    ) -> Self {
+        let mut instruction = Self::new(op);
+        instruction.set_type(result_type_id);
+        instruction.set_result(id);
+        instruction.add_operand(operand_1);
+        instruction.add_operand(operand_2);
+        instruction.add_operand(operand_3);
+        instruction.add_operand(operand_4);
         instruction
     }
 
@@ -843,11 +906,11 @@ impl super::Instruction {
         instruction
     }
 
-    pub(super) fn kill() -> Self {
+    pub(super) const fn kill() -> Self {
         Self::new(Op::Kill)
     }
 
-    pub(super) fn return_void() -> Self {
+    pub(super) const fn return_void() -> Self {
         Self::new(Op::Return)
     }
 

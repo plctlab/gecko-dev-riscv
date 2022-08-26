@@ -5,11 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "HTMLFormSubmission.h"
-
 #include "HTMLFormElement.h"
 #include "HTMLFormSubmissionConstants.h"
 #include "nsCOMPtr.h"
-#include "mozilla/dom/Document.h"
 #include "nsComponentManagerUtils.h"
 #include "nsGkAtoms.h"
 #include "nsIFormControl.h"
@@ -31,11 +29,14 @@
 #include "nsCExternalHandlerService.h"
 #include "nsContentUtils.h"
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/Directory.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/RandomNum.h"
+
+#include <tuple>
 
 namespace mozilla::dom {
 
@@ -716,8 +717,7 @@ nsresult EncodingFormSubmission::EncodeVal(const nsAString& aStr,
                                            nsCString& aOut,
                                            EncodeType aEncodeType) {
   nsresult rv;
-  const Encoding* ignored;
-  Tie(rv, ignored) = mEncoding->Encode(aStr, aOut);
+  std::tie(rv, std::ignore) = mEncoding->Encode(aStr, aOut);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -792,7 +792,8 @@ nsresult HTMLFormSubmission::GetFromForm(HTMLFormElement* aForm,
     // policy - do *not* consult default-src, see:
     // http://www.w3.org/TR/CSP2/#directive-default-src
     rv = csp->Permits(aForm, nullptr /* nsICSPEventListener */, actionURL,
-                      nsIContentSecurityPolicy::FORM_ACTION_DIRECTIVE, true,
+                      nsIContentSecurityPolicy::FORM_ACTION_DIRECTIVE,
+                      true /* aSpecific */, true /* aSendViolationReports */,
                       &permitsFormAction);
     NS_ENSURE_SUCCESS(rv, rv);
     if (!permitsFormAction) {

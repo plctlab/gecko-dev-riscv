@@ -54,12 +54,14 @@ class NativeLayerRoot {
       SurfacePoolHandle* aSurfacePoolHandle) = 0;
   virtual already_AddRefed<NativeLayer> CreateLayerForExternalTexture(
       bool aIsOpaque) = 0;
+  virtual already_AddRefed<NativeLayer> CreateLayerForColor(
+      gfx::DeviceColor aColor) {
+    return nullptr;
+  }
 
   virtual void AppendLayer(NativeLayer* aLayer) = 0;
   virtual void RemoveLayer(NativeLayer* aLayer) = 0;
   virtual void SetLayers(const nsTArray<RefPtr<NativeLayer>>& aLayers) = 0;
-  virtual void PauseCompositor() {}
-  virtual bool ResumeCompositor() { return true; }
 
   // Called before any layer content changes
   virtual void PrepareForCommit() {}

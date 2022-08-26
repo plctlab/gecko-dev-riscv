@@ -164,9 +164,15 @@ nsresult nsExtProtocolChannel::OpenURL() {
       goto finish;
     }
 
-    RefPtr<nsIPrincipal> principal = mLoadInfo->TriggeringPrincipal();
-    rv = extProtService->LoadURI(mUrl, principal, ctx,
-                                 mLoadInfo->GetLoadTriggeredFromExternal());
+    RefPtr<nsIPrincipal> triggeringPrincipal = mLoadInfo->TriggeringPrincipal();
+    RefPtr<nsIPrincipal> redirectPrincipal;
+    if (!mLoadInfo->RedirectChain().IsEmpty()) {
+      mLoadInfo->RedirectChain().LastElement()->GetPrincipal(
+          getter_AddRefs(redirectPrincipal));
+    }
+    rv = extProtService->LoadURI(mUrl, triggeringPrincipal, redirectPrincipal,
+                                 ctx, mLoadInfo->GetLoadTriggeredFromExternal(),
+                                 mLoadInfo->GetHasValidUserGestureActivation());
 
     if (NS_SUCCEEDED(rv) && mListener) {
       mStatus = NS_ERROR_NO_CONTENT;
@@ -412,12 +418,6 @@ NS_IMETHODIMP nsExtProtocolChannel::SetClassifierMatchedTrackingInfo(
 
 NS_IMETHODIMP nsExtProtocolChannel::NotifyClassificationFlags(
     uint32_t aClassificationFlags, bool aIsThirdParty) {
-  // nothing to do
-  return NS_OK;
-}
-
-NS_IMETHODIMP nsExtProtocolChannel::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
   // nothing to do
   return NS_OK;
 }

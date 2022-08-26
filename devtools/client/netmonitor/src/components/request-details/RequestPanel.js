@@ -91,7 +91,8 @@ class RequestPanel extends Component {
     updateFormDataSections(this.props);
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     const { request, connector } = nextProps;
     fetchNetworkUpdatePacket(connector.requestData, request, [
       "requestPostData",
@@ -190,7 +191,7 @@ class RequestPanel extends Component {
     const { request, targetSearchResult } = this.props;
     const { filterText, rawRequestPayloadDisplayed } = this.state;
     const { formDataSections, mimeType, requestPostData } = request;
-    const postData = requestPostData ? requestPostData.postData.text : null;
+    const postData = requestPostData ? requestPostData.postData?.text : null;
 
     if ((!formDataSections || formDataSections.length === 0) && !postData) {
       return div({ className: "empty-notice" }, REQUEST_EMPTY_TEXT);
@@ -227,11 +228,15 @@ class RequestPanel extends Component {
     if (postData && limit <= postData.length) {
       error = REQUEST_TRUNCATED;
     }
-
     if (formDataSections && formDataSections.length === 0 && postData) {
       if (!error) {
-        const json = parseJSON(postData).json;
-        if (json) {
+        const jsonParsedPostData = parseJSON(postData);
+        const { json, strippedChars } = jsonParsedPostData;
+        // If XSSI characters were present in the request just display the raw
+        // data because a request should never have XSSI escape characters
+        if (strippedChars) {
+          hasFormattedDisplay = false;
+        } else if (json) {
           component = PropertiesView;
           componentProps = {
             object: sortObjectKeys(json),

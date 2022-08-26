@@ -21,6 +21,7 @@ if CONFIG["MOZ_PLACES"]:
         "mozISyncedBookmarksMirror.idl",
         "nsIFaviconService.idl",
         "nsINavBookmarksService.idl",
+        "nsIPlacesPreviewsHelperService.idl",
         "nsITaggingService.idl",
     ]
 
@@ -57,19 +58,20 @@ if CONFIG["MOZ_PLACES"]:
     ]
 
     EXTRA_JS_MODULES += [
-        "BookmarkHTMLUtils.jsm",
-        "BookmarkJSONUtils.jsm",
-        "Bookmarks.jsm",
-        "ExtensionSearchHandler.jsm",
-        "History.jsm",
-        "PlacesBackups.jsm",
-        "PlacesDBUtils.jsm",
-        "PlacesExpiration.jsm",
-        "PlacesSyncUtils.jsm",
-        "PlacesTransactions.jsm",
-        "PlacesUtils.jsm",
-        "SyncedBookmarksMirror.jsm",
-        "TaggingService.jsm",
+        "BookmarkHTMLUtils.sys.mjs",
+        "BookmarkJSONUtils.sys.mjs",
+        "Bookmarks.sys.mjs",
+        "ExtensionSearchHandler.sys.mjs",
+        "History.sys.mjs",
+        "PlacesBackups.sys.mjs",
+        "PlacesDBUtils.sys.mjs",
+        "PlacesExpiration.sys.mjs",
+        "PlacesPreviews.sys.mjs",
+        "PlacesSyncUtils.sys.mjs",
+        "PlacesTransactions.sys.mjs",
+        "PlacesUtils.sys.mjs",
+        "SyncedBookmarksMirror.sys.mjs",
+        "TaggingService.sys.mjs",
     ]
 
     XPCOM_MANIFESTS += [
@@ -82,8 +84,5 @@ include("/ipc/chromium/chromium-config.mozbuild")
 
 with Files("**"):
     BUG_COMPONENT = ("Toolkit", "Places")
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]
 
 REQUIRES_UNIFIED_BUILD = True

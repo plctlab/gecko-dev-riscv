@@ -1,14 +1,13 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* eslint-env mozilla/browser-window */
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   Downloads: "resource://gre/modules/Downloads.jsm",
@@ -21,8 +20,6 @@ class ScreenshotsUI extends HTMLElement {
   }
   async connectedCallback() {
     this.initialize();
-
-    await this.takeScreenshot();
   }
 
   initialize() {
@@ -36,6 +33,8 @@ class ScreenshotsUI extends HTMLElement {
     let templateContent = template.content;
     this.appendChild(templateContent.cloneNode(true));
 
+    this._retryButton = this.querySelector(".highlight-button-retry");
+    this._retryButton.addEventListener("click", this);
     this._cancelButton = this.querySelector(".highlight-button-cancel");
     this._cancelButton.addEventListener("click", this);
     this._copyButton = this.querySelector(".highlight-button-copy");
@@ -45,24 +44,35 @@ class ScreenshotsUI extends HTMLElement {
   }
 
   close() {
-    let params = new URLSearchParams(location.search);
-    let browsingContextId = parseInt(params.get("browsingContextId"), 10);
-    let browsingContext = BrowsingContext.get(browsingContextId);
-    let win = browsingContext.top.embedderElement.ownerGlobal;
-    Services.obs.notifyObservers(win, "toggle-screenshot-disable", "false");
+    URL.revokeObjectURL(document.getElementById("placeholder-image").src);
     window.close();
   }
 
   async handleEvent(event) {
-    if (event.type == "click" && event.target == this._cancelButton) {
+    if (event.type == "click" && event.currentTarget == this._cancelButton) {
       this.close();
-    } else if (event.type == "click" && event.target == this._copyButton) {
+    } else if (
+      event.type == "click" &&
+      event.currentTarget == this._copyButton
+    ) {
       this.saveToClipboard(
         this.ownerDocument.getElementById("placeholder-image").src
       );
-    } else if (event.type == "click" && event.target == this._downloadButton) {
+    } else if (
+      event.type == "click" &&
+      event.currentTarget == this._downloadButton
+    ) {
       await this.saveToFile(
         this.ownerDocument.getElementById("placeholder-image").src
+      );
+    } else if (
+      event.type == "click" &&
+      event.currentTarget == this._retryButton
+    ) {
+      Services.obs.notifyObservers(
+        window.parent.ownerGlobal,
+        "menuitem-screenshot",
+        "retry"
       );
     }
   }
@@ -102,10 +112,11 @@ class ScreenshotsUI extends HTMLElement {
       // add the download to the download list in the Downloads list in the Browser UI
       list.add(download);
 
-      this.close();
-
       // Await successful completion of the save via the download manager
       await download.start();
+
+      // need to close after download because blob url is revoked on close
+      this.close();
     } catch (ex) {}
   }
 
@@ -157,7 +168,7 @@ class ScreenshotsUI extends HTMLElement {
 
   getFilename() {
     let filenameTitle = "Dummy Page"; /* TODO: retrieve title froom image */
-    const date = new Date(Date.now());
+    const date = new Date();
     // eslint-disable-next-line no-control-regex
     filenameTitle = filenameTitle.replace(/[:\\<>/!@&?"*.|\x00-\x1F]/g, " ");
     filenameTitle = filenameTitle.replace(/\s{1,4000}/g, " ");
@@ -181,7 +192,7 @@ class ScreenshotsUI extends HTMLElement {
     return clipFilename + extension;
   }
 
-  async takeScreenshot() {
+  async takeVisibleScreenshot() {
     let params = new URLSearchParams(location.search);
     let browsingContextId = parseInt(params.get("browsingContextId"), 10);
     let browsingContext = BrowsingContext.get(browsingContextId);
@@ -203,8 +214,15 @@ class ScreenshotsUI extends HTMLElement {
 
     context.drawImage(snapshot, 0, 0);
 
-    let imgEle = this.ownerDocument.getElementById("placeholder-image");
-    imgEle.src = canvas.toDataURL();
+    canvas.toBlob(function(blob) {
+      let newImg = document.createElement("img");
+      let url = URL.createObjectURL(blob);
+
+      newImg.setAttribute("id", "placeholder-image");
+
+      newImg.src = url;
+      document.getElementById("preview-image-div").appendChild(newImg);
+    });
 
     snapshot.close();
   }

@@ -69,7 +69,8 @@ class AccessibilityTree extends Component {
   /**
    * Add accessibility event listeners that affect tree rendering and updates.
    */
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     this.props.startListeningForAccessibilityEvents({
       reorder: this.onReorder,
       "name-change": this.onNameChange,
@@ -219,7 +220,7 @@ class AccessibilityTree extends Component {
           toolboxDoc,
           highlighted,
           decorator: {
-            getRowClass: function() {
+            getRowClass() {
               return highlighted ? ["highlighted"] : [];
             },
           },
@@ -235,7 +236,7 @@ class AccessibilityTree extends Component {
       object: getAccessibilityTreeRoot(),
       mode: MODE.SHORT,
       provider: new Provider(accessibles, filtered, dispatch),
-      columns: columns,
+      columns,
       className,
       renderValue: this.renderValue,
       renderRow,
@@ -255,7 +256,7 @@ class AccessibilityTree extends Component {
 
         return true;
       },
-      onContextMenuTree: function(e) {
+      onContextMenuTree(e) {
         // If context menu event is triggered on (or bubbled to) the TreeView, it was
         // done via keyboard. Open context menu for currently selected row.
         let row = this.getSelectedRow();

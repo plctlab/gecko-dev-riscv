@@ -6,15 +6,50 @@
 
 #include "mozilla/ProfilerThreadRegistrationData.h"
 
+#include "mozilla/FOGIPC.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "js/AllocationRecording.h"
 #include "js/ProfilingStack.h"
-#include "js/TraceLoggerAPI.h"
 
 #if defined(XP_WIN)
 #  include <windows.h>
 #elif defined(XP_DARWIN)
 #  include <pthread.h>
+#endif
+
+#ifdef NIGHTLY_BUILD
+namespace geckoprofiler::markers {
+
+using namespace mozilla;
+
+struct ThreadCpuUseMarker {
+  static constexpr Span<const char> MarkerTypeName() {
+    return MakeStringSpan("ThreadCpuUse");
+  }
+  static void StreamJSONMarkerData(baseprofiler::SpliceableJSONWriter& aWriter,
+                                   ProfilerThreadId aThreadId,
+                                   int64_t aCpuTimeMs, int64_t aWakeUps,
+                                   const ProfilerString8View& aThreadName) {
+    aWriter.IntProperty("threadId", static_cast<int64_t>(aThreadId.ToNumber()));
+    aWriter.IntProperty("time", aCpuTimeMs);
+    aWriter.IntProperty("wakeups", aWakeUps);
+    aWriter.StringProperty("label", aThreadName);
+  }
+  static MarkerSchema MarkerTypeDisplay() {
+    using MS = MarkerSchema;
+    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
+    schema.AddKeyLabelFormat("time", "CPU Time", MS::Format::Milliseconds);
+    schema.AddKeyLabelFormat("wakeups", "Wake ups", MS::Format::Integer);
+    schema.SetTooltipLabel("{marker.name} - {marker.data.label}");
+    schema.SetTableLabel(
+        "{marker.name} - {marker.data.label}: {marker.data.time} of CPU time, "
+        "{marker.data.wakeups} wake ups");
+    return schema;
+  }
+};
+
+}  // namespace geckoprofiler::markers
 #endif
 
 namespace mozilla::profiler {
@@ -49,7 +84,7 @@ static void profiler_add_js_marker(const char* aMarkerName,
 }
 
 static void profiler_add_js_allocation_marker(JS::RecordAllocationInfo&& info) {
-  if (!profiler_can_accept_markers()) {
+  if (!profiler_thread_is_being_profiled_for_markers()) {
     return;
   }
 
@@ -94,11 +129,11 @@ static void profiler_add_js_allocation_marker(JS::RecordAllocationInfo&& info) {
       info.size, info.inNursery);
 }
 
-void ThreadRegistrationLockedRWFromAnyThread::
-    SetIsBeingProfiledWithProfiledThreadData(
-        ProfiledThreadData* aProfiledThreadData, const PSAutoLock&) {
-  MOZ_ASSERT(!mIsBeingProfiled);
-  mIsBeingProfiled = true;
+void ThreadRegistrationLockedRWFromAnyThread::SetProfilingFeaturesAndData(
+    ThreadProfilingFeatures aProfilingFeatures,
+    ProfiledThreadData* aProfiledThreadData, const PSAutoLock&) {
+  MOZ_ASSERT(mProfilingFeatures == ThreadProfilingFeatures::NotProfiled);
+  mProfilingFeatures = aProfilingFeatures;
 
   MOZ_ASSERT(!mProfiledThreadData);
   MOZ_ASSERT(aProfiledThreadData);
@@ -112,13 +147,16 @@ void ThreadRegistrationLockedRWFromAnyThread::
   }
 
   // Check invariants.
-  MOZ_ASSERT(mIsBeingProfiled == !!mProfiledThreadData);
-  MOZ_ASSERT((mJSContext && mIsBeingProfiled) == !!mJsFrameBuffer);
+  MOZ_ASSERT((mProfilingFeatures != ThreadProfilingFeatures::NotProfiled) ==
+             !!mProfiledThreadData);
+  MOZ_ASSERT((mJSContext &&
+              (mProfilingFeatures != ThreadProfilingFeatures::NotProfiled)) ==
+             !!mJsFrameBuffer);
 }
 
-void ThreadRegistrationLockedRWFromAnyThread::
-    ClearIsBeingProfiledAndProfiledThreadData(const PSAutoLock&) {
-  mIsBeingProfiled = false;
+void ThreadRegistrationLockedRWFromAnyThread::ClearProfilingFeaturesAndData(
+    const PSAutoLock&) {
+  mProfilingFeatures = ThreadProfilingFeatures::NotProfiled;
   mProfiledThreadData = nullptr;
 
   if (mJsFrameBuffer) {
@@ -127,8 +165,11 @@ void ThreadRegistrationLockedRWFromAnyThread::
   }
 
   // Check invariants.
-  MOZ_ASSERT(mIsBeingProfiled == !!mProfiledThreadData);
-  MOZ_ASSERT((mJSContext && mIsBeingProfiled) == !!mJsFrameBuffer);
+  MOZ_ASSERT((mProfilingFeatures != ThreadProfilingFeatures::NotProfiled) ==
+             !!mProfiledThreadData);
+  MOZ_ASSERT((mJSContext &&
+              (mProfilingFeatures != ThreadProfilingFeatures::NotProfiled)) ==
+             !!mJsFrameBuffer);
 }
 
 void ThreadRegistrationLockedRWOnThread::SetJSContext(JSContext* aJSContext) {
@@ -137,7 +178,8 @@ void ThreadRegistrationLockedRWOnThread::SetJSContext(JSContext* aJSContext) {
   mJSContext = aJSContext;
 
   if (mProfiledThreadData) {
-    MOZ_ASSERT(mIsBeingProfiled == !!mProfiledThreadData);
+    MOZ_ASSERT((mProfilingFeatures != ThreadProfilingFeatures::NotProfiled) ==
+               !!mProfiledThreadData);
     // We now have a JSContext, and the thread is already being profiled,
     // allocate a JsFramesBuffer to allow profiler-unlocked on-thread sampling.
     MOZ_ASSERT(!mJsFrameBuffer);
@@ -149,7 +191,9 @@ void ThreadRegistrationLockedRWOnThread::SetJSContext(JSContext* aJSContext) {
   js::SetContextProfilingStack(aJSContext, &ProfilingStackRef());
 
   // Check invariants.
-  MOZ_ASSERT((mJSContext && mIsBeingProfiled) == !!mJsFrameBuffer);
+  MOZ_ASSERT((mJSContext &&
+              (mProfilingFeatures != ThreadProfilingFeatures::NotProfiled)) ==
+             !!mJsFrameBuffer);
 }
 
 void ThreadRegistrationLockedRWOnThread::ClearJSContext() {
@@ -161,7 +205,9 @@ void ThreadRegistrationLockedRWOnThread::ClearJSContext() {
   }
 
   // Check invariants.
-  MOZ_ASSERT((mJSContext && mIsBeingProfiled) == !!mJsFrameBuffer);
+  MOZ_ASSERT((mJSContext &&
+              (mProfilingFeatures != ThreadProfilingFeatures::NotProfiled)) ==
+             !!mJsFrameBuffer);
 }
 
 void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
@@ -179,9 +225,7 @@ void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
     if (mJSSampling == ACTIVE_REQUESTED) {
       mJSSampling = ACTIVE;
       js::EnableContextProfilingStack(mJSContext, true);
-      if (JSTracerEnabled()) {
-        JS::StartTraceLogger(mJSContext);
-      }
+
       if (JSAllocationsEnabled()) {
         // TODO - This probability should not be hardcoded. See Bug 1547284.
         JS::EnableRecordingAllocations(mJSContext,
@@ -193,14 +237,67 @@ void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
     } else if (mJSSampling == INACTIVE_REQUESTED) {
       mJSSampling = INACTIVE;
       js::EnableContextProfilingStack(mJSContext, false);
-      if (JSTracerEnabled()) {
-        JS::StopTraceLogger(mJSContext);
-      }
+
       if (JSAllocationsEnabled()) {
         JS::DisableRecordingAllocations(mJSContext);
       }
     }
   }
 }
+
+#ifdef NIGHTLY_BUILD
+void ThreadRegistrationUnlockedConstReaderAndAtomicRW::RecordWakeCount() const {
+  baseprofiler::detail::BaseProfilerAutoLock lock(mRecordWakeCountMutex);
+
+  uint64_t newWakeCount = mWakeCount - mAlreadyRecordedWakeCount;
+  if (newWakeCount == 0 && mSleep != AWAKE) {
+    // If no new wake-up was counted, and the thread is not marked awake,
+    // we can be pretty sure there is no CPU activity to record.
+    // Threads that are never annotated as asleep/awake (typically rust threads)
+    // start as awake.
+    return;
+  }
+
+  uint64_t cpuTimeNs;
+  if (!GetCpuTimeSinceThreadStartInNs(&cpuTimeNs, PlatformDataCRef())) {
+    cpuTimeNs = 0;
+  }
+
+  constexpr uint64_t NS_PER_MS = 1'000'000;
+  uint64_t cpuTimeMs = cpuTimeNs / NS_PER_MS;
+
+  uint64_t newCpuTimeMs = MOZ_LIKELY(cpuTimeMs > mAlreadyRecordedCpuTimeInMs)
+                              ? cpuTimeMs - mAlreadyRecordedCpuTimeInMs
+                              : 0;
+
+  if (!newWakeCount && !newCpuTimeMs) {
+    // Nothing to report, avoid computing the Glean friendly thread name.
+    return;
+  }
+
+  nsAutoCString threadName(mInfo.Name());
+  // Trim the trailing number of threads that are part of a thread pool.
+  for (size_t length = threadName.Length(); length > 0; --length) {
+    const char c = threadName.CharAt(length - 1);
+    if ((c < '0' || c > '9') && c != '#' && c != ' ') {
+      if (length != threadName.Length()) {
+        threadName.SetLength(length);
+      }
+      break;
+    }
+  }
+
+  mozilla::glean::RecordThreadCpuUse(threadName, newCpuTimeMs, newWakeCount);
+
+  // The thread id is provided as part of the payload because this call is
+  // inside a ThreadRegistration data function, which could be invoked with
+  // the ThreadRegistry locked. We cannot call any function/option that could
+  // attempt to lock the ThreadRegistry again, like MarkerThreadId.
+  PROFILER_MARKER("Thread CPU use", OTHER, {}, ThreadCpuUseMarker,
+                  mInfo.ThreadId(), newCpuTimeMs, newWakeCount, threadName);
+  mAlreadyRecordedCpuTimeInMs = cpuTimeMs;
+  mAlreadyRecordedWakeCount += newWakeCount;
+}
+#endif
 
 }  // namespace mozilla::profiler

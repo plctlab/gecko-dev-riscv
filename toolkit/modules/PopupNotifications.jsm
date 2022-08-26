@@ -4,7 +4,6 @@
 
 var EXPORTED_SYMBOLS = ["PopupNotifications"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { PrivateBrowsingUtils } = ChromeUtils.import(
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
@@ -501,8 +500,6 @@ PopupNotifications.prototype = {
    *                     different icons.
    *        popupIconURL:
    *                     A string. URL of the image to be displayed in the popup.
-   *                     Normally specified in CSS using list-style-image and the
-   *                     .popup-notification-icon[popupid=...] selector.
    *        learnMoreURL:
    *                     A string URL. Setting this property will make the
    *                     prompt display a "Learn More" link that, when clicked,
@@ -531,6 +528,9 @@ PopupNotifications.prototype = {
    *        extraAttr:
    *                     An optional string value which will be given to the
    *                     extraAttr attribute on the notification's anchorElement
+   *        popupOptions:
+   *                     An optional object containing popup options passed to
+   *                     `openPopup()` when defined.
    * @returns the Notification object corresponding to the added notification.
    */
   show: function PopupNotifications_show(
@@ -1339,7 +1339,14 @@ PopupNotifications.prototype = {
       this._popupshownListener = this._popupshownListener.bind(this);
       target.addEventListener("popupshown", this._popupshownListener, true);
 
-      this.panel.openPopup(anchorElement, "bottomcenter topleft", 0, 0);
+      let popupOptions = notificationsToShow.findLast(
+        n => n.options?.popupOptions
+      )?.options?.popupOptions;
+      if (popupOptions) {
+        this.panel.openPopup(anchorElement, popupOptions);
+      } else {
+        this.panel.openPopup(anchorElement, "bottomcenter topleft", 0, 0);
+      }
     });
   },
 

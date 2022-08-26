@@ -6,19 +6,24 @@
 
 var EXPORTED_SYMBOLS = ["TabTarget"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const { Target } = ChromeUtils.import(
+  "chrome://remote/content/cdp/targets/Target.jsm"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   RemoteAgent: "chrome://remote/content/components/RemoteAgent.jsm",
+  TabManager: "chrome://remote/content/shared/TabManager.jsm",
   TabSession: "chrome://remote/content/cdp/sessions/TabSession.jsm",
-  Target: "chrome://remote/content/cdp/targets/Target.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "Favicons",
   "@mozilla.org/browser/favicon-service;1",
   "nsIFaviconService"
@@ -33,9 +38,13 @@ class TabTarget extends Target {
    * @param BrowserElement browser
    */
   constructor(targetList, browser) {
-    super(targetList, TabSession);
+    super(targetList, lazy.TabSession);
 
     this.browser = browser;
+
+    // The tab target uses a unique id as shared with WebDriver to reference
+    // a specific tab.
+    this.id = lazy.TabManager.getIdForBrowser(browser);
 
     // Define the HTTP path to query this target
     this.path = `/devtools/page/${this.id}`;
@@ -94,7 +103,7 @@ class TabTarget extends Target {
   /** @return {Promise.<String=>} */
   get faviconUrl() {
     return new Promise((resolve, reject) => {
-      Favicons.getFaviconURLForPage(this.browser.currentURI, url => {
+      lazy.Favicons.getFaviconURLForPage(this.browser.currentURI, url => {
         if (url) {
           resolve(url.spec);
         } else {
@@ -117,7 +126,7 @@ class TabTarget extends Target {
   }
 
   get wsDebuggerURL() {
-    const { host, port } = RemoteAgent;
+    const { host, port } = lazy.RemoteAgent;
     return `ws://${host}:${port}${this.path}`;
   }
 
@@ -136,7 +145,6 @@ class TabTarget extends Target {
       // title: this.title,
       type: this.type,
       url: this.url,
-      browsingContextId: this.browsingContext.id,
       webSocketDebuggerUrl: this.wsDebuggerURL,
     };
   }

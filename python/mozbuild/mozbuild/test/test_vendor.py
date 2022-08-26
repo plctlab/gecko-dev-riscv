@@ -18,31 +18,11 @@ import mozunit
 def test_up_to_date_vendor():
     with tempfile.TemporaryDirectory() as work_dir:
         subprocess.check_call(["hg", "init", work_dir])
-        os.makedirs(os.path.join(work_dir, "build"))
         os.makedirs(os.path.join(work_dir, "third_party"))
-
-        # Create empty virtualenv_packages file
-        with open(
-            os.path.join(work_dir, "build", "common_virtualenv_packages.txt"), "a"
-        ) as file:
-            # Since VendorPython thinks "work_dir" is the topsrcdir,
-            # it will use its associated virtualenv and package configuration.
-            # Since it uses "pip-tools" within, and "pip-tools" needs
-            # the "Click" library, we need to make them available.
-            file.write("vendored:third_party/python/Click\n")
-            file.write("vendored:third_party/python/pip_tools\n")
-
-        # Copy existing "third_party/python/" vendored files
-        existing_vendored = os.path.join(topsrcdir, "third_party", "python")
-        work_vendored = os.path.join(work_dir, "third_party", "python")
-        shutil.copytree(existing_vendored, work_vendored)
-
-        # Copy "mach" module so that `VirtualenvManager` can populate itself.
-        # This is needed because "topsrcdir" is used in this test both for determining
-        # import paths and for acting as a "work dir".
-        existing_mach = os.path.join(topsrcdir, "python", "mach")
-        work_mach = os.path.join(work_dir, "python", "mach")
-        shutil.copytree(existing_mach, work_mach)
+        shutil.copytree(
+            os.path.join(topsrcdir, os.path.join("third_party", "python")),
+            os.path.join(work_dir, os.path.join("third_party", "python")),
+        )
 
         # Run the vendoring process
         vendor = VendorPython(
@@ -57,9 +37,10 @@ def test_up_to_date_vendor():
             [
                 "diff",
                 "-r",
-                existing_vendored,
-                work_vendored,
+                os.path.join(topsrcdir, os.path.join("third_party", "python")),
+                os.path.join(work_dir, os.path.join("third_party", "python")),
                 "--exclude=__pycache__",
+                "--strip-trailing-cr",
             ]
         )
 

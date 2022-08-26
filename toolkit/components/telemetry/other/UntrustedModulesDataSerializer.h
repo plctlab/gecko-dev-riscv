@@ -24,9 +24,9 @@ class MOZ_RAII UntrustedModulesDataSerializer final {
 
   nsresult mCtorResult;
   JSContext* mCx;
-  JS::RootedObject mMainObj;
-  JS::RootedObject mModulesArray;
-  JS::RootedObject mPerProcObjContainer;
+  JS::Rooted<JSObject*> mMainObj;
+  JS::Rooted<JSObject*> mModulesArray;
+  JS::Rooted<JSObject*> mPerProcObjContainer;
 
   IndexMap mIndexMap;
   const uint32_t mMaxModulesArrayLen;
@@ -36,13 +36,14 @@ class MOZ_RAII UntrustedModulesDataSerializer final {
   // (See "Flags for getUntrustedModuleLoadEvents" in nsITelemetry.idl)
   const uint32_t mFlags;
 
-  static bool SerializeEvent(JSContext* aCx, JS::MutableHandleValue aElement,
-                             const ProcessedModuleLoadEvent& aEvent,
-                             const IndexMap& aModuleIndices);
+  static bool SerializeEvent(
+      JSContext* aCx, JS::MutableHandle<JS::Value> aElement,
+      const ProcessedModuleLoadEventContainer& aEventContainer,
+      const IndexMap& aModuleIndices);
   nsresult GetPerProcObject(const UntrustedModulesData& aData,
-                            JS::MutableHandleObject aObj);
-  nsresult AddLoadEvents(const Vector<ProcessedModuleLoadEvent>& aEvents,
-                         JS::MutableHandleObject aPerProcObj);
+                            JS::MutableHandle<JSObject*> aObj);
+  nsresult AddLoadEvents(const UntrustedModuleLoadingEvents& aEvents,
+                         JS::MutableHandle<JSObject*> aPerProcObj);
   nsresult AddSingleData(const UntrustedModulesData& aData);
 
  public:
@@ -55,7 +56,7 @@ class MOZ_RAII UntrustedModulesDataSerializer final {
    *
    * @param  aRet  [out] This gets assigned to the newly created object.
    */
-  void GetObject(JS::MutableHandleValue aRet);
+  void GetObject(JS::MutableHandle<JS::Value> aRet);
 
   /**
    * Adds data to the JS object.

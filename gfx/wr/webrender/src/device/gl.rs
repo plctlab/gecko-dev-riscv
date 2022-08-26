@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use super::super::shader_source::{OPTIMIZED_SHADERS, UNOPTIMIZED_SHADERS};
-use api::{ColorF, ImageDescriptor, ImageFormat, Parameter, BoolParameter};
+use api::{ColorF, ImageDescriptor, ImageFormat, Parameter, BoolParameter, IntParameter};
 use api::{MixBlendMode, ImageBufferKind, VoidPtrToSizeFn};
 use api::{CrashAnnotator, CrashAnnotation, CrashAnnotatorGuard};
 use api::units::*;
@@ -386,7 +386,6 @@ impl<T> Drop for VBO<T> {
 pub struct ExternalTexture {
     id: gl::GLuint,
     target: gl::GLuint,
-    swizzle: Swizzle,
     uv_rect: TexelRect,
 }
 
@@ -394,13 +393,11 @@ impl ExternalTexture {
     pub fn new(
         id: u32,
         target: ImageBufferKind,
-        swizzle: Swizzle,
         uv_rect: TexelRect,
     ) -> Self {
         ExternalTexture {
             id,
             target: get_gl_target(target),
-            swizzle,
             uv_rect,
         }
     }
@@ -526,7 +523,6 @@ impl Texture {
         let ext = ExternalTexture {
             id: self.id,
             target: self.target,
-            swizzle: Swizzle::default(),
             // TODO(gw): Support custom UV rect for external textures during captures
             uv_rect: TexelRect::new(
                 0.0,
@@ -1084,6 +1080,8 @@ pub struct Device {
     /// Note: this currently only applies to the batched texture uploads
     /// path.
     use_draw_calls_for_texture_copy: bool,
+    /// Number of pixels below which we prefer batched uploads.
+    batched_upload_threshold: i32,
 
     // HW or API capabilities
     capabilities: Capabilities,
@@ -1250,6 +1248,17 @@ impl DrawTarget {
         }
     }
 
+    pub fn offset(&self) -> DeviceIntPoint {
+        match *self {
+            DrawTarget::Default { .. } |
+            DrawTarget::Texture { .. } |
+            DrawTarget::External { .. } => {
+                DeviceIntPoint::zero()
+            }
+            DrawTarget::NativeSurface { offset, .. } => offset,
+        }
+    }
+
     pub fn to_framebuffer_rect(&self, device_rect: DeviceIntRect) -> FramebufferIntRect {
         let mut fb_rect = device_rect_as_framebuffer_rect(&device_rect);
         match *self {
@@ -1382,6 +1391,7 @@ impl Device {
         resource_override_path: Option<PathBuf>,
         use_optimized_shaders: bool,
         upload_method: UploadMethod,
+        batched_upload_threshold: i32,
         cached_programs: Option<Rc<ProgramCache>>,
         allow_texture_storage_support: bool,
         allow_texture_swizzling: bool,
@@ -1424,7 +1434,7 @@ impl Device {
                 if supports_khr_debug {
                     Self::log_driver_messages(gl);
                 }
-                println!("Caught GL error {:x} at {}", code, name);
+                error!("Caught GL error {:x} at {}", code, name);
                 panic!("Caught GL error {:x} at {}", code, name);
             });
         }
@@ -1653,7 +1663,8 @@ impl Device {
              //  && renderer_name.starts_with("AMD");
              //  (XXX: we apply this restriction to all GPUs to handle switching)
 
-        let is_angle = renderer_name.starts_with("ANGLE");
+        let is_windows_angle = cfg!(target_os = "windows")
+            && renderer_name.starts_with("ANGLE");
         let is_adreno_3xx = renderer_name.starts_with("Adreno (TM) 3");
 
         // Some GPUs require the stride of the data during texture uploads to be
@@ -1672,9 +1683,9 @@ impl Device {
             // On AMD Mac, it must always be a multiple of 256 bytes.
             // We apply this restriction to all GPUs to handle switching
             StrideAlignment::Bytes(NonZeroUsize::new(256).unwrap())
-        } else if is_angle {
-            // On ANGLE, PBO texture uploads get incorrectly truncated if
-            // the stride is greater than the width * bpp.
+        } else if is_windows_angle {
+            // On ANGLE-on-D3D, PBO texture uploads get incorrectly truncated
+            // if the stride is greater than the width * bpp.
             StrideAlignment::Bytes(NonZeroUsize::new(1).unwrap())
         } else {
             // Other platforms may have similar requirements and should be added
@@ -1782,6 +1793,7 @@ impl Device {
             upload_method,
             use_batched_texture_uploads: requires_batched_texture_uploads.unwrap_or(false),
             use_draw_calls_for_texture_copy: false,
+            batched_upload_threshold,
 
             inside_frame: false,
 
@@ -1876,6 +1888,9 @@ impl Device {
                     self.use_draw_calls_for_texture_copy = *enabled;
                 }
             }
+            Parameter::Int(IntParameter::BatchedUploadThreshold, threshold) => {
+                self.batched_upload_threshold = *threshold;
+            }
             _ => {}
         }
     }
@@ -1948,6 +1963,10 @@ impl Device {
 
     pub fn use_draw_calls_for_texture_copy(&self) -> bool {
         self.use_draw_calls_for_texture_copy
+    }
+
+    pub fn batched_upload_threshold(&self) -> i32 {
+        self.batched_upload_threshold
     }
 
     pub fn reset_state(&mut self) {
@@ -2049,7 +2068,7 @@ impl Device {
             && !using_wrapper
         {
             fn note(name: &str, duration: Duration) {
-                profiler::add_text_marker(cstr!("OpenGL Calls"), name, duration);
+                profiler::add_text_marker("OpenGL Calls", name, duration);
             }
             let threshold = Duration::from_millis(1);
             let wrapped = gl::ProfilingGl::wrap(self.gl.clone(), threshold, note);
@@ -2373,24 +2392,6 @@ impl Device {
 
             // Link!
             self.gl.link_program(program.id);
-
-            if cfg!(debug_assertions) {
-                // Check that all our overrides worked
-                for (i, attr) in descriptor
-                    .vertex_attributes
-                    .iter()
-                    .chain(descriptor.instance_attributes.iter())
-                    .enumerate()
-                {
-                    //Note: we can't assert here because the driver may optimize out some of the
-                    // vertex attributes legitimately, returning their location to be -1.
-                    let location = self.gl.get_attrib_location(program.id, attr.name);
-                    if location != i as gl::GLint {
-                        warn!("Attribute {:?} is not found in the shader {}. Expected at {}, found at {}",
-                            attr, program.source_info.base_filename, i, location);
-                    }
-                }
-            }
 
             // GL recommends detaching and deleting shaders once the link
             // is complete (whether successful or not). This allows the driver
@@ -3870,6 +3871,12 @@ impl Device {
             (gl::ONE, gl::ONE_MINUS_SRC_ALPHA),
         );
     }
+    pub fn set_blend_mode_plus_lighter(&mut self) {
+        self.set_blend_factors(
+            (gl::ONE, gl::ONE),
+            (gl::ONE, gl::ONE),
+        );
+    }
     pub fn set_blend_mode_exclusion(&mut self) {
         self.set_blend_factors(
             (gl::ONE_MINUS_DST_COLOR, gl::ONE_MINUS_SRC_COLOR),
@@ -3907,6 +3914,9 @@ impl Device {
                 // blend factor only make sense for the normal mode
                 self.gl.blend_func_separate(gl::ZERO, gl::SRC_COLOR, gl::ZERO, gl::SRC_ALPHA);
                 gl::FUNC_ADD
+            },
+            MixBlendMode::PlusLighter => {
+                return self.set_blend_mode_plus_lighter();
             },
             MixBlendMode::Multiply => gl::MULTIPLY_KHR,
             MixBlendMode::Screen => gl::SCREEN_KHR,

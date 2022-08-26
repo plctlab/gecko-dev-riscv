@@ -1,8 +1,8 @@
 /*
  * Bug 1270678 - A test case to test does the favicon obey originAttributes.
  */
-const { PlacesUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesUtils.jsm"
+const { PlacesUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesUtils.sys.mjs"
 );
 let { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
 
@@ -78,7 +78,7 @@ function loadFaviconHandler(metadata, response) {
   response.bodyOutputStream.write(gFaviconData, gFaviconData.length);
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   // Make sure userContext is enabled.
   await SpecialPowers.pushPrefEnv({
     set: [["privacy.userContext.enabled", true]],

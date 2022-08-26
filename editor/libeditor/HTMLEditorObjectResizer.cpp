@@ -7,12 +7,14 @@
 
 #include "HTMLEditorEventListener.h"
 #include "HTMLEditUtils.h"
+
 #include "mozilla/DebugOnly.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/MathAlgorithms.h"
+#include "mozilla/mozalloc.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/mozalloc.h"
+#include "mozilla/StaticPrefs_editor.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/MouseEvent.h"
 #include "mozilla/dom/EventTarget.h"
@@ -321,7 +323,9 @@ nsresult HTMLEditor::ShowResizersInternal(Element& aResizedElement) {
     return NS_ERROR_FAILURE;
   }
 
-  if (NS_WARN_IF(!IsDescendantOfEditorRoot(&aResizedElement))) {
+  const RefPtr<Element> editingHost = ComputeEditingHost();
+  if (NS_WARN_IF(!editingHost) ||
+      NS_WARN_IF(!aResizedElement.IsInclusiveDescendantOf(editingHost))) {
     return NS_ERROR_UNEXPECTED;
   }
 
@@ -670,9 +674,8 @@ nsresult HTMLEditor::StartResizing(Element& aHandleElement) {
       "Element::SetAttr(nsGkAtoms::_moz_activated, true) failed");
 
   // do we want to preserve ratio or not?
-  bool preserveRatio =
-      HTMLEditUtils::IsImage(mResizedObject) &&
-      Preferences::GetBool("editor.resizing.preserve_ratio", true);
+  const bool preserveRatio = StaticPrefs::editor_resizing_preserve_ratio() &&
+                             HTMLEditUtils::IsImage(mResizedObject);
 
   // the way we change the position/size of the shadow depends on
   // the handle
@@ -1020,7 +1023,7 @@ nsresult HTMLEditor::SetShadowPosition(Element& aShadowElement,
 }
 
 int32_t HTMLEditor::GetNewResizingIncrement(int32_t aX, int32_t aY,
-                                            ResizeAt aResizeAt) {
+                                            ResizeAt aResizeAt) const {
   int32_t result = 0;
   if (!mPreserveRatio) {
     switch (aResizeAt) {
@@ -1259,8 +1262,8 @@ nsresult HTMLEditor::SetFinalSizeWithTransaction(int32_t aX, int32_t aY) {
                  : 0);
 
   // we want one transaction only from a user's point of view
-  AutoPlaceholderBatch treatAsOneTransaction(*this,
-                                             ScrollSelectionIntoView::Yes);
+  AutoPlaceholderBatch treatAsOneTransaction(
+      *this, ScrollSelectionIntoView::Yes, __FUNCTION__);
   RefPtr<Element> resizedElement(mResizedObject);
   RefPtr<nsStyledElement> resizedStyleElement =
       nsStyledElement::FromNodeOrNull(mResizedObject);

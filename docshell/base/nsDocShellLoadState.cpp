@@ -581,6 +581,12 @@ void nsDocShellLoadState::MaybeStripTrackerQueryStrings(
     BrowsingContext* aContext, nsIURI* aCurrentUnstrippedURI) {
   MOZ_ASSERT(aContext);
 
+  // Return early if the triggering principal doesn't exist. This could happen
+  // when loading a URL by using a browsing context in the Browser Toolbox.
+  if (!TriggeringPrincipal()) {
+    return;
+  }
+
   // We don't need to strip for sub frames because the query string has been
   // stripped in the top-level content. Also, we don't apply stripping if it
   // is triggered by addons.
@@ -610,12 +616,15 @@ void nsDocShellLoadState::MaybeStripTrackerQueryStrings(
       Telemetry::LABELS_QUERY_STRIPPING_COUNT::Navigation);
 
   nsCOMPtr<nsIURI> strippedURI;
-  if (URLQueryStringStripper::Strip(URI(), strippedURI)) {
+  uint32_t numStripped = URLQueryStringStripper::Strip(
+      URI(), aContext->UsePrivateBrowsing(), strippedURI);
+  if (numStripped) {
     mUnstrippedURI = URI();
     SetURI(strippedURI);
 
     Telemetry::AccumulateCategorical(
         Telemetry::LABELS_QUERY_STRIPPING_COUNT::StripForNavigation);
+    Telemetry::Accumulate(Telemetry::QUERY_STRIPPING_PARAM_COUNT, numStripped);
   } else if (LoadType() & nsIDocShell::LOAD_CMD_RELOAD) {
     // Preserve the Unstripped URI if it's a reload. By doing this, we can
     // restore the stripped query parameters once the ETP has been toggled to
@@ -628,7 +637,8 @@ void nsDocShellLoadState::MaybeStripTrackerQueryStrings(
   // string could be different.
   if (mUnstrippedURI) {
     nsCOMPtr<nsIURI> uri;
-    URLQueryStringStripper::Strip(mUnstrippedURI, uri);
+    Unused << URLQueryStringStripper::Strip(
+        mUnstrippedURI, aContext->UsePrivateBrowsing(), uri);
     bool equals = false;
     Unused << URI()->Equals(uri, &equals);
     MOZ_ASSERT(equals);
@@ -957,7 +967,6 @@ nsLoadFlags nsDocShellLoadState::CalculateChannelLoadFlags(
           nsIRequest::LOAD_BYPASS_CACHE | nsIRequest::LOAD_FRESH_CONNECTION;
       [[fallthrough]];
 
-    case LOAD_RELOAD_NORMAL:
     case LOAD_REFRESH:
       loadFlags |= nsIRequest::VALIDATE_ALWAYS;
       break;
@@ -973,6 +982,13 @@ nsLoadFlags nsDocShellLoadState::CalculateChannelLoadFlags(
           nsIRequest::LOAD_BYPASS_CACHE | nsIRequest::LOAD_FRESH_CONNECTION;
       break;
 
+    case LOAD_RELOAD_NORMAL:
+      if (!StaticPrefs::
+              browser_soft_reload_only_force_validate_top_level_document()) {
+        loadFlags |= nsIRequest::VALIDATE_ALWAYS;
+        break;
+      }
+      [[fallthrough]];
     case LOAD_NORMAL:
     case LOAD_LINK:
       // Set cache checking flags

@@ -2,12 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-%filter substitution
-%define glassActiveBorderColor rgb(37, 44, 51)
-%define glassInactiveBorderColor rgb(102, 102, 102)
+:root {
+  --glass-active-border-color: rgb(37, 44, 51);
+  --glass-inactive-border-color: rgb(102, 102, 102);
+  --glass-shadow-color: hsla(240,5%,5%,0.3);
+}
 
-@media (-moz-os-version: windows-win7),
-       (-moz-os-version: windows-win8) {
+@media (-moz-platform: windows-win7),
+       (-moz-platform: windows-win8) {
   @media (-moz-windows-classic: 0) {
     :root[sizemode="normal"] #toolbar-menubar:not([autohide="true"]) > #menubar-items,
     :root[sizemode="normal"] #toolbar-menubar[autohide="true"][inactive] + #TabsToolbar > .toolbar-items {
@@ -41,16 +43,16 @@
 }
 
 @media (-moz-windows-compositor) {
-  @media not (-moz-os-version: windows-win7) {
-    @media not (-moz-os-version: windows-win8) {
+  @media not (-moz-platform: windows-win7) {
+    @media not (-moz-platform: windows-win8) {
       @media (-moz-windows-default-theme) {
         @media (-moz-windows-accent-color-in-titlebar) {
-          :root[sizemode=normal][tabsintitlebar] {
-            border-top: .5px solid -moz-accent-color;
+          :root[sizemode=normal][tabsintitlebar] #navigator-toolbox {
+            border-top: .5px solid AccentColor;
           }
         }
 
-        :root[sizemode=normal][tabsintitlebar]:-moz-window-inactive {
+        :root[sizemode=normal][tabsintitlebar]:-moz-window-inactive #navigator-toolbox {
           border-top-color: rgb(57,57,57);
         }
 
@@ -65,22 +67,16 @@
         }
       }
 
-      @media (-moz-windows-default-theme: 0) {
-        :root[tabsintitlebar] {
-          appearance: auto;
-          -moz-default-appearance: -moz-win-glass;
-        }
-
+      /* See bug 1715990 about why we do this ourselves on HCM */
+      @media (prefers-contrast) {
         :root[tabsintitlebar]:not(:-moz-lwtheme) {
-          background-color: transparent;
+          background-color: ActiveCaption;
+          color: CaptionText;
         }
 
-        /* On win10, if we don't set this on the entire browser container including
-         * the sidebar, if the sidebar is open the accent color bleeds through in
-         * the titlebar */
-        :root[tabsintitlebar] #browser {
-          appearance: auto;
-          -moz-default-appearance: -moz-win-exclude-glass;
+        :root[tabsintitlebar]:not(:-moz-lwtheme):-moz-window-inactive {
+          background-color: InactiveCaption;
+          color: InactiveCaptionText;
         }
       }
 
@@ -245,8 +241,8 @@
     }
   }
 
-  @media (-moz-os-version: windows-win7),
-         (-moz-os-version: windows-win8) {
+  @media (-moz-platform: windows-win7),
+         (-moz-platform: windows-win8) {
     :root {
       background-color: transparent;
       appearance: auto;
@@ -271,11 +267,12 @@
     }
   }
 
-  @media (-moz-os-version: windows-win8) {
+  @media (-moz-platform: windows-win8) {
     /* Artificially draw window borders that are covered by lwtheme, see bug 591930.
-     * Borders for win7 are below, win10 doesn't need them. */
+     * Borders for win7 are below, win10 only needs something like this when
+     * drawing in the titlebar (-moz-windows-accent-color-in-titlebar). */
     #main-window[sizemode="normal"] #navigator-toolbox:-moz-lwtheme {
-      border-top: 1px solid @glassShadowColor@;
+      border-top: 1px solid var(--glass-shadow-color);
     }
   }
 
@@ -300,15 +297,16 @@
   }
 
   /* Artificially draw window borders that are covered by lwtheme, see bug 591930.
-   * We use a different border for win8, and this is not necessary on win10+ */
+   * We use a different border for win8, and this win10+ only needs this if
+   * drawing in the titlebar (-moz-windows-accent-color-in-titlebar). */
   #main-window[sizemode="normal"] #navigator-toolbox:-moz-lwtheme {
-    border-top: 1px solid @glassActiveBorderColor@;
+    border-top: 1px solid var(--glass-active-border-color);
     padding-top: 1px;
     box-shadow: 0 1px 0 rgba(255,255,255,.6) inset;
   }
 
   #main-window[sizemode="normal"] #navigator-toolbox:-moz-lwtheme:-moz-window-inactive {
-    border-top-color: @glassInactiveBorderColor@;
+    border-top-color: var(--glass-inactive-border-color);
   }
 }
 
@@ -325,13 +323,13 @@
     /* Render a window top border for lwthemes: */
     #main-window[tabsintitlebar][sizemode="normal"] #navigator-toolbox:-moz-lwtheme {
       background-image: linear-gradient(to bottom,
-            @glassActiveBorderColor@ 0, @glassActiveBorderColor@ 1px,
+            var(--glass-active-border-color) 0, var(--glass-active-border-color) 1px,
             rgba(255,255,255,.6) 1px, rgba(255,255,255,.6) 2px, transparent 2px);
     }
 
     #main-window[tabsintitlebar][sizemode="normal"] #navigator-toolbox:-moz-lwtheme:-moz-window-inactive {
       background-image: linear-gradient(to bottom,
-            @glassInactiveBorderColor@ 0, @glassInactiveBorderColor@ 1px,
+            var(--glass-inactive-border-color) 0, var(--glass-inactive-border-color) 1px,
             rgba(255,255,255,.6) 1px, rgba(255,255,255,.6) 2px, transparent 2px);
     }
   }

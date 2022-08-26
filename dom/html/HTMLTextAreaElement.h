@@ -11,13 +11,13 @@
 #include "mozilla/TextControlElement.h"
 #include "mozilla/TextControlState.h"
 #include "mozilla/TextEditor.h"
+#include "mozilla/dom/ConstraintValidation.h"
 #include "mozilla/dom/HTMLFormElement.h"
 #include "mozilla/dom/HTMLInputElementBinding.h"
 #include "nsIControllers.h"
 #include "nsCOMPtr.h"
 #include "nsGenericHTMLElement.h"
 #include "nsStubMutationObserver.h"
-#include "nsIConstraintValidation.h"
 #include "nsGkAtoms.h"
 
 class nsIControllers;
@@ -27,7 +27,6 @@ namespace mozilla {
 
 class EventChainPostVisitor;
 class EventChainPreVisitor;
-class EventStates;
 class PresState;
 
 namespace dom {
@@ -36,9 +35,9 @@ class FormData;
 
 class HTMLTextAreaElement final : public TextControlElement,
                                   public nsStubMutationObserver,
-                                  public nsIConstraintValidation {
+                                  public ConstraintValidation {
  public:
-  using nsIConstraintValidation::GetValidationMessage;
+  using ConstraintValidation::GetValidationMessage;
   using ValueSetterOption = TextControlState::ValueSetterOption;
   using ValueSetterOptions = TextControlState::ValueSetterOptions;
 
@@ -70,7 +69,7 @@ class HTMLTextAreaElement final : public TextControlElement,
 
   virtual void FieldSetDisabledChanged(bool aNotify) override;
 
-  virtual EventStates IntrinsicState() const override;
+  virtual ElementState IntrinsicState() const override;
 
   void SetLastValueChangeWasInteractive(bool);
 
@@ -160,6 +159,8 @@ class HTMLTextAreaElement final : public TextControlElement,
   void UpdateTooShortValidityState();
   void UpdateValueMissingValidityState();
   void UpdateBarredFromConstraintValidation();
+
+  // ConstraintValidation
   nsresult GetValidationMessage(nsAString& aValidationMessage,
                                 ValidityStateType aType) override;
 
@@ -216,7 +217,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   void SetReadOnly(bool aReadOnly, ErrorResult& aError) {
     SetHTMLBoolAttr(nsGkAtoms::readonly, aReadOnly, aError);
   }
-  bool Required() const { return State().HasState(NS_EVENT_STATE_REQUIRED); }
+  bool Required() const { return State().HasState(ElementState::REQUIRED); }
 
   MOZ_CAN_RUN_SCRIPT void SetRangeText(const nsAString& aReplacement,
                                        ErrorResult& aRv);

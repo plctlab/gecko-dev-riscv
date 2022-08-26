@@ -1,36 +1,49 @@
 {
+  "$schema": "https://json-schema.org/draft/2019-09/schema",
+  "$id": "file:///UpdateAction.schema.json",
   "title": "UpdateActionMessage",
   "description": "A template for messages that execute predetermined actions.",
-  "version": "1.0.0",
+  "allOf": [
+    { "$ref": "file:///FxMSCommon.schema.json#/$defs/Message" }
+  ],
   "type": "object",
   "properties": {
-    "action": {
+    "content": {
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string"
-        },
-        "data": {
+        "action": {
           "type": "object",
           "properties": {
-            "url": {
-              "type": "string",
-              "description": "URL data to be used as argument to the action"
+            "id": {
+              "type": "string"
             },
-            "expireDelta": {
-              "type": "number",
-              "description": "Expiration timestamp to be used as argument to the action"
+            "data": {
+              "type": "object",
+              "description": "Additional data provided as argument when executing the action",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "description": "URL data to be used as argument to the action"
+                },
+                "expireDelta": {
+                  "type": "number",
+                  "description": "Expiration timestamp to be used as argument to the action"
+                }
+              }
             }
-          }
-        },
-        "description": "Additional data provided as argument when executing the action"
+          },
+          "additionalProperties": true,
+          "description": "Optional action to take in addition to showing the notification",
+          "required": ["id", "data"]
+        }
       },
-      "additionalProperties": false,
-      "description": "Optional action to take in addition to showing the notification"
+      "additionalProperties": true,
+      "required": ["action"]
     },
-    "additionalProperties": false,
-    "required": ["id", "action"]
+    "template": {
+      "type": "string",
+      "const": "update_action"
+    }
   },
-  "additionalProperties": false,
-  "required": ["action"]
+  "required": ["targeting"]
 }

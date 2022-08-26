@@ -12,10 +12,9 @@ var EXPORTED_SYMBOLS = [
   "BookmarkSeparator",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Async } = ChromeUtils.import("resource://services-common/async.js");
 const { SCORE_INCREMENT_XLARGE } = ChromeUtils.import(
   "resource://services-sync/constants.js"
@@ -28,27 +27,24 @@ const { CryptoWrapper } = ChromeUtils.import(
 );
 const { Svc, Utils } = ChromeUtils.import("resource://services-sync/util.js");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  BookmarkValidator: "resource://services-sync/bookmark_validator.js",
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesBackups: "resource://gre/modules/PlacesBackups.sys.mjs",
+  PlacesDBUtils: "resource://gre/modules/PlacesDBUtils.sys.mjs",
+  PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  SyncedBookmarksMirror: "resource://gre/modules/SyncedBookmarksMirror.sys.mjs",
+});
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Observers: "resource://services-common/observers.js",
-  OS: "resource://gre/modules/osfile.jsm",
-  PlacesBackups: "resource://gre/modules/PlacesBackups.jsm",
-  PlacesDBUtils: "resource://gre/modules/PlacesDBUtils.jsm",
-  PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
   Resource: "resource://services-sync/resource.js",
-  SyncedBookmarksMirror: "resource://gre/modules/SyncedBookmarksMirror.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "PlacesBundle", () => {
-  return Services.strings.createBundle(
-    "chrome://places/locale/places.properties"
-  );
-});
-
-XPCOMUtils.defineLazyGetter(this, "ANNOS_TO_TRACK", () => [
-  PlacesUtils.LMANNO_FEEDURI,
-  PlacesUtils.LMANNO_SITEURI,
+XPCOMUtils.defineLazyGetter(lazy, "ANNOS_TO_TRACK", () => [
+  lazy.PlacesUtils.LMANNO_FEEDURI,
+  lazy.PlacesUtils.LMANNO_SITEURI,
 ]);
 
 const PLACES_MAINTENANCE_INTERVAL_SECONDS = 4 * 60 * 60; // 4 hours.
@@ -69,12 +65,12 @@ const FORBIDDEN_INCOMING_PARENT_IDS = ["pinned", "readinglist"];
 // The tracker ignores changes made by import and restore, to avoid bumping the
 // score and triggering syncs during the process, as well as changes made by
 // Sync.
-XPCOMUtils.defineLazyGetter(this, "IGNORED_SOURCES", () => [
-  PlacesUtils.bookmarks.SOURCES.SYNC,
-  PlacesUtils.bookmarks.SOURCES.IMPORT,
-  PlacesUtils.bookmarks.SOURCES.RESTORE,
-  PlacesUtils.bookmarks.SOURCES.RESTORE_ON_STARTUP,
-  PlacesUtils.bookmarks.SOURCES.SYNC_REPARENT_REMOVED_FOLDER_CHILDREN,
+XPCOMUtils.defineLazyGetter(lazy, "IGNORED_SOURCES", () => [
+  lazy.PlacesUtils.bookmarks.SOURCES.SYNC,
+  lazy.PlacesUtils.bookmarks.SOURCES.IMPORT,
+  lazy.PlacesUtils.bookmarks.SOURCES.RESTORE,
+  lazy.PlacesUtils.bookmarks.SOURCES.RESTORE_ON_STARTUP,
+  lazy.PlacesUtils.bookmarks.SOURCES.SYNC_REPARENT_REMOVED_FOLDER_CHILDREN,
 ]);
 
 // The validation telemetry version for the engine. Version 1 is collected
@@ -145,7 +141,7 @@ PlacesItem.prototype = {
       recordId: this.id,
       parentRecordId: this.parentid,
     };
-    let dateAdded = PlacesSyncUtils.bookmarks.ratchetTimestampBackwards(
+    let dateAdded = lazy.PlacesSyncUtils.bookmarks.ratchetTimestampBackwards(
       this.dateAdded,
       +this.modified * 1000
     );
@@ -327,13 +323,13 @@ BookmarksEngine.prototype = {
   allowSkippedRecord: false,
 
   async _ensureCurrentSyncID(newSyncID) {
-    await PlacesSyncUtils.bookmarks.ensureCurrentSyncId(newSyncID);
+    await lazy.PlacesSyncUtils.bookmarks.ensureCurrentSyncId(newSyncID);
     let buf = await this._store.ensureOpenMirror();
     await buf.ensureCurrentSyncId(newSyncID);
   },
 
   async ensureCurrentSyncID(newSyncID) {
-    let shouldWipeRemote = await PlacesSyncUtils.bookmarks.shouldWipeRemote();
+    let shouldWipeRemote = await lazy.PlacesSyncUtils.bookmarks.shouldWipeRemote();
     if (!shouldWipeRemote) {
       this._log.debug(
         "Checking if server sync ID ${newSyncID} matches existing",
@@ -361,7 +357,7 @@ BookmarksEngine.prototype = {
   },
 
   async getSyncID() {
-    return PlacesSyncUtils.bookmarks.getSyncId();
+    return lazy.PlacesSyncUtils.bookmarks.getSyncId();
   },
 
   async resetSyncID() {
@@ -370,7 +366,7 @@ BookmarksEngine.prototype = {
   },
 
   async resetLocalSyncID() {
-    let newSyncID = await PlacesSyncUtils.bookmarks.resetSyncId();
+    let newSyncID = await lazy.PlacesSyncUtils.bookmarks.resetSyncId();
     this._log.debug("Assigned new sync ID ${newSyncID}", { newSyncID });
     let buf = await this._store.ensureOpenMirror();
     await buf.ensureCurrentSyncId(newSyncID);
@@ -387,7 +383,7 @@ BookmarksEngine.prototype = {
     await mirror.setCollectionLastModified(lastSync);
     // Update the last sync time in Places so that reverting to the original
     // bookmarks engine doesn't download records we've already applied.
-    await PlacesSyncUtils.bookmarks.setLastSync(lastSync);
+    await lazy.PlacesSyncUtils.bookmarks.setLastSync(lastSync);
   },
 
   async _syncStartup() {
@@ -398,7 +394,7 @@ BookmarksEngine.prototype = {
       let lastSync = await this.getLastSync();
       if (!lastSync) {
         this._log.debug("Bookmarks backup starting");
-        await PlacesBackups.create(null, true);
+        await lazy.PlacesBackups.create(null, true);
         this._log.debug("Bookmarks backup done");
       }
     } catch (ex) {
@@ -450,7 +446,7 @@ BookmarksEngine.prototype = {
             "elapsed since last run; running Places maintenance",
           { elapsedSinceMaintenance }
         );
-        await PlacesDBUtils.maintenanceOnIdle();
+        await lazy.PlacesDBUtils.maintenanceOnIdle();
         this._ranMaintenanceOnLastSync = true;
         this.service.recordTelemetryEvent("maintenance", "run", "bookmarks");
       } else {
@@ -462,7 +458,7 @@ BookmarksEngine.prototype = {
 
   async _syncFinish() {
     await SyncEngine.prototype._syncFinish.call(this);
-    await PlacesSyncUtils.bookmarks.ensureMobileQuery();
+    await lazy.PlacesSyncUtils.bookmarks.ensureMobileQuery();
   },
 
   async pullAllChanges() {
@@ -471,7 +467,7 @@ BookmarksEngine.prototype = {
 
   async trackRemainingChanges() {
     let changes = this._modified.changes;
-    await PlacesSyncUtils.bookmarks.pushChanges(changes);
+    await lazy.PlacesSyncUtils.bookmarks.pushChanges(changes);
   },
 
   _deleteId(id) {
@@ -484,7 +480,7 @@ BookmarksEngine.prototype = {
   // override with logic that lives in Places and the mirror.
   async _resetClient() {
     await super._resetClient();
-    await PlacesSyncUtils.bookmarks.reset();
+    await lazy.PlacesSyncUtils.bookmarks.reset();
     let buf = await this._store.ensureOpenMirror();
     await buf.reset();
   },
@@ -509,7 +505,7 @@ BookmarksEngine.prototype = {
 
     try {
       let recordsToUpload = await buf.apply({
-        remoteTimeSeconds: Resource.serverTime,
+        remoteTimeSeconds: lazy.Resource.serverTime,
         signal: watchdog.signal,
       });
       this._modified.replace(recordsToUpload);
@@ -652,7 +648,7 @@ BookmarksStore.prototype = {
 
   // Create a record starting from the weave id (places guid)
   async createRecord(id, collection) {
-    let item = await PlacesSyncUtils.bookmarks.fetch(id);
+    let item = await lazy.PlacesSyncUtils.bookmarks.fetch(id);
     if (!item) {
       // deleted item
       let record = new PlacesItem(collection, id);
@@ -690,7 +686,7 @@ BookmarksStore.prototype = {
     if (record.bmkUri != null) {
       let frecency = FRECENCY_UNKNOWN;
       try {
-        frecency = await PlacesSyncUtils.history.fetchURLFrecency(
+        frecency = await lazy.PlacesSyncUtils.history.fetchURLFrecency(
           record.bmkUri
         );
       } catch (ex) {
@@ -710,8 +706,8 @@ BookmarksStore.prototype = {
 
   async wipe() {
     // Save a backup before clearing out all bookmarks.
-    await PlacesBackups.create(null, true);
-    await PlacesSyncUtils.bookmarks.wipe();
+    await lazy.PlacesBackups.create(null, true);
+    await lazy.PlacesSyncUtils.bookmarks.wipe();
   },
 
   ensureOpenMirror() {
@@ -728,19 +724,19 @@ BookmarksStore.prototype = {
   },
 
   async _openMirror() {
-    let mirrorPath = OS.Path.join(
-      OS.Constants.Path.profileDir,
+    let mirrorPath = PathUtils.join(
+      PathUtils.profileDir,
       "weave",
       "bookmarks.sqlite"
     );
-    await OS.File.makeDir(OS.Path.dirname(mirrorPath), {
-      from: OS.Constants.Path.profileDir,
+    await IOUtils.makeDirectory(PathUtils.parent(mirrorPath), {
+      createAncestors: true,
     });
 
-    return SyncedBookmarksMirror.open({
+    return lazy.SyncedBookmarksMirror.open({
       path: mirrorPath,
       recordStepTelemetry: (name, took, counts) => {
-        Observers.notify(
+        lazy.Observers.notify(
           "weave:engine:sync:step",
           {
             name,
@@ -751,7 +747,7 @@ BookmarksStore.prototype = {
         );
       },
       recordValidationTelemetry: (took, checked, problems) => {
-        Observers.notify(
+        lazy.Observers.notify(
           "weave:engine:validate:finish",
           {
             version: BOOKMARK_VALIDATOR_VERSION,
@@ -767,7 +763,10 @@ BookmarksStore.prototype = {
 
   async applyIncomingBatch(records) {
     let buf = await this.ensureOpenMirror();
-    for (let chunk of PlacesUtils.chunkArray(records, this._batchChunkSize)) {
+    for (let chunk of lazy.PlacesUtils.chunkArray(
+      records,
+      this._batchChunkSize
+    )) {
       await buf.store(chunk);
     }
     // Array of failed records.
@@ -800,15 +799,17 @@ BookmarksTracker.prototype = {
   __proto__: Tracker.prototype,
 
   onStart() {
-    PlacesUtils.bookmarks.addObserver(this, true);
+    lazy.PlacesUtils.bookmarks.addObserver(this, true);
     this._placesListener = new PlacesWeakCallbackWrapper(
       this.handlePlacesEvents.bind(this)
     );
-    PlacesUtils.observers.addListener(
+    lazy.PlacesUtils.observers.addListener(
       [
         "bookmark-added",
         "bookmark-removed",
         "bookmark-moved",
+        "bookmark-tags-changed",
+        "bookmark-time-changed",
         "bookmark-title-changed",
         "bookmark-url-changed",
       ],
@@ -820,12 +821,14 @@ BookmarksTracker.prototype = {
   },
 
   onStop() {
-    PlacesUtils.bookmarks.removeObserver(this);
-    PlacesUtils.observers.removeListener(
+    lazy.PlacesUtils.bookmarks.removeObserver(this);
+    lazy.PlacesUtils.observers.removeListener(
       [
         "bookmark-added",
         "bookmark-removed",
         "bookmark-moved",
+        "bookmark-tags-changed",
+        "bookmark-time-changed",
         "bookmark-title-changed",
         "bookmark-url-changed",
       ],
@@ -837,7 +840,7 @@ BookmarksTracker.prototype = {
   },
 
   async getChangedIDs() {
-    return PlacesSyncUtils.bookmarks.pullChanges();
+    return lazy.PlacesSyncUtils.bookmarks.pullChanges();
   },
 
   observe(subject, topic, data) {
@@ -884,9 +887,11 @@ BookmarksTracker.prototype = {
         case "bookmark-removed":
         case "bookmark-moved":
         case "bookmark-guid-changed":
+        case "bookmark-tags-changed":
+        case "bookmark-time-changed":
         case "bookmark-title-changed":
         case "bookmark-url-changed":
-          if (IGNORED_SOURCES.includes(event.source)) {
+          if (lazy.IGNORED_SOURCES.includes(event.source)) {
             continue;
           }
 
@@ -917,11 +922,11 @@ BookmarksTracker.prototype = {
     oldValue,
     source
   ) {
-    if (IGNORED_SOURCES.includes(source)) {
+    if (lazy.IGNORED_SOURCES.includes(source)) {
       return;
     }
 
-    if (isAnno && !ANNOS_TO_TRACK.includes(property)) {
+    if (isAnno && !lazy.ANNOS_TO_TRACK.includes(property)) {
       // Ignore annotations except for the ones that we sync.
       return;
     }

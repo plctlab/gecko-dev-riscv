@@ -4,10 +4,9 @@
 
 var EXPORTED_SYMBOLS = ["ContextualIdentityService"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 // The maximum valid numeric value for the userContextId.
 const MAX_USER_CONTEXT_ID = -1 >>> 0;
@@ -15,37 +14,39 @@ const LAST_CONTAINERS_JSON_VERSION = 4;
 const SAVE_DELAY_MS = 1500;
 const CONTEXTUAL_IDENTITY_ENABLED_PREF = "privacy.userContext.enabled";
 
-XPCOMUtils.defineLazyGetter(this, "gBrowserBundle", function() {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "gBrowserBundle", function() {
   return Services.strings.createBundle(
     "chrome://browser/locale/browser.properties"
   );
 });
 
-XPCOMUtils.defineLazyGetter(this, "gTextDecoder", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gTextDecoder", function() {
   return new TextDecoder();
 });
 
-XPCOMUtils.defineLazyGetter(this, "gTextEncoder", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gTextEncoder", function() {
   return new TextEncoder();
 });
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "AsyncShutdown",
   "resource://gre/modules/AsyncShutdown.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm"
 );
@@ -233,8 +234,8 @@ _ContextualIdentityService.prototype = {
     if (!this._saver) {
       this._saverCallback = () => this._saver.finalize();
 
-      this._saver = new DeferredTask(() => this.save(), SAVE_DELAY_MS);
-      AsyncShutdown.profileBeforeChange.addBlocker(
+      this._saver = new lazy.DeferredTask(() => this.save(), SAVE_DELAY_MS);
+      lazy.AsyncShutdown.profileBeforeChange.addBlocker(
         "ContextualIdentityService: writing data",
         this._saverCallback
       );
@@ -246,7 +247,7 @@ _ContextualIdentityService.prototype = {
   },
 
   save() {
-    AsyncShutdown.profileBeforeChange.removeBlocker(this._saverCallback);
+    lazy.AsyncShutdown.profileBeforeChange.removeBlocker(this._saverCallback);
 
     this._saver = null;
     this._saverCallback = null;
@@ -257,7 +258,7 @@ _ContextualIdentityService.prototype = {
       identities: this._identities,
     };
 
-    let bytes = gTextEncoder.encode(JSON.stringify(object));
+    let bytes = lazy.gTextEncoder.encode(JSON.stringify(object));
     return IOUtils.write(this._path, bytes, {
       tmpPath: this._path + ".tmp",
     });
@@ -354,7 +355,7 @@ _ContextualIdentityService.prototype = {
   },
 
   parseData(bytes) {
-    let data = JSON.parse(gTextDecoder.decode(bytes));
+    let data = JSON.parse(lazy.gTextDecoder.decode(bytes));
     if (data.version == 1) {
       this.resetDefault();
       return;
@@ -404,13 +405,13 @@ _ContextualIdentityService.prototype = {
         "@mozilla.org/network/file-input-stream;1"
       ].createInstance(Ci.nsIFileInputStream);
       inputStream.init(
-        new FileUtils.File(this._path),
-        FileUtils.MODE_RDONLY,
-        FileUtils.PERMS_FILE,
+        new lazy.FileUtils.File(this._path),
+        lazy.FileUtils.MODE_RDONLY,
+        lazy.FileUtils.PERMS_FILE,
         0
       );
       try {
-        let bytes = NetUtil.readInputStream(
+        let bytes = lazy.NetUtil.readInputStream(
           inputStream,
           inputStream.available()
         );
@@ -476,7 +477,7 @@ _ContextualIdentityService.prototype = {
       return identity.name;
     }
 
-    return gBrowserBundle.GetStringFromName(identity.l10nID);
+    return lazy.gBrowserBundle.GetStringFromName(identity.l10nID);
   },
 
   setTabStyle(tab) {

@@ -5,11 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gtest/gtest.h"
+#include "mozilla/ipc/DataPipe.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "nsIAsyncInputStream.h"
 #include "nsComponentManagerUtils.h"
+#include "nsIAsyncOutputStream.h"
 #include "nsIInputStream.h"
 #include "nsIMultiplexInputStream.h"
+#include "nsIPipe.h"
 #include "nsISeekableStream.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
@@ -91,7 +94,7 @@ TEST(MultiplexInputStream, Seek_SET)
   ASSERT_EQ((uint64_t)buf3.Length(), length);
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length() + buf2.Length());
+  ASSERT_EQ(tell, int64_t(buf1.Length() + buf2.Length()));
 
   // Check read is correct
   rv = stream->Read(readBuf, 5, &count);
@@ -103,7 +106,7 @@ TEST(MultiplexInputStream, Seek_SET)
   ASSERT_EQ(0, strncmp(readBuf, "Foo b", count));
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length() + buf2.Length() + 5);
+  ASSERT_EQ(tell, int64_t(buf1.Length() + buf2.Length() + 5));
 
   // Seek back to start of second stream (covers bug 1272371)
   rv = seekStream->Seek(nsISeekableStream::NS_SEEK_SET, buf1.Length());
@@ -113,7 +116,7 @@ TEST(MultiplexInputStream, Seek_SET)
   ASSERT_EQ((uint64_t)buf2.Length() + buf3.Length(), length);
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length());
+  ASSERT_EQ(tell, int64_t(buf1.Length()));
 
   // Check read is correct
   rv = stream->Read(readBuf, 6, &count);
@@ -125,7 +128,7 @@ TEST(MultiplexInputStream, Seek_SET)
   ASSERT_EQ(0, strncmp(readBuf, "The qu", count));
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length() + 6);
+  ASSERT_EQ(tell, int64_t(buf1.Length() + 6));
 }
 
 TEST(MultiplexInputStream, Seek_CUR)
@@ -269,7 +272,7 @@ TEST(MultiplexInputStream, Seek_END)
   ASSERT_EQ((uint64_t)0, length);
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length() + buf2.Length() + buf3.Length());
+  ASSERT_EQ(tell, int64_t(buf1.Length() + buf2.Length() + buf3.Length()));
 
   // -1
   rv = seekStream->Seek(nsISeekableStream::NS_SEEK_END, -1);
@@ -279,7 +282,7 @@ TEST(MultiplexInputStream, Seek_END)
   ASSERT_EQ((uint64_t)1, length);
   rv = seekStream->Tell(&tell);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(tell, buf1.Length() + buf2.Length() + buf3.Length() - 1);
+  ASSERT_EQ(tell, int64_t(buf1.Length() + buf2.Length() + buf3.Length() - 1));
 
   // Almost at the beginning
   tell = 1;
@@ -352,7 +355,9 @@ TEST(MultiplexInputStream, AsyncWait_withEventTarget)
   ASSERT_FALSE(cb->Called());
 
   // Eventually it is called.
-  MOZ_ALWAYS_TRUE(mozilla::SpinEventLoopUntil([&]() { return cb->Called(); }));
+  MOZ_ALWAYS_TRUE(mozilla::SpinEventLoopUntil(
+      "xpcom:TEST(MultiplexInputStream, AsyncWait_withEventTarget)"_ns,
+      [&]() { return cb->Called(); }));
   ASSERT_TRUE(cb->Called());
 }
 
@@ -393,7 +398,9 @@ TEST(MultiplexInputStream, AsyncWait_withEventTarget_closureOnly)
   ASSERT_FALSE(cb->Called());
 
   // Eventually it is called.
-  MOZ_ALWAYS_TRUE(mozilla::SpinEventLoopUntil([&]() { return cb->Called(); }));
+  MOZ_ALWAYS_TRUE(mozilla::SpinEventLoopUntil(
+      "xpcom:TEST(MultiplexInputStream, AsyncWait_withEventTarget_closureOnly)"_ns,
+      [&]() { return cb->Called(); }));
   ASSERT_TRUE(cb->Called());
 }
 
@@ -753,7 +760,7 @@ TEST(MultiplexInputStream, LengthInputStream)
   int64_t length;
   rv = fsis->Length(&length);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_EQ(buf.Length() * 2, length);
+  ASSERT_EQ(int64_t(buf.Length() * 2), length);
 
   // An async LengthInputStream.
   RefPtr<testing::LengthInputStream> asyncLengthStream =
@@ -776,8 +783,10 @@ TEST(MultiplexInputStream, LengthInputStream)
   rv = afsis->AsyncLengthWait(callback, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return callback->Called(); }));
-  ASSERT_EQ(buf.Length() * 3, callback->Size());
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(MultiplexInputStream, LengthInputStream) 1"_ns,
+      [&]() { return callback->Called(); }));
+  ASSERT_EQ(int64_t(buf.Length() * 3), callback->Size());
 
   // Now a negative stream
   lengthStream = new testing::LengthInputStream(buf, true, false, NS_OK, true);
@@ -808,7 +817,128 @@ TEST(MultiplexInputStream, LengthInputStream)
   rv = afsis->AsyncLengthWait(callback2, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return callback2->Called(); }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(MultiplexInputStream, LengthInputStream) 2"_ns,
+      [&]() { return callback2->Called(); }));
   ASSERT_FALSE(callback1->Called());
   ASSERT_TRUE(callback2->Called());
+}
+
+void TestMultiplexStreamReadWhileWaiting(nsIAsyncInputStream* pipeIn,
+                                         nsIAsyncOutputStream* pipeOut) {
+  // We had an issue where a stream which was read while a message was in-flight
+  // to report the stream was ready, meaning that the stream reported 0 bytes
+  // available when checked in the MultiplexInputStream's callback, and was
+  // skipped over.
+
+  nsCOMPtr<nsIThread> mainThread = NS_GetCurrentThread();
+
+  nsCOMPtr<nsIMultiplexInputStream> multiplexStream =
+      do_CreateInstance("@mozilla.org/io/multiplex-input-stream;1");
+  ASSERT_TRUE(NS_SUCCEEDED(multiplexStream->AppendStream(pipeIn)));
+
+  nsCOMPtr<nsIInputStream> stringStream;
+  ASSERT_TRUE(NS_SUCCEEDED(
+      NS_NewCStringInputStream(getter_AddRefs(stringStream), "xxxx\0"_ns)));
+  ASSERT_TRUE(NS_SUCCEEDED(multiplexStream->AppendStream(stringStream)));
+
+  nsCOMPtr<nsIAsyncInputStream> asyncMultiplex =
+      do_QueryInterface(multiplexStream);
+  ASSERT_TRUE(asyncMultiplex);
+
+  RefPtr<testing::InputStreamCallback> cb = new testing::InputStreamCallback();
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->AsyncWait(cb, 0, 0, mainThread)));
+  EXPECT_FALSE(cb->Called());
+
+  NS_ProcessPendingEvents(mainThread);
+  EXPECT_FALSE(cb->Called());
+
+  uint64_t available;
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, 0u);
+
+  // Write some data to the pipe, which should wake up the async wait message to
+  // be delivered.
+  char toWrite[] = "1234";
+  uint32_t written;
+  ASSERT_TRUE(NS_SUCCEEDED(pipeOut->Write(toWrite, sizeof(toWrite), &written)));
+  EXPECT_EQ(written, sizeof(toWrite));
+  EXPECT_FALSE(cb->Called());
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, sizeof(toWrite));
+
+  // Read that data from the stream
+  char toRead[sizeof(toWrite)];
+  uint32_t read;
+  ASSERT_TRUE(
+      NS_SUCCEEDED(asyncMultiplex->Read(toRead, sizeof(toRead), &read)));
+  EXPECT_EQ(read, sizeof(toRead));
+  EXPECT_STREQ(toRead, toWrite);
+  EXPECT_FALSE(cb->Called());
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, 0u);
+
+  // The multiplex stream will have detected the read and prevented the callback
+  // from having been called yet.
+  NS_ProcessPendingEvents(mainThread);
+  EXPECT_FALSE(cb->Called());
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, 0u);
+
+  // Write more data and close, then make sure we can read everything else in
+  // the stream.
+  char toWrite2[] = "56789";
+  ASSERT_TRUE(
+      NS_SUCCEEDED(pipeOut->Write(toWrite2, sizeof(toWrite2), &written)));
+  EXPECT_EQ(written, sizeof(toWrite2));
+  EXPECT_FALSE(cb->Called());
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, sizeof(toWrite2));
+
+  ASSERT_TRUE(NS_SUCCEEDED(pipeOut->Close()));
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  // XXX: Theoretically if the multiplex stream could detect it, we could report
+  // `sizeof(toWrite2) + 4` because the stream is complete, but there's no way
+  // for the multiplex stream to know.
+  EXPECT_EQ(available, sizeof(toWrite2));
+
+  NS_ProcessPendingEvents(mainThread);
+  EXPECT_TRUE(cb->Called());
+
+  // Read that final bit of data and make sure we read it.
+  char toRead2[sizeof(toWrite2)];
+  ASSERT_TRUE(
+      NS_SUCCEEDED(asyncMultiplex->Read(toRead2, sizeof(toRead2), &read)));
+  EXPECT_EQ(read, sizeof(toRead2));
+  EXPECT_STREQ(toRead2, toWrite2);
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, 5u);
+
+  // Read the extra data as well.
+  char extraRead[5];
+  ASSERT_TRUE(
+      NS_SUCCEEDED(asyncMultiplex->Read(extraRead, sizeof(extraRead), &read)));
+  EXPECT_EQ(read, sizeof(extraRead));
+  EXPECT_STREQ(extraRead, "xxxx");
+  ASSERT_TRUE(NS_SUCCEEDED(asyncMultiplex->Available(&available)));
+  EXPECT_EQ(available, 0u);
+}
+
+TEST(MultiplexInputStream, ReadWhileWaiting_nsPipe)
+{
+  nsCOMPtr<nsIAsyncInputStream> pipeIn;
+  nsCOMPtr<nsIAsyncOutputStream> pipeOut;
+  ASSERT_TRUE(NS_SUCCEEDED(NS_NewPipe2(getter_AddRefs(pipeIn),
+                                       getter_AddRefs(pipeOut), true, true)));
+  TestMultiplexStreamReadWhileWaiting(pipeIn, pipeOut);
+}
+
+TEST(MultiplexInputStream, ReadWhileWaiting_DataPipe)
+{
+  RefPtr<mozilla::ipc::DataPipeReceiver> pipeIn;
+  RefPtr<mozilla::ipc::DataPipeSender> pipeOut;
+  ASSERT_TRUE(NS_SUCCEEDED(mozilla::ipc::NewDataPipe(
+      mozilla::ipc::kDefaultDataPipeCapacity, getter_AddRefs(pipeOut),
+      getter_AddRefs(pipeIn))));
+  TestMultiplexStreamReadWhileWaiting(pipeIn, pipeOut);
 }

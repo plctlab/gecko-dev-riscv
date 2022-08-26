@@ -25,6 +25,10 @@
       "type": "boolean"
     },
 
+    "AppUpdatePin": {
+      "type": "string"
+    },
+
     "AppUpdateURL": {
       "type": "URL"
     },
@@ -84,7 +88,7 @@
     },
 
     "AutoLaunchProtocolsFromOrigins": {
-      "type": ["JSON", "array"],
+      "type": ["array", "JSON"],
       "items": {
         "type": "object",
         "properties": {
@@ -217,7 +221,18 @@
 
         "Locked": {
           "type": "boolean"
+        },
+
+        "Behavior": {
+          "type": "string",
+          "enum": ["accept", "reject-foreign", "reject", "limit-foreign", "reject-tracker", "reject-tracker-and-partition-foreign"]
+        },
+
+        "BehaviorPrivateBrowsing": {
+          "type": "string",
+          "enum": ["accept", "reject-foreign", "reject", "limit-foreign", "reject-tracker", "reject-tracker-and-partition-foreign"]
         }
+
       }
     },
 
@@ -236,22 +251,46 @@
     "DisabledCiphers": {
       "type": "object",
       "properties": {
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA": {
+          "type": "boolean"
+        },
+        "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA": {
+          "type": "boolean"
+        },
         "TLS_DHE_RSA_WITH_AES_128_CBC_SHA": {
           "type": "boolean"
         },
         "TLS_DHE_RSA_WITH_AES_256_CBC_SHA": {
           "type": "boolean"
         },
-        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA": {
+        "TLS_RSA_WITH_AES_128_GCM_SHA256": {
           "type": "boolean"
         },
-        "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA": {
-          "type": "boolean"
-        },
-        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256": {
-          "type": "boolean"
-        },
-        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256": {
+        "TLS_RSA_WITH_AES_256_GCM_SHA384": {
           "type": "boolean"
         },
         "TLS_RSA_WITH_AES_128_CBC_SHA": {
@@ -261,12 +300,6 @@
           "type": "boolean"
         },
         "TLS_RSA_WITH_3DES_EDE_CBC_SHA": {
-          "type": "boolean"
-        },
-        "TLS_RSA_WITH_AES_128_GCM_SHA256": {
-          "type": "boolean"
-        },
-        "TLS_RSA_WITH_AES_256_GCM_SHA384": {
           "type": "boolean"
         }
       }
@@ -432,6 +465,24 @@
       }
     },
 
+    "ExemptDomainFileTypePairsFromFileTypeDownloadWarnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file_extension": {
+            "type": "string"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+
     "Extensions": {
       "type": "object",
       "properties": {
@@ -457,7 +508,7 @@
     },
 
     "ExtensionSettings": {
-      "type": ["JSON", "object"],
+      "type": ["object", "JSON"],
       "properties": {
         "*": {
           "type": "object",
@@ -470,7 +521,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": ["extension", "dictionary", "locale", "theme"]
+                "enum": ["extension", "dictionary", "locale", "theme", "sitepermission"]
               }
             },
             "blocked_install_message": {
@@ -526,10 +577,16 @@
         "TopSites": {
           "type": "boolean"
         },
+        "SponsoredTopSites": {
+          "type": "boolean"
+        },
         "Highlights": {
           "type": "boolean"
         },
         "Pocket": {
+          "type": "boolean"
+        },
+        "SponsoredPocket": {
           "type": "boolean"
         },
         "Snippets": {
@@ -570,8 +627,12 @@
       }
     },
 
+    "GoToIntranetSiteForSingleWordEntryInAddressBar": {
+      "type": "boolean"
+    },
+
     "Handlers": {
-      "type": ["JSON", "object"],
+      "type": ["object", "JSON"],
       "patternProperties": {
         "^(mimeTypes|extensions|schemes)$": {
           "type": "object",
@@ -713,7 +774,7 @@
         },
         "type": "object"
       },
-      "type": ["JSON", "array"]
+      "type": ["array", "JSON"]
     },
 
     "ManualAppUpdateOnly": {
@@ -750,6 +811,14 @@
 
     "PasswordManagerEnabled": {
       "type": "boolean"
+    },
+
+    "PasswordManagerExceptions": {
+      "type": "array",
+      "strict": false,
+      "items": {
+        "type": "origin"
+      }
     },
 
     "PDFjs": {
@@ -978,7 +1047,7 @@
     },
 
     "Preferences": {
-      "type": ["JSON", "object"],
+      "type": ["object", "JSON"],
       "patternProperties": {
         "^.*$": {
           "type": ["number", "boolean", "string", "object"],
@@ -1189,6 +1258,10 @@
       "enum": ["tls1", "tls1.1", "tls1.2", "tls1.3"]
     },
 
+    "StartDownloadsInTempDirectory": {
+      "type": "boolean"
+    },
+
     "SupportMenu": {
       "type": "object",
       "properties": {
@@ -1223,10 +1296,17 @@
         "SkipOnboarding": {
           "type": "boolean"
         },
+        "MoreFromMozilla": {
+          "type": "boolean"
+        },
         "Locked": {
           "type": "boolean"
         }
       }
+    },
+
+    "UseSystemPrintDialog": {
+      "type": "boolean"
     },
 
     "WebsiteFilter": {

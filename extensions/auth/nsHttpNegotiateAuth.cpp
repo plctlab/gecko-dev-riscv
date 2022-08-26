@@ -13,7 +13,6 @@
 // http://msdn.microsoft.com/library/default.asp?url=/library/en-us/dnsecure/html/http-sso-1.asp
 //
 
-#include <string.h>
 #include <stdlib.h>
 
 #include "nsAuth.h"
@@ -30,23 +29,15 @@
 #include "nsNetCID.h"
 #include "nsProxyRelease.h"
 #include "plbase64.h"
-#include "plstr.h"
 #include "mozilla/Base64.h"
-#include "mozilla/Logging.h"
 #include "mozilla/Tokenizer.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
-#include "prmem.h"
-#include "prnetdb.h"
-#include "mozilla/Likely.h"
 #include "mozilla/Sprintf.h"
 #include "nsIChannel.h"
 #include "nsNetUtil.h"
 #include "nsThreadUtils.h"
 #include "nsIHttpAuthenticatorCallback.h"
-#include "mozilla/Mutex.h"
 #include "nsICancelable.h"
-#include "nsUnicharUtils.h"
 #include "mozilla/net/HttpAuthUtils.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/net/DNS.h"
@@ -319,6 +310,10 @@ class GetNextTokenCompleteEvent final : public nsIRunnable,
   nsCOMPtr<nsISupports> mContinuationState;
 };
 
+inline nsISupports* ToSupports(GetNextTokenCompleteEvent* aEvent) {
+  return static_cast<nsIRunnable*>(aEvent);
+}
+
 NS_IMPL_ISUPPORTS(GetNextTokenCompleteEvent, nsIRunnable, nsICancelable)
 
 //
@@ -336,7 +331,7 @@ class GetNextTokenRunnable final : public mozilla::Runnable {
       const nsACString& challenge, bool isProxyAuth, const nsAString& domain,
       const nsAString& username, const nsAString& password,
       nsISupports* sessionState, nsISupports* continuationState,
-      GetNextTokenCompleteEvent* aCompleteEvent)
+      nsMainThreadPtrHandle<GetNextTokenCompleteEvent>& aCompleteEvent)
       : mozilla::Runnable("GetNextTokenRunnable"),
         mAuthChannel(authChannel),
         mChallenge(challenge),
@@ -413,7 +408,7 @@ class GetNextTokenRunnable final : public mozilla::Runnable {
   nsString mPassword;
   nsCOMPtr<nsISupports> mSessionState;
   nsCOMPtr<nsISupports> mContinuationState;
-  RefPtr<GetNextTokenCompleteEvent> mCompleteEvent;
+  nsMainThreadPtrHandle<GetNextTokenCompleteEvent> mCompleteEvent;
 };
 
 }  // anonymous namespace
@@ -428,12 +423,13 @@ nsHttpNegotiateAuth::GenerateCredentialsAsync(
   NS_ENSURE_ARG(aCallback);
   NS_ENSURE_ARG_POINTER(aCancelable);
 
-  RefPtr<GetNextTokenCompleteEvent> cancelEvent =
-      new GetNextTokenCompleteEvent(aCallback);
-
   nsMainThreadPtrHandle<nsIHttpAuthenticableChannel> handle(
       new nsMainThreadPtrHolder<nsIHttpAuthenticableChannel>(
           "nsIHttpAuthenticableChannel", authChannel, false));
+  nsMainThreadPtrHandle<GetNextTokenCompleteEvent> cancelEvent(
+      new nsMainThreadPtrHolder<GetNextTokenCompleteEvent>(
+          "GetNextTokenCompleteEvent", new GetNextTokenCompleteEvent(aCallback),
+          false));
   nsCOMPtr<nsIRunnable> getNextTokenRunnable = new GetNextTokenRunnable(
       handle, challenge, isProxyAuth, domain, username, password, sessionState,
       continuationState, cancelEvent);
@@ -442,7 +438,8 @@ nsHttpNegotiateAuth::GenerateCredentialsAsync(
       getNextTokenRunnable, nsIEventTarget::DISPATCH_EVENT_MAY_BLOCK);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  cancelEvent.forget(aCancelable);
+  RefPtr<GetNextTokenCompleteEvent> cancelable(cancelEvent.get());
+  cancelable.forget(aCancelable);
   return NS_OK;
 }
 

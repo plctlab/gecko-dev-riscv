@@ -11,8 +11,9 @@
 #include "gfxTextRun.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/intl/String.h"
+#include "mozilla/intl/UnicodeProperties.h"
+#include "mozilla/intl/UnicodeScriptCodes.h"
 #include "nsUnicodeProperties.h"
-#include "nsUnicodeScriptCodes.h"
 
 #include "harfbuzz/hb.h"
 #include "harfbuzz/hb-ot.h"
@@ -53,6 +54,7 @@ gfxHarfBuzzShaper::gfxHarfBuzzShaper(gfxFont* aFont)
       mNumLongVMetrics(0),
       mDefaultVOrg(-1.0),
       mUseFontGetGlyph(aFont->ProvidesGetGlyph()),
+      mIsSymbolFont(false),
       mUseFontGlyphWidths(aFont->ProvidesGlyphWidths()),
       mInitialized(false),
       mVerticalInitialized(false),
@@ -113,6 +115,16 @@ hb_codepoint_t gfxHarfBuzzShaper::GetNominalGlyph(
   }
 
   if (!gid) {
+    if (mIsSymbolFont) {
+      // For legacy MS Symbol fonts, we try mapping the given character code
+      // to the PUA range used by these fonts' cmaps.
+      if (auto pua = gfxFontUtils::MapLegacySymbolFontCharToPUA(unicode)) {
+        gid = GetNominalGlyph(pua);
+      }
+      if (gid) {
+        return gid;
+      }
+    }
     switch (unicode) {
       case 0xA0:
         // if there's no glyph for &nbsp;, just use the space glyph instead.
@@ -304,12 +316,14 @@ hb_position_t gfxHarfBuzzShaper::GetGlyphHAdvance(hb_codepoint_t glyph) const {
                       uint16_t(metrics->metrics[glyph].advanceWidth));
 }
 
-hb_position_t gfxHarfBuzzShaper::GetGlyphVAdvance(hb_codepoint_t glyph) const {
+hb_position_t gfxHarfBuzzShaper::GetGlyphVAdvance(hb_codepoint_t glyph) {
+  InitializeVertical();
+
   if (!mVmtxTable) {
-    // Must be a "vertical" font that doesn't actually have vertical metrics;
-    // use a fixed advance.
-    return FloatToFixed(
-        mFont->GetMetrics(nsFontMetrics::eVertical).aveCharWidth);
+    // Must be a "vertical" font that doesn't actually have vertical metrics.
+    // Return an invalid (negative) value to tell the caller to fall back to
+    // something else.
+    return -1;
   }
 
   NS_ASSERTION(mNumLongVMetrics > 0,
@@ -353,11 +367,17 @@ hb_position_t gfxHarfBuzzShaper::HBGetGlyphVAdvance(hb_font_t* font,
   // and provide hinted platform-specific vertical advances (analogous to the
   // GetGlyphWidth method for horizontal advances). If that proves necessary,
   // we'll add a new gfxFont method and call it from here.
-  //
+  hb_position_t advance = fcd->mShaper->GetGlyphVAdvance(glyph);
+  if (advance < 0) {
+    // Not available (e.g. broken metrics in the font); use a fallback value.
+    advance = FloatToFixed(fcd->mShaper->GetFont()
+                               ->GetMetrics(nsFontMetrics::eVertical)
+                               .aveCharWidth);
+  }
   // We negate the value from GetGlyphVAdvance here because harfbuzz shapes
   // with a coordinate system where positive is upwards, whereas the inline
   // direction in which glyphs advance is downwards.
-  return -fcd->mShaper->GetGlyphVAdvance(glyph);
+  return -advance;
 }
 
 struct VORG {
@@ -981,7 +1001,7 @@ static hb_position_t HBGetHKerning(hb_font_t* font, void* font_data,
 
 static hb_codepoint_t HBGetMirroring(hb_unicode_funcs_t* ufuncs,
                                      hb_codepoint_t aCh, void* user_data) {
-  return GetMirroredChar(aCh);
+  return intl::UnicodeProperties::CharMirror(aCh);
 }
 
 static hb_unicode_general_category_t HBGetGeneralCategory(
@@ -991,18 +1011,20 @@ static hb_unicode_general_category_t HBGetGeneralCategory(
 
 static hb_script_t HBGetScript(hb_unicode_funcs_t* ufuncs, hb_codepoint_t aCh,
                                void* user_data) {
-  return hb_script_t(GetScriptTagForCode(GetScriptCode(aCh)));
+  return hb_script_t(
+      GetScriptTagForCode(intl::UnicodeProperties::GetScriptCode(aCh)));
 }
 
 static hb_unicode_combining_class_t HBGetCombiningClass(
     hb_unicode_funcs_t* ufuncs, hb_codepoint_t aCh, void* user_data) {
-  return hb_unicode_combining_class_t(GetCombiningClass(aCh));
+  return hb_unicode_combining_class_t(
+      intl::UnicodeProperties::GetCombiningClass(aCh));
 }
 
 static hb_bool_t HBUnicodeCompose(hb_unicode_funcs_t* ufuncs, hb_codepoint_t a,
                                   hb_codepoint_t b, hb_codepoint_t* ab,
                                   void* user_data) {
-  char32_t ch = mozilla::intl::String::ComposePairNFC(a, b);
+  char32_t ch = intl::String::ComposePairNFC(a, b);
   if (ch > 0) {
     *ab = ch;
     return true;
@@ -1025,7 +1047,7 @@ static hb_bool_t HBUnicodeDecompose(hb_unicode_funcs_t* ufuncs,
 #endif
 
   char32_t decomp[2] = {0};
-  if (mozilla::intl::String::DecomposeRawNFD(ab, decomp)) {
+  if (intl::String::DecomposeRawNFD(ab, decomp)) {
     if (decomp[1] || decomp[0] != ab) {
       *a = decomp[0];
       *b = decomp[1];
@@ -1118,7 +1140,7 @@ bool gfxHarfBuzzShaper::Initialize() {
     uint32_t len;
     const uint8_t* data = (const uint8_t*)hb_blob_get_data(mCmapTable, &len);
     mCmapFormat = gfxFontUtils::FindPreferredSubtable(
-        data, len, &mSubtableOffset, &mUVSTableOffset);
+        data, len, &mSubtableOffset, &mUVSTableOffset, &mIsSymbolFont);
     if (mCmapFormat <= 0) {
       return false;
     }
@@ -1149,9 +1171,8 @@ bool gfxHarfBuzzShaper::Initialize() {
 hb_font_t* gfxHarfBuzzShaper::CreateHBFont(gfxFont* aFont,
                                            hb_font_funcs_t* aFontFuncs,
                                            FontCallbackData* aCallbackData) {
-  hb_face_t* hbFace = aFont->GetFontEntry()->GetHBFace();
-  hb_font_t* result = hb_font_create(hbFace);
-  hb_face_destroy(hbFace);
+  auto face(aFont->GetFontEntry()->GetHBFace());
+  hb_font_t* result = hb_font_create(face);
 
   if (aFontFuncs && aCallbackData) {
     if (aFontFuncs == sNominalGlyphFunc) {

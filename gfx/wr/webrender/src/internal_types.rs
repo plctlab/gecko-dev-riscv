@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{ColorF, DocumentId, ExternalImageId, PrimitiveFlags, Parameter};
+use api::{ColorF, DocumentId, ExternalImageId, PrimitiveFlags, Parameter, RenderReasons};
 use api::{ImageFormat, NotificationRequest, Shadow, FilterOp, ImageBufferKind};
 use api::units::*;
 use api;
@@ -13,6 +13,8 @@ use crate::renderer::{FullFrameStats, PipelineInfo};
 use crate::gpu_cache::GpuCacheUpdateList;
 use crate::frame_builder::Frame;
 use crate::profiler::TransactionProfile;
+use crate::spatial_tree::SpatialNodeIndex;
+use crate::prim_store::PrimitiveInstanceIndex;
 use fxhash::FxHasher;
 use plane_split::BspSplitter;
 use smallvec::SmallVec;
@@ -169,14 +171,17 @@ impl FrameStamp {
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 pub struct PlaneSplitAnchor {
-    pub cluster_index: usize,
-    pub instance_index: usize,
+    pub spatial_node_index: SpatialNodeIndex,
+    pub instance_index: PrimitiveInstanceIndex,
 }
 
 impl PlaneSplitAnchor {
-    pub fn new(cluster_index: usize, instance_index: usize) -> Self {
+    pub fn new(
+        spatial_node_index: SpatialNodeIndex,
+        instance_index: PrimitiveInstanceIndex,
+    ) -> Self {
         PlaneSplitAnchor {
-            cluster_index,
+            spatial_node_index,
             instance_index,
         }
     }
@@ -185,8 +190,8 @@ impl PlaneSplitAnchor {
 impl Default for PlaneSplitAnchor {
     fn default() -> Self {
         PlaneSplitAnchor {
-            cluster_index: 0,
-            instance_index: 0,
+            spatial_node_index: SpatialNodeIndex::INVALID,
+            instance_index: PrimitiveInstanceIndex(!0),
         }
     }
 }
@@ -208,7 +213,11 @@ const OPACITY_EPSILON: f32 = 0.001;
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub enum Filter {
     Identity,
-    Blur(f32, f32),
+    Blur {
+        width: f32,
+        height: f32,
+        should_inflate: bool,
+    },
     Brightness(f32),
     Contrast(f32),
     Grayscale(f32),
@@ -229,7 +238,7 @@ impl Filter {
     pub fn is_visible(&self) -> bool {
         match *self {
             Filter::Identity |
-            Filter::Blur(..) |
+            Filter::Blur { .. } |
             Filter::Brightness(..) |
             Filter::Contrast(..) |
             Filter::Grayscale(..) |
@@ -254,7 +263,7 @@ impl Filter {
     pub fn is_noop(&self) -> bool {
         match *self {
             Filter::Identity => false, // this is intentional
-            Filter::Blur(width, height) => width == 0.0 && height == 0.0,
+            Filter::Blur { width, height, .. } => width == 0.0 && height == 0.0,
             Filter::Brightness(amount) => amount == 1.0,
             Filter::Contrast(amount) => amount == 1.0,
             Filter::Grayscale(amount) => amount == 0.0,
@@ -306,7 +315,7 @@ impl Filter {
             Filter::LinearToSrgb => 9,
             Filter::Flood(..) => 10,
             Filter::ComponentTransfer => 11,
-            Filter::Blur(..) => 12,
+            Filter::Blur { .. } => 12,
             Filter::DropShadows(..) => 13,
             Filter::Opacity(..) => 14,
         }
@@ -317,7 +326,7 @@ impl From<FilterOp> for Filter {
     fn from(op: FilterOp) -> Self {
         match op {
             FilterOp::Identity => Filter::Identity,
-            FilterOp::Blur(w, h) => Filter::Blur(w, h),
+            FilterOp::Blur(width, height) => Filter::Blur { width, height, should_inflate: true },
             FilterOp::Brightness(b) => Filter::Brightness(b),
             FilterOp::Contrast(c) => Filter::Contrast(c),
             FilterOp::Grayscale(g) => Filter::Grayscale(g),
@@ -497,6 +506,13 @@ pub struct TextureCacheUpdate {
     pub source: TextureUpdateSource,
 }
 
+/// Command to update the contents of the texture cache.
+#[derive(Debug)]
+pub struct TextureCacheCopy {
+    pub src_rect: DeviceIntRect,
+    pub dst_rect: DeviceIntRect,
+}
+
 /// Atomic set of commands to manipulate the texture cache, generated on the
 /// RenderBackend thread and executed on the Renderer thread.
 ///
@@ -511,6 +527,9 @@ pub struct TextureUpdateList {
     pub allocations: Vec<TextureCacheAllocation>,
     /// Commands to update the contents of the textures. Processed second.
     pub updates: FastHashMap<CacheTextureId, Vec<TextureCacheUpdate>>,
+    /// Commands to move items within the cache, these are applied before everything
+    /// else in the update list.
+    pub copies: FastHashMap<(CacheTextureId, CacheTextureId), Vec<TextureCacheCopy>>,
 }
 
 impl TextureUpdateList {
@@ -520,6 +539,7 @@ impl TextureUpdateList {
             clears_shared_cache: false,
             allocations: Vec::new(),
             updates: FastHashMap::default(),
+            copies: FastHashMap::default(),
         }
     }
 
@@ -623,6 +643,25 @@ impl TextureUpdateList {
         };
     }
 
+    /// Push a copy operation from a texture to another.
+    ///
+    /// The source and destination rectangles must have the same size.
+    /// The copies are applied before every other operations in the
+    /// texture update list.
+    pub fn push_copy(
+        &mut self,
+        src_id: CacheTextureId, src_rect: &DeviceIntRect,
+        dst_id: CacheTextureId, dst_rect: &DeviceIntRect,
+    ) {
+        debug_assert_eq!(src_rect.size(), dst_rect.size());
+        self.copies.entry((src_id, dst_id))
+            .or_insert_with(Vec::new)
+            .push(TextureCacheCopy {
+                src_rect: *src_rect,
+                dst_rect: *dst_rect,
+            });
+    }
+
     fn debug_assert_coalesced(&self, id: CacheTextureId) {
         debug_assert!(
             self.allocations.iter().filter(|x| x.id == id).count() <= 1,
@@ -653,6 +692,7 @@ pub struct RenderedDocument {
     pub frame: Frame,
     pub is_new_scene: bool,
     pub profile: TransactionProfile,
+    pub render_reasons: RenderReasons,
     pub frame_stats: Option<FullFrameStats>
 }
 
@@ -685,17 +725,7 @@ pub enum ResultMsg {
 }
 
 #[derive(Clone, Debug)]
-pub struct ResourceCacheError {
-    description: String,
-}
-
-impl ResourceCacheError {
-    pub fn new(description: String) -> ResourceCacheError {
-        ResourceCacheError {
-            description,
-        }
-    }
-}
+pub struct ResourceCacheError;
 
 /// Primitive metadata we pass around in a bunch of places
 #[derive(Copy, Clone, Debug)]
@@ -714,5 +744,18 @@ impl LayoutPrimitiveInfo {
             clip_rect,
             flags: PrimitiveFlags::default(),
         }
+    }
+}
+
+// In some cases (e.g. printing) a pipeline is referenced multiple times by
+// a parent display list. This allows us to distinguish between them.
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+#[derive(Copy, Clone, PartialEq, Debug, Eq, Hash)]
+pub struct PipelineInstanceId(u32);
+
+impl PipelineInstanceId {
+    pub fn new(id: u32) -> Self {
+        PipelineInstanceId(id)
     }
 }

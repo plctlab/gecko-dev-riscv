@@ -11,14 +11,14 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/StreamBufferSource.h"
 #include "nsCOMPtr.h"
 #include "nsICloneableInputStream.h"
 #include "nsIInputStream.h"
 #include "nsIIPCSerializableInputStream.h"
 #include "nsISeekableStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class MemoryBlobImpl final : public BaseBlobImpl {
  public:
@@ -43,11 +43,12 @@ class MemoryBlobImpl final : public BaseBlobImpl {
     MOZ_ASSERT(mDataOwner && mDataOwner->mData, "must have data");
   }
 
-  void CreateInputStream(nsIInputStream** aStream, ErrorResult& aRv) override;
+  void CreateInputStream(nsIInputStream** aStream,
+                         ErrorResult& aRv) const override;
 
   already_AddRefed<BlobImpl> CreateSlice(uint64_t aStart, uint64_t aLength,
                                          const nsAString& aContentType,
-                                         ErrorResult& aRv) override;
+                                         ErrorResult& aRv) const override;
 
   bool IsMemoryFile() const override { return true; }
 
@@ -96,7 +97,7 @@ class MemoryBlobImpl final : public BaseBlobImpl {
     // sDataOwners and sMemoryReporterRegistered may only be accessed while
     // holding sDataOwnerMutex!  You also must hold the mutex while touching
     // elements of the linked list that DataOwner inherits from.
-    static mozilla::StaticMutex sDataOwnerMutex;
+    static mozilla::StaticMutex sDataOwnerMutex MOZ_UNANNOTATED;
     static mozilla::StaticAutoPtr<mozilla::LinkedList<DataOwner> > sDataOwners;
     static bool sMemoryReporterRegistered;
 
@@ -104,45 +105,31 @@ class MemoryBlobImpl final : public BaseBlobImpl {
     uint64_t mLength;
   };
 
-  class DataOwnerAdapter final : public nsIInputStream,
-                                 public nsISeekableStream,
-                                 public nsIIPCSerializableInputStream,
-                                 public nsICloneableInputStream {
+  class DataOwnerAdapter final : public StreamBufferSource {
     using DataOwner = MemoryBlobImpl::DataOwner;
 
    public:
-    static nsresult Create(DataOwner* aDataOwner, uint32_t aStart,
-                           uint32_t aLength, nsIInputStream** _retval);
+    static nsresult Create(DataOwner* aDataOwner, size_t aStart, size_t aLength,
+                           nsIInputStream** _retval);
 
-    NS_DECL_THREADSAFE_ISUPPORTS
+    Span<const char> Data() override { return mData; }
 
-    // These are mandatory.
-    NS_FORWARD_NSIINPUTSTREAM(mStream->)
-    NS_FORWARD_NSISEEKABLESTREAM(mSeekableStream->)
-    NS_FORWARD_NSITELLABLESTREAM(mSeekableStream->)
-    NS_FORWARD_NSICLONEABLEINPUTSTREAM(mCloneableInputStream->)
+    // This StreamBufferSource is owning, as the `mData` span references the
+    // immutable data buffer owned by `mDataOwner` which is being kept alive.
+    bool Owning() override { return true; }
 
-    // This is optional. We use a conditional QI to keep it from being called
-    // if the underlying stream doesn't support it.
-    NS_FORWARD_NSIIPCSERIALIZABLEINPUTSTREAM(mSerializableInputStream->)
+    // The memory usage from `DataOwner` is reported elsewhere, so we don't need
+    // to record it here.
+    size_t SizeOfExcludingThisEvenIfShared(MallocSizeOf) override { return 0; }
 
    private:
-    ~DataOwnerAdapter() = default;
+    ~DataOwnerAdapter() override = default;
 
-    DataOwnerAdapter(DataOwner* aDataOwner, nsIInputStream* aStream)
-        : mDataOwner(aDataOwner),
-          mStream(aStream),
-          mSeekableStream(do_QueryInterface(aStream)),
-          mSerializableInputStream(do_QueryInterface(aStream)),
-          mCloneableInputStream(do_QueryInterface(aStream)) {
-      MOZ_ASSERT(mSeekableStream, "Somebody gave us the wrong stream!");
-    }
+    DataOwnerAdapter(DataOwner* aDataOwner, Span<const char> aData)
+        : mDataOwner(aDataOwner), mData(aData) {}
 
     RefPtr<DataOwner> mDataOwner;
-    nsCOMPtr<nsIInputStream> mStream;
-    nsCOMPtr<nsISeekableStream> mSeekableStream;
-    nsCOMPtr<nsIIPCSerializableInputStream> mSerializableInputStream;
-    nsCOMPtr<nsICloneableInputStream> mCloneableInputStream;
+    Span<const char> mData;
   };
 
  private:
@@ -162,13 +149,12 @@ class MemoryBlobImpl final : public BaseBlobImpl {
     MOZ_ASSERT(mDataOwner && mDataOwner->mData, "must have data");
   }
 
-  ~MemoryBlobImpl() = default;
+  ~MemoryBlobImpl() override = default;
 
   // Used when backed by a memory store
   RefPtr<DataOwner> mDataOwner;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_MemoryBlobImpl_h

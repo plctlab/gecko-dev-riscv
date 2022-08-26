@@ -70,10 +70,13 @@ def run_test(context, is_junit, **kwargs):
         "mochitest-webgl2-deqp": "webgl2-deqp",
         "mochitest-webgpu": "webgpu",
         "mochitest-devtools-chrome": "devtools",
+        "mochitest-browser-a11y": "a11y",
         "mochitest-remote": "remote",
     }
     args.subsuite = subsuites.get(suite)
     if args.subsuite == "devtools":
+        args.flavor = "browser"
+    if args.subsuite == "a11y":
         args.flavor = "browser"
 
     if not args.test_paths:
@@ -121,7 +124,7 @@ def run_mochitest_desktop(context, args):
 
 
 def set_android_args(context, args):
-    args.app = args.app or "org.mozilla.geckoview.test"
+    args.app = args.app or "org.mozilla.geckoview.test_runner"
     args.utilityPath = context.hostutils
     args.xrePath = context.hostutils
     config = context.mozharness_config
@@ -153,6 +156,9 @@ def run_geckoview_junit(context, args):
     args = set_android_args(context, args)
 
     from runjunit import run_test_harness
+
+    # Force fission disabled by default for android
+    args["disable_fission"] = True
 
     logger.info("mach calling runjunit with args: " + str(args))
     return run_test_harness(parser, args)

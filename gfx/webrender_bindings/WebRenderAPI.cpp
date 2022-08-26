@@ -33,30 +33,6 @@ namespace wr {
 MOZ_DEFINE_MALLOC_SIZE_OF(WebRenderMallocSizeOf)
 MOZ_DEFINE_MALLOC_ENCLOSING_SIZE_OF(WebRenderMallocEnclosingSizeOf)
 
-enum SideBitsPacked {
-  eSideBitsPackedTop = 0x1000,
-  eSideBitsPackedRight = 0x2000,
-  eSideBitsPackedBottom = 0x4000,
-  eSideBitsPackedLeft = 0x8000
-};
-
-static uint16_t SideBitsToHitInfoBits(SideBits aSideBits) {
-  uint16_t ret = 0;
-  if (aSideBits & SideBits::eTop) {
-    ret |= eSideBitsPackedTop;
-  }
-  if (aSideBits & SideBits::eRight) {
-    ret |= eSideBitsPackedRight;
-  }
-  if (aSideBits & SideBits::eBottom) {
-    ret |= eSideBitsPackedBottom;
-  }
-  if (aSideBits & SideBits::eLeft) {
-    ret |= eSideBitsPackedLeft;
-  }
-  return ret;
-}
-
 class NewRenderer : public RendererEvent {
  public:
   NewRenderer(wr::DocumentHandle** aDocHandle,
@@ -276,12 +252,13 @@ void TransactionBuilder::ClearDisplayList(Epoch aEpoch,
   wr_transaction_clear_display_list(mTxn, aEpoch, aPipelineId);
 }
 
-void TransactionBuilder::GenerateFrame(const VsyncId& aVsyncId) {
-  wr_transaction_generate_frame(mTxn, aVsyncId.mId);
+void TransactionBuilder::GenerateFrame(const VsyncId& aVsyncId,
+                                       wr::RenderReasons aReasons) {
+  wr_transaction_generate_frame(mTxn, aVsyncId.mId, aReasons);
 }
 
-void TransactionBuilder::InvalidateRenderedFrame() {
-  wr_transaction_invalidate_rendered_frame(mTxn);
+void TransactionBuilder::InvalidateRenderedFrame(wr::RenderReasons aReasons) {
+  wr_transaction_invalidate_rendered_frame(mTxn, aReasons);
 }
 
 bool TransactionBuilder::IsEmpty() const {
@@ -304,13 +281,6 @@ void TransactionBuilder::SetDocumentView(
   wrDocRect.max.x = aDocumentRect.x + aDocumentRect.width;
   wrDocRect.max.y = aDocumentRect.y + aDocumentRect.height;
   wr_transaction_set_document_view(mTxn, &wrDocRect);
-}
-
-void TransactionBuilder::UpdateScrollPosition(
-    const wr::WrPipelineId& aPipelineId,
-    const layers::ScrollableLayerGuid::ViewID& aScrollId,
-    const wr::LayoutPoint& aScrollPosition) {
-  wr_transaction_scroll_layer(mTxn, aPipelineId, aScrollId, aScrollPosition);
 }
 
 TransactionWrapper::TransactionWrapper(Transaction* aTxn) : mTxn(aTxn) {}
@@ -338,8 +308,8 @@ void TransactionWrapper::AppendTransformProperties(
 void TransactionWrapper::UpdateScrollPosition(
     const wr::WrPipelineId& aPipelineId,
     const layers::ScrollableLayerGuid::ViewID& aScrollId,
-    const wr::LayoutPoint& aScrollPosition) {
-  wr_transaction_scroll_layer(mTxn, aPipelineId, aScrollId, aScrollPosition);
+    const nsTArray<wr::SampledScrollOffset>& aSampledOffsets) {
+  wr_transaction_scroll_layer(mTxn, aPipelineId, aScrollId, &aSampledOffsets);
 }
 
 void TransactionWrapper::UpdateIsTransformAsyncZooming(uint64_t aAnimationId,
@@ -464,26 +434,10 @@ void WebRenderAPI::UpdateDebugFlags(uint32_t aFlags) {
 }
 
 void WebRenderAPI::SendTransaction(TransactionBuilder& aTxn) {
+  if (mRootApi && mRootApi->mRendererDestroyed) {
+    return;
+  }
   wr_api_send_transaction(mDocHandle, aTxn.Raw(), aTxn.UseSceneBuilderThread());
-}
-
-SideBits ExtractSideBitsFromHitInfoBits(uint16_t& aHitInfoBits) {
-  SideBits sideBits = SideBits::eNone;
-  if (aHitInfoBits & eSideBitsPackedTop) {
-    sideBits |= SideBits::eTop;
-  }
-  if (aHitInfoBits & eSideBitsPackedRight) {
-    sideBits |= SideBits::eRight;
-  }
-  if (aHitInfoBits & eSideBitsPackedBottom) {
-    sideBits |= SideBits::eBottom;
-  }
-  if (aHitInfoBits & eSideBitsPackedLeft) {
-    sideBits |= SideBits::eLeft;
-  }
-
-  aHitInfoBits &= 0x0fff;
-  return sideBits;
 }
 
 std::vector<WrHitResult> WebRenderAPI::HitTest(const wr::WorldPoint& aPoint) {
@@ -500,8 +454,14 @@ std::vector<WrHitResult> WebRenderAPI::HitTest(const wr::WorldPoint& aPoint) {
     geckoResult.mLayersId = wr::AsLayersId(wrResult.pipeline_id);
     geckoResult.mScrollId =
         static_cast<layers::ScrollableLayerGuid::ViewID>(wrResult.scroll_id);
-    geckoResult.mSideBits = ExtractSideBitsFromHitInfoBits(wrResult.hit_info);
-    geckoResult.mHitInfo.deserialize(wrResult.hit_info);
+    geckoResult.mHitInfo.deserialize(wrResult.hit_info & 0x0fff);
+    geckoResult.mSideBits = static_cast<SideBits>(wrResult.hit_info >> 12);
+
+    if (wrResult.animation_id != 0) {
+      geckoResult.mAnimationId = Some(wrResult.animation_id);
+    } else {
+      geckoResult.mAnimationId = Nothing();
+    }
     geckoResults.push_back(geckoResult);
   }
   return geckoResults;
@@ -573,11 +533,15 @@ void WebRenderAPI::SetBool(wr::BoolParameter aKey, bool aValue) {
   wr_api_set_bool(mDocHandle, aKey, aValue);
 }
 
+void WebRenderAPI::SetInt(wr::IntParameter aKey, int32_t aValue) {
+  wr_api_set_int(mDocHandle, aKey, aValue);
+}
+
 void WebRenderAPI::SetClearColor(const gfx::DeviceColor& aColor) {
   RenderThread::Get()->SetClearColor(mId, ToColorF(aColor));
 }
 
-void WebRenderAPI::SetProfilerUI(const nsCString& aUIString) {
+void WebRenderAPI::SetProfilerUI(const nsACString& aUIString) {
   RenderThread::Get()->SetProfilerUI(mId, aUIString);
 }
 
@@ -688,7 +652,7 @@ void WebRenderAPI::Capture() {
   wr_api_capture(mDocHandle, path, bits);
 }
 
-void WebRenderAPI::StartCaptureSequence(const nsCString& aPath,
+void WebRenderAPI::StartCaptureSequence(const nsACString& aPath,
                                         uint32_t aFlags) {
   if (mCaptureSequence) {
     wr_api_stop_capture_sequence(mDocHandle);
@@ -1037,9 +1001,11 @@ Maybe<wr::WrSpatialId> DisplayListBuilder::PushStackingContext(
   MOZ_ASSERT(mClipChainLeaf.isNothing(),
              "Non-empty leaf from clip chain given, but not used with SC!");
 
-  WRDL_LOG("PushStackingContext b=%s t=%s\n", mWrState,
-           ToString(aBounds).c_str(),
-           transform ? ToString(*transform).c_str() : "none");
+  WRDL_LOG(
+      "PushStackingContext b=%s t=%s id=0x%" PRIx64 "\n", mWrState,
+      ToString(aBounds).c_str(),
+      aParams.mTransformPtr ? ToString(*aParams.mTransformPtr).c_str() : "none",
+      aParams.animation ? aParams.animation->id : 0);
 
   auto spatialId = wr_dp_push_stacking_context(
       mWrState, aBounds, mCurrentSpaceAndClipChain.space, &aParams,
@@ -1077,7 +1043,7 @@ wr::WrClipId DisplayListBuilder::DefineImageMaskClip(
   CancelGroup();
 
   WrClipId clipId = wr_dp_define_image_mask_clip_with_parent_clip_chain(
-      mWrState, &mCurrentSpaceAndClipChain, aMask, aPoints.Elements(),
+      mWrState, mCurrentSpaceAndClipChain.space, aMask, aPoints.Elements(),
       aPoints.Length(), aFillRule);
 
   return clipId;
@@ -1091,8 +1057,8 @@ wr::WrClipId DisplayListBuilder::DefineRoundedRectClip(
   if (aSpace) {
     clipId = wr_dp_define_rounded_rect_clip(mWrState, *aSpace, aComplex);
   } else {
-    clipId = wr_dp_define_rounded_rect_clip_with_parent_clip_chain(
-        mWrState, &mCurrentSpaceAndClipChain, aComplex);
+    clipId = wr_dp_define_rounded_rect_clip(
+        mWrState, mCurrentSpaceAndClipChain.space, aComplex);
   }
 
   return clipId;
@@ -1106,8 +1072,8 @@ wr::WrClipId DisplayListBuilder::DefineRectClip(Maybe<wr::WrSpatialId> aSpace,
   if (aSpace) {
     clipId = wr_dp_define_rect_clip(mWrState, *aSpace, aClipRect);
   } else {
-    clipId = wr_dp_define_rect_clip_with_parent_clip_chain(
-        mWrState, &mCurrentSpaceAndClipChain, aClipRect);
+    clipId = wr_dp_define_rect_clip(mWrState, mCurrentSpaceAndClipChain.space,
+                                    aClipRect);
   }
 
   return clipId;
@@ -1154,7 +1120,9 @@ Maybe<wr::WrSpatialId> DisplayListBuilder::GetScrollIdForDefinedScrollLayer(
 wr::WrSpatialId DisplayListBuilder::DefineScrollLayer(
     const layers::ScrollableLayerGuid::ViewID& aViewId,
     const Maybe<wr::WrSpatialId>& aParent, const wr::LayoutRect& aContentRect,
-    const wr::LayoutRect& aClipRect, const wr::LayoutPoint& aScrollOffset,
+    const wr::LayoutRect& aClipRect, const wr::LayoutVector2D& aScrollOffset,
+    wr::APZScrollGeneration aScrollOffsetGeneration,
+    wr::HasScrollLinkedEffect aHasScrollLinkedEffect,
     wr::SpatialTreeItemKey aKey) {
   auto it = mScrollIds.find(aViewId);
   if (it != mScrollIds.end()) {
@@ -1166,12 +1134,16 @@ wr::WrSpatialId DisplayListBuilder::DefineScrollLayer(
 
   auto space = wr_dp_define_scroll_layer(
       mWrState, aViewId, aParent ? aParent.ptr() : &defaultParent, aContentRect,
-      aClipRect, aScrollOffset, aKey);
+      aClipRect, aScrollOffset, aScrollOffsetGeneration, aHasScrollLinkedEffect,
+      aKey);
 
-  WRDL_LOG("DefineScrollLayer id=%" PRIu64 "/%zu p=%s co=%s cl=%s\n", mWrState,
-           aViewId, space->id,
-           aParent ? ToString(aParent->space.id).c_str() : "(nil)",
-           ToString(aContentRect).c_str(), ToString(aClipRect).c_str());
+  WRDL_LOG("DefineScrollLayer id=%" PRIu64
+           "/%zu p=%s co=%s cl=%s generation=%s hasScrollLinkedEffect=%s\n",
+           mWrState, aViewId, space.id,
+           aParent ? ToString(aParent->id).c_str() : "(nil)",
+           ToString(aContentRect).c_str(), ToString(aClipRect).c_str(),
+           ToString(aScrollOffsetGeneration).c_str(),
+           ToString(aHasScrollLinkedEffect).c_str());
 
   mScrollIds[aViewId] = space;
   return space;
@@ -1180,11 +1152,13 @@ wr::WrSpatialId DisplayListBuilder::DefineScrollLayer(
 void DisplayListBuilder::PushRect(const wr::LayoutRect& aBounds,
                                   const wr::LayoutRect& aClip,
                                   bool aIsBackfaceVisible,
+                                  bool aForceAntiAliasing, bool aIsCheckerboard,
                                   const wr::ColorF& aColor) {
   wr::LayoutRect clip = MergeClipLeaf(aClip);
   WRDL_LOG("PushRect b=%s cl=%s c=%s\n", mWrState, ToString(aBounds).c_str(),
            ToString(clip).c_str(), ToString(aColor).c_str());
   wr_dp_push_rect(mWrState, aBounds, clip, aIsBackfaceVisible,
+                  aForceAntiAliasing, aIsCheckerboard,
                   &mCurrentSpaceAndClipChain, aColor);
 }
 
@@ -1221,7 +1195,7 @@ void DisplayListBuilder::PushHitTest(
     const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
     bool aIsBackfaceVisible,
     const layers::ScrollableLayerGuid::ViewID& aScrollId,
-    gfx::CompositorHitTestInfo aHitInfo, SideBits aSideBits) {
+    const gfx::CompositorHitTestInfo& aHitInfo, SideBits aSideBits) {
   wr::LayoutRect clip = MergeClipLeaf(aClip);
   WRDL_LOG("PushHitTest b=%s cl=%s\n", mWrState, ToString(aBounds).c_str(),
            ToString(clip).c_str());
@@ -1231,7 +1205,7 @@ void DisplayListBuilder::PushHitTest(
                 "of bits in uint16_t minus 4 for SideBitsPacked");
 
   uint16_t hitInfoBits = static_cast<uint16_t>(aHitInfo.serialize()) |
-                         SideBitsToHitInfoBits(aSideBits);
+                         (static_cast<uint16_t>(aSideBits) << 12);
 
   wr_dp_push_hit_test(mWrState, aBounds, clip, aIsBackfaceVisible,
                       &mCurrentSpaceAndClipChain, aScrollId, hitInfoBits);
@@ -1314,16 +1288,17 @@ void DisplayListBuilder::PushConicGradient(
 
 void DisplayListBuilder::PushImage(
     const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
-    bool aIsBackfaceVisible, wr::ImageRendering aFilter, wr::ImageKey aImage,
-    bool aPremultipliedAlpha, const wr::ColorF& aColor,
-    bool aPreferCompositorSurface, bool aSupportsExternalCompositing) {
+    bool aIsBackfaceVisible, bool aForceAntiAliasing,
+    wr::ImageRendering aFilter, wr::ImageKey aImage, bool aPremultipliedAlpha,
+    const wr::ColorF& aColor, bool aPreferCompositorSurface,
+    bool aSupportsExternalCompositing) {
   wr::LayoutRect clip = MergeClipLeaf(aClip);
   WRDL_LOG("PushImage b=%s cl=%s\n", mWrState, ToString(aBounds).c_str(),
            ToString(clip).c_str());
   wr_dp_push_image(mWrState, aBounds, clip, aIsBackfaceVisible,
-                   &mCurrentSpaceAndClipChain, aFilter, aImage,
-                   aPremultipliedAlpha, aColor, aPreferCompositorSurface,
-                   aSupportsExternalCompositing);
+                   aForceAntiAliasing, &mCurrentSpaceAndClipChain, aFilter,
+                   aImage, aPremultipliedAlpha, aColor,
+                   aPreferCompositorSurface, aSupportsExternalCompositing);
 }
 
 void DisplayListBuilder::PushRepeatingImage(
@@ -1362,6 +1337,20 @@ void DisplayListBuilder::PushNV12Image(
     wr::ImageRendering aRendering, bool aPreferCompositorSurface,
     bool aSupportsExternalCompositing) {
   wr_dp_push_yuv_NV12_image(
+      mWrState, aBounds, MergeClipLeaf(aClip), aIsBackfaceVisible,
+      &mCurrentSpaceAndClipChain, aImageChannel0, aImageChannel1, aColorDepth,
+      aColorSpace, aColorRange, aRendering, aPreferCompositorSurface,
+      aSupportsExternalCompositing);
+}
+
+void DisplayListBuilder::PushP010Image(
+    const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+    bool aIsBackfaceVisible, wr::ImageKey aImageChannel0,
+    wr::ImageKey aImageChannel1, wr::WrColorDepth aColorDepth,
+    wr::WrYuvColorSpace aColorSpace, wr::WrColorRange aColorRange,
+    wr::ImageRendering aRendering, bool aPreferCompositorSurface,
+    bool aSupportsExternalCompositing) {
+  wr_dp_push_yuv_P010_image(
       mWrState, aBounds, MergeClipLeaf(aClip), aIsBackfaceVisible,
       &mCurrentSpaceAndClipChain, aImageChannel0, aImageChannel1, aColorDepth,
       aColorSpace, aColorRange, aRendering, aPreferCompositorSurface,
@@ -1657,6 +1646,20 @@ already_AddRefed<gfxContext> DisplayListBuilder::GetTextContext(
 
   RefPtr<gfxContext> tmp = mCachedContext;
   return tmp.forget();
+}
+
+void DisplayListBuilder::PushInheritedClipChain(
+    nsDisplayListBuilder* aBuilder, const DisplayItemClipChain* aClipChain) {
+  if (!aClipChain || mInheritedClipChain == aClipChain) {
+    return;
+  }
+  if (!mInheritedClipChain) {
+    mInheritedClipChain = aClipChain;
+    return;
+  }
+
+  mInheritedClipChain =
+      aBuilder->CreateClipChainIntersection(mInheritedClipChain, aClipChain);
 }
 
 }  // namespace wr

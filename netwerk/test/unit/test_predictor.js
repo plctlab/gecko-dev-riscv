@@ -1,7 +1,6 @@
 "use strict";
 
 const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const ReferrerInfo = Components.Constructor(
   "@mozilla.org/referrer-info;1",
   "nsIReferrerInfo",
@@ -13,10 +12,7 @@ var running_single_process = false;
 var predictor = null;
 
 function is_child_process() {
-  return (
-    Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime)
-      .processType == Ci.nsIXULRuntime.PROCESS_TYPE_CONTENT
-  );
+  return Services.appinfo.processType == Ci.nsIXULRuntime.PROCESS_TYPE_CONTENT;
 }
 
 function extract_origin(uri) {
@@ -692,6 +688,7 @@ function test_visitor_doom() {
         aURI,
         aIdEnhance,
         aDataSize,
+        aAltDataSize,
         aFetchCount,
         aLastModifiedTime,
         aExpirationTime,
@@ -737,6 +734,7 @@ function test_visitor_doom() {
           aURI,
           aIdEnhance,
           aDataSize,
+          aAltDataSize,
           aFetchCount,
           aLastModifiedTime,
           aExpirationTime,

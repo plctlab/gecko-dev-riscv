@@ -15,7 +15,7 @@
 #include "APZTestAccess.h"
 #include "APZTestCommon.h"
 #include "gfxPlatform.h"
-#include "InternalHitTester.h"
+#include "MockHitTester.h"
 #include "apz/src/WRHitTester.h"
 
 #include "mozilla/layers/APZSampler.h"
@@ -85,11 +85,24 @@ class APZCTreeManagerTester : public APZCTesterBase {
   }
 
   void CreateScrollData(const char* aTreeShape,
-                        const nsIntRegion* aVisibleRegions = nullptr,
+                        const LayerIntRegion* aVisibleRegions = nullptr,
                         const gfx::Matrix4x4* aTransforms = nullptr) {
     layers = TestWRScrollData::Create(aTreeShape, *updater, aVisibleRegions,
                                       aTransforms);
     root = layers[0];
+  }
+
+  void CreateMockHitTester() {
+    mHitTester = MakeUnique<MockHitTester>();
+    // Save a pointer in a separate variable, because SetUp() will
+    // move the value out of mHitTester.
+    mMockHitTester = static_cast<MockHitTester*>(mHitTester.get());
+  }
+  void QueueMockHitResult(ScrollableLayerGuid::ViewID aScrollId,
+                          gfx::CompositorHitTestInfo aHitInfo =
+                              gfx::CompositorHitTestFlags::eVisibleToHitTest) {
+    MOZ_ASSERT(mMockHitTester);
+    mMockHitTester->QueueHitResult(aScrollId, aHitInfo);
   }
 
   RefPtr<TestAPZCTreeManager> manager;
@@ -99,6 +112,7 @@ class APZCTreeManagerTester : public APZCTesterBase {
   WebRenderLayerScrollData* root = nullptr;
 
   UniquePtr<IAPZHitTester> mHitTester;
+  MockHitTester* mMockHitTester = nullptr;
 
  protected:
   static ScrollMetadata BuildScrollMetadata(
@@ -118,27 +132,6 @@ class APZCTreeManagerTester : public APZCTesterBase {
     metadata.SetPageScrollAmount(LayoutDeviceIntSize(50, 100));
     metadata.SetLineScrollAmount(LayoutDeviceIntSize(5, 10));
     return metadata;
-  }
-
-  void SetEventRegionsBasedOnBottommostMetrics(
-      WebRenderLayerScrollData* aLayer) {
-    const FrameMetrics& metrics =
-        aLayer->GetScrollMetadata(layers, 0).GetMetrics();
-    CSSRect scrollableRect = metrics.GetScrollableRect();
-    if (!scrollableRect.IsEqualEdges(CSSRect(-1, -1, -1, -1))) {
-      // The purpose of this is to roughly mimic what layout would do in the
-      // case of a scrollable frame with the event regions and clip. This lets
-      // us exercise the hit-testing code in APZCTreeManager
-      EventRegions er = aLayer->GetEventRegions();
-      IntRect scrollRect =
-          RoundedToInt(scrollableRect * metrics.LayersPixelsPerCSSPixel())
-              .ToUnknownRect();
-      er.mHitRegion = nsIntRegion(IntRect(
-          RoundedToInt(
-              metrics.GetCompositionBounds().TopLeft().ToUnknownPoint()),
-          scrollRect.Size()));
-      APZTestAccess::SetEventRegions(*aLayer, er);
-    }
   }
 
   void SetScrollMetadata(WebRenderLayerScrollData* aLayer,
@@ -179,7 +172,6 @@ class APZCTreeManagerTester : public APZCTesterBase {
     ScrollMetadata metadata = BuildScrollMetadata(
         aScrollId, aScrollableRect, ParentLayerRect(compositionBounds));
     SetScrollMetadata(aLayer, metadata);
-    SetEventRegionsBasedOnBottommostMetrics(aLayer);
   }
 
   bool HasScrollableFrameMetrics(const WebRenderLayerScrollData* aLayer) const {
@@ -217,8 +209,8 @@ class APZCTreeManagerTester : public APZCTesterBase {
 
   void CreateSimpleScrollingLayer() {
     const char* treeShape = "x";
-    nsIntRegion layerVisibleRegion[] = {
-        nsIntRegion(IntRect(0, 0, 200, 200)),
+    LayerIntRegion layerVisibleRegion[] = {
+        LayerIntRect(0, 0, 200, 200),
     };
     CreateScrollData(treeShape, layerVisibleRegion);
     SetScrollableFrameMetrics(layers[0], ScrollableLayerGuid::START_SCROLL_ID,

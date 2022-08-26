@@ -9,14 +9,13 @@
 
 #include "AccessibleHypertext_i.c"
 
-#include "HyperTextAccessibleWrap.h"
 #include "IUnknownImpl.h"
 
 using namespace mozilla::a11y;
 
-HyperTextAccessibleWrap* ia2AccessibleHypertext::TextAcc() {
-  AccessibleWrap* acc = LocalAcc();
-  return static_cast<HyperTextAccessibleWrap*>(acc);
+HyperTextAccessibleBase* ia2AccessibleHypertext::TextAcc() {
+  Accessible* acc = Acc();
+  return acc ? acc->AsHyperTextBase() : nullptr;
 }
 
 // IUnknown
@@ -26,17 +25,19 @@ ia2AccessibleHypertext::QueryInterface(REFIID aIID, void** aInstancePtr) {
 
   *aInstancePtr = nullptr;
 
-  HyperTextAccessibleWrap* hyp = TextAcc();
-  if (hyp && hyp->IsTextRole()) {
-    if (aIID == IID_IAccessibleText)
+  Accessible* acc = Acc();
+  if (acc && acc->IsTextRole()) {
+    bool isLocal = acc->IsLocal();
+    if (aIID == IID_IAccessibleText) {
       *aInstancePtr =
           static_cast<IAccessibleText*>(static_cast<ia2AccessibleText*>(this));
-    else if (aIID == IID_IAccessibleHypertext)
+    } else if (aIID == IID_IAccessibleHypertext) {
       *aInstancePtr = static_cast<IAccessibleHypertext*>(this);
-    else if (aIID == IID_IAccessibleHypertext2)
+    } else if (aIID == IID_IAccessibleHypertext2 && isLocal) {
       *aInstancePtr = static_cast<IAccessibleHypertext2*>(this);
-    else if (aIID == IID_IAccessibleEditableText)
+    } else if (aIID == IID_IAccessibleEditableText && isLocal) {
       *aInstancePtr = static_cast<IAccessibleEditableText*>(this);
+    }
 
     if (*aInstancePtr) {
       AddRef();
@@ -55,7 +56,7 @@ ia2AccessibleHypertext::get_nHyperlinks(long* aHyperlinkCount) {
 
   *aHyperlinkCount = 0;
 
-  HyperTextAccessibleWrap* hyperText = TextAcc();
+  HyperTextAccessibleBase* hyperText = TextAcc();
   if (!hyperText) return CO_E_OBJNOTCONNECTED;
 
   *aHyperlinkCount = hyperText->LinkCount();
@@ -69,19 +70,15 @@ ia2AccessibleHypertext::get_hyperlink(long aLinkIndex,
 
   *aHyperlink = nullptr;
 
-  LocalAccessible* hyperLink;
-  HyperTextAccessibleWrap* hyperText = TextAcc();
+  HyperTextAccessibleBase* hyperText = TextAcc();
   if (!hyperText) {
     return CO_E_OBJNOTCONNECTED;
   }
 
-  hyperLink = hyperText->LinkAt(aLinkIndex);
+  Accessible* hyperLink = hyperText->LinkAt(aLinkIndex);
 
   if (!hyperLink) return E_FAIL;
 
-  // GetNativeInterface returns an IAccessible, but we need an
-  // IAccessibleHyperlink, so use MsaaAccessible::GetFrom instead and let
-  // RefPtr cast it.
   RefPtr<IAccessibleHyperlink> result = MsaaAccessible::GetFrom(hyperLink);
   result.forget(aHyperlink);
   return S_OK;
@@ -94,7 +91,7 @@ ia2AccessibleHypertext::get_hyperlinkIndex(long aCharIndex,
 
   *aHyperlinkIndex = 0;
 
-  HyperTextAccessibleWrap* hyperAcc = TextAcc();
+  HyperTextAccessibleBase* hyperAcc = TextAcc();
   if (!hyperAcc) return CO_E_OBJNOTCONNECTED;
 
   *aHyperlinkIndex = hyperAcc->LinkIndexAtOffset(aCharIndex);
@@ -111,7 +108,7 @@ ia2AccessibleHypertext::get_hyperlinks(IAccessibleHyperlink*** aHyperlinks,
   *aHyperlinks = nullptr;
   *aNHyperlinks = 0;
 
-  HyperTextAccessibleWrap* hyperText = TextAcc();
+  HyperTextAccessibleBase* hyperText = TextAcc();
   if (!hyperText) {
     return CO_E_OBJNOTCONNECTED;
   }
@@ -131,11 +128,8 @@ ia2AccessibleHypertext::get_hyperlinks(IAccessibleHyperlink*** aHyperlinks,
   }
 
   for (uint32_t i = 0; i < count; ++i) {
-    LocalAccessible* hyperLink = hyperText->LinkAt(i);
+    Accessible* hyperLink = hyperText->LinkAt(i);
     MOZ_ASSERT(hyperLink);
-    // GetNativeInterface returns an IAccessible, but we need an
-    // IAccessibleHyperlink, so use MsaaAccessible::GetFrom instead and let
-    // RefPtr cast it.
     RefPtr<IAccessibleHyperlink> iaHyper = MsaaAccessible::GetFrom(hyperLink);
     iaHyper.forget(&(*aHyperlinks)[i]);
   }

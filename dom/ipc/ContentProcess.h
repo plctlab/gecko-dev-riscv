@@ -15,8 +15,7 @@
 #  include "mozilla/mscom/ProcessRuntime.h"
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * ContentProcess is a singleton on the content process which represents
@@ -26,7 +25,7 @@ class ContentProcess : public mozilla::ipc::ProcessChild {
   using ProcessChild = mozilla::ipc::ProcessChild;
 
  public:
-  explicit ContentProcess(ProcessId aParentPid) : ProcessChild(aParentPid) {}
+  using ProcessChild::ProcessChild;
 
   ~ContentProcess() = default;
 
@@ -41,13 +40,8 @@ class ContentProcess : public mozilla::ipc::ProcessChild {
   mozilla::mscom::ProcessRuntime mCOMRuntime;
 #endif
   mozilla::ipc::ScopedXREEmbed mXREEmbed;
-
-  ContentProcess(const ContentProcess&) = delete;
-
-  const ContentProcess& operator=(const ContentProcess&) = delete;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // ifndef dom_tabs_ContentThread_h

@@ -7,12 +7,13 @@ var EXPORTED_SYMBOLS = ["FirstStartup"];
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Normandy: "resource://normandy/Normandy.jsm",
   TaskScheduler: "resource://gre/modules/TaskScheduler.jsm",
 });
@@ -51,13 +52,13 @@ var FirstStartup = {
 
     let promises = [];
     if (AppConstants.MOZ_NORMANDY) {
-      promises.push(Normandy.init({ runAsync: false }));
+      promises.push(lazy.Normandy.init({ runAsync: false }));
     }
 
     if (AppConstants.MOZ_UPDATE_AGENT) {
       // It's technically possible for a previous installation to leave an old
       // OS-level scheduled task around.  Start fresh.
-      promises.push(TaskScheduler.deleteAllTasks().catch(() => {}));
+      promises.push(lazy.TaskScheduler.deleteAllTasks().catch(() => {}));
     }
 
     if (promises.length) {

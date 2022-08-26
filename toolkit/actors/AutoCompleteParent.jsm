@@ -6,33 +6,32 @@
 
 var EXPORTED_SYMBOLS = ["AutoCompleteParent"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   GeckoViewAutocomplete: "resource://gre/modules/GeckoViewAutocomplete.jsm",
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "DELEGATE_AUTOCOMPLETE",
   "toolkit.autocomplete.delegate",
   false
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 
 const PREF_SECURITY_DELAY = "security.notification_enable_delay";
 
-// Stores the browser and actor that has the active popup, used by formfill
-let currentBrowserWeakRef = null;
+// Stores the actor that has the active popup, used by formfill
 let currentActor = null;
 
 let autoCompleteListeners = new Set();
@@ -175,10 +174,6 @@ class AutoCompleteParent extends JSWindowActorParent {
     return currentActor;
   }
 
-  static getCurrentBrowser() {
-    return currentBrowserWeakRef ? currentBrowserWeakRef.get() : null;
-  }
-
   static addPopupStateListener(listener) {
     autoCompleteListeners.add(listener);
   }
@@ -214,7 +209,6 @@ class AutoCompleteParent extends JSWindowActorParent {
         // large list, and then open on a small one.
         this.openedPopup.adjustHeight();
         this.openedPopup = null;
-        currentBrowserWeakRef = null;
         currentActor = null;
         evt.target.removeEventListener("popuphidden", this);
         evt.target.removeEventListener("popupshowing", this);
@@ -245,7 +239,6 @@ class AutoCompleteParent extends JSWindowActorParent {
 
     // Non-empty result styles
     let resultStyles = new Set(results.map(r => r.style).filter(r => !!r));
-    currentBrowserWeakRef = Cu.getWeakReference(browser);
     currentActor = this;
     this.openedPopup = browser.autoCompletePopup;
     // the layout varies according to different result type
@@ -318,7 +311,7 @@ class AutoCompleteParent extends JSWindowActorParent {
     // information for telemetry purposes. After bug 1555209, this information
     // can be passed to the parent process outside of nsIAutoCompleteResult APIs
     // so we won't need this hack.
-    let rawExtraData = JSON.parse(lastResult.comment);
+    let rawExtraData = JSON.parse(lastResult.comment).telemetryEventData;
     if (!rawExtraData.searchStartTimeMS) {
       throw new Error("Invalid autocomplete search start time");
     }
@@ -331,8 +324,6 @@ class AutoCompleteParent extends JSWindowActorParent {
     let duration =
       Services.telemetry.msSystemNow() - rawExtraData.searchStartTimeMS;
     delete rawExtraData.searchStartTimeMS;
-
-    delete rawExtraData.formHostname;
 
     // Add counts by result style to rawExtraData.
     results.reduce((accumulated, r) => {
@@ -401,7 +392,10 @@ class AutoCompleteParent extends JSWindowActorParent {
   receiveMessage(message) {
     let browser = this.browsingContext.top.embedderElement;
 
-    if (!browser || (!DELEGATE_AUTOCOMPLETE && !browser.autoCompletePopup)) {
+    if (
+      !browser ||
+      (!lazy.DELEGATE_AUTOCOMPLETE && !browser.autoCompletePopup)
+    ) {
       // If there is no browser or popup, just make sure that the popup has been closed.
       if (this.openedPopup) {
         this.openedPopup.closePopup();
@@ -429,8 +423,8 @@ class AutoCompleteParent extends JSWindowActorParent {
           inputElementIdentifier,
           formOrigin,
         } = message.data;
-        if (DELEGATE_AUTOCOMPLETE) {
-          GeckoViewAutocomplete.delegateSelection({
+        if (lazy.DELEGATE_AUTOCOMPLETE) {
+          lazy.GeckoViewAutocomplete.delegateSelection({
             browsingContext: this.browsingContext,
             options: results,
             inputElementIdentifier,
@@ -451,15 +445,6 @@ class AutoCompleteParent extends JSWindowActorParent {
 
       case "FormAutoComplete:ClosePopup": {
         this.closePopup();
-        break;
-      }
-
-      case "FormAutoComplete:Disconnect": {
-        // The controller stopped controlling the current input, so clear
-        // any cached data.  This is necessary cause otherwise we'd clear data
-        // only when starting a new search, but the next input could not support
-        // autocomplete and it would end up inheriting the existing data.
-        AutoCompleteResultView.clearResults();
         break;
       }
     }
@@ -488,7 +473,7 @@ class AutoCompleteParent extends JSWindowActorParent {
     );
     items.forEach(item => (item.disabled = true));
 
-    setTimeout(
+    lazy.setTimeout(
       () => items.forEach(item => (item.disabled = false)),
       popupDelay
     );

@@ -11,7 +11,8 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_privacy.h"
-#include "mozilla/intl/MozLocale.h"
+#include "mozilla/intl/AppDateTimeFormat.h"
+#include "mozilla/intl/Locale.h"
 #include "mozilla/intl/OSPreferences.h"
 #include "nsDirectoryService.h"
 #include "nsDirectoryServiceDefs.h"
@@ -25,11 +26,13 @@
 
 #define INTL_SYSTEM_LOCALES_CHANGED "intl:system-locales-changed"
 
+#define PSEUDO_LOCALE_PREF "intl.l10n.pseudo"
 #define REQUESTED_LOCALES_PREF "intl.locale.requested"
 #define WEB_EXPOSED_LOCALES_PREF "intl.locale.privacy.web_exposed"
 
 static const char* kObservedPrefs[] = {REQUESTED_LOCALES_PREF,
-                                       WEB_EXPOSED_LOCALES_PREF, nullptr};
+                                       WEB_EXPOSED_LOCALES_PREF,
+                                       PSEUDO_LOCALE_PREF, nullptr};
 
 using namespace mozilla::intl::ffi;
 using namespace mozilla::intl;
@@ -175,6 +178,15 @@ LocaleService* LocaleService::GetInstance() {
   return sInstance;
 }
 
+static void NotifyAppLocaleChanged() {
+  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+  if (obs) {
+    obs->NotifyObservers(nullptr, "intl:app-locales-changed", nullptr);
+  }
+  // The locale in AppDateTimeFormat is cached statically.
+  AppDateTimeFormat::ClearLocaleCache();
+}
+
 void LocaleService::RemoveObservers() {
   if (mIsServer) {
     Preferences::RemoveObservers(this, kObservedPrefs);
@@ -192,10 +204,7 @@ void LocaleService::AssignAppLocales(const nsTArray<nsCString>& aAppLocales) {
              "This should only be called for LocaleService in client mode.");
 
   mAppLocales = aAppLocales.Clone();
-  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-  if (obs) {
-    obs->NotifyObservers(nullptr, "intl:app-locales-changed", nullptr);
-  }
+  NotifyAppLocaleChanged();
 }
 
 void LocaleService::AssignRequestedLocales(
@@ -249,10 +258,7 @@ void LocaleService::LocalesChanged() {
 
   if (mAppLocales != newLocales) {
     mAppLocales = std::move(newLocales);
-    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-    if (obs) {
-      obs->NotifyObservers(nullptr, "intl:app-locales-changed", nullptr);
-    }
+    NotifyAppLocaleChanged();
   }
 }
 
@@ -295,6 +301,8 @@ LocaleService::Observe(nsISupports* aSubject, const char* aTopic,
       RequestedLocalesChanged();
     } else if (pref.EqualsLiteral(WEB_EXPOSED_LOCALES_PREF)) {
       WebExposedLocalesChanged();
+    } else if (pref.EqualsLiteral(PSEUDO_LOCALE_PREF)) {
+      NotifyAppLocaleChanged();
     }
   }
 
@@ -303,9 +311,20 @@ LocaleService::Observe(nsISupports* aSubject, const char* aTopic,
 
 bool LocaleService::LanguagesMatch(const nsACString& aRequested,
                                    const nsACString& aAvailable) {
-  Locale requested = Locale(aRequested);
-  Locale available = Locale(aAvailable);
-  return requested.GetLanguage().Equals(available.GetLanguage());
+  Locale requested;
+  auto requestedResult = LocaleParser::TryParse(aRequested, requested);
+  Locale available;
+  auto availableResult = LocaleParser::TryParse(aAvailable, available);
+
+  if (requestedResult.isErr() || availableResult.isErr()) {
+    return false;
+  }
+
+  if (requested.Canonicalize().isErr() || available.Canonicalize().isErr()) {
+    return false;
+  }
+
+  return requested.Language().Span() == available.Language().Span();
 }
 
 bool LocaleService::IsServer() { return mIsServer; }
@@ -527,9 +546,14 @@ LocaleService::NegotiateLanguages(const nsTArray<nsCString>& aRequested,
     return NS_ERROR_INVALID_ARG;
   }
 
+#ifdef DEBUG
+  Locale parsedLocale;
+  auto result = LocaleParser::TryParse(aDefaultLocale, parsedLocale);
+
   MOZ_ASSERT(
-      aDefaultLocale.IsEmpty() || Locale(aDefaultLocale).IsWellFormed(),
+      aDefaultLocale.IsEmpty() || result.isOk(),
       "If specified, default locale must be a well-formed BCP47 language tag.");
+#endif
 
   if (aStrategy == kLangNegStrategyLookup && aDefaultLocale.IsEmpty()) {
     NS_WARNING(

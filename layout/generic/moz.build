@@ -144,8 +144,10 @@ EXPORTS.mozilla += [
     "ReflowInput.h",
     "ReflowOutput.h",
     "ScrollbarPreferences.h",
+    "ScrollGeneration.h",
     "ScrollOrigin.h",
     "ScrollPositionUpdate.h",
+    "ScrollSnapTargetId.h",
     "ViewportFrame.h",
     "WritingModes.h",
 ]
@@ -157,7 +159,7 @@ EXPORTS.mozilla.layout += [
 
 UNIFIED_SOURCES += [
     "AspectRatio.cpp",
-    "BlockReflowInput.cpp",
+    "BlockReflowState.cpp",
     "BRFrame.cpp",
     "ColumnSetWrapperFrame.cpp",
     "ColumnUtils.cpp",
@@ -225,6 +227,12 @@ UNIFIED_SOURCES += [
     "WBRFrame.cpp",
 ]
 
+SOURCES += [
+    # If this file gets compiled with ScrollPositionUpdate.cpp, the specialized
+    # `operator<<` for ScrollGeneration<> won't be visible
+    "ScrollGeneration.cpp",
+]
+
 GeneratedFile(
     "FrameIdList.h",
     script="GenerateFrameLists.py",
@@ -266,7 +274,4 @@ MOCHITEST_MANIFESTS += ["test/mochitest.ini"]
 MOCHITEST_CHROME_MANIFESTS += ["test/chrome.ini"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
-    CXXFLAGS += CONFIG["TK_CFLAGS"]
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]
+    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]

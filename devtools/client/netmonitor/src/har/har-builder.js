@@ -53,7 +53,7 @@ HarBuilder.prototype = {
    * @returns {Promise} A promise that resolves to the HAR object when
    * the entire build process is done.
    */
-  build: async function() {
+  async build() {
     this.promises = [];
 
     // Build basic structure for data.
@@ -61,7 +61,10 @@ HarBuilder.prototype = {
 
     // Build entries.
     for (const file of this._options.items) {
-      log.log.entries.push(await this.buildEntry(log.log, file));
+      const entry = await this.buildEntry(log.log, file);
+      if (entry) {
+        log.log.entries.push(entry);
+      }
     }
 
     // Some data needs to be fetched from the backend during the
@@ -73,7 +76,7 @@ HarBuilder.prototype = {
 
   // Helpers
 
-  buildPage: function(file) {
+  buildPage(file) {
     const page = {};
 
     // Page start time is set when the first request is processed
@@ -85,7 +88,7 @@ HarBuilder.prototype = {
     return page;
   },
 
-  getPage: function(log, file) {
+  getPage(log, file) {
     const { id } = this._options;
     let page = this._pageMap[id];
     if (page) {
@@ -98,7 +101,7 @@ HarBuilder.prototype = {
     return page;
   },
 
-  buildEntry: async function(log, file) {
+  async buildEntry(log, file) {
     const page = this.getPage(log, file);
 
     const entry = {};
@@ -106,13 +109,22 @@ HarBuilder.prototype = {
     entry.startedDateTime = dateToJSON(new Date(file.startedMs));
 
     let { eventTimings } = file;
-    if (!eventTimings && this._options.requestData) {
-      eventTimings = await this._options.requestData(file.id, "eventTimings");
-    }
+    try {
+      if (!eventTimings && this._options.requestData) {
+        eventTimings = await this._options.requestData(file.id, "eventTimings");
+      }
 
-    entry.request = await this.buildRequest(file);
-    entry.response = await this.buildResponse(file);
-    entry.cache = await this.buildCache(file);
+      entry.request = await this.buildRequest(file);
+      entry.response = await this.buildResponse(file);
+      entry.cache = await this.buildCache(file);
+    } catch (e) {
+      // Ignore any request for which we can't retrieve lazy data
+      // The request has most likely been destroyed on the server side,
+      // either because persist is disabled or the request's target/WindowGlobal/process
+      // has been destroyed.
+      console.warn("HAR builder failed on", file.url, e, e.stack);
+      return null;
+    }
     entry.timings = eventTimings ? eventTimings.timings : {};
 
     // Calculate total time by summing all timings. Note that
@@ -149,7 +161,7 @@ HarBuilder.prototype = {
     return entry;
   },
 
-  buildPageTimings: function(page, file) {
+  buildPageTimings(page, file) {
     // Event timing info isn't available
     const timings = {
       onContentLoad: -1,
@@ -167,7 +179,7 @@ HarBuilder.prototype = {
     return timings;
   },
 
-  buildRequest: async function(file) {
+  async buildRequest(file) {
     // When using HarAutomation, HarCollector will automatically fetch requestHeaders
     // and requestCookies, but when we use it from netmonitor, FirefoxDataProvider
     // should fetch it itself lazily, via requestData.
@@ -214,7 +226,7 @@ HarBuilder.prototype = {
    *
    * @param {Object} input Request or response header object.
    */
-  buildHeaders: function(input) {
+  buildHeaders(input) {
     if (!input) {
       return [];
     }
@@ -222,7 +234,7 @@ HarBuilder.prototype = {
     return this.buildNameValuePairs(input.headers);
   },
 
-  appendHeadersPostData: function(input = [], file) {
+  appendHeadersPostData(input = [], file) {
     if (!file.requestPostData) {
       return input;
     }
@@ -237,7 +249,7 @@ HarBuilder.prototype = {
     return input;
   },
 
-  buildCookies: function(input) {
+  buildCookies(input) {
     if (!input) {
       return [];
     }
@@ -245,7 +257,7 @@ HarBuilder.prototype = {
     return this.buildNameValuePairs(input.cookies || input);
   },
 
-  buildNameValuePairs: function(entries) {
+  buildNameValuePairs(entries) {
     const result = [];
 
     // HAR requires headers array to be presented, so always
@@ -259,7 +271,7 @@ HarBuilder.prototype = {
       this.fetchData(entry.value).then(value => {
         result.push({
           name: entry.name,
-          value: value,
+          value,
         });
       });
     });
@@ -267,7 +279,7 @@ HarBuilder.prototype = {
     return result;
   },
 
-  buildPostData: async function(file) {
+  async buildPostData(file) {
     // When using HarAutomation, HarCollector will automatically fetch requestPostData
     // and requestHeaders, but when we use it from netmonitor, FirefoxDataProvider
     // should fetch it itself lazily, via requestData.
@@ -332,7 +344,7 @@ HarBuilder.prototype = {
     return postData;
   },
 
-  buildResponse: async function(file) {
+  async buildResponse(file) {
     // When using HarAutomation, HarCollector will automatically fetch responseHeaders
     // and responseCookies, but when we use it from netmonitor, FirefoxDataProvider
     // should fetch it itself lazily, via requestData.
@@ -386,7 +398,7 @@ HarBuilder.prototype = {
     return response;
   },
 
-  buildContent: async function(file) {
+  async buildContent(file) {
     const content = {
       mimeType: file.mimeType,
       size: -1,
@@ -429,7 +441,7 @@ HarBuilder.prototype = {
     return content;
   },
 
-  buildCache: async function(file) {
+  async buildCache(file) {
     const cache = {};
 
     // if resource has changed, return early
@@ -454,7 +466,7 @@ HarBuilder.prototype = {
     return cache;
   },
 
-  buildCacheEntry: function(cacheEntry) {
+  buildCacheEntry(cacheEntry) {
     const cache = {};
 
     if (typeof cacheEntry !== "undefined") {
@@ -477,27 +489,9 @@ HarBuilder.prototype = {
     return cache;
   },
 
-  getBlockingEndTime: function(file) {
-    if (file.resolveStarted && file.connectStarted) {
-      return file.resolvingTime;
-    }
-
-    if (file.connectStarted) {
-      return file.connectingTime;
-    }
-
-    if (file.sendStarted) {
-      return file.sendingTime;
-    }
-
-    return file.sendingTime > file.startTime
-      ? file.sendingTime
-      : file.waitingForTime;
-  },
-
   // RDP Helpers
 
-  fetchData: function(string) {
+  fetchData(string) {
     const promise = this._options.getString(string).then(value => {
       return value;
     });
@@ -572,7 +566,7 @@ function dateToJSON(date) {
     if (!c) {
       c = 2;
     }
-    let s = new String(n);
+    let s = String(n);
     while (s.length < c) {
       s = "0" + s;
     }

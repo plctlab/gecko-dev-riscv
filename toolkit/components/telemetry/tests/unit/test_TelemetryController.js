@@ -12,7 +12,6 @@ const { CommonUtils } = ChromeUtils.import(
   "resource://services-common/utils.js"
 );
 const { ClientID } = ChromeUtils.import("resource://gre/modules/ClientID.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryController } = ChromeUtils.import(
   "resource://gre/modules/TelemetryController.jsm"
 );
@@ -60,8 +59,7 @@ const TEST_PING_TYPE = "test-ping-type";
 var gClientID = null;
 
 XPCOMUtils.defineLazyGetter(this, "DATAREPORTING_PATH", async function() {
-  let profileDir = await PathUtils.getProfileDir();
-  return PathUtils.join(profileDir, "datareporting");
+  return PathUtils.join(PathUtils.profileDir, "datareporting");
 });
 
 function sendPing(aSendClientId, aSendEnvironment) {
@@ -615,60 +613,13 @@ add_task(async function test_changePingAfterSubmission() {
   );
 });
 
-add_task(
-  {
-    skip_if: () =>
-      Services.prefs.getBoolPref(TelemetryUtils.Preferences.Unified, false),
-  },
-  async function test_telemetryEnabledUnexpectedValue() {
-    // Remove the default value for toolkit.telemetry.enabled from the default prefs.
-    // Otherwise, we wouldn't be able to set the pref to a string.
-    let defaultPrefBranch = Services.prefs.getDefaultBranch(null);
-    defaultPrefBranch.deleteBranch(TelemetryUtils.Preferences.TelemetryEnabled);
-
-    // Set the preferences controlling the Telemetry status to a string.
-    Preferences.set(TelemetryUtils.Preferences.TelemetryEnabled, "false");
-    // Check that Telemetry is not enabled.
-    await TelemetryController.testReset();
-    Assert.equal(
-      Telemetry.canRecordExtended,
-      false,
-      "Invalid values must not enable Telemetry recording."
-    );
-
-    // Delete the pref again.
-    defaultPrefBranch.deleteBranch(TelemetryUtils.Preferences.TelemetryEnabled);
-
-    // Make sure that flipping it to true works.
-    Preferences.set(TelemetryUtils.Preferences.TelemetryEnabled, true);
-    await TelemetryController.testReset();
-    Assert.equal(
-      Telemetry.canRecordExtended,
-      true,
-      "True must enable Telemetry recording."
-    );
-
-    // Also check that the false works as well.
-    Preferences.set(TelemetryUtils.Preferences.TelemetryEnabled, false);
-    await TelemetryController.testReset();
-    Assert.equal(
-      Telemetry.canRecordExtended,
-      false,
-      "False must disable Telemetry recording."
-    );
-
-    // Restore the state of the pref.
-    Preferences.set(TelemetryUtils.Preferences.TelemetryEnabled, true);
-  }
-);
-
 add_task(async function test_telemetryCleanFHRDatabase() {
   const FHR_DBNAME_PREF = "datareporting.healthreport.dbName";
   const CUSTOM_DB_NAME = "unlikely.to.be.used.sqlite";
   const DEFAULT_DB_NAME = "healthreport.sqlite";
 
   // Check that we're able to remove a FHR DB with a custom name.
-  const profileDir = await PathUtils.getProfileDir();
+  const profileDir = PathUtils.profileDir;
   const CUSTOM_DB_PATHS = [
     PathUtils.join(profileDir, CUSTOM_DB_NAME),
     PathUtils.join(profileDir, CUSTOM_DB_NAME + "-wal"),
@@ -687,7 +638,7 @@ add_task(async function test_telemetryCleanFHRDatabase() {
     try {
       await IOUtils.read(dbFilePath);
     } catch (e) {
-      Assert.ok(e instanceof DOMException);
+      Assert.ok(DOMException.isInstance(e));
       Assert.equal(
         e.name,
         "NotFoundError",
@@ -719,7 +670,7 @@ add_task(async function test_telemetryCleanFHRDatabase() {
     try {
       await IOUtils.read(dbFilePath);
     } catch (e) {
-      Assert.ok(e instanceof DOMException);
+      Assert.ok(DOMException.isInstance(e));
       Assert.equal(
         e.name,
         "NotFoundError",

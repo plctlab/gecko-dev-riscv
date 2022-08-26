@@ -50,12 +50,14 @@ const EventEmitter = require("devtools/shared/event-emitter");
 const {
   getTheme,
   setTheme,
+  getAutoTheme,
   addThemeObserver,
   removeThemeObserver,
 } = require("devtools/client/shared/theme");
 
 const FORBIDDEN_IDS = new Set(["toolbox", ""]);
 const MAX_ORDINAL = 99;
+const POPUP_DEBUG_PREF = "devtools.popups.debug";
 
 /**
  * DevTools is a class that represents a set of developer tools, it holds a
@@ -286,6 +288,15 @@ DevTools.prototype = {
   },
 
   /**
+   * Returns the name of the default (auto) theme for devtools.
+   *
+   * @return {string} theme
+   */
+  getAutoTheme() {
+    return getAutoTheme();
+  },
+
+  /**
    * Called when the developer tools theme changes.
    */
   _onThemeChanged() {
@@ -361,7 +372,7 @@ DevTools.prototype = {
       !isCoreTheme &&
       theme.id == currTheme
     ) {
-      setTheme("light");
+      setTheme("auto");
 
       this.emit("theme-unregistered", theme);
     }
@@ -428,7 +439,7 @@ DevTools.prototype = {
    * @param {Object} state
    *                 A SessionStore state object that gets modified by reference
    */
-  saveDevToolsSession: function(state) {
+  saveDevToolsSession(state) {
     state.browserConsole = BrowserConsoleManager.getBrowserConsoleSessionState();
     state.browserToolbox = BrowserToolboxLauncher.getBrowserToolboxSessionState();
   },
@@ -436,7 +447,7 @@ DevTools.prototype = {
   /**
    * Restore the devtools session state as provided by SessionStore.
    */
-  restoreDevToolsSession: async function({ browserConsole, browserToolbox }) {
+  async restoreDevToolsSession({ browserConsole, browserToolbox }) {
     if (browserToolbox) {
       BrowserToolboxLauncher.init();
     }
@@ -573,6 +584,25 @@ DevTools.prototype = {
     tab,
     { toolId, hostType, startTime, raise, reason, hostOptions } = {}
   ) {
+    // Popups are debugged via the toolbox of their opener document/tab.
+    // So avoid opening dedicated toolbox for them.
+    if (
+      tab.linkedBrowser.browsingContext.opener &&
+      Services.prefs.getBoolPref(POPUP_DEBUG_PREF)
+    ) {
+      const openerTab = tab.ownerGlobal.gBrowser.getTabForBrowser(
+        tab.linkedBrowser.browsingContext.opener.embedderElement
+      );
+      const openerDescriptor = await TabDescriptorFactory.getDescriptorForTab(
+        openerTab
+      );
+      if (this.getToolboxForDescriptor(openerDescriptor)) {
+        console.log(
+          "Can't open a toolbox for this document as this is debugged from its opener tab"
+        );
+        return;
+      }
+    }
     const descriptor = await TabDescriptorFactory.createDescriptorForTab(tab);
     return this.showToolbox(descriptor, {
       toolId,
@@ -717,7 +747,7 @@ DevTools.prototype = {
    * Note that is will end up being cached in WebExtension codebase, via
    * DevToolsExtensionPageContextParent.getDevToolsCommands.
    */
-  createCommandsForTabForWebExtension: function(tab) {
+  createCommandsForTabForWebExtension(tab) {
     return CommandsFactory.forTab(tab, { isWebExtension: true });
   },
 
@@ -725,7 +755,7 @@ DevTools.prototype = {
    * Compatibility layer for web-extensions. Used by DevToolsShim for
    * toolkit/components/extensions/ext-c-toolkit.js
    */
-  openBrowserConsole: function() {
+  openBrowserConsole() {
     const {
       BrowserConsoleManager,
     } = require("devtools/client/webconsole/browser-console-manager");

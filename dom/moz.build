@@ -8,9 +8,6 @@
 with Files("**"):
     BUG_COMPONENT = ("Core", "DOM: Core & HTML")
 
-with Files("plugins/**"):
-    BUG_COMPONENT = ("Core", "Plug-ins")
-
 JAR_MANIFESTS += ["jar.mn"]
 
 interfaces = [
@@ -52,6 +49,7 @@ DIRS += [
     "filehandle",
     "filesystem",
     "flex",
+    "fs",
     "gamepad",
     "geolocation",
     "grid",
@@ -83,6 +81,7 @@ DIRS += [
     "messagechannel",
     "promise",
     "smil",
+    "streams",
     "url",
     "webauthn",
     "webidl",
@@ -108,7 +107,10 @@ DIRS += [
     "localstorage",
     "prio",
     "l10n",
+    "origin-trials",
+    "webscheduling",
 ]
+
 
 TEST_DIRS += [
     "tests",

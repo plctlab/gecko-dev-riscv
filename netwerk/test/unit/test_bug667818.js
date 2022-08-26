@@ -1,9 +1,7 @@
 "use strict";
 
 function makeURI(str) {
-  return Cc["@mozilla.org/network/io-service;1"]
-    .getService(Ci.nsIIOService)
-    .newURI(str);
+  return Services.io.newURI(str);
 }
 
 add_task(async () => {
@@ -15,7 +13,6 @@ add_task(async () => {
   );
   Services.prefs.setBoolPref("dom.security.https_first", false);
 
-  var serv = Cc["@mozilla.org/cookieService;1"].getService(Ci.nsICookieService);
   var uri = makeURI("http://example.com/");
   var channel = NetUtil.newChannel({
     uri,
@@ -38,7 +35,7 @@ add_task(async () => {
   );
 
   // Now sanity check
-  serv.setCookieStringFromHttp(
+  Services.cookies.setCookieStringFromHttp(
     uri,
     "test2=test2; path=/; domain=example.com;",
     channel

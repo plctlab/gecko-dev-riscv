@@ -32,9 +32,7 @@ void CustomDistributionMetric::AccumulateSamples(
       Telemetry::Accumulate(id, sample);
     }
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_custom_distribution_accumulate_samples(mId, &aSamples);
-#endif
 }
 
 void CustomDistributionMetric::AccumulateSamplesSigned(
@@ -48,19 +46,13 @@ void CustomDistributionMetric::AccumulateSamplesSigned(
       Telemetry::Accumulate(id, sample);
     }
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_custom_distribution_accumulate_samples_signed(mId, &aSamples);
-#endif
 }
 
 Result<Maybe<DistributionData>, nsCString>
 CustomDistributionMetric::TestGetValue(const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<DistributionData>();
-#else
   nsCString err;
-  if (fog_custom_distribution_test_get_error(mId, &aPingName, &err)) {
+  if (fog_custom_distribution_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_custom_distribution_test_has_value(mId, &aPingName)) {
@@ -72,7 +64,6 @@ CustomDistributionMetric::TestGetValue(const nsACString& aPingName) const {
   fog_custom_distribution_test_get_value(mId, &aPingName, &sum, &buckets,
                                          &counts);
   return Some(DistributionData(buckets, counts, sum));
-#endif
 }
 
 }  // namespace impl
@@ -89,7 +80,7 @@ GleanCustomDistribution::AccumulateSamples(const nsTArray<int64_t>& aSamples) {
 NS_IMETHODIMP
 GleanCustomDistribution::TestGetValue(const nsACString& aPingName,
                                       JSContext* aCx,
-                                      JS::MutableHandleValue aResult) {
+                                      JS::MutableHandle<JS::Value> aResult) {
   auto result = mCustomDist.TestGetValue(aPingName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());
@@ -102,7 +93,7 @@ GleanCustomDistribution::TestGetValue(const nsACString& aPingName,
     aResult.set(JS::UndefinedValue());
   } else {
     // Build return value of the form: { sum: #, values: {bucket1: count1, ...}
-    JS::RootedObject root(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> root(aCx, JS_NewPlainObject(aCx));
     if (!root) {
       return NS_ERROR_FAILURE;
     }
@@ -111,7 +102,7 @@ GleanCustomDistribution::TestGetValue(const nsACString& aPingName,
                            JSPROP_ENUMERATE)) {
       return NS_ERROR_FAILURE;
     }
-    JS::RootedObject valuesObj(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> valuesObj(aCx, JS_NewPlainObject(aCx));
     if (!valuesObj ||
         !JS_DefineProperty(aCx, root, "values", valuesObj, JSPROP_ENUMERATE)) {
       return NS_ERROR_FAILURE;

@@ -11,22 +11,23 @@
 
 const EXPORTED_SYMBOLS = ["LoginBreaches"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
   RemoteSettings: "resource://services-settings/remote-settings.js",
   RemoteSettingsClient: "resource://services-settings/RemoteSettingsClient.jsm",
 });
 
-this.LoginBreaches = {
+const LoginBreaches = {
   REMOTE_SETTINGS_COLLECTION: "fxmonitor-breaches",
 
   async update(breaches = null) {
-    const logins = await LoginHelper.getAllUserFacingLogins();
+    const logins = await lazy.LoginHelper.getAllUserFacingLogins();
     await this.getPotentialBreachesByLoginGUID(logins, breaches);
   },
 
@@ -48,10 +49,12 @@ this.LoginBreaches = {
     const breachesByLoginGUID = new Map();
     if (!breaches) {
       try {
-        breaches = await RemoteSettings(this.REMOTE_SETTINGS_COLLECTION).get();
+        breaches = await lazy
+          .RemoteSettings(this.REMOTE_SETTINGS_COLLECTION)
+          .get();
       } catch (ex) {
-        if (ex instanceof RemoteSettingsClient.UnknownCollectionError) {
-          log.warn(
+        if (ex instanceof lazy.RemoteSettingsClient.UnknownCollectionError) {
+          lazy.log.warn(
             "Could not get Remote Settings collection.",
             this.REMOTE_SETTINGS_COLLECTION,
             ex
@@ -75,12 +78,11 @@ this.LoginBreaches = {
     // they were changed. It's important to note here that we are NOT considering the
     // username and password of that login.
     for (const login of logins) {
-      const loginURI = Services.io.newURI(login.origin);
       let loginHost;
       try {
         // nsIURI.host can throw if the URI scheme doesn't have a host.
-        loginHost = loginURI.host;
-      } catch (ex) {
+        loginHost = Services.io.newURI(login.origin).host;
+      } catch {
         continue;
       }
       for (const breach of breaches) {
@@ -173,6 +175,6 @@ this.LoginBreaches = {
   },
 };
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  return LoginHelper.createLogger("LoginBreaches");
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  return lazy.LoginHelper.createLogger("LoginBreaches");
 });

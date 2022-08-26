@@ -9,8 +9,7 @@
 #define vm_Opcodes_h
 
 #include <stddef.h>
-
-#include "vm/WellKnownAtom.h"  // js_*_str
+#include <stdint.h>
 
 // clang-format off
 /*
@@ -160,8 +159,6 @@
  *     The formula above is correct for the next instruction. The jump target
  *     has a stack depth that is 1 less.
  *
- * -   See `JSOp::Gosub` for another special case.
- *
  * -   The `JSOp::JumpTarget` instruction immediately following a `JSTRY_CATCH`
  *     or `JSTRY_FINALLY` span has the same stack depth as the `JSOp::Try`
  *     instruction that precedes the span.
@@ -212,6 +209,9 @@
  *
  * [Index]
  *   [Constants]
+ *   [Compound primitives]
+ *     Record literals
+ *     Tuple literals
  *   [Expressions]
  *     Unary operators
  *     Binary operators
@@ -268,7 +268,7 @@
      *   Operands:
      *   Stack: => null
      */ \
-    MACRO(Null, null, js_null_str, 1, 0, 1, JOF_BYTE) \
+    MACRO(Null, null, "null", 1, 0, 1, JOF_BYTE) \
     /*
      * Push a boolean constant.
      *
@@ -276,8 +276,8 @@
      *   Operands:
      *   Stack: => true/false
      */ \
-    MACRO(False, false_, js_false_str, 1, 0, 1, JOF_BYTE) \
-    MACRO(True, true_, js_true_str, 1, 0, 1, JOF_BYTE) \
+    MACRO(False, false_, "false", 1, 0, 1, JOF_BYTE) \
+    MACRO(True, true_, "true", 1, 0, 1, JOF_BYTE) \
     /*
      * Push the `int32_t` immediate operand as an `Int32Value`.
      *
@@ -560,7 +560,7 @@
      *   Operands:
      *   Stack: value, target => (value instanceof target)
      */ \
-    MACRO(Instanceof, instanceof, js_instanceof_str, 1, 2, 1, JOF_BYTE|JOF_IC) \
+    MACRO(Instanceof, instanceof, "instanceof", 1, 2, 1, JOF_BYTE|JOF_IC) \
     /*
      * [The `in` operator][1].
      *
@@ -577,7 +577,7 @@
      *   Operands:
      *   Stack: id, obj => (id in obj)
      */ \
-    MACRO(In, in_, js_in_str, 1, 2, 1, JOF_BYTE|JOF_IC) \
+    MACRO(In, in_, "in", 1, 2, 1, JOF_BYTE|JOF_IC) \
     /*
      * [Bitwise shift operators][1] (`<<`, `>>`, `>>>`).
      *
@@ -748,6 +748,16 @@
      */ \
     MACRO(ToString, to_string, NULL, 1, 1, 1, JOF_BYTE) \
     /*
+     * Test whether the value on top of the stack is `NullValue` or
+     * `UndefinedValue` and push the boolean result.
+     *
+     *   Category: Expressions
+     *   Type: Other expressions
+     *   Operands:
+     *   Stack: val => val, IsNullOrUndefined(val)
+     */ \
+    MACRO(IsNullOrUndefined, is_null_or_undefined, NULL, 1, 1, 2, JOF_BYTE) \
+    /*
      * Push the global `this` value. Not to be confused with the `globalThis`
      * property on the global.
      *
@@ -778,9 +788,7 @@
      *
      * The result is a constructor or `undefined`.
      *
-     * This must be used only in scripts where `new.target` is allowed:
-     * non-arrow function scripts and other scripts that have a non-arrow
-     * function script on the scope chain.
+     * This must be used only in non-arrow function scripts.
      *
      * Implements: [GetNewTarget][1].
      *
@@ -803,9 +811,9 @@
      *   Category: Expressions
      *   Type: Other expressions
      *   Operands:
-     *   Stack: moduleId => promise
+     *   Stack: moduleId, options => promise
      */ \
-    MACRO(DynamicImport, dynamic_import, NULL, 1, 1, 1, JOF_BYTE) \
+    MACRO(DynamicImport, dynamic_import, NULL, 1, 2, 1, JOF_BYTE) \
     /*
      * Push the `import.meta` object.
      *
@@ -1373,6 +1381,24 @@
      */ \
     MACRO(EndIter, end_iter, NULL, 1, 2, 0, JOF_BYTE) \
     /*
+     * If the iterator object on top of the stack has a `return` method,
+     * call that method. If the method exists but does not return an object,
+     * and `kind` is not `CompletionKind::Throw`, throw a TypeError. (If
+     * `kind` is `Throw`, the error we are already throwing takes precedence.)
+     *
+     * `iter` must be an object conforming to the [Iterator][1] interface.
+     *
+     * Implements: [IteratorClose][2]
+     *
+     * [1]: https://tc39.es/ecma262/#sec-iterator-interface
+     * [2]: https://tc39.es/ecma262/#sec-iteratorclose
+     *   Category: Objects
+     *   Type: Iteration
+     *   Operands: CompletionKind kind
+     *   Stack: iter =>
+     */ \
+    MACRO(CloseIter, close_iter, NULL, 2, 1, 0, JOF_UINT8|JOF_IC) \
+    /*
      * Check that the top value on the stack is an object, and throw a
      * TypeError if not. `kind` is used only to generate an appropriate error
      * message.
@@ -1530,14 +1556,100 @@
      */ \
     MACRO(RegExp, reg_exp, NULL, 5, 0, 1, JOF_REGEXP) \
     /*
+     * Initialize a new record, preallocating `length` memory slots. `length` can still grow
+     * if needed, for example when using the spread operator.
+     *
+     * Implements: [RecordLiteral Evaluation][1] step 1.
+     *
+     * [1]: https://tc39.es/proposal-record-tuple/#sec-record-initializer-runtime-semantics-evaluation
+     *
+     *   Category: Compound primitives
+     *   Type: Record literals
+     *   Operands: uint32_t length
+     *   Stack: => rval
+     */ \
+    IF_RECORD_TUPLE(MACRO(InitRecord, init_record, NULL, 5, 0, 1, JOF_UINT32)) \
+    /*
+     * Add the last element in the stack to the preceding tuple.
+     *
+     * Implements: [AddPropertyIntoRecordEntriesList][1].
+     *
+     * [1]: https://tc39.es/proposal-record-tuple/#sec-addpropertyintorecordentrieslist
+     *
+     *   Category: Compound primitives
+     *   Type: Record literals
+     *   Operands:
+     *   Stack: record, key, value => record
+     */ \
+    IF_RECORD_TUPLE(MACRO(AddRecordProperty, add_record_property, NULL, 1, 3, 1, JOF_BYTE)) \
+    /*
+     * Add the last element in the stack to the preceding tuple.
+     *
+     * Implements: [RecordPropertyDefinitionEvaluation][1] for
+     *   RecordPropertyDefinition : ... AssignmentExpression
+     *
+     * [1]: https://tc39.es/proposal-record-tuple/#sec-addpropertyintorecordentrieslist
+     *
+     *   Category: Compound primitives
+     *   Type: Record literals
+     *   Operands:
+     *   Stack: record, value => record
+     */ \
+    IF_RECORD_TUPLE(MACRO(AddRecordSpread, add_record_spread, NULL, 1, 2, 1, JOF_BYTE)) \
+    /*
+     * Mark a record as "initialized", going from "write-only" mode to
+     * "read-only" mode.
+     *
+     *   Category: Compound primitives
+     *   Type: Record literals
+     *   Operands:
+     *   Stack: record => record
+     */ \
+    IF_RECORD_TUPLE(MACRO(FinishRecord, finish_record, NULL, 1, 1, 1, JOF_BYTE)) \
+    /*
+     * Initialize a new tuple, preallocating `length` memory slots. `length` can still grow
+     * if needed, for example when using the spread operator.
+     *
+     * Implements: [TupleLiteral Evaluation][1] step 1.
+     *
+     * [1]: https://tc39.es/proposal-record-tuple/#sec-tuple-initializer-runtime-semantics-evaluation
+     *
+     *   Category: Compound primitives
+     *   Type: Tuple literals
+     *   Operands: uint32_t length
+     *   Stack: => rval
+     */ \
+    IF_RECORD_TUPLE(MACRO(InitTuple, init_tuple, NULL, 5, 0, 1, JOF_UINT32)) \
+    /*
+     * Add the last element in the stack to the preceding tuple.
+     *
+     * Implements: [AddValueToTupleSequenceList][1].
+     *
+     * [1]: https://tc39.es/proposal-record-tuple/#sec-addvaluetotuplesequencelist
+     *
+     *   Category: Compound primitives
+     *   Type: Tuple literals
+     *   Operands:
+     *   Stack: tuple, element => tuple
+     */ \
+    IF_RECORD_TUPLE(MACRO(AddTupleElement, add_tuple_element, NULL, 1, 2, 1, JOF_BYTE)) \
+    /*
+     * Mark a tuple as "initialized", going from "write-only" mode to
+     * "read-only" mode.
+     *
+     *   Category: Compound primitives
+     *   Type: Tuple literals
+     *   Operands:
+     *   Stack: tuple => tuple
+     */ \
+    IF_RECORD_TUPLE(MACRO(FinishTuple, finish_tuple, NULL, 1, 1, 1, JOF_BYTE)) \
+    /*
      * Push a new function object.
      *
      * The new function inherits the current environment chain.
      *
-     * Used to create most JS functions. Notable exceptions are arrow functions
-     * and derived or default class constructors.
-     *
-     * The function indicated by `funcIndex` must be a non-arrow function.
+     * Used to create most JS functions. Notable exceptions are derived or
+     * default class constructors.
      *
      * Implements: [InstantiateFunctionObject][1], [Evaluation for
      * *FunctionExpression*][2], and so on.
@@ -1551,22 +1663,6 @@
      *   Stack: => fn
      */ \
     MACRO(Lambda, lambda, NULL, 5, 0, 1, JOF_OBJECT) \
-    /*
-     * Push a new arrow function.
-     *
-     * `newTarget` matters only if the arrow function uses the expression
-     * `new.target`. It should be the current value of `new.target`, so that
-     * the arrow function inherits `new.target` from the enclosing scope. (If
-     * `new.target` is illegal here, the value doesn't matter; use `null`.)
-     *
-     * The function indicated by `funcIndex` must be an arrow function.
-     *
-     *   Category: Functions
-     *   Type: Creating functions
-     *   Operands: uint32_t funcIndex
-     *   Stack: newTarget => arrowFn
-     */ \
-    MACRO(LambdaArrow, lambda_arrow, NULL, 5, 1, 1, JOF_OBJECT) \
     /*
      * Set the name of a function.
      *
@@ -1646,16 +1742,18 @@
      * Invoke `callee` with `this` and `args`, and push the return value. Throw
      * a TypeError if `callee` isn't a function.
      *
+     * `JSOp::CallContent` is for `callContentFunction` in self-hosted JS, and
+     * this is for handling it differently in debugger's `onNativeCall` hook.
+     * `onNativeCall` hook disables all JITs, and `JSOp::CallContent` is
+     * treated exactly the same as `JSOP::Call` in JIT.
+     *
      * `JSOp::CallIter` is used for implicit calls to @@iterator methods, to
      * ensure error messages are formatted with `JSMSG_NOT_ITERABLE` ("x is not
      * iterable") rather than `JSMSG_NOT_FUNCTION` ("x[Symbol.iterator] is not
      * a function"). The `argc` operand must be 0 for this variation.
      *
-     * `JSOp::FunApply` hints to the VM that this is likely a call to the
-     * builtin method `Function.prototype.apply`, an easy optimization target.
-     *
-     * `JSOp::FunCall` similarly hints to the VM that the callee is likely
-     * `Function.prototype.call`.
+     * `JSOp::CallContentIter` is `JSOp::CallContent` variant of
+     * `JSOp::CallIter`.
      *
      * `JSOp::CallIgnoresRv` hints to the VM that the return value is ignored.
      * This allows alternate faster implementations to be used that avoid
@@ -1671,9 +1769,9 @@
      *   Stack: callee, this, args[0], ..., args[argc-1] => rval
      */ \
     MACRO(Call, call, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
+    MACRO(CallContent, call_content, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
     MACRO(CallIter, call_iter, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
-    MACRO(FunApply, fun_apply, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
-    MACRO(FunCall, fun_call, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
+    MACRO(CallContentIter, call_content_iter, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
     MACRO(CallIgnoresRv, call_ignores_rv, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_IC) \
     /*
      * Like `JSOp::Call`, but the arguments are provided in an array rather than
@@ -1692,22 +1790,21 @@
      */ \
     MACRO(SpreadCall, spread_call, NULL, 1, 3, 1, JOF_BYTE|JOF_INVOKE|JOF_SPREAD|JOF_IC) \
     /*
-     * Push true if `arr` is an array object that can be passed directly as the
-     * `args` argument to `JSOp::SpreadCall`.
+     * Push an array object that can be passed directly as the `args` argument
+     * to `JSOp::SpreadCall`. If the operation can't be optimized, push
+     * `undefined` instead.
      *
      * This instruction and the branch around the iterator loop are emitted
-     * only when `arr` is itself a rest parameter, as in `(...arr) =>
-     * f(...arr)`, a strong hint that it's a packed Array whose prototype is
-     * `Array.prototype`.
+     * only when `iterable` is the sole argument in a call, as in `f(...arr)`.
      *
      * See `js::OptimizeSpreadCall`.
      *
      *   Category: Functions
      *   Type: Calls
      *   Operands:
-     *   Stack: arr => arr, optimized
+     *   Stack: iterable => array_or_undefined
      */ \
-    MACRO(OptimizeSpreadCall, optimize_spread_call, NULL, 1, 1, 2, JOF_BYTE|JOF_IC) \
+    MACRO(OptimizeSpreadCall, optimize_spread_call, NULL, 1, 1, 1, JOF_BYTE|JOF_IC) \
     /*
      * Perform a direct eval in the current environment if `callee` is the
      * builtin `eval` function, otherwise follow same behaviour as `JSOp::Call`.
@@ -1834,6 +1931,9 @@
      * *SuperCall* expressions, to allow JITs to distinguish them from `new`
      * expressions.
      *
+     * `JSOp::NewContent` is for `constructContentFunction` in self-hosted JS.
+     * See the comment for `JSOp::CallContent` for more details.
+     *
      * Implements: [EvaluateConstruct][1] steps 7 and 8.
      *
      * [1]: https://tc39.es/ecma262/#sec-evaluatenew
@@ -1844,6 +1944,7 @@
      *   Stack: callee, isConstructing, args[0], ..., args[argc-1], newTarget => rval
      */ \
     MACRO(New, new_, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_CONSTRUCT|JOF_IC) \
+    MACRO(NewContent, new_content, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_CONSTRUCT|JOF_IC) \
     MACRO(SuperCall, super_call, NULL, 3, -1, 1, JOF_ARGC|JOF_INVOKE|JOF_CONSTRUCT|JOF_IC) \
     /*
      * Spread-call variant of `JSOp::New`.
@@ -2541,97 +2642,14 @@
      */ \
     MACRO(Exception, exception, NULL, 1, 0, 1, JOF_BYTE) \
     /*
-     * Push `resumeIndex`.
-     *
-     * This value must be used only by `JSOp::Gosub`, `JSOp::Finally`, and `JSOp::Retsub`.
-     *
-     *   Category: Control flow
-     *   Type: Exceptions
-     *   Operands: uint24_t resumeIndex
-     *   Stack: => resumeIndex
-     */ \
-    MACRO(ResumeIndex, resume_index, NULL, 4, 0, 1, JOF_RESUMEINDEX) \
-    /*
-     * Jump to the start of a `finally` block.
-     *
-     * `JSOp::Gosub` is unusual: if the finally block finishes normally, it will
-     * reach the `JSOp::Retsub` instruction at the end, and control then
-     * "returns" to the `JSOp::Gosub` and picks up at the next instruction, like
-     * a function call but within a single script and stack frame. (It's named
-     * after the thing in BASIC.)
-     *
-     * We need this because a `try` block can terminate in several different
-     * ways: control can flow off the end, return, throw an exception, `break`
-     * with or without a label, or `continue`. Exceptions are handled
-     * separately; but all those success paths are written as bytecode, and
-     * each one needs to run the `finally` block before continuing with
-     * whatever they were doing. They use `JSOp::Gosub` for this. It is thus
-     * normal for multiple `Gosub` instructions in a script to target the same
-     * `finally` block.
-     *
-     * Rules: `forwardOffset` must be positive and must target a
-     * `JSOp::JumpTarget` instruction followed by `JSOp::Finally`. The
-     * instruction immediately following `JSOp::Gosub` in the script must be a
-     * `JSOp::JumpTarget` instruction, and `resumeIndex` must be the index into
-     * `script->resumeOffsets()` that points to that instruction.
-     *
-     * Note: This op doesn't actually push or pop any values. Its use count of
-     * 2 is a lie to make the stack depth math work for this very odd control
-     * flow instruction.
-     *
-     * `JSOp::Gosub` is considered to have two "successors": the target of
-     * `offset`, which is the actual next instruction to run; and the
-     * instruction immediately following `JSOp::Gosub`, even though it won't run
-     * until later. We define the successor graph this way in order to support
-     * knowing the stack depth at that instruction without first reading the
-     * whole `finally` block.
-     *
-     * The stack depth at that instruction is, as it happens, the current stack
-     * depth minus 2. So this instruction gets nuses == 2.
-     *
-     * Unfortunately there is a price to be paid in horribleness. When
-     * `JSOp::Gosub` runs, it leaves two values on the stack that the stack
-     * depth math doesn't know about. It jumps to the finally block, where
-     * `JSOp::Finally` again does nothing to the stack, but with a bogus def
-     * count of 2, restoring balance to the accounting. If `JSOp::Retsub` is
-     * reached, it pops the two values (for real this time) and control
-     * resumes at the instruction that follows JSOp::Gosub in memory.
-     *
-     *   Category: Control flow
-     *   Type: Exceptions
-     *   Operands: int32_t forwardOffset
-     *   Stack: false, resumeIndex =>
-     */ \
-    MACRO(Gosub, gosub, NULL, 5, 2, 0, JOF_JUMP) \
-    /*
-     * No-op instruction that marks the start of a `finally` block. This has a
-     * def count of 2, but the values are already on the stack (they're
-     * actually left on the stack by `JSOp::Gosub`).
-     *
-     * These two values must not be used except by `JSOp::Retsub`.
+     * No-op instruction that marks the start of a `finally` block.
      *
      *   Category: Control flow
      *   Type: Exceptions
      *   Operands:
-     *   Stack: => false, resumeIndex
+     *   Stack: =>
      */ \
-    MACRO(Finally, finally, NULL, 1, 0, 2, JOF_BYTE) \
-    /*
-     * Jump back to the next instruction, or rethrow an exception, at the end
-     * of a `finally` block. See `JSOp::Gosub` for the explanation.
-     *
-     * If `throwing` is true, throw `v`. Otherwise, `v` must be a resume index;
-     * jump to the corresponding offset within the script.
-     *
-     * The two values popped must be the ones notionally pushed by
-     * `JSOp::Finally`.
-     *
-     *   Category: Control flow
-     *   Type: Exceptions
-     *   Operands:
-     *   Stack: throwing, v =>
-     */ \
-    MACRO(Retsub, retsub, NULL, 1, 2, 0, JOF_BYTE) \
+    MACRO(Finally, finally, NULL, 1, 0, 0, JOF_BYTE) \
     /*
      * Push `MagicValue(JS_UNINITIALIZED_LEXICAL)`, a magic value used to mark
      * a binding as uninitialized.
@@ -3513,12 +3531,13 @@
  * a power of two.  Use this macro to do so.
  */
 #define FOR_EACH_TRAILING_UNUSED_OPCODE(MACRO) \
-  MACRO(228)                                   \
-  MACRO(229)                                   \
-  MACRO(230)                                   \
-  MACRO(231)                                   \
-  MACRO(232)                                   \
-  MACRO(233)                                   \
+  IF_RECORD_TUPLE(/* empty */, MACRO(227))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(228))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(229))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(230))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(231))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(232))     \
+  IF_RECORD_TUPLE(/* empty */, MACRO(233))     \
   MACRO(234)                                   \
   MACRO(235)                                   \
   MACRO(236)                                   \
@@ -3571,5 +3590,14 @@ FOR_EACH_OPCODE(DEFINE_LENGTH_CONSTANT)
 #undef DEFINE_LENGTH_CONSTANT
 
 }  // namespace js
+
+/*
+ * JS operation bytecodes.
+ */
+enum class JSOp : uint8_t {
+#define ENUMERATE_OPCODE(op, ...) op,
+  FOR_EACH_OPCODE(ENUMERATE_OPCODE)
+#undef ENUMERATE_OPCODE
+};
 
 #endif  // vm_Opcodes_h

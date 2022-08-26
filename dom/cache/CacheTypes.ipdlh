@@ -4,9 +4,8 @@
 
 include protocol PCache;
 include protocol PCacheStreamControl;
-include protocol PChildToParentStream;
 include IPCStream;
-include ChannelInfo;
+include IPCChannelInfo;
 include PBackgroundSharedTypes;
 
 include "mozilla/dom/cache/IPCUtils.h";
@@ -85,6 +84,7 @@ struct CacheResponse
   PrincipalInfo? principalInfo;
   uint32_t paddingInfo;
   int64_t paddingSize;
+  RequestCredentials credentials;
 };
 
 struct CacheRequestResponse

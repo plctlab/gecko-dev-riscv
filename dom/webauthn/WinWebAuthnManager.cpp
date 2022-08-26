@@ -14,8 +14,7 @@
 #include "winwebauthn/webauthn.h"
 #include "WinWebAuthnManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 static mozilla::LazyLogModule gWinWebAuthnManagerLog("winwebauthnkeymanager");
@@ -192,7 +191,8 @@ void WinWebAuthnManager::Register(
 
   // Client Data
   WEBAUTHN_CLIENT_DATA WebAuthNClientData = {
-      WEBAUTHN_CLIENT_DATA_CURRENT_VERSION, aInfo.ClientDataJSON().Length(),
+      WEBAUTHN_CLIENT_DATA_CURRENT_VERSION,
+      (DWORD)aInfo.ClientDataJSON().Length(),
       (BYTE*)(aInfo.ClientDataJSON().get()), WEBAUTHN_HASH_ALGORITHM_SHA_256};
 
   // Algorithms
@@ -286,10 +286,13 @@ void WinWebAuthnManager::Register(
         break;
     }
 
+    if (extra.Extensions().Length() >
+        (int)(sizeof(rgExtension) / sizeof(rgExtension[0]))) {
+      nsresult aError = NS_ERROR_DOM_INVALID_STATE_ERR;
+      MaybeAbortRegister(aTransactionId, aError);
+      return;
+    }
     for (const WebAuthnExtension& ext : extra.Extensions()) {
-      MOZ_ASSERT(cExtensions <
-                 (int)(sizeof(rgExtension) / sizeof(rgExtension[0])));
-
       if (ext.type() == WebAuthnExtension::TWebAuthnExtensionHmacSecret) {
         HmacCreateSecret =
             ext.get_WebAuthnExtensionHmacSecret().hmacCreateSecret() == true;
@@ -360,7 +363,7 @@ void WinWebAuthnManager::Register(
 
   // MakeCredentialOptions
   WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS WebAuthNCredentialOptions = {
-      WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_CURRENT_VERSION,
+      WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_VERSION_4,
       aInfo.TimeoutMS(),
       {0, NULL},
       {0, NULL},
@@ -370,7 +373,11 @@ void WinWebAuthnManager::Register(
       winAttestation,
       0,     // Flags
       NULL,  // CancellationId
-      pExcludeCredentialList};
+      pExcludeCredentialList,
+      WEBAUTHN_ENTERPRISE_ATTESTATION_NONE,
+      WEBAUTHN_LARGE_BLOB_SUPPORT_NONE,
+      FALSE,  // PreferResidentKey
+  };
 
   GUID cancellationId = {0};
   if (gWinWebauthnGetCancellationId(&cancellationId) == S_OK) {
@@ -397,11 +404,6 @@ void WinWebAuthnManager::Register(
   mCancellationIds.erase(aTransactionId);
 
   if (hr == S_OK) {
-    nsTArray<uint8_t> attObject;
-    attObject.AppendElements(
-        pWebAuthNCredentialAttestation->pbAttestationObject,
-        pWebAuthNCredentialAttestation->cbAttestationObject);
-
     nsTArray<uint8_t> credentialId;
     credentialId.AppendElements(pWebAuthNCredentialAttestation->pbCredentialId,
                                 pWebAuthNCredentialAttestation->cbCredentialId);
@@ -450,6 +452,24 @@ void WinWebAuthnManager::Register(
                                        attestation->pX5c->cbData);
       authenticatorData.AppendElements(attestation->pbSignature,
                                        attestation->cbSignature);
+    }
+
+    nsTArray<uint8_t> attObject;
+    if (winAttestation == WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_NONE) {
+      // Zero AAGuid
+      const uint8_t zeroGuid[16] = {0};
+      authenticatorData.ReplaceElementsAt(32 + 1 + 4 /*AAGuid offset*/, 16,
+                                          zeroGuid, 16);
+
+      CryptoBuffer authData;
+      authData.Assign(authenticatorData);
+      CryptoBuffer noneAttObj;
+      CBOREncodeNoneAttestationObj(authData, noneAttObj);
+      attObject.AppendElements(noneAttObj);
+    } else {
+      attObject.AppendElements(
+          pWebAuthNCredentialAttestation->pbAttestationObject,
+          pWebAuthNCredentialAttestation->cbAttestationObject);
     }
 
     nsTArray<WebAuthnExtensionResult> extensions;
@@ -534,7 +554,8 @@ void WinWebAuthnManager::Sign(PWebAuthnTransactionParent* aTransactionParent,
 
   // Client Data
   WEBAUTHN_CLIENT_DATA WebAuthNClientData = {
-      WEBAUTHN_CLIENT_DATA_CURRENT_VERSION, aInfo.ClientDataJSON().Length(),
+      WEBAUTHN_CLIENT_DATA_CURRENT_VERSION,
+      (DWORD)aInfo.ClientDataJSON().Length(),
       (BYTE*)(aInfo.ClientDataJSON().get()), WEBAUTHN_HASH_ALGORITHM_SHA_256};
 
   if (aInfo.Extra().isSome()) {
@@ -745,5 +766,4 @@ void WinWebAuthnManager::Cancel(PWebAuthnTransactionParent* aParent,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

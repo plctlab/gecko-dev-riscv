@@ -31,25 +31,29 @@
 // constructor via a backstage pass.
 var EXPORTED_SYMBOLS = ["FormAutofillParent", "FormAutofillStatus"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
 );
+const { FormAutofillUtils } = ChromeUtils.import(
+  "resource://autofill/FormAutofillUtils.jsm"
+);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
   CreditCard: "resource://gre/modules/CreditCard.jsm",
   FormAutofillPreferences: "resource://autofill/FormAutofillPreferences.jsm",
   FormAutofillPrompter: "resource://autofill/FormAutofillPrompter.jsm",
-  FormAutofillUtils: "resource://autofill/FormAutofillUtils.jsm",
   OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
 });
 
-this.log = null;
-FormAutofill.defineLazyLogGetter(this, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyGetter(lazy, "log", () =>
+  FormAutofill.defineLogGetter(lazy, EXPORTED_SYMBOLS[0])
+);
 
 const {
   ENABLED_AUTOFILL_ADDRESSES_PREF,
@@ -115,7 +119,7 @@ let FormAutofillStatus = {
    * @private
    */
   uninit() {
-    gFormAutofillStorage._saveImmediately();
+    lazy.gFormAutofillStorage._saveImmediately();
 
     if (!this._initialized) {
       return;
@@ -134,14 +138,14 @@ let FormAutofillStatus = {
   },
 
   get formAutofillStorage() {
-    return gFormAutofillStorage;
+    return lazy.gFormAutofillStorage;
   },
 
   /**
    * Broadcast the status to frames when the form autofill status changes.
    */
   onStatusChanged() {
-    log.debug("onStatusChanged: Status changed to", this._active);
+    lazy.log.debug("onStatusChanged: Status changed to", this._active);
     Services.ppmm.sharedData.set("FormAutofill:enabled", this._active);
     // Sync autofill enabled to make sure the value is up-to-date
     // no matter when the new content process is initialized.
@@ -171,7 +175,7 @@ let FormAutofillStatus = {
    * Update the status and trigger onStatusChanged, if necessary.
    */
   updateStatus() {
-    log.debug("updateStatus");
+    lazy.log.debug("updateStatus");
     let wasActive = this._active;
     this._active = this.computeStatus();
     if (this._active !== wasActive) {
@@ -180,14 +184,14 @@ let FormAutofillStatus = {
   },
 
   async updateSavedFieldNames() {
-    log.debug("updateSavedFieldNames");
+    lazy.log.debug("updateSavedFieldNames");
 
     let savedFieldNames;
-    const addressNames = await gFormAutofillStorage.addresses.getSavedFieldNames();
+    const addressNames = await lazy.gFormAutofillStorage.addresses.getSavedFieldNames();
 
     // Don't access the credit cards store unless it is enabled.
     if (FormAutofill.isAutofillCreditCardsAvailable) {
-      const creditCardNames = await gFormAutofillStorage.creditCards.getSavedFieldNames();
+      const creditCardNames = await lazy.gFormAutofillStorage.creditCards.getSavedFieldNames();
       savedFieldNames = new Set([...addressNames, ...creditCardNames]);
     } else {
       savedFieldNames = addressNames;
@@ -228,10 +232,10 @@ let FormAutofillStatus = {
   onCloseWindow() {},
 
   async observe(subject, topic, data) {
-    log.debug("observe:", topic, "with data:", data);
+    lazy.log.debug("observe:", topic, "with data:", data);
     switch (topic) {
       case "privacy-pane-loaded": {
-        let formAutofillPreferences = new FormAutofillPreferences();
+        let formAutofillPreferences = new lazy.FormAutofillPreferences();
         let document = subject.document;
         let prefFragment = formAutofillPreferences.init(document);
         let formAutofillGroupBox = document.getElementById(
@@ -268,11 +272,11 @@ let FormAutofillStatus = {
 
 // Lazily load the storage JSM to avoid disk I/O until absolutely needed.
 // Once storage is loaded we need to update saved field names and inform content processes.
-XPCOMUtils.defineLazyGetter(this, "gFormAutofillStorage", () => {
+XPCOMUtils.defineLazyGetter(lazy, "gFormAutofillStorage", () => {
   let { formAutofillStorage } = ChromeUtils.import(
     "resource://autofill/FormAutofillStorage.jsm"
   );
-  log.debug("Loading formAutofillStorage");
+  lazy.log.debug("Loading formAutofillStorage");
 
   formAutofillStorage.initialize().then(() => {
     // Update the saved field names to compute the status and update child processes.
@@ -305,7 +309,7 @@ class FormAutofillParent extends JSWindowActorParent {
   async receiveMessage({ name, data }) {
     switch (name) {
       case "FormAutofill:InitStorage": {
-        await gFormAutofillStorage.initialize();
+        await lazy.gFormAutofillStorage.initialize();
         await FormAutofillStatus.updateSavedFieldNames();
         break;
       }
@@ -318,24 +322,24 @@ class FormAutofillParent extends JSWindowActorParent {
         break;
       }
       case "FormAutofill:OpenPreferences": {
-        const win = BrowserWindowTracker.getTopWindow();
+        const win = lazy.BrowserWindowTracker.getTopWindow();
         win.openPreferences("privacy-form-autofill");
         break;
       }
       case "FormAutofill:GetDecryptedString": {
         let { cipherText, reauth } = data;
         if (!FormAutofillUtils._reauthEnabledByUser) {
-          log.debug("Reauth is disabled");
+          lazy.log.debug("Reauth is disabled");
           reauth = false;
         }
         let string;
         try {
-          string = await OSKeyStore.decrypt(cipherText, reauth);
+          string = await lazy.OSKeyStore.decrypt(cipherText, reauth);
         } catch (e) {
           if (e.result != Cr.NS_ERROR_ABORT) {
             throw e;
           }
-          log.warn("User canceled encryption login");
+          lazy.log.warn("User canceled encryption login");
         }
         return string;
       }
@@ -350,27 +354,32 @@ class FormAutofillParent extends JSWindowActorParent {
       // The remaining Save and Remove messages are invoked only by tests.
       case "FormAutofill:SaveAddress": {
         if (data.guid) {
-          await gFormAutofillStorage.addresses.update(data.guid, data.address);
+          await lazy.gFormAutofillStorage.addresses.update(
+            data.guid,
+            data.address
+          );
         } else {
-          await gFormAutofillStorage.addresses.add(data.address);
+          await lazy.gFormAutofillStorage.addresses.add(data.address);
         }
         break;
       }
       case "FormAutofill:SaveCreditCard": {
         if (!(await FormAutofillUtils.ensureLoggedIn()).authenticated) {
-          log.warn("User canceled encryption login");
+          lazy.log.warn("User canceled encryption login");
           return undefined;
         }
-        await gFormAutofillStorage.creditCards.add(data.creditcard);
+        await lazy.gFormAutofillStorage.creditCards.add(data.creditcard);
         break;
       }
       case "FormAutofill:RemoveAddresses": {
-        data.guids.forEach(guid => gFormAutofillStorage.addresses.remove(guid));
+        data.guids.forEach(guid =>
+          lazy.gFormAutofillStorage.addresses.remove(guid)
+        );
         break;
       }
       case "FormAutofill:RemoveCreditCards": {
         data.guids.forEach(guid =>
-          gFormAutofillStorage.creditCards.remove(guid)
+          lazy.gFormAutofillStorage.creditCards.remove(guid)
         );
         break;
       }
@@ -410,7 +419,7 @@ class FormAutofillParent extends JSWindowActorParent {
    *         The input autocomplete property's information.
    */
   static async _getRecords({ collectionName, searchString, info }) {
-    let collection = gFormAutofillStorage[collectionName];
+    let collection = lazy.gFormAutofillStorage[collectionName];
     if (!collection) {
       return [];
     }
@@ -441,7 +450,7 @@ class FormAutofillParent extends JSWindowActorParent {
       if (
         collectionName == ADDRESSES_COLLECTION_NAME &&
         record.country &&
-        !FormAutofill.supportedCountries.includes(record.country)
+        !FormAutofill.isAutofillAddressesAvailableInCountry(record.country)
       ) {
         // Address autofill isn't supported for the record's country so we don't
         // want to attempt to potentially incorrectly fill the address fields.
@@ -469,7 +478,7 @@ class FormAutofillParent extends JSWindowActorParent {
     }
     if (address.guid) {
       // Avoid updating the fields that users don't modify.
-      let originalAddress = await gFormAutofillStorage.addresses.get(
+      let originalAddress = await lazy.gFormAutofillStorage.addresses.get(
         address.guid
       );
       for (let field in address.record) {
@@ -479,7 +488,7 @@ class FormAutofillParent extends JSWindowActorParent {
       }
 
       if (
-        !(await gFormAutofillStorage.addresses.mergeIfPossible(
+        !(await lazy.gFormAutofillStorage.addresses.mergeIfPossible(
           address.guid,
           address.record,
           true
@@ -493,12 +502,12 @@ class FormAutofillParent extends JSWindowActorParent {
 
         showDoorhanger = async () => {
           const description = FormAutofillUtils.getAddressLabel(address.record);
-          const state = await FormAutofillPrompter.promptToSaveAddress(
+          const state = await lazy.FormAutofillPrompter.promptToSaveAddress(
             browser,
             "updateAddress",
             description
           );
-          let changedGUIDs = await gFormAutofillStorage.addresses.mergeToStorage(
+          let changedGUIDs = await lazy.gFormAutofillStorage.addresses.mergeToStorage(
             address.record,
             true
           );
@@ -506,25 +515,25 @@ class FormAutofillParent extends JSWindowActorParent {
             case "create":
               if (!changedGUIDs.length) {
                 changedGUIDs.push(
-                  await gFormAutofillStorage.addresses.add(address.record)
+                  await lazy.gFormAutofillStorage.addresses.add(address.record)
                 );
               }
               break;
             case "update":
               if (!changedGUIDs.length) {
-                await gFormAutofillStorage.addresses.update(
+                await lazy.gFormAutofillStorage.addresses.update(
                   address.guid,
                   address.record,
                   true
                 );
                 changedGUIDs.push(address.guid);
               } else {
-                gFormAutofillStorage.addresses.remove(address.guid);
+                lazy.gFormAutofillStorage.addresses.remove(address.guid);
               }
               break;
           }
           changedGUIDs.forEach(guid =>
-            gFormAutofillStorage.addresses.notifyUsed(guid)
+            lazy.gFormAutofillStorage.addresses.notifyUsed(guid)
           );
         };
         // Address should be updated
@@ -538,7 +547,7 @@ class FormAutofillParent extends JSWindowActorParent {
           "autofill",
           timeStartedFillingMS
         );
-        gFormAutofillStorage.addresses.notifyUsed(address.guid);
+        lazy.gFormAutofillStorage.addresses.notifyUsed(address.guid);
         // Address is merged successfully
         Services.telemetry.scalarAdd(
           "formautofill.addresses.fill_type_autofill",
@@ -546,16 +555,16 @@ class FormAutofillParent extends JSWindowActorParent {
         );
       }
     } else {
-      let changedGUIDs = await gFormAutofillStorage.addresses.mergeToStorage(
+      let changedGUIDs = await lazy.gFormAutofillStorage.addresses.mergeToStorage(
         address.record
       );
       if (!changedGUIDs.length) {
         changedGUIDs.push(
-          await gFormAutofillStorage.addresses.add(address.record)
+          await lazy.gFormAutofillStorage.addresses.add(address.record)
         );
       }
       changedGUIDs.forEach(guid =>
-        gFormAutofillStorage.addresses.notifyUsed(guid)
+        lazy.gFormAutofillStorage.addresses.notifyUsed(guid)
       );
       this._recordFormFillingTime("address", "manual", timeStartedFillingMS);
 
@@ -567,7 +576,7 @@ class FormAutofillParent extends JSWindowActorParent {
         );
         showDoorhanger = async () => {
           const description = FormAutofillUtils.getAddressLabel(address.record);
-          const state = await FormAutofillPrompter.promptToSaveAddress(
+          const state = await lazy.FormAutofillPrompter.promptToSaveAddress(
             browser,
             "firstTimeUse",
             description
@@ -608,7 +617,7 @@ class FormAutofillParent extends JSWindowActorParent {
     // Remove invalid cc-type values
     if (
       creditCard.record["cc-type"] &&
-      !CreditCard.isValidNetwork(creditCard.record["cc-type"])
+      !lazy.CreditCard.isValidNetwork(creditCard.record["cc-type"])
     ) {
       // Let's reset the credit card to empty, and then network auto-detect will
       // pick it up.
@@ -620,7 +629,7 @@ class FormAutofillParent extends JSWindowActorParent {
       // Indicate that the user has used Credit Card Autofill to fill in a form.
       setUsedStatus(3);
 
-      let originalCCData = await gFormAutofillStorage.creditCards.get(
+      let originalCCData = await lazy.gFormAutofillStorage.creditCards.get(
         creditCard.guid
       );
       let recordUnchanged = true;
@@ -639,7 +648,7 @@ class FormAutofillParent extends JSWindowActorParent {
       }
 
       if (recordUnchanged) {
-        gFormAutofillStorage.creditCards.notifyUsed(creditCard.guid);
+        lazy.gFormAutofillStorage.creditCards.notifyUsed(creditCard.guid);
         // Add probe to record credit card autofill(without modification).
         Services.telemetry.scalarAdd(
           "formautofill.creditCards.fill_type_autofill",
@@ -670,18 +679,20 @@ class FormAutofillParent extends JSWindowActorParent {
       );
       this._recordFormFillingTime("creditCard", "manual", timeStartedFillingMS);
 
-      let existingGuid = await gFormAutofillStorage.creditCards.getDuplicateGuid(
+      let existingGuid = await lazy.gFormAutofillStorage.creditCards.getDuplicateGuid(
         creditCard.record
       );
 
       if (existingGuid) {
         creditCard.guid = existingGuid;
 
-        let originalCCData = await gFormAutofillStorage.creditCards.get(
+        let originalCCData = await lazy.gFormAutofillStorage.creditCards.get(
           creditCard.guid
         );
 
-        gFormAutofillStorage.creditCards._normalizeRecord(creditCard.record);
+        lazy.gFormAutofillStorage.creditCards._normalizeRecord(
+          creditCard.record
+        );
 
         // If the credit card record is a duplicate, check if the fields match the
         // record.
@@ -701,7 +712,7 @@ class FormAutofillParent extends JSWindowActorParent {
           // but somehow has a duplicate record in the storage. Will be reset to 2
           // if the doorhanger actually shows below.
           setUsedStatus(1);
-          gFormAutofillStorage.creditCards.notifyUsed(creditCard.guid);
+          lazy.gFormAutofillStorage.creditCards.notifyUsed(creditCard.guid);
           return false;
         }
       }
@@ -716,10 +727,10 @@ class FormAutofillParent extends JSWindowActorParent {
         return;
       }
 
-      await FormAutofillPrompter.promptToSaveCreditCard(
+      await lazy.FormAutofillPrompter.promptToSaveCreditCard(
         browser,
         creditCard,
-        gFormAutofillStorage
+        lazy.gFormAutofillStorage
       );
     };
   }

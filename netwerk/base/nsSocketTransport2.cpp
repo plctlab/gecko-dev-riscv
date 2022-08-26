@@ -826,7 +826,6 @@ nsresult nsSocketTransport::InitWithName(const char* name, size_t length) {
 nsresult nsSocketTransport::InitWithConnectedSocket(PRFileDesc* fd,
                                                     const NetAddr* addr) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  NS_ASSERTION(!mFD.IsInitialized(), "already initialized");
 
   char buf[kNetAddrMaxCStrBufSize];
   addr->ToStringBuffer(buf, sizeof(buf));
@@ -851,7 +850,7 @@ nsresult nsSocketTransport::InitWithConnectedSocket(PRFileDesc* fd,
 
   {
     MutexAutoLock lock(mLock);
-
+    NS_ASSERTION(!mFD.IsInitialized(), "already initialized");
     mFD = fd;
     mFDref = 1;
     mFDconnected = true;
@@ -924,6 +923,7 @@ nsresult nsSocketTransport::ResolveHost() {
       this, SocketHost().get(), SocketPort(),
       mConnectionFlags & nsSocketTransport::BYPASS_CACHE ? " bypass cache" : "",
       mProxyTransparentResolvesHost));
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
   nsresult rv;
 
@@ -1080,6 +1080,14 @@ nsresult nsSocketTransport::BuildSocket(PRFileDesc*& fd, bool& proxyTransparent,
     controlFlags |= nsISocketProvider::BE_CONSERVATIVE;
   }
 
+  if (mConnectionFlags & nsISocketTransport::DONT_TRY_ECH) {
+    controlFlags |= nsISocketProvider::DONT_TRY_ECH;
+  }
+
+  if (mConnectionFlags & nsISocketTransport::IS_RETRY) {
+    controlFlags |= nsISocketProvider::IS_RETRY;
+  }
+
   if (mConnectionFlags &
       nsISocketTransport::ANONYMOUS_CONNECT_ALLOW_CLIENT_CERT) {
     controlFlags |= nsISocketProvider::ANONYMOUS_CONNECT_ALLOW_CLIENT_CERT;
@@ -1195,6 +1203,7 @@ nsresult nsSocketTransport::BuildSocket(PRFileDesc*& fd, bool& proxyTransparent,
 
 nsresult nsSocketTransport::InitiateSocket() {
   SOCKET_LOG(("nsSocketTransport::InitiateSocket [this=%p]\n", this));
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
   nsresult rv;
   bool isLocal;
@@ -1233,7 +1242,7 @@ nsresult nsSocketTransport::InitiateSocket() {
           "Browser services should be disabled or redirected to a local "
           "server.\n",
           mHost.get(), ipaddr.get());
-      MOZ_CRASH("Attempting to connect to non-local address!");
+      return NS_ERROR_NON_LOCAL_CONNECTION_REFUSED;
     }
   }
 
@@ -1282,10 +1291,13 @@ nsresult nsSocketTransport::InitiateSocket() {
   //
   // if we already have a connected socket, then just attach and return.
   //
-  if (mFD.IsInitialized()) {
-    rv = mSocketTransportService->AttachSocket(mFD, this);
-    if (NS_SUCCEEDED(rv)) mAttached = true;
-    return rv;
+  {
+    MutexAutoLock lock(mLock);
+    if (mFD.IsInitialized()) {
+      rv = mSocketTransportService->AttachSocket(mFD, this);
+      if (NS_SUCCEEDED(rv)) mAttached = true;
+      return rv;
+    }
   }
 
   //
@@ -1393,19 +1405,21 @@ nsresult nsSocketTransport::InitiateSocket() {
   PR_SetSocketOption(fd, &opt);
 #endif
 
-  // inform socket transport about this newly created socket...
-  rv = mSocketTransportService->AttachSocket(fd, this);
-  if (NS_FAILED(rv)) {
-    CloseSocket(fd,
-                mSocketTransportService->IsTelemetryEnabledAndNotSleepPhase());
-    return rv;
-  }
-  mAttached = true;
+  // up to here, mFD will only be accessed by us
 
   // assign mFD so that we can properly handle OnSocketDetached before we've
   // established a connection.
   {
     MutexAutoLock lock(mLock);
+    // inform socket transport about this newly created socket...
+    rv = mSocketTransportService->AttachSocket(fd, this);
+    if (NS_FAILED(rv)) {
+      CloseSocket(
+          fd, mSocketTransportService->IsTelemetryEnabledAndNotSleepPhase());
+      return rv;
+    }
+    mAttached = true;
+
     mFD = fd;
     mFDref = 1;
     mFDconnected = false;
@@ -1615,12 +1629,19 @@ bool nsSocketTransport::RecoverFromError() {
 
   nsresult rv;
 
-  // OK to check this outside mLock
-  NS_ASSERTION(!mFDconnected, "socket should not be connected");
+#ifdef DEBUG
+  {
+    MutexAutoLock lock(mLock);
+    NS_ASSERTION(!mFDconnected, "socket should not be connected");
+  }
+#endif
 
   // all connection failures need to be reported to DNS so that the next
   // time we will use a different address if available.
-  if (mState == STATE_CONNECTING && mDNSRecord) {
+  // NS_BASE_STREAM_CLOSED is not an actual connection failure, so don't report
+  // to DNS.
+  if (mState == STATE_CONNECTING && mDNSRecord &&
+      mCondition != NS_BASE_STREAM_CLOSED) {
     mDNSRecord->ReportUnusable(SocketPort());
   }
 
@@ -1904,6 +1925,7 @@ void nsSocketTransport::ReleaseFD_Locked(PRFileDesc* fd) {
 
 void nsSocketTransport::OnSocketEvent(uint32_t type, nsresult status,
                                       nsISupports* param) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   SOCKET_LOG(
       ("nsSocketTransport::OnSocketEvent [this=%p type=%u status=%" PRIx32
        " param=%p]\n",
@@ -2039,6 +2061,7 @@ void nsSocketTransport::OnSocketEvent(uint32_t type, nsresult status,
 // socket handler impl
 
 void nsSocketTransport::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   SOCKET_LOG1(("nsSocketTransport::OnSocketReady [this=%p outFlags=%hd]\n",
                this, outFlags));
 
@@ -2263,7 +2286,8 @@ NS_IMPL_CI_INTERFACE_GETTER(nsSocketTransport, nsISocketTransport, nsITransport,
 
 NS_IMETHODIMP
 nsSocketTransport::OpenInputStream(uint32_t flags, uint32_t segsize,
-                                   uint32_t segcount, nsIInputStream** result) {
+                                   uint32_t segcount,
+                                   nsIInputStream** aResult) {
   SOCKET_LOG(
       ("nsSocketTransport::OpenInputStream [this=%p flags=%x]\n", this, flags));
 
@@ -2271,6 +2295,7 @@ nsSocketTransport::OpenInputStream(uint32_t flags, uint32_t segsize,
 
   nsresult rv;
   nsCOMPtr<nsIAsyncInputStream> pipeIn;
+  nsCOMPtr<nsIInputStream> result;
 
   if (!(flags & OPEN_UNBUFFERED) || (flags & OPEN_BLOCKING)) {
     // XXX if the caller wants blocking, then the caller also gets buffered!
@@ -2290,25 +2315,27 @@ nsSocketTransport::OpenInputStream(uint32_t flags, uint32_t segsize,
                       NS_ASYNCCOPY_VIA_WRITESEGMENTS, segsize);
     if (NS_FAILED(rv)) return rv;
 
-    *result = pipeIn;
+    result = pipeIn;
   } else {
-    *result = &mInput;
+    result = &mInput;
   }
 
   // flag input stream as open
   mInputClosed = false;
 
   rv = PostEvent(MSG_ENSURE_CONNECT);
-  if (NS_FAILED(rv)) return rv;
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
-  NS_ADDREF(*result);
+  result.forget(aResult);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsSocketTransport::OpenOutputStream(uint32_t flags, uint32_t segsize,
                                     uint32_t segcount,
-                                    nsIOutputStream** result) {
+                                    nsIOutputStream** aResult) {
   SOCKET_LOG(("nsSocketTransport::OpenOutputStream [this=%p flags=%x]\n", this,
               flags));
 
@@ -2316,6 +2343,7 @@ nsSocketTransport::OpenOutputStream(uint32_t flags, uint32_t segsize,
 
   nsresult rv;
   nsCOMPtr<nsIAsyncOutputStream> pipeOut;
+  nsCOMPtr<nsIOutputStream> result;
   if (!(flags & OPEN_UNBUFFERED) || (flags & OPEN_BLOCKING)) {
     // XXX if the caller wants blocking, then the caller also gets buffered!
     // bool openBuffered = !(flags & OPEN_UNBUFFERED);
@@ -2334,9 +2362,9 @@ nsSocketTransport::OpenOutputStream(uint32_t flags, uint32_t segsize,
                       NS_ASYNCCOPY_VIA_READSEGMENTS, segsize);
     if (NS_FAILED(rv)) return rv;
 
-    *result = pipeOut;
+    result = pipeOut;
   } else {
-    *result = &mOutput;
+    result = &mOutput;
   }
 
   // flag output stream as open
@@ -2345,7 +2373,7 @@ nsSocketTransport::OpenOutputStream(uint32_t flags, uint32_t segsize,
   rv = PostEvent(MSG_ENSURE_CONNECT);
   if (NS_FAILED(rv)) return rv;
 
-  NS_ADDREF(*result);
+  result.forget(aResult);
   return NS_OK;
 }
 
@@ -2366,14 +2394,14 @@ nsSocketTransport::Close(nsresult reason) {
 NS_IMETHODIMP
 nsSocketTransport::GetSecurityInfo(nsISupports** secinfo) {
   MutexAutoLock lock(mLock);
-  NS_IF_ADDREF(*secinfo = mSecInfo);
+  *secinfo = do_AddRef(mSecInfo).take();
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsSocketTransport::GetSecurityCallbacks(nsIInterfaceRequestor** callbacks) {
   MutexAutoLock lock(mLock);
-  NS_IF_ADDREF(*callbacks = mCallbacks);
+  *callbacks = do_AddRef(mCallbacks).take();
   return NS_OK;
 }
 
@@ -2534,6 +2562,7 @@ nsSocketTransport::Bind(NetAddr* aLocalAddr) {
   NS_ENSURE_ARG(aLocalAddr);
 
   MutexAutoLock lock(mLock);
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   if (mAttached) {
     return NS_ERROR_FAILURE;
   }
@@ -3100,22 +3129,25 @@ static void LogOSError(const char* aPrefix, const void* aObjPtr) {
 
 #  ifdef XP_WIN
   DWORD errCode = WSAGetLastError();
-  LPVOID errMessage;
-  FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                    FORMAT_MESSAGE_IGNORE_INSERTS,
-                NULL, errCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                (LPTSTR)&errMessage, 0, NULL);
+  char* errMessage;
+  FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                 NULL, errCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                 (LPSTR)&errMessage, 0, NULL);
+  NS_WARNING(nsPrintfCString("%s [%p] OS error[0x%lx] %s",
+                             aPrefix ? aPrefix : "nsSocketTransport", aObjPtr,
+                             errCode,
+                             errMessage ? errMessage : "<no error text>")
+                 .get());
+  LocalFree(errMessage);
 #  else
   int errCode = errno;
   char* errMessage = strerror(errno);
-#  endif
   NS_WARNING(nsPrintfCString("%s [%p] OS error[0x%x] %s",
                              aPrefix ? aPrefix : "nsSocketTransport", aObjPtr,
                              errCode,
                              errMessage ? errMessage : "<no error text>")
                  .get());
-#  ifdef XP_WIN
-  LocalFree(errMessage);
 #  endif
 #endif
 }

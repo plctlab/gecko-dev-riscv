@@ -5,46 +5,6 @@
 /* import-globals-from extensionControlled.js */
 /* import-globals-from preferences.js */
 
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "DownloadUtils",
-  "resource://gre/modules/DownloadUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "LoginHelper",
-  "resource://gre/modules/LoginHelper.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "OSKeyStore",
-  "resource://gre/modules/OSKeyStore.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "SiteDataManager",
-  "resource:///modules/SiteDataManager.jsm"
-);
-XPCOMUtils.defineLazyModuleGetters(this, {
-  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
-  UrlbarProviderQuickSuggest:
-    "resource:///modules/UrlbarProviderQuickSuggest.jsm",
-});
-XPCOMUtils.defineLazyGetter(this, "L10n", () => {
-  return new Localization([
-    "branding/brand.ftl",
-    "browser/preferences/preferences.ftl",
-  ]);
-});
-
-var { PrivateBrowsingUtils } = ChromeUtils.import(
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
-);
-
 const PREF_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
 
 const TRACKING_PROTECTION_KEY = "websites.trackingProtectionMode";
@@ -61,6 +21,18 @@ const CONTENT_BLOCKING_PREFS = [
   "privacy.firstparty.isolate",
 ];
 
+/*
+ * Prefs that are unique to sanitizeOnShutdown and are not shared
+ * with the deleteOnClose mechanism like privacy.clearOnShutdown.cookies, -cache and -offlineApps
+ */
+const SANITIZE_ON_SHUTDOWN_PREFS_ONLY = [
+  "privacy.clearOnShutdown.history",
+  "privacy.clearOnShutdown.downloads",
+  "privacy.clearOnShutdown.sessions",
+  "privacy.clearOnShutdown.formdata",
+  "privacy.clearOnShutdown.siteSettings",
+];
+
 const PREF_OPT_OUT_STUDIES_ENABLED = "app.shield.optoutstudies.enabled";
 const PREF_NORMANDY_ENABLED = "app.normandy.enabled";
 
@@ -71,6 +43,9 @@ const { BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN } = Ci.nsICookieService;
 
 const PASSWORD_MANAGER_PREF_ID = "services.passwordSavingEnabled";
 const PREF_PASSWORD_MANAGER_ENABLED = "signon.rememberSignons";
+
+const PREF_DFPI_ENABLED_BY_DEFAULT =
+  "privacy.restrict3rdpartystorage.rollout.enabledByDefault";
 
 XPCOMUtils.defineLazyGetter(this, "AlertsServiceDND", function() {
   try {
@@ -85,13 +60,6 @@ XPCOMUtils.defineLazyGetter(this, "AlertsServiceDND", function() {
   }
 });
 
-XPCOMUtils.defineLazyServiceGetter(
-  this,
-  "listManager",
-  "@mozilla.org/url-classifier/listmanager;1",
-  "nsIUrlListManager"
-);
-
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "OS_AUTH_ENABLED",
@@ -103,13 +71,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "gIsFirstPartyIsolated",
   "privacy.firstparty.isolate",
-  false
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gStatePartitioningMVPEnabled",
-  "browser.contentblocking.state-partitioning.mvp.ui.enabled",
   false
 );
 
@@ -127,6 +88,17 @@ Preferences.addAll([
   // Tracker list
   { id: "urlclassifier.trackingTable", type: "string" },
 
+  // TCP rollout
+  {
+    id: "privacy.restrict3rdpartystorage.rollout.enabledByDefault",
+    type: "bool",
+  },
+  {
+    id:
+      "privacy.restrict3rdpartystorage.rollout.preferences.TCPToggleInStandard",
+    type: "bool",
+  },
+
   // Button prefs
   { id: "pref.privacy.disable_button.cookie_exceptions", type: "bool" },
   { id: "pref.privacy.disable_button.view_cookies", type: "bool" },
@@ -137,21 +109,23 @@ Preferences.addAll([
   },
 
   // Location Bar
+  { id: "browser.urlbar.suggest.bestmatch", type: "bool" },
   { id: "browser.urlbar.suggest.bookmark", type: "bool" },
   { id: "browser.urlbar.suggest.history", type: "bool" },
   { id: "browser.urlbar.suggest.openpage", type: "bool" },
   { id: "browser.urlbar.suggest.topsites", type: "bool" },
   { id: "browser.urlbar.suggest.engines", type: "bool" },
-  { id: "browser.urlbar.suggest.quicksuggest", type: "bool" },
+  { id: "browser.urlbar.suggest.quicksuggest.nonsponsored", type: "bool" },
   { id: "browser.urlbar.suggest.quicksuggest.sponsored", type: "bool" },
+  { id: "browser.urlbar.quicksuggest.dataCollection.enabled", type: "bool" },
 
   // History
   { id: "places.history.enabled", type: "bool" },
   { id: "browser.formfill.enable", type: "bool" },
   { id: "privacy.history.custom", type: "bool" },
+
   // Cookies
   { id: "network.cookie.cookieBehavior", type: "int" },
-  { id: "network.cookie.lifetimePolicy", type: "int" },
   { id: "network.cookie.blockFutureCookies", type: "bool" },
   // Content blocking category
   { id: "browser.contentblocking.category", type: "string" },
@@ -160,6 +134,15 @@ Preferences.addAll([
   // Clear Private Data
   { id: "privacy.sanitize.sanitizeOnShutdown", type: "bool" },
   { id: "privacy.sanitize.timeSpan", type: "int" },
+  { id: "privacy.clearOnShutdown.cookies", type: "bool" },
+  { id: "privacy.clearOnShutdown.cache", type: "bool" },
+  { id: "privacy.clearOnShutdown.offlineApps", type: "bool" },
+  { id: "privacy.clearOnShutdown.history", type: "bool" },
+  { id: "privacy.clearOnShutdown.downloads", type: "bool" },
+  { id: "privacy.clearOnShutdown.sessions", type: "bool" },
+  { id: "privacy.clearOnShutdown.formdata", type: "bool" },
+  { id: "privacy.clearOnShutdown.siteSettings", type: "bool" },
+
   // Do not track
   { id: "privacy.donottrackheader.enabled", type: "bool" },
 
@@ -220,6 +203,10 @@ Preferences.addAll([
 
   // Windows SSO
   { id: "network.http.windows-sso.enabled", type: "bool" },
+
+  // Quick Actions
+  { id: "browser.urlbar.quickactions.showPrefs", type: "bool" },
+  { id: "browser.urlbar.suggest.quickactions", type: "bool" },
 ]);
 
 // Study opt out
@@ -231,6 +218,14 @@ if (AppConstants.MOZ_DATA_REPORTING) {
     { id: PREF_UPLOAD_ENABLED, type: "bool" },
   ]);
 }
+// Privacy segmentation section
+Preferences.addAll([
+  {
+    id: "browser.privacySegmentation.preferences.show",
+    type: "bool",
+  },
+  { id: "browser.privacySegmentation.enabled", type: "bool" },
+]);
 
 // Data Choices tab
 if (AppConstants.MOZ_CRASHREPORTER) {
@@ -288,20 +283,9 @@ function dataCollectionCheckboxHandler({
 
 // Sets the "Learn how" SUMO link in the Strict/Custom options of Content Blocking.
 function setUpContentBlockingWarnings() {
-  if (gStatePartitioningMVPEnabled) {
-    let warnings = document.querySelectorAll(
-      ".content-blocking-warning-description"
-    );
-    for (let warning of warnings) {
-      document.l10n.setAttributes(
-        warning,
-        "content-blocking-and-isolating-etp-warning-description-2"
-      );
-    }
-    document.getElementById(
-      "fpiIncompatibilityWarning"
-    ).hidden = !gIsFirstPartyIsolated;
-  }
+  document.getElementById(
+    "fpiIncompatibilityWarning"
+  ).hidden = !gIsFirstPartyIsolated;
 
   let links = document.querySelectorAll(".contentBlockWarningLink");
   let contentBlockingWarningUrl =
@@ -310,6 +294,71 @@ function setUpContentBlockingWarnings() {
   for (let link of links) {
     link.setAttribute("href", contentBlockingWarningUrl);
   }
+}
+
+function initTCPStandardSection() {
+  document
+    .getElementById("tcp-learn-more-link")
+    .setAttribute(
+      "href",
+      Services.urlFormatter.formatURLPref("app.support.baseURL") +
+        Services.prefs.getStringPref(
+          "privacy.restrict3rdpartystorage.preferences.learnMoreURLSuffix"
+        )
+    );
+
+  let cookieBehaviorPref = Preferences.get("network.cookie.cookieBehavior");
+  let updateTCPSectionVisibilityState = () => {
+    document.getElementById("etpStandardTCPBox").hidden =
+      // Hide this section if we show the rollout section already.
+      !document.getElementById("etpStandardTCPRolloutBox").hidden ||
+      cookieBehaviorPref.value !=
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN;
+  };
+
+  cookieBehaviorPref.on("change", updateTCPSectionVisibilityState);
+
+  updateTCPSectionVisibilityState();
+}
+
+function initTCPRolloutSection() {
+  document
+    .getElementById("tcp-rollout-learn-more-link")
+    .setAttribute(
+      "href",
+      Services.urlFormatter.formatURLPref("app.support.baseURL") +
+        Services.prefs.getStringPref(
+          "privacy.restrict3rdpartystorage.rollout.preferences.learnMoreURLSuffix"
+        )
+    );
+
+  let dfpiPref = Preferences.get(PREF_DFPI_ENABLED_BY_DEFAULT);
+  let updateTCPRolloutSectionVisibilityState = () => {
+    // For phase 2 we always hide the TCP preferences section. TCP will be
+    // enabled by default in "standard" ETP mode.
+    if (NimbusFeatures.tcpByDefault.getVariable("enabled")) {
+      document.getElementById("etpStandardTCPRolloutBox").hidden = true;
+      return;
+    }
+
+    let onboardingEnabled =
+      NimbusFeatures.tcpPreferences.getVariable("enabled") ||
+      (dfpiPref.value && dfpiPref.hasUserValue);
+    document.getElementById(
+      "etpStandardTCPRolloutBox"
+    ).hidden = !onboardingEnabled;
+  };
+
+  NimbusFeatures.tcpPreferences.onUpdate(
+    updateTCPRolloutSectionVisibilityState
+  );
+  NimbusFeatures.tcpByDefault.onUpdate(updateTCPRolloutSectionVisibilityState);
+  window.addEventListener("unload", () => {
+    NimbusFeatures.tcpPreferences.off(updateTCPRolloutSectionVisibilityState);
+    NimbusFeatures.tcpByDefault.off(updateTCPRolloutSectionVisibilityState);
+  });
+
+  updateTCPRolloutSectionVisibilityState();
 }
 
 var gPrivacyPane = {
@@ -427,6 +476,19 @@ var gPrivacyPane = {
     });
   },
 
+  _initQuickActionsSection() {
+    let showPref = Preferences.get("browser.urlbar.quickactions.showPrefs");
+    let showQuickActionsGroup = () => {
+      document.getElementById("quickActionsBox").hidden = !showPref.value;
+    };
+    showPref.on("change", showQuickActionsGroup);
+    showQuickActionsGroup();
+
+    document
+      .getElementById("quickActionsLink")
+      .setAttribute("href", UrlbarProviderQuickActions.helpUrl);
+  },
+
   syncFromHttpsOnlyPref() {
     let httpsOnlyOnPref = Services.prefs.getBoolPref(
       "dom.security.https_only_mode"
@@ -498,6 +560,8 @@ var gPrivacyPane = {
    */
   init() {
     this._updateSanitizeSettingsButton();
+    this.initDeleteOnCloseBox();
+    this.syncSanitizationPrefsWithDeleteOnClose();
     this.initializeHistoryMode();
     this.updateHistoryModePane();
     this.updatePrivacyMicroControls();
@@ -524,10 +588,6 @@ var gPrivacyPane = {
 
     // Watch all of the prefs that the new Cookies & Site Data UI depends on
     Preferences.get("network.cookie.cookieBehavior").on(
-      "change",
-      gPrivacyPane.networkCookieBehaviorReadPrefs.bind(gPrivacyPane)
-    );
-    Preferences.get("network.cookie.lifetimePolicy").on(
       "change",
       gPrivacyPane.networkCookieBehaviorReadPrefs.bind(gPrivacyPane)
     );
@@ -694,8 +754,7 @@ var gPrivacyPane = {
     setSyncToPrefListener("blockCookiesMenu", () =>
       this.writeBlockCookiesFrom()
     );
-    setSyncFromPrefListener("deleteOnClose", () => this.readDeleteOnClose());
-    setSyncToPrefListener("deleteOnClose", () => this.writeDeleteOnClose());
+
     setSyncFromPrefListener("savePasswords", () => this.readSavePasswords());
 
     let microControlHandler = el =>
@@ -761,8 +820,9 @@ var gPrivacyPane = {
         .setAttribute("href", windowsSSOURL);
     }
 
+    this.initDataCollection();
+
     if (AppConstants.MOZ_DATA_REPORTING) {
-      this.initDataCollection();
       if (AppConstants.MOZ_CRASHREPORTER) {
         this.initSubmitCrashes();
       }
@@ -926,22 +986,17 @@ var gPrivacyPane = {
       let contentBlockOptionSocialMedia = document.getElementById(
         "blockCookiesSocialMedia"
       );
-      let l10nID = gStatePartitioningMVPEnabled
-        ? "sitedata-option-block-cross-site-tracking-cookies-including-social-media"
-        : "sitedata-option-block-cross-site-and-social-media-trackers";
-      document.l10n.setAttributes(contentBlockOptionSocialMedia, l10nID);
-    }
-    if (gStatePartitioningMVPEnabled) {
-      let contentBlockOptionIsolate = document.getElementById(
-        "isolateCookiesSocialMedia"
-      );
+
       document.l10n.setAttributes(
-        contentBlockOptionIsolate,
-        "sitedata-option-block-cross-site-cookies-including-social-media"
+        contentBlockOptionSocialMedia,
+        "sitedata-option-block-cross-site-tracking-cookies"
       );
     }
 
     setUpContentBlockingWarnings();
+
+    initTCPRolloutSection();
+    initTCPStandardSection();
   },
 
   populateCategoryContents() {
@@ -984,6 +1039,22 @@ var gPrivacyPane = {
             rulesArray.push("cookieBehavior4");
             break;
           case BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN:
+            // If the default cookie behavior is updated by the TCP rollout
+            // pref, don't update the UI for dFPI. That means for dFPI enabled
+            // and disabled the bulleted list in the "standard" category
+            // description will be the same. This is a compromise to avoid
+            // layout shifting when toggling the checkbox. The layout can
+            // otherwise shift, because dFPI on / off changes the bulleted list
+            // in the ETP category description.
+            if (
+              Services.prefs.getBoolPref(
+                "privacy.restrict3rdpartystorage.rollout.enabledByDefault",
+                false
+              )
+            ) {
+              rulesArray.push("cookieBehavior4");
+              break;
+            }
             rulesArray.push(
               gIsFirstPartyIsolated ? "cookieBehavior4" : "cookieBehavior5"
             );
@@ -1065,9 +1136,6 @@ var gPrivacyPane = {
       ).hidden = true;
       document.querySelector(
         selector + " .all-third-party-cookies-option"
-      ).hidden = true;
-      document.querySelector(
-        selector + " .third-party-tracking-cookies-plus-isolate-option"
       ).hidden = true;
       document.querySelector(selector + " .social-media-option").hidden = true;
 
@@ -1152,10 +1220,9 @@ var gPrivacyPane = {
             ).hidden = false;
             break;
           case "cookieBehavior5":
-            let cookieSelector = gStatePartitioningMVPEnabled
-              ? " .cross-site-cookies-option"
-              : " .third-party-tracking-cookies-plus-isolate-option";
-            document.querySelector(selector + cookieSelector).hidden = false;
+            document.querySelector(
+              selector + " .cross-site-cookies-option"
+            ).hidden = false;
             break;
           case "cookieBehaviorPBM5":
             // We only need to show the cookie option for private windows if the
@@ -1272,11 +1339,7 @@ var gPrivacyPane = {
       behavior == Ci.nsICookieService.BEHAVIOR_REJECT;
     let privateBrowsing = Preferences.get("browser.privatebrowsing.autostart")
       .value;
-    let cookieExpirationLocked = Services.prefs.prefIsLocked(
-      "network.cookie.lifetimePolicy"
-    );
-    deleteOnCloseCheckbox.disabled =
-      privateBrowsing || completelyBlockCookies || cookieExpirationLocked;
+    deleteOnCloseCheckbox.disabled = privateBrowsing || completelyBlockCookies;
     deleteOnCloseNote.hidden = !privateBrowsing;
 
     switch (behavior) {
@@ -1489,10 +1552,6 @@ var gPrivacyPane = {
    * value of the private browsing auto-start preference.
    */
   updatePrivacyMicroControls() {
-    // Check the "Delete cookies when Firefox is closed" checkbox and disable the setting
-    // when we're in auto private mode (or reset it back otherwise).
-    document.getElementById("deleteOnClose").checked = this.readDeleteOnClose();
-
     let clearDataSettings = document.getElementById("clearDataSettings");
 
     if (document.getElementById("historyMode").value == "custom") {
@@ -1579,6 +1638,98 @@ var gPrivacyPane = {
         Services.obs.notifyObservers(null, "clear-private-data");
       },
     });
+  },
+
+  /*
+   * On loading the page, assigns the state to the deleteOnClose checkbox that fits the pref selection
+   */
+  initDeleteOnCloseBox() {
+    let deleteOnCloseBox = document.getElementById("deleteOnClose");
+    deleteOnCloseBox.checked =
+      (Preferences.get("privacy.sanitize.sanitizeOnShutdown").value &&
+        Preferences.get("privacy.clearOnShutdown.cookies").value &&
+        Preferences.get("privacy.clearOnShutdown.cache").value &&
+        Preferences.get("privacy.clearOnShutdown.offlineApps").value) ||
+      Preferences.get("browser.privatebrowsing.autostart").value;
+  },
+
+  /*
+   * Keeps the state of the deleteOnClose checkbox in sync with the pref selection
+   */
+  syncSanitizationPrefsWithDeleteOnClose() {
+    let deleteOnCloseBox = document.getElementById("deleteOnClose");
+    let historyMode = Preferences.get("privacy.history.custom");
+    let sanitizeOnShutdownPref = Preferences.get(
+      "privacy.sanitize.sanitizeOnShutdown"
+    );
+    // ClearOnClose cleaning categories
+    let cookiePref = Preferences.get("privacy.clearOnShutdown.cookies");
+    let cachePref = Preferences.get("privacy.clearOnShutdown.cache");
+    let offlineAppsPref = Preferences.get(
+      "privacy.clearOnShutdown.offlineApps"
+    );
+
+    // Sync the cleaning prefs with the deleteOnClose box
+    deleteOnCloseBox.addEventListener("command", () => {
+      let { checked } = deleteOnCloseBox;
+      cookiePref.value = checked;
+      cachePref.value = checked;
+      offlineAppsPref.value = checked;
+      // Forget the current pref selection if sanitizeOnShutdown is disabled,
+      // to not over clear when it gets enabled by the sync mechanism
+      if (!sanitizeOnShutdownPref.value) {
+        this._resetCleaningPrefs();
+      }
+      // If no other cleaning category is selected, sanitizeOnShutdown gets synced with deleteOnClose
+      sanitizeOnShutdownPref.value =
+        this._isCustomCleaningPrefPresent() || checked;
+
+      // Update the view of the history settings
+      if (checked && !historyMode.value) {
+        historyMode.value = "custom";
+        this.initializeHistoryMode();
+        this.updateHistoryModePane();
+        this.updatePrivacyMicroControls();
+      }
+    });
+
+    cookiePref.on("change", this._onSanitizePrefChangeSyncClearOnClose);
+    cachePref.on("change", this._onSanitizePrefChangeSyncClearOnClose);
+    offlineAppsPref.on("change", this._onSanitizePrefChangeSyncClearOnClose);
+    sanitizeOnShutdownPref.on(
+      "change",
+      this._onSanitizePrefChangeSyncClearOnClose
+    );
+  },
+
+  /*
+   * Sync the deleteOnClose box to its cleaning prefs
+   */
+  _onSanitizePrefChangeSyncClearOnClose() {
+    let deleteOnCloseBox = document.getElementById("deleteOnClose");
+    deleteOnCloseBox.checked =
+      Preferences.get("privacy.clearOnShutdown.cookies").value &&
+      Preferences.get("privacy.clearOnShutdown.cache").value &&
+      Preferences.get("privacy.clearOnShutdown.offlineApps").value &&
+      Preferences.get("privacy.sanitize.sanitizeOnShutdown").value;
+  },
+
+  /*
+   * Unsets cleaning prefs that do not belong to DeleteOnClose
+   */
+  _resetCleaningPrefs() {
+    SANITIZE_ON_SHUTDOWN_PREFS_ONLY.forEach(
+      pref => (Preferences.get(pref).value = false)
+    );
+  },
+
+  /*
+   Checks if the user set cleaning prefs that do not belong to DeleteOnClose
+   */
+  _isCustomCleaningPrefPresent() {
+    return SANITIZE_ON_SHUTDOWN_PREFS_ONLY.some(
+      pref => Preferences.get(pref).value
+    );
   },
 
   /**
@@ -1704,29 +1855,7 @@ var gPrivacyPane = {
    *     4   means reject all trackers
    *     5   means reject all trackers and partition third-party cookies
    *         see netwerk/cookie/src/CookieService.cpp for details
-   * network.cookie.lifetimePolicy
-   * - determines how long cookies are stored:
-   *     0   means keep cookies until they expire
-   *     2   means keep cookies until the browser is closed
    */
-
-  readDeleteOnClose() {
-    let privateBrowsing = Preferences.get("browser.privatebrowsing.autostart")
-      .value;
-    if (privateBrowsing) {
-      return true;
-    }
-
-    let lifetimePolicy = Preferences.get("network.cookie.lifetimePolicy").value;
-    return lifetimePolicy == Ci.nsICookieService.ACCEPT_SESSION;
-  },
-
-  writeDeleteOnClose() {
-    let checkbox = document.getElementById("deleteOnClose");
-    return checkbox.checked
-      ? Ci.nsICookieService.ACCEPT_SESSION
-      : Ci.nsICookieService.ACCEPT_NORMALLY;
-  },
 
   /**
    * Reads the network.cookie.cookieBehavior preference value and
@@ -1925,49 +2054,43 @@ var gPrivacyPane = {
    * Initializes the address bar section.
    */
   _initAddressBar() {
-    // Update the Firefox Suggest section when Firefox Suggest's enabled status
-    // or scenario changes.
-    this._urlbarPrefObserver = {
-      onPrefChanged: pref => {
-        if (["quicksuggest.enabled", "quicksuggest.scenario"].includes(pref)) {
-          this._updateFirefoxSuggestSection();
-        }
-      },
-    };
-    UrlbarPrefs.addObserver(this._urlbarPrefObserver);
+    // Update the Firefox Suggest section when its Nimbus config changes.
+    let onNimbus = () => this._updateFirefoxSuggestSection();
+    NimbusFeatures.urlbar.onUpdate(onNimbus);
     window.addEventListener("unload", () => {
-      // UrlbarPrefs holds a weak reference to our observer, which is why we
-      // don't remove it on unload.
-      this._urlbarPrefObserver = null;
+      NimbusFeatures.urlbar.off(onNimbus);
     });
 
-    // Set up the sponsored checkbox. When the main checkbox is checked, the
-    // sponsored checkbox should be enabled and its checked status should
-    // reflect the sponsored pref. When the main checkbox is unchecked, the
-    // sponsored checkbox should be disabled and unchecked, but the sponsored
-    // pref should retain its value. Due to this complexity, we manage the
-    // sponsored checkbox manually.
-    Preferences.get("browser.urlbar.suggest.quicksuggest").on("change", () =>
-      // Update the enabled and checked status of the sponsored checkbox when
-      // the main pref changes.
-      this._updateFirefoxSuggestSponsoredCheckbox()
+    // The Firefox Suggest info box potentially needs updating when any of the
+    // toggles change.
+    let infoBoxPrefs = [
+      "browser.urlbar.suggest.quicksuggest.nonsponsored",
+      "browser.urlbar.suggest.quicksuggest.sponsored",
+      "browser.urlbar.quicksuggest.dataCollection.enabled",
+    ];
+    for (let pref of infoBoxPrefs) {
+      Preferences.get(pref).on("change", () =>
+        this._updateFirefoxSuggestInfoBox()
+      );
+    }
+
+    // Set the URL of the learn-more link for Firefox Suggest best match.
+    const bestMatchLearnMoreLink = document.getElementById(
+      "firefoxSuggestBestMatchLearnMore"
     );
-    setEventListener("firefoxSuggestSponsoredSuggestion", "command", () => {
-      // Update the sponsored pref value when the sponsored checkbox is
-      // toggled.
-      Preferences.get(
-        "browser.urlbar.suggest.quicksuggest.sponsored"
-      ).value = document.getElementById(
-        "firefoxSuggestSponsoredSuggestion"
-      ).checked;
-    });
+    bestMatchLearnMoreLink.setAttribute(
+      "href",
+      UrlbarProviderQuickSuggest.bestMatchHelpUrl
+    );
 
-    // Set the Firefox Suggest learn-more link URL.
-    document
-      .getElementById("firefoxSuggestSuggestionLearnMore")
-      .setAttribute("href", UrlbarProviderQuickSuggest.helpUrl);
+    // Set the URL of the Firefox Suggest learn-more links.
+    let links = document.querySelectorAll(".firefoxSuggestLearnMore");
+    for (let link of links) {
+      link.setAttribute("href", UrlbarProviderQuickSuggest.helpUrl);
+    }
 
     this._updateFirefoxSuggestSection(true);
+    this._initQuickActionsSection();
   },
 
   /**
@@ -1978,6 +2101,11 @@ var gPrivacyPane = {
    *   Pass true when calling this when initializing the pane.
    */
   _updateFirefoxSuggestSection(onInit = false) {
+    // Show the best match checkbox container as appropriate.
+    document.getElementById(
+      "firefoxSuggestBestMatchContainer"
+    ).hidden = !UrlbarPrefs.get("bestMatchEnabled");
+
     let container = document.getElementById("firefoxSuggestContainer");
 
     if (UrlbarPrefs.get("quickSuggestEnabled")) {
@@ -1988,15 +2116,17 @@ var gPrivacyPane = {
       };
       for (let [elementId, l10nId] of Object.entries(l10nIdByElementId)) {
         let element = document.getElementById(elementId);
-        element.dataset.l10nIdOriginal = element.dataset.l10nId;
+        element.dataset.l10nIdOriginal ??= element.dataset.l10nId;
         element.dataset.l10nId = l10nId;
       }
-      // The main checkbox description discusses data collection, which we
-      // perform only in the "online" scenario. Hide it otherwise.
-      document.getElementById("firefoxSuggestSuggestionDescription").hidden =
-        UrlbarPrefs.get("quicksuggest.scenario") != "online";
+
+      // Add the extraMargin class to the engine-prefs link.
+      document
+        .getElementById("openSearchEnginePreferences")
+        .classList.add("extraMargin");
+
       // Show the container.
-      this._updateFirefoxSuggestSponsoredCheckbox();
+      this._updateFirefoxSuggestInfoBox();
       container.removeAttribute("hidden");
     } else if (!onInit) {
       // Firefox Suggest is not enabled. This is the default, so to avoid
@@ -2010,23 +2140,63 @@ var gPrivacyPane = {
         delete element.dataset.l10nIdOriginal;
         document.l10n.translateElements([element]);
       }
+      document
+        .getElementById("openSearchEnginePreferences")
+        .classList.remove("extraMargin");
     }
   },
 
   /**
-   * Updates the sponsored Firefox Suggest checkbox (in the address bar section)
-   * depending on the status of the main Firefox Suggest checkbox.
+   * Updates the Firefox Suggest info box (in the address bar section) depending
+   * on the states of the Firefox Suggest toggles.
    */
-  _updateFirefoxSuggestSponsoredCheckbox() {
-    let sponsoredCheckbox = document.getElementById(
-      "firefoxSuggestSponsoredSuggestion"
-    );
-    sponsoredCheckbox.disabled = !Preferences.get(
-      "browser.urlbar.suggest.quicksuggest"
+  _updateFirefoxSuggestInfoBox() {
+    let nonsponsored = Preferences.get(
+      "browser.urlbar.suggest.quicksuggest.nonsponsored"
     ).value;
-    sponsoredCheckbox.checked =
-      !sponsoredCheckbox.disabled &&
-      Preferences.get("browser.urlbar.suggest.quicksuggest.sponsored").value;
+    let sponsored = Preferences.get(
+      "browser.urlbar.suggest.quicksuggest.sponsored"
+    ).value;
+    let dataCollection = Preferences.get(
+      "browser.urlbar.quicksuggest.dataCollection.enabled"
+    ).value;
+
+    // Get the l10n ID of the appropriate text based on the values of the three
+    // prefs.
+    let l10nId;
+    if (nonsponsored && sponsored && dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-all";
+    } else if (nonsponsored && sponsored && !dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-nonsponsored-sponsored";
+    } else if (nonsponsored && !sponsored && dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-nonsponsored-data";
+    } else if (nonsponsored && !sponsored && !dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-nonsponsored";
+    } else if (!nonsponsored && sponsored && dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-sponsored-data";
+    } else if (!nonsponsored && sponsored && !dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-sponsored";
+    } else if (!nonsponsored && !sponsored && dataCollection) {
+      l10nId = "addressbar-firefox-suggest-info-data";
+    }
+
+    let instance = (this._firefoxSuggestInfoBoxInstance = {});
+    let infoBox = document.getElementById("firefoxSuggestInfoBox");
+    if (!l10nId) {
+      infoBox.hidden = true;
+    } else {
+      let infoText = document.getElementById("firefoxSuggestInfoText");
+      infoText.dataset.l10nId = l10nId;
+
+      // If the info box is currently hidden and we unhide it immediately, it
+      // will show its old text until the new text is asyncly fetched and shown.
+      // That's ugly, so wait for the fetch to finish before unhiding it.
+      document.l10n.translateElements([infoText]).then(() => {
+        if (instance == this._firefoxSuggestInfoBoxInstance) {
+          infoBox.hidden = false;
+        }
+      });
+    }
   },
 
   // GEOLOCATION
@@ -2195,7 +2365,7 @@ var gPrivacyPane = {
    * the UI for it can't be controlled by the normal preference bindings.
    */
   _initMasterPasswordUI() {
-    var noMP = !LoginHelper.isMasterPasswordSet();
+    var noMP = !LoginHelper.isPrimaryPasswordSet();
 
     var button = document.getElementById("changeMasterPassword");
     button.disabled = noMP;
@@ -2259,19 +2429,21 @@ var gPrivacyPane = {
   },
 
   /**
-   * Displays a dialog in which the master password may be changed.
+   * Displays a dialog in which the primary password may be changed.
    */
   async changeMasterPassword() {
-    // Require OS authentication before the user can set a Master Password.
+    // Require OS authentication before the user can set a Primary Password.
     // OS reauthenticate functionality is not available on Linux yet (bug 1527745)
     if (
-      !LoginHelper.isMasterPasswordSet() &&
+      !LoginHelper.isPrimaryPasswordSet() &&
       OS_AUTH_ENABLED &&
       OSKeyStore.canReauth()
     ) {
+      // Uses primary-password-os-auth-dialog-message-win and
+      // primary-password-os-auth-dialog-message-macosx via concatenation:
       let messageId =
         "primary-password-os-auth-dialog-message-" + AppConstants.platform;
-      let [messageText, captionText] = await L10n.formatMessages([
+      let [messageText, captionText] = await document.l10n.formatMessages([
         {
           id: messageId,
         },
@@ -2412,24 +2584,21 @@ var gPrivacyPane = {
       safeBrowsingPhishingPref.value = enableSafeBrowsing.checked;
       safeBrowsingMalwarePref.value = enableSafeBrowsing.checked;
 
-      if (enableSafeBrowsing.checked) {
-        blockDownloads.removeAttribute("disabled");
-        if (blockDownloads.checked) {
-          blockUncommonUnwanted.removeAttribute("disabled");
-        }
-      } else {
-        blockDownloads.setAttribute("disabled", "true");
-        blockUncommonUnwanted.setAttribute("disabled", "true");
-      }
+      blockDownloads.disabled =
+        !enableSafeBrowsing.checked || blockDownloadsPref.locked;
+      blockUncommonUnwanted.disabled =
+        !blockDownloads.checked ||
+        !enableSafeBrowsing.checked ||
+        blockUnwantedPref.locked ||
+        blockUncommonPref.locked;
     });
 
     blockDownloads.addEventListener("command", function() {
       blockDownloadsPref.value = blockDownloads.checked;
-      if (blockDownloads.checked) {
-        blockUncommonUnwanted.removeAttribute("disabled");
-      } else {
-        blockUncommonUnwanted.setAttribute("disabled", "true");
-      }
+      blockUncommonUnwanted.disabled =
+        !blockDownloads.checked ||
+        blockUnwantedPref.locked ||
+        blockUncommonPref.locked;
     });
 
     blockUncommonUnwanted.addEventListener("command", function() {
@@ -2479,6 +2648,16 @@ var gPrivacyPane = {
     }
     blockUncommonUnwanted.checked =
       blockUnwantedPref.value && blockUncommonPref.value;
+
+    if (safeBrowsingPhishingPref.locked || safeBrowsingMalwarePref.locked) {
+      enableSafeBrowsing.disabled = true;
+    }
+    if (blockDownloadsPref.locked) {
+      blockDownloads.disabled = true;
+    }
+    if (blockUnwantedPref.locked || blockUncommonPref.locked) {
+      blockUncommonUnwanted.disabled = true;
+    }
   },
 
   /**
@@ -2572,10 +2751,24 @@ var gPrivacyPane = {
   },
 
   initDataCollection() {
+    if (
+      !AppConstants.MOZ_DATA_REPORTING &&
+      !Services.prefs.getBoolPref(
+        "browser.privacySegmentation.preferences.show",
+        false
+      )
+    ) {
+      // Nothing to control in the data collection section, remove it.
+      document.getElementById("dataCollectionCategory").remove();
+      document.getElementById("dataCollectionGroup").remove();
+      return;
+    }
+
     this._setupLearnMoreLink(
       "toolkit.datacollection.infoURL",
       "dataCollectionPrivacyNotice"
     );
+    this.initPrivacySegmentation();
   },
 
   initSubmitCrashes() {
@@ -2590,6 +2783,33 @@ var gPrivacyPane = {
       const checkboxId = event.target.getAttribute("for");
       document.getElementById(checkboxId).click();
     });
+  },
+
+  initPrivacySegmentation() {
+    // Learn more link
+    document
+      .getElementById("privacy-segmentation-learn-more-link")
+      .setAttribute(
+        "href",
+        Services.urlFormatter.formatURLPref("app.support.baseURL") +
+          Services.prefs.getStringPref(
+            "browser.privacySegmentation.preferences.learnMoreURLSuffix"
+          )
+      );
+
+    // Section visibility
+    let visibilityPref = Preferences.get(
+      "browser.privacySegmentation.preferences.show"
+    );
+    let section = document.getElementById("privacySegmentationSection");
+    let updatePrivacySegmentationSectionVisibilityState = () => {
+      section.hidden = !visibilityPref.value;
+    };
+    visibilityPref.on(
+      "change",
+      updatePrivacySegmentationSectionVisibilityState
+    );
+    updatePrivacySegmentationSectionVisibilityState();
   },
 
   /**

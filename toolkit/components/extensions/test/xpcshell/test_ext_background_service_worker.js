@@ -12,8 +12,6 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/AddonManager.jsm"
 );
 
-const { EventEmitter } = ExtensionCommon;
-
 AddonTestUtils.init(this);
 AddonTestUtils.createAppInfo(
   "xpcshell@tests.mozilla.org",
@@ -34,150 +32,14 @@ add_task(async function setup() {
   );
 
   await AddonTestUtils.promiseStartupManager();
-  // Ensure that the profile-after-change message has been notified,
-  // so that ServiceWokerRegistrar is going to be initialized.
-  Services.obs.notifyObservers(
-    null,
-    "profile-after-change",
-    "force-serviceworkerrestart-init"
-  );
-
-  // Make sure background-delayed-startup is set to true (in some builds,
-  // in particular Thunderbird, it is set to false) otherwise the extension
-  // service worker will be started before the test cases can properly
-  // mock the behavior expected on browser startup by calling the
-  // nsIServiceWorkerManager.reloadRegistrationsForTest (and then the test task
-  // test_serviceworker_lifecycle_events will fail because the worker will
-  // refuse to be spawned while the extension is still disabled).
-  Services.prefs.setBoolPref(
-    "extensions.webextensions.background-delayed-startup",
-    true
-  );
 
   Services.prefs.setBoolPref("dom.serviceWorkers.testing.enabled", true);
 
   registerCleanupFunction(() => {
-    Services.prefs.clearUserPref(
-      "extensions.webextensions.background-delayed-startup"
-    );
     Services.prefs.clearUserPref("dom.serviceWorkers.testing.enabled");
     Services.prefs.clearUserPref("dom.serviceWorkers.idle_timeout");
   });
 });
-
-// A test utility class used in the test case to watch for a given extension
-// service worker being spawned and terminated (using the same kind of Firefox DevTools
-// internals that about:debugging is using to watch the workers activity).
-class TestWorkerWatcher extends EventEmitter {
-  JS_ACTOR_NAME = "TestWorkerWatcher";
-
-  constructor() {
-    super();
-    this.extensionProcess = null;
-    this.extensionProcessActor = null;
-    this.registerProcessActor();
-    this.getAndWatchExtensionProcess();
-    // Observer child process creation and shutdown if the extension
-    // are meant to run in a child process.
-    Services.obs.addObserver(this, "ipc:content-created");
-    Services.obs.addObserver(this, "ipc:content-shutdown");
-  }
-
-  async destroy() {
-    await this.stopWatchingWorkers();
-    ChromeUtils.unregisterProcessActor(this.JS_ACTOR_NAME);
-  }
-
-  watchExtensionServiceWorker(extension) {
-    // These events are emitted by TestWatchExtensionWorkersParent.
-    const promiseWorkerSpawned = this.waitForEvent("worker-spawned", extension);
-    const promiseWorkerTerminated = this.waitForEvent(
-      "worker-terminated",
-      extension
-    );
-
-    // Terminate the worker sooner by settng the idle_timeout to 0,
-    // then clear the pref as soon as the worker has been terminated.
-    const terminate = () => {
-      promiseWorkerTerminated.then(() => {
-        Services.prefs.clearUserPref("dom.serviceWorkers.idle_timeout");
-      });
-      Services.prefs.setIntPref("dom.serviceWorkers.idle_timeout", 0);
-      return promiseWorkerTerminated;
-    };
-
-    return {
-      promiseWorkerSpawned,
-      promiseWorkerTerminated,
-      terminate,
-    };
-  }
-
-  // Methods only used internally.
-
-  waitForEvent(event, extension) {
-    return new Promise(resolve => {
-      const listener = (_eventName, data) => {
-        if (!data.workerUrl.startsWith(extension.extension?.principal.spec)) {
-          return;
-        }
-        this.off(event, listener);
-        resolve(data);
-      };
-
-      this.on(event, listener);
-    });
-  }
-
-  registerProcessActor() {
-    const { JS_ACTOR_NAME } = this;
-    const getModuleURI = relPath =>
-      Services.io.newFileURI(do_get_file(relPath)).spec;
-    ChromeUtils.registerProcessActor(JS_ACTOR_NAME, {
-      parent: {
-        moduleURI: getModuleURI(`data/${JS_ACTOR_NAME}Parent.jsm`),
-      },
-      child: {
-        moduleURI: getModuleURI(`data/${JS_ACTOR_NAME}Child.jsm`),
-      },
-    });
-  }
-
-  startWatchingWorkers() {
-    if (!this.extensionProcessActor) {
-      return;
-    }
-    this.extensionProcessActor.eventEmitter = this;
-    return this.extensionProcessActor.sendQuery("Test:StartWatchingWorkers");
-  }
-
-  stopWatchingWorkers() {
-    if (!this.extensionProcessActor) {
-      return;
-    }
-    this.extensionProcessActor.eventEmitter = null;
-    return this.extensionProcessActor.sendQuery("Test:StopWatchingWorkers");
-  }
-
-  getAndWatchExtensionProcess() {
-    const extensionProcess = ChromeUtils.getAllDOMProcesses().find(p => {
-      return p.remoteType === "extension";
-    });
-    if (extensionProcess !== this.extensionProcess) {
-      this.extensionProcess = extensionProcess;
-      this.extensionProcessActor = extensionProcess
-        ? extensionProcess.getActor(this.JS_ACTOR_NAME)
-        : null;
-      this.startWatchingWorkers();
-    }
-  }
-
-  observe(subject, topic, childIDString) {
-    // Keep the watched process and related test child process actor updated
-    // when a process is created or destroyed.
-    this.getAndWatchExtensionProcess();
-  }
-}
 
 add_task(
   async function test_fail_spawn_extension_worker_for_disabled_extension() {
@@ -216,15 +78,7 @@ add_task(
       "The extension service worker has been terminated as expected"
     );
 
-    const swm = Cc["@mozilla.org/serviceworkers/manager;1"].getService(
-      Ci.nsIServiceWorkerManager
-    );
-
-    const swReg = swm.getRegistrationByPrincipal(
-      extension.extension.principal,
-      extension.extension.principal.spec
-    );
-
+    const swReg = testWorkerWatcher.getRegistration(extension);
     ok(swReg, "Got a service worker registration");
     ok(swReg?.activeWorker, "Got an active worker");
 
@@ -398,8 +252,18 @@ add_task(async function test_serviceworker_lifecycle_events() {
   );
 
   info("Restart AddonManager (mocking Browser instance restart)");
-  ExtensionParent._resetStartupPromises();
-  await AddonTestUtils.promiseStartupManager();
+  // Start the addon manager with `earlyStartup: false` to keep the background service worker
+  // from being started right away:
+  //
+  // - the call to `swm.reloadRegistrationForTest()` that follows is making sure that
+  //   the previously registered service worker is in the same state it would be when
+  //   the entire browser is restarted.
+  //
+  // - if the background service worker is being spawned again by the time we call
+  //   `swm.reloadRegistrationForTest()`, ServiceWorkerUpdateJob would fail and trigger
+  //   an `mState == State::Started` diagnostic assertion from ServiceWorkerJob::Finish
+  //   and the xpcshell test will fail for the crash triggered by the assertion.
+  await AddonTestUtils.promiseStartupManager({ lateStartup: false });
   await extension.awaitStartup();
 
   info(
@@ -410,7 +274,9 @@ add_task(async function test_serviceworker_lifecycle_events() {
   info(
     "trigger delayed call to nsIServiceWorkerManager.registerForAddonPrincipal"
   );
-  extension.extension.emit("start-background-page");
+  // complete the startup notifications, then start the background
+  AddonTestUtils.notifyLateStartup();
+  extension.extension.emit("start-background-script");
 
   info("Force activate the extension worker");
   const newSwReg = swm.getRegistrationByPrincipal(

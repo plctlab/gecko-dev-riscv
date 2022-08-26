@@ -165,30 +165,18 @@ class GCVector {
   }
 
   bool traceWeak(JSTracer* trc) {
-    T* src = begin();
-    T* dst = begin();
-    while (src != end()) {
-      if (GCPolicy<T>::traceWeak(trc, src)) {
-        if (src != dst) {
-          *dst = std::move(*src);
-        }
-        dst++;
-      }
-      src++;
-    }
-
-    MOZ_ASSERT(dst <= end());
-    shrinkBy(end() - dst);
+    mutableEraseIf(
+        [trc](T& elem) { return !GCPolicy<T>::traceWeak(trc, &elem); });
     return !empty();
   }
 
-  bool needsSweep() const { return !this->empty(); }
-
-  void sweep() {
+  // Like eraseIf, but may mutate the contents of the vector.
+  template <typename Pred>
+  void mutableEraseIf(Pred pred) {
     T* src = begin();
     T* dst = begin();
     while (src != end()) {
-      if (!GCPolicy<T>::needsSweep(src)) {
+      if (!pred(*src)) {
         if (src != dst) {
           *dst = std::move(*src);
         }

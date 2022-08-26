@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const HEURISTIC_FALLBACK_PROVIDERNAME = "HeuristicFallback";
 const PLACES_PROVIDERNAME = "Places";
 
 testEngine_setup();
@@ -18,6 +17,7 @@ add_task(async function test_no_slash() {
     context,
     autofilled: "file.org/",
     completed: "http://file.org/",
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: "http://file.org/",
@@ -55,6 +55,7 @@ add_task(async function test_w_slash() {
     context,
     autofilled: "file.org/",
     completed: "http://file.org/",
+    hasAutofillTitle: false,
     matches: [
       makeVisitResult(context, {
         uri: "http://file.org/",
@@ -86,10 +87,11 @@ add_task(async function test_middle() {
     context,
     autofilled: "file.org/test/",
     completed: "http://file.org/test/",
+    hasAutofillTitle: true,
     matches: [
       makeVisitResult(context, {
         uri: "http://file.org/test/",
-        title: "file.org/test/",
+        title: "test visit for http://file.org/test/",
         heuristic: true,
       }),
     ],

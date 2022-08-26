@@ -84,21 +84,23 @@ var openInspectorSidebarTab = async function(id) {
  * @return a promise that resolves when the inspector is ready and the rule view
  * is visible and ready
  */
-function openRuleView() {
-  return openInspector().then(data => {
-    const view = data.inspector.getPanel("ruleview").view;
+async function openRuleView() {
+  const { inspector, toolbox, highlighterTestFront } = await openInspector();
 
-    // Replace the view to use a custom debounce function that can be triggered manually
-    // through an additional ".flush()" property.
-    view.debounce = manualDebounce();
+  const ruleViewPanel = inspector.getPanel("ruleview");
+  await ruleViewPanel.readyPromise;
+  const view = ruleViewPanel.view;
 
-    return {
-      toolbox: data.toolbox,
-      inspector: data.inspector,
-      highlighterTestFront: data.highlighterTestFront,
-      view,
-    };
-  });
+  // Replace the view to use a custom debounce function that can be triggered manually
+  // through an additional ".flush()" property.
+  view.debounce = manualDebounce();
+
+  return {
+    toolbox,
+    inspector,
+    highlighterTestFront,
+    view,
+  };
 }
 
 /**
@@ -244,8 +246,16 @@ var selectNode = async function(
   info("Selecting the node for '" + selector + "'");
   const nodeFront = await getNodeFront(selector, inspector);
   const updated = inspector.once("inspector-updated");
+
+  const { ELEMENT_NODE } = require("devtools/shared/dom-node-constants");
+  const onSelectionCssSelectorsUpdated =
+    nodeFront?.nodeType == ELEMENT_NODE
+      ? inspector.once("selection-css-selectors-updated")
+      : null;
+
   inspector.selection.setNodeFront(nodeFront, { reason, isSlotted });
   await updated;
+  await onSelectionCssSelectorsUpdated;
 };
 
 /**
@@ -265,6 +275,8 @@ async function getNodeFrontInFrames(selectors, inspector) {
   let walker = inspector.walker;
   let rootNode = walker.rootNode;
 
+  // clone the array since `selectors` could be used from callsite after.
+  selectors = [...selectors];
   // Extract the last selector from the provided array of selectors.
   const nodeSelector = selectors.pop();
 
@@ -548,7 +560,7 @@ function getRuleViewRule(view, selectorText, index = 0) {
 
 /**
  * Get references to the name and value span nodes corresponding to a given
- * selector and property name in the rule-view
+ * selector and property name in the rule-view.
  *
  * @param {CssRuleView} view
  *        The instance of the rule-view panel
@@ -556,25 +568,38 @@ function getRuleViewRule(view, selectorText, index = 0) {
  *        The selector in the rule-view to look for the property in
  * @param {String} propertyName
  *        The name of the property
+ * @param {Object=} options
+ * @param {Boolean=} options.wait
+ *        When true, returns a promise which waits until a valid rule view
+ *        property can be retrieved for the provided selectorText & propertyName.
+ *        Defaults to false.
  * @return {Object} An object like {nameSpan: DOMNode, valueSpan: DOMNode}
  */
-function getRuleViewProperty(view, selectorText, propertyName) {
-  let prop;
+function getRuleViewProperty(view, selectorText, propertyName, options = {}) {
+  if (options.wait) {
+    return waitFor(() =>
+      _syncGetRuleViewProperty(view, selectorText, propertyName)
+    );
+  }
+  return _syncGetRuleViewProperty(view, selectorText, propertyName);
+}
 
+function _syncGetRuleViewProperty(view, selectorText, propertyName) {
   const rule = getRuleViewRule(view, selectorText);
-  if (rule) {
-    // Look for the propertyName in that rule element
-    for (const p of rule.querySelectorAll(".ruleview-property")) {
-      const nameSpan = p.querySelector(".ruleview-propertyname");
-      const valueSpan = p.querySelector(".ruleview-propertyvalue");
+  if (!rule) {
+    return null;
+  }
 
-      if (nameSpan.textContent === propertyName) {
-        prop = { nameSpan: nameSpan, valueSpan: valueSpan };
-        break;
-      }
+  // Look for the propertyName in that rule element
+  for (const p of rule.querySelectorAll(".ruleview-property")) {
+    const nameSpan = p.querySelector(".ruleview-propertyname");
+    const valueSpan = p.querySelector(".ruleview-propertyvalue");
+
+    if (nameSpan.textContent === propertyName) {
+      return { nameSpan, valueSpan };
     }
   }
-  return prop;
+  return null;
 }
 
 /**
@@ -742,7 +767,7 @@ function buildContextMenuItems(menu) {
  * @return An array of MenuItems
  */
 function openStyleContextMenuAndGetAllItems(view, target) {
-  const menu = view.contextMenu._openMenu({ target: target });
+  const menu = view.contextMenu._openMenu({ target });
   return buildContextMenuItems(menu);
 }
 
@@ -771,7 +796,7 @@ async function waitUntilVisitedState(tab, selectors) {
       tab.linkedBrowser,
       selectors,
       args => {
-        const NS_EVENT_STATE_VISITED = 1 << 19;
+        const ELEMENT_STATE_VISITED = 1 << 19;
 
         for (const selector of args) {
           const target = content.wrappedJSObject.document.querySelector(
@@ -780,7 +805,7 @@ async function waitUntilVisitedState(tab, selectors) {
           if (
             !(
               target &&
-              InspectorUtils.getContentState(target) & NS_EVENT_STATE_VISITED
+              InspectorUtils.getContentState(target) & ELEMENT_STATE_VISITED
             )
           ) {
             return false;

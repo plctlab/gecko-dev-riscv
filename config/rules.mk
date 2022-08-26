@@ -149,6 +149,15 @@ MOZ_PROGRAM_LDFLAGS += -Wl,-rpath -Wl,@executable_path/Frameworks
 endif
 endif
 
+# For Mac executables, set the @rpath to be @executable_path by default so that
+# shared libraries built with an @rpath install name in the same directory
+# as the executable can be resolved. Executables not in the same directory
+# should override the @rpath with a relative path such as @executable_path/../
+# depending on their install location.
+ifeq ($(OS_ARCH),Darwin)
+MOZ_PROGRAM_LDFLAGS += -Wl,-rpath,@executable_path
+endif
+
 ifeq ($(OS_ARCH),WINNT)
 ifeq ($(CC_TYPE),clang)
 MOZ_PROGRAM_LDFLAGS += -Wl,-pdb,$(dir $@)/$(LINK_PDBFILE)
@@ -172,7 +181,7 @@ endif
 
 ifdef COMPILE_ENVIRONMENT
 ifndef TARGETS
-TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_SHARED_LIBRARY) $(WASM_LIBRARY)
+TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_SHARED_LIBRARY)
 endif
 
 COBJS = $(notdir $(CSRCS:.c=.$(OBJ_SUFFIX)))
@@ -210,12 +219,6 @@ SIMPLE_PROGRAMS :=
 HOST_SHARED_LIBRARY :=
 HOST_PROGRAM :=
 HOST_SIMPLE_PROGRAMS :=
-WASM_LIBRARY :=
-endif
-
-WASM_ARCHIVE = $(addsuffix .$(WASM_OBJ_SUFFIX),$(WASM_LIBRARY))
-ifneq (,$(WASM_ARCHIVE))
-CSRCS += $(addsuffix .c,$(WASM_ARCHIVE))
 endif
 
 ifdef MACH
@@ -274,9 +277,9 @@ endif
 #
 
 ifeq ($(OS_ARCH),Darwin)
-ifneq (,$(SHARED_LIBRARY)$(WASM_LIBRARY))
-_LOADER_PATH := @executable_path
-EXTRA_DSO_LDOPTS	+= -dynamiclib -install_name $(_LOADER_PATH)/$@ -compatibility_version 1 -current_version 1 -single_module
+ifneq (,$(SHARED_LIBRARY))
+_LOADER_PATH := @rpath
+EXTRA_DSO_LDOPTS	+= -dynamiclib -install_name $(_LOADER_PATH)/$@ -compatibility_version 1 -current_version 1
 endif
 endif
 
@@ -390,7 +393,7 @@ compile:: host target
 
 host:: $(HOST_OBJS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_RUST_PROGRAMS) $(HOST_RUST_LIBRARY_FILE) $(HOST_SHARED_LIBRARY)
 
-target:: $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(RUST_LIBRARY_FILE) $(RUST_PROGRAMS) $(WASM_LIBRARY))
+target:: $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(RUST_LIBRARY_FILE) $(RUST_PROGRAMS))
 
 ifndef LIBRARY
 ifdef OBJS
@@ -501,18 +504,10 @@ $(LIBRARY): $(OBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 $(WASM_ARCHIVE): $(CWASMOBJS) $(CPPWASMOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD_VERBOSE)
 	$(RM) $(WASM_ARCHIVE)
-	$(WASM_CXX) -o $@ -Wl,--export-all -Wl,--stack-first -Wl,-z,stack-size=$(if $(MOZ_OPTIMIZE),262144,1048576) -Wl,--no-entry -Wl,--growable-table $(CWASMOBJS) $(CPPWASMOBJS)
+	$(WASM_CXX) -o $@ -Wl,--export-all -Wl,--stack-first -Wl,-z,stack-size=$(if $(MOZ_OPTIMIZE),262144,1048576) -Wl,--no-entry -Wl,--growable-table $(CWASMOBJS) $(CPPWASMOBJS) -lwasi-emulated-process-clocks
 
-$(addsuffix .c,$(WASM_ARCHIVE)): $(WASM_ARCHIVE)
-	$(DIST)/host/bin/wasm2c -o $@ $<
-
-$(WASM_LIBRARY): DSO_SONAME=$@
-$(WASM_LIBRARY): IMPORT_LIBRARY=$(WASM_LIBRARY:$(DLL_PREFIX)%$(DLL_SUFFIX)=$(IMPORT_LIB_PREFIX)%$(IMPORT_LIB_SUFFIX))
-$(WASM_LIBRARY): $(filter %.$(OBJ_SUFFIX),$(OBJS))
-	$(REPORT_BUILD)
-	$(RM) $(WASM_LIBRARY)
-	$(MKCSHLIB) $(filter %.$(OBJ_SUFFIX),$(OBJS)) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS)
-	$(call py_action,check_binary,--target $@)
+$(addsuffix .c,$(WASM_ARCHIVE)): $(WASM_ARCHIVE) $(DIST)/host/bin/wasm2c$(HOST_BIN_SUFFIX)
+	$(DIST)/host/bin/wasm2c$(HOST_BIN_SUFFIX) -o $@ $<
 
 ifeq ($(OS_ARCH),WINNT)
 # Import libraries are created by the rules creating shared libraries.
@@ -541,9 +536,7 @@ endif
 
 $(SHARED_LIBRARY): $(OBJS) $(call resfile,$(SHARED_LIBRARY)) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
-ifndef INCREMENTAL_LINKER
 	$(RM) $@
-endif
 	$(MKSHLIB) $($@_OBJS) $(filter %.res,$^) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS)
 	$(call py_action,check_binary,--target $@)
 
@@ -636,7 +629,7 @@ endif
 endef
 
 ifneq (,$(filter $(DIST)/bin%,$(FINAL_TARGET)))
-DUMP_SYMS_TARGETS := $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(WASM_LIBRARY)
+DUMP_SYMS_TARGETS := $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS)
 endif
 
 ifdef MOZ_AUTOMATION
@@ -1127,7 +1120,6 @@ FREEZE_VARIABLES = \
   EXPORTS \
   DIRS \
   LIBRARY \
-  WASM_LIBRARY \
   MODULE \
   $(NULL)
 

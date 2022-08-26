@@ -116,7 +116,8 @@ class ArrayBufferBuilder {
   ArrayBufferBuilder& operator=(const ArrayBufferBuilder&) = delete;
   ArrayBufferBuilder& operator=(const ArrayBufferBuilder&&) = delete;
 
-  bool SetCapacityInternal(uint32_t aNewCap, const MutexAutoLock& aProofOfLock);
+  bool SetCapacityInternal(uint32_t aNewCap, const MutexAutoLock& aProofOfLock)
+      MOZ_REQUIRES(mMutex);
 
   static bool AreOverlappingRegions(const uint8_t* aStart1, uint32_t aLength1,
                                     const uint8_t* aStart2, uint32_t aLength2);
@@ -124,10 +125,10 @@ class ArrayBufferBuilder {
   Mutex mMutex;
 
   // All of these are protected by mMutex.
-  uint8_t* mDataPtr;
-  uint32_t mCapacity;
-  uint32_t mLength;
-  void* mMapPtr;
+  uint8_t* mDataPtr MOZ_GUARDED_BY(mMutex);
+  uint32_t mCapacity MOZ_GUARDED_BY(mMutex);
+  uint32_t mLength MOZ_GUARDED_BY(mMutex);
+  void* mMapPtr MOZ_GUARDED_BY(mMutex);
 
   // This is used in assertions only.
   bool mNeutered;
@@ -309,6 +310,8 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
   void MaybeLowerChannelPriority();
 
  public:
+  bool CanSend(ErrorResult& aRv);
+
   virtual void Send(
       const Nullable<
           DocumentOrBlobOrArrayBufferViewOrArrayBufferOrFormDataOrURLSearchParamsOrUSVString>&
@@ -317,6 +320,9 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
 
   virtual void SendInputStream(nsIInputStream* aInputStream,
                                ErrorResult& aRv) override {
+    if (!CanSend(aRv)) {
+      return;
+    }
     BodyExtractor<nsIInputStream> body(aInputStream);
     SendInternal(&body, false, aRv);
   }

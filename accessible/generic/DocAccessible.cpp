@@ -7,6 +7,7 @@
 #include "LocalAccessible-inl.h"
 #include "AccIterator.h"
 #include "AccAttributes.h"
+#include "CachedTableAccessible.h"
 #include "DocAccessible-inl.h"
 #include "DocAccessibleChild.h"
 #include "HTMLImageMapAccessible.h"
@@ -28,6 +29,7 @@
 #include "nsIDocShell.h"
 #include "mozilla/dom/Document.h"
 #include "nsPIDOMWindow.h"
+#include "nsIContentInlines.h"
 #include "nsIEditingSession.h"
 #include "nsIFrame.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -42,14 +44,16 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/EditorBase.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/HTMLEditor.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_accessibility.h"
+#include "mozilla/a11y/DocAccessibleParent.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/DocumentType.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/HTMLSelectElement.h"
 #include "mozilla/dom/MutationEventBinding.h"
 #include "mozilla/dom/UserActivation.h"
 
@@ -88,6 +92,7 @@ DocAccessible::DocAccessible(dom::Document* aDocument,
       mDocumentNode(aDocument),
       mLoadState(eTreeConstructionPending),
       mDocFlags(0),
+      mViewportCacheDirty(false),
       mLoadEventType(0),
       mPrevStateBits(0),
       mVirtualCursor(nullptr),
@@ -129,6 +134,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(DocAccessible,
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAccessibleCache)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAnchorJumpElm)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInvalidationList)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingUpdates)
   for (const auto& ar : tmp->mARIAOwnsHash.Values()) {
     for (uint32_t i = 0; i < ar->Length(); i++) {
       NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mARIAOwnsHash entry item");
@@ -146,6 +152,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(DocAccessible, LocalAccessible)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAccessibleCache)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAnchorJumpElm)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInvalidationList)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingUpdates)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
   tmp->mARIAOwnsHash.Clear();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
@@ -154,7 +161,6 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DocAccessible)
   NS_INTERFACE_MAP_ENTRY(nsIDocumentObserver)
   NS_INTERFACE_MAP_ENTRY(nsIMutationObserver)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
-  NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsIAccessiblePivotObserver)
 NS_INTERFACE_MAP_END_INHERITING(HyperTextAccessible)
 
@@ -260,28 +266,34 @@ void DocAccessible::ApplyARIAState(uint64_t* aState) const {
   if (mParent) mParent->ApplyARIAState(aState);
 }
 
-already_AddRefed<AccAttributes> DocAccessible::Attributes() {
-  RefPtr<AccAttributes> attributes = HyperTextAccessibleWrap::Attributes();
-
-  // No attributes if document is not attached to the tree or if it's a root
-  // document.
-  if (!mParent || IsRoot()) return attributes.forget();
-
-  // Override ARIA object attributes from outerdoc.
-  aria::AttrIterator attribIter(mParent->GetContent());
-  while (attribIter.Next()) {
-    nsString value;
-    attribIter.AttrValue(value);
-    attributes->SetAttribute(attribIter.AttrName(), std::move(value));
-  }
-
-  return attributes.forget();
-}
-
-LocalAccessible* DocAccessible::FocusedChild() {
+Accessible* DocAccessible::FocusedChild() {
   // Return an accessible for the current global focus, which does not have to
   // be contained within the current document.
-  return FocusMgr()->FocusedAccessible();
+  if (Accessible* focusedAcc = FocusMgr()->FocusedAccessible()) {
+    return focusedAcc;
+  }
+  nsFocusManager* focusManagerDOM = nsFocusManager::GetFocusManager();
+
+  if (!focusManagerDOM) {
+    return nullptr;
+  }
+
+  if (!XRE_IsParentProcess()) {
+    // DocAccessibleParent's don't exist in the content
+    // process, so we can't return anything useful if this
+    // is the case.
+    return nullptr;
+  }
+  // If we call GetFocusedBrowsingContext from the chrome process
+  // it returns the BrowsingContext for the focused _window_, which
+  // is not helpful here. Instead use GetFocusedBrowsingContextInChrome
+  // which returns the content BrowsingContext that has focus.
+  dom::BrowsingContext* focusedContext =
+      focusManagerDOM->GetFocusedBrowsingContextInChrome();
+
+  DocAccessibleParent* focusedDoc =
+      DocAccessibleParent::GetFrom(focusedContext);
+  return focusedDoc ? focusedDoc->GetFocusedAcc() : nullptr;
 }
 
 void DocAccessible::TakeFocus() const {
@@ -297,7 +309,7 @@ void DocAccessible::TakeFocus() const {
 already_AddRefed<EditorBase> DocAccessible::GetEditor() const {
   // Check if document is editable (designMode="on" case). Otherwise check if
   // the html:body (for HTML document case) or document element is editable.
-  if (!mDocumentNode->HasFlag(NODE_IS_EDITABLE) &&
+  if (!mDocumentNode->IsInDesignMode() &&
       (!mContent || !mContent->HasFlag(NODE_IS_EDITABLE))) {
     return nullptr;
   }
@@ -353,6 +365,16 @@ void DocAccessible::DocType(nsAString& aType) const {
   if (docType) docType->GetPublicId(aType);
 }
 
+void DocAccessible::QueueCacheUpdate(LocalAccessible* aAcc,
+                                     uint64_t aNewDomain) {
+  if (!mIPCDoc || !StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return;
+  }
+  uint64_t& domain = mQueuedCacheUpdates.LookupOrInsert(aAcc, 0);
+  domain |= aNewDomain;
+  Controller()->ScheduleProcessing();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // LocalAccessible
 
@@ -387,6 +409,10 @@ void DocAccessible::Init() {
     // harm even if it isn't necessary. We set mLoadEventType here and it will
     // be fired in ProcessLoad as usual.
     mLoadEventType = nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_COMPLETE;
+  } else if (mDocumentNode->IsInitialDocument()) {
+    // The initial about:blank document will never finish loading, so we can
+    // immediately mark it loaded to avoid waiting for its load.
+    mLoadState |= eDOMLoaded;
   }
 
   AddEventListeners();
@@ -437,6 +463,10 @@ void DocAccessible::Shutdown() {
   }
 
   mChildDocuments.Clear();
+  // mQueuedCacheUpdates can contain a reference to this document (ex. if the
+  // doc is scrollable and we're sending a scroll position update). Clear the
+  // map here to avoid creating ref cycles.
+  mQueuedCacheUpdates.Clear();
 
   // XXX thinking about ordering?
   if (mIPCDoc) {
@@ -455,6 +485,7 @@ void DocAccessible::Shutdown() {
 
   mAnchorJumpElm = nullptr;
   mInvalidationList.Clear();
+  mPendingUpdates.Clear();
 
   for (auto iter = mAccessibleCache.Iter(); !iter.Done(); iter.Next()) {
     LocalAccessible* accessible = iter.Data();
@@ -533,17 +564,6 @@ nsRect DocAccessible::RelativeBounds(nsIFrame** aRelativeFrame) const {
 
 // DocAccessible protected member
 nsresult DocAccessible::AddEventListeners() {
-  nsCOMPtr<nsIDocShell> docShell(mDocumentNode->GetDocShell());
-
-  // We want to add a command observer only if the document is content and has
-  // an editor.
-  if (docShell->ItemType() == nsIDocShellTreeItem::typeContent) {
-    RefPtr<nsCommandManager> commandManager = docShell->GetCommandManager();
-    if (commandManager) {
-      commandManager->AddCommandObserver(this, "obs_documentCreated");
-    }
-  }
-
   SelectionMgr()->AddDocSelectionListener(mPresShell);
 
   // Add document observer.
@@ -558,18 +578,6 @@ nsresult DocAccessible::RemoveEventListeners() {
 
   if (mDocumentNode) {
     mDocumentNode->RemoveObserver(this);
-
-    nsCOMPtr<nsIDocShell> docShell(mDocumentNode->GetDocShell());
-    NS_ASSERTION(docShell, "doc should support nsIDocShellTreeItem.");
-
-    if (docShell) {
-      if (docShell->ItemType() == nsIDocShellTreeItem::typeContent) {
-        RefPtr<nsCommandManager> commandManager = docShell->GetCommandManager();
-        if (commandManager) {
-          commandManager->RemoveCommandObserver(this, "obs_documentCreated");
-        }
-      }
-    }
   }
 
   if (mScrollWatchTimer) {
@@ -603,6 +611,13 @@ void DocAccessible::ScrollTimerCallback(nsITimer* aTimer, void* aClosure) {
 }
 
 void DocAccessible::HandleScroll(nsINode* aTarget) {
+  // Regardless of our scroll timer, we need to send a cache update
+  // to ensure the next Bounds() query accurately reflects our position
+  // after scrolling.
+  if (LocalAccessible* scrollTarget = GetAccessible(aTarget)) {
+    QueueCacheUpdate(scrollTarget, CacheDomain::ScrollPosition);
+  }
+
   const uint32_t kScrollEventInterval = 100;
   // If we haven't dispatched a scrolling event for a target in at least
   // kScrollEventInterval milliseconds, dispatch one now.
@@ -635,23 +650,28 @@ void DocAccessible::HandleScroll(nsINode* aTarget) {
   }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// nsIObserver
+std::pair<nsPoint, nsRect> DocAccessible::ComputeScrollData(
+    LocalAccessible* aAcc) {
+  nsPoint scrollPoint;
+  nsRect scrollRange;
 
-NS_IMETHODIMP
-DocAccessible::Observe(nsISupports* aSubject, const char* aTopic,
-                       const char16_t* aData) {
-  if (!nsCRT::strcmp(aTopic, "obs_documentCreated")) {
-    // State editable will now be set, readonly is now clear
-    // Normally we only fire delayed events created from the node, not an
-    // accessible object. See the AccStateChangeEvent constructor for details
-    // about this exceptional case.
-    RefPtr<AccEvent> event =
-        new AccStateChangeEvent(this, states::EDITABLE, true);
-    FireDelayedEvent(event);
+  if (nsIFrame* frame = aAcc->GetFrame()) {
+    nsIScrollableFrame* sf = aAcc == this
+                                 ? mPresShell->GetRootScrollFrameAsScrollable()
+                                 : frame->GetScrollTargetFrame();
+
+    // If there is no scrollable frame, it's likely a scroll in a popup, like
+    // <select>. Return a scroll offset and range of 0. The scroll info
+    // is currently only used on Android, and popups are rendered natively
+    // there.
+    if (sf) {
+      scrollPoint = sf->GetScrollPosition() * mPresShell->GetResolution();
+      scrollRange = sf->GetScrollRange();
+      scrollRange.ScaleRoundOut(mPresShell->GetResolution());
+    }
   }
 
-  return NS_OK;
+  return {scrollPoint, scrollRange};
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -700,7 +720,21 @@ void DocAccessible::AttributeWillChange(dom::Element* aElement,
   }
 
   if (aAttribute == nsGkAtoms::id) {
+    if (accessible->IsActiveDescendant()) {
+      RefPtr<AccEvent> event =
+          new AccStateChangeEvent(accessible, states::ACTIVE, false);
+      FireDelayedEvent(event);
+    }
+
     RelocateARIAOwnedIfNeeded(aElement);
+  }
+
+  if (aAttribute == nsGkAtoms::aria_activedescendant) {
+    if (LocalAccessible* activeDescendant = accessible->CurrentItem()) {
+      RefPtr<AccEvent> event =
+          new AccStateChangeEvent(activeDescendant, states::ACTIVE, false);
+      FireDelayedEvent(event);
+    }
   }
 
   // If attribute affects accessible's state, store the old state so we can
@@ -750,16 +784,24 @@ void DocAccessible::AttributeChanged(dom::Element* aElement,
     return;
   }
 
-  // Ignore attribute change if the element doesn't have an accessible (at all
-  // or still) if the element is not a root content of this document accessible
-  // (which is treated as attribute change on this document accessible).
-  // Note: we don't bail if all the content hasn't finished loading because
-  // these attributes are changing for a loaded part of the content.
   LocalAccessible* accessible = GetAccessible(aElement);
   if (!accessible) {
-    if (mContent != aElement) return;
-
-    accessible = this;
+    if (mContent == aElement) {
+      // The attribute change occurred on the root content of this
+      // DocAccessible, so handle it as an attribute change on this.
+      accessible = this;
+    } else {
+      if (aModType == dom::MutationEvent_Binding::ADDITION &&
+          aria::AttrCharacteristicsFor(aAttribute) & ATTR_GLOBAL) {
+        // The element doesn't have an Accessible, but a global ARIA attribute
+        // was just added, which means we should probably create an Accessible.
+        ContentInserted(aElement, aElement->GetNextSibling());
+        return;
+      }
+      // The element doesn't have an Accessible, so ignore the attribute
+      // change.
+      return;
+    }
   }
 
   MOZ_ASSERT(accessible->IsBoundToParent() || accessible->IsDoc(),
@@ -768,7 +810,8 @@ void DocAccessible::AttributeChanged(dom::Element* aElement,
   if (aAttribute == nsGkAtoms::id) {
     dom::Element* elm = accessible->Elm();
     RelocateARIAOwnedIfNeeded(elm);
-    ARIAActiveDescendantIDMaybeMoved(elm);
+    ARIAActiveDescendantIDMaybeMoved(accessible);
+    accessible->SendCache(CacheDomain::DOMNodeID, CacheUpdateType::Update);
   }
 
   // The activedescendant universal property redirects accessible focus events
@@ -799,22 +842,25 @@ void DocAccessible::AttributeChanged(dom::Element* aElement,
 }
 
 void DocAccessible::ARIAActiveDescendantChanged(LocalAccessible* aAccessible) {
-  nsIContent* elm = aAccessible->GetContent();
-  if (elm && elm->IsElement() && aAccessible->IsActiveWidget()) {
+  if (dom::Element* elm = aAccessible->Elm()) {
     nsAutoString id;
-    if (elm->AsElement()->GetAttr(kNameSpaceID_None,
-                                  nsGkAtoms::aria_activedescendant, id)) {
+    if (elm->GetAttr(kNameSpaceID_None, nsGkAtoms::aria_activedescendant, id)) {
       dom::Element* activeDescendantElm = IDRefsIterator::GetElem(elm, id);
       if (activeDescendantElm) {
         LocalAccessible* activeDescendant = GetAccessible(activeDescendantElm);
         if (activeDescendant) {
-          FocusMgr()->ActiveItemChanged(activeDescendant, false);
+          RefPtr<AccEvent> event =
+              new AccStateChangeEvent(activeDescendant, states::ACTIVE, true);
+          FireDelayedEvent(event);
+          if (aAccessible->IsActiveWidget()) {
+            FocusMgr()->ActiveItemChanged(activeDescendant, false);
 #ifdef A11Y_LOG
-          if (logging::IsEnabled(logging::eFocus)) {
-            logging::ActiveItemChangeCausedBy("ARIA activedescedant changed",
-                                              activeDescendant);
-          }
+            if (logging::IsEnabled(logging::eFocus)) {
+              logging::ActiveItemChangeCausedBy("ARIA activedescedant changed",
+                                                activeDescendant);
+            }
 #endif
+          }
           return;
         }
       }
@@ -832,19 +878,35 @@ void DocAccessible::ARIAActiveDescendantChanged(LocalAccessible* aAccessible) {
   }
 }
 
-void DocAccessible::ContentAppended(nsIContent* aFirstNewContent) {}
+void DocAccessible::ContentAppended(nsIContent* aFirstNewContent) {
+  MaybeHandleChangeToHiddenNameOrDescription(aFirstNewContent);
+}
 
-void DocAccessible::ContentStateChanged(dom::Document* aDocument,
-                                        nsIContent* aContent,
-                                        EventStates aStateMask) {
-  LocalAccessible* accessible = GetAccessible(aContent);
+void DocAccessible::ElementStateChanged(dom::Document* aDocument,
+                                        dom::Element* aElement,
+                                        dom::ElementState aStateMask) {
+  if (aStateMask.HasState(dom::ElementState::READWRITE) &&
+      aElement == mDocumentNode->GetRootElement()) {
+    // This handles changes to designMode. contentEditable is handled by
+    // LocalAccessible::AttributeChangesState and
+    // LocalAccessible::DOMAttributeChanged.
+    const bool isEditable =
+        aElement->State().HasState(dom::ElementState::READWRITE);
+    RefPtr<AccEvent> event =
+        new AccStateChangeEvent(this, states::EDITABLE, isEditable);
+    FireDelayedEvent(event);
+    event = new AccStateChangeEvent(this, states::READONLY, !isEditable);
+    FireDelayedEvent(event);
+  }
+
+  LocalAccessible* accessible = GetAccessible(aElement);
   if (!accessible) return;
 
-  if (aStateMask.HasState(NS_EVENT_STATE_CHECKED)) {
+  if (aStateMask.HasState(dom::ElementState::CHECKED)) {
     LocalAccessible* widget = accessible->ContainerWidget();
     if (widget && widget->IsSelect()) {
       AccSelChangeEvent::SelChangeType selChangeType =
-          aContent->AsElement()->State().HasState(NS_EVENT_STATE_CHECKED)
+          aElement->State().HasState(dom::ElementState::CHECKED)
               ? AccSelChangeEvent::eSelectionAdd
               : AccSelChangeEvent::eSelectionRemove;
       RefPtr<AccEvent> event =
@@ -855,29 +917,32 @@ void DocAccessible::ContentStateChanged(dom::Document* aDocument,
 
     RefPtr<AccEvent> event = new AccStateChangeEvent(
         accessible, states::CHECKED,
-        aContent->AsElement()->State().HasState(NS_EVENT_STATE_CHECKED));
+        aElement->State().HasState(dom::ElementState::CHECKED));
     FireDelayedEvent(event);
   }
 
-  if (aStateMask.HasState(NS_EVENT_STATE_INVALID)) {
+  if (aStateMask.HasState(dom::ElementState::INVALID)) {
     RefPtr<AccEvent> event =
         new AccStateChangeEvent(accessible, states::INVALID, true);
     FireDelayedEvent(event);
   }
 
-  if (aStateMask.HasState(NS_EVENT_STATE_REQUIRED)) {
+  if (aStateMask.HasState(dom::ElementState::REQUIRED)) {
     RefPtr<AccEvent> event =
         new AccStateChangeEvent(accessible, states::REQUIRED);
     FireDelayedEvent(event);
   }
 
-  if (aStateMask.HasState(NS_EVENT_STATE_VISITED)) {
+  if (aStateMask.HasState(dom::ElementState::VISITED)) {
     RefPtr<AccEvent> event =
         new AccStateChangeEvent(accessible, states::TRAVERSED, true);
     FireDelayedEvent(event);
   }
 
-  if (aStateMask.HasState(NS_EVENT_STATE_DEFAULT)) {
+  // We only expose dom::ElementState::DEFAULT on buttons, but we can get
+  // notifications for other controls like checkboxes.
+  if (aStateMask.HasState(dom::ElementState::DEFAULT) &&
+      accessible->IsButton()) {
     RefPtr<AccEvent> event =
         new AccStateChangeEvent(accessible, states::DEFAULT);
     FireDelayedEvent(event);
@@ -890,7 +955,9 @@ void DocAccessible::CharacterDataWillChange(nsIContent* aContent,
 void DocAccessible::CharacterDataChanged(nsIContent* aContent,
                                          const CharacterDataChangeInfo&) {}
 
-void DocAccessible::ContentInserted(nsIContent* aChild) {}
+void DocAccessible::ContentInserted(nsIContent* aChild) {
+  MaybeHandleChangeToHiddenNameOrDescription(aChild);
+}
 
 void DocAccessible::ContentRemoved(nsIContent* aChildNode,
                                    nsIContent* aPreviousSiblingNode) {
@@ -1064,6 +1131,10 @@ void DocAccessible::BindToDocument(LocalAccessible* aAccessible,
       mNotificationController->ScheduleRelocation(aAccessible);
     }
   }
+
+  if (mIPCDoc) {
+    mInsertedAccessibles.EnsureInserted(aAccessible);
+  }
 }
 
 void DocAccessible::UnbindFromDocument(LocalAccessible* aAccessible) {
@@ -1134,6 +1205,25 @@ void DocAccessible::ContentInserted(nsIContent* aStartChildNode,
   mNotificationController->ScheduleContentInsertion(container, list);
 }
 
+void DocAccessible::ScheduleTreeUpdate(nsIContent* aContent) {
+  if (mPendingUpdates.Contains(aContent)) {
+    return;
+  }
+  mPendingUpdates.AppendElement(aContent);
+  mNotificationController->ScheduleProcessing();
+}
+
+void DocAccessible::ProcessPendingUpdates() {
+  auto updates = std::move(mPendingUpdates);
+  for (auto update : updates) {
+    if (update->GetComposedDoc() != mDocumentNode) {
+      continue;
+    }
+    // The pruning logic will take care of avoiding unnecessary notifications.
+    ContentInserted(update, update->GetNextSibling());
+  }
+}
+
 bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
   bool insert = false;
 
@@ -1142,13 +1232,12 @@ bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
   nsIContent* shadowHost =
       aRoot->GetShadowRoot() ? aRoot : aRoot->GetContainingShadowHost();
   if (shadowHost) {
-    dom::ExplicitChildIterator iter(shadowHost);
-
     // Check all explicit children in the host, if they are not slotted
     // then remove their accessibles and subtrees.
-    while (nsIContent* childNode = iter.GetNextChild()) {
+    for (nsIContent* childNode = shadowHost->GetFirstChild(); childNode;
+         childNode = childNode->GetNextSibling()) {
       if (!childNode->GetPrimaryFrame() &&
-          !nsCoreUtils::IsDisplayContents(childNode)) {
+          !nsCoreUtils::CanCreateAccessibleWithoutFrame(childNode)) {
         ContentRemoved(childNode);
       }
     }
@@ -1159,7 +1248,7 @@ bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
       for (nsIContent* childNode = aRoot->GetFirstChild(); childNode;
            childNode = childNode->GetNextSibling()) {
         if (!childNode->GetPrimaryFrame() &&
-            !nsCoreUtils::IsDisplayContents(childNode)) {
+            !nsCoreUtils::CanCreateAccessibleWithoutFrame(childNode)) {
           ContentRemoved(childNode);
         }
       }
@@ -1183,12 +1272,15 @@ bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
 #endif
 
     nsIFrame* frame = acc->GetFrame();
+    if (frame) {
+      acc->MaybeQueueCacheUpdateForStyleChanges();
+    }
 
     // LocalAccessible has no frame and it's not display:contents. Remove it.
     // As well as removing the a11y subtree, we must also remove Accessibles
     // for DOM descendants, since some of these might be relocated Accessibles
     // and their DOM nodes are now hidden as well.
-    if (!frame && !nsCoreUtils::IsDisplayContents(aRoot)) {
+    if (!frame && !nsCoreUtils::CanCreateAccessibleWithoutFrame(aRoot)) {
       ContentRemoved(aRoot);
       return false;
     }
@@ -1229,6 +1321,19 @@ bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
     // cache, which listens for the following event.
     if (acc->IsTable() || acc->IsTableRow() || acc->IsTableCell()) {
       FireDelayedEvent(nsIAccessibleEvent::EVENT_TABLE_STYLING_CHANGED, acc);
+      LocalAccessible* table;
+      if (acc->IsTable()) {
+        table = acc;
+      } else {
+        for (table = acc->LocalParent(); table; table = table->LocalParent()) {
+          if (table->IsTable()) {
+            break;
+          }
+        }
+      }
+      if (table && table->IsTable()) {
+        QueueCacheUpdate(acc, CacheDomain::Table);
+      }
     }
 
     // The accessible can be reparented or reordered in its parent.
@@ -1250,7 +1355,8 @@ bool DocAccessible::PruneOrInsertSubtree(nsIContent* aRoot) {
   } else {
     // If there is no current accessible, and the node has a frame, or is
     // display:contents, schedule it for insertion.
-    if (aRoot->GetPrimaryFrame() || nsCoreUtils::IsDisplayContents(aRoot)) {
+    if (aRoot->GetPrimaryFrame() ||
+        nsCoreUtils::CanCreateAccessibleWithoutFrame(aRoot)) {
       // This may be a new subtree, the insertion process will recurse through
       // its descendants.
       if (!GetAccessibleOrDescendant(aRoot)) {
@@ -1333,6 +1439,60 @@ void DocAccessible::ProcessInvalidationList() {
   }
 
   mInvalidationList.Clear();
+}
+
+void DocAccessible::ProcessQueuedCacheUpdates() {
+  if (!StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return;
+  }
+
+  nsTArray<CacheData> data;
+  for (auto iter = mQueuedCacheUpdates.Iter(); !iter.Done(); iter.Next()) {
+    LocalAccessible* acc = iter.Key();
+    uint64_t domain = iter.UserData();
+    if (acc->IsInDocument() && !acc->IsDefunct()) {
+      RefPtr<AccAttributes> fields =
+          acc->BundleFieldsForCache(domain, CacheUpdateType::Update);
+
+      if (fields->Count()) {
+        data.AppendElement(CacheData(
+            acc->IsDoc() ? 0 : reinterpret_cast<uint64_t>(acc->UniqueID()),
+            fields));
+      }
+    }
+  }
+
+  mQueuedCacheUpdates.Clear();
+
+  if (mViewportCacheDirty) {
+    RefPtr<AccAttributes> fields =
+        BundleFieldsForCache(CacheDomain::Viewport, CacheUpdateType::Update);
+    if (fields->Count()) {
+      data.AppendElement(CacheData(0, fields));
+    }
+    mViewportCacheDirty = false;
+  }
+
+  if (data.Length()) {
+    IPCDoc()->SendCache(CacheUpdateType::Update, data, true);
+  }
+}
+
+void DocAccessible::SendAccessiblesWillMove() {
+  if (!mIPCDoc) {
+    return;
+  }
+  nsTArray<uint64_t> ids;
+  for (LocalAccessible* acc : mMovedAccessibles) {
+    // If acc is defunct or not in a document, it was removed after it was
+    // moved.
+    if (!acc->IsDefunct() && acc->IsInDocument()) {
+      ids.AppendElement(reinterpret_cast<uintptr_t>(acc->UniqueID()));
+    }
+  }
+  if (!ids.IsEmpty()) {
+    mIPCDoc->SendAccessiblesWillMove(ids);
+  }
 }
 
 LocalAccessible* DocAccessible::GetAccessibleEvenIfNotInMap(
@@ -1420,8 +1580,9 @@ void DocAccessible::DoInitialUpdate() {
 #else
           int32_t holder = 0, childID = 0;
 #endif
-          browserChild->SendPDocAccessibleConstructor(ipcDoc, nullptr, 0,
-                                                      childID, holder);
+          browserChild->SendPDocAccessibleConstructor(
+              ipcDoc, nullptr, 0, mDocumentNode->GetBrowsingContext(), childID,
+              holder);
 #if !defined(XP_WIN)
           ipcDoc->SendPDocAccessiblePlatformExtConstructor();
 #endif
@@ -1621,13 +1782,24 @@ bool DocAccessible::UpdateAccessibleOnAttrChange(dom::Element* aElement,
     return true;
   }
 
-  if (aAttribute == nsGkAtoms::aria_multiselectable &&
-      aElement->HasAttr(kNameSpaceID_None, nsGkAtoms::role)) {
-    // This affects whether the accessible supports SelectAccessible.
-    // COM says we cannot change what interfaces are supported on-the-fly,
-    // so invalidate this object. A new one will be created on demand.
-    RecreateAccessible(aElement);
+  if (aAttribute == nsGkAtoms::multiple) {
+    if (dom::HTMLSelectElement* select =
+            dom::HTMLSelectElement::FromNode(aElement)) {
+      if (select->Size() <= 1) {
+        // Adding the 'multiple' attribute to a select that has a size of 1
+        // creates a listbox as opposed to a combobox with a popup combobox
+        // list. Removing the attribute does the opposite.
+        RecreateAccessible(aElement);
+        return true;
+      }
+    }
+  }
 
+  if (aAttribute == nsGkAtoms::size &&
+      aElement->IsHTMLElement(nsGkAtoms::select)) {
+    // Changing the size of a select element can potentially change it from a
+    // combobox button to a listbox with different underlying implementations.
+    RecreateAccessible(aElement);
     return true;
   }
 
@@ -1932,8 +2104,8 @@ void DocAccessible::ContentRemoved(LocalAccessible* aChild) {
     }
   }
   MOZ_DIAGNOSTIC_ASSERT(aChild->LocalParent(), "Unparented #2");
-  parent->RemoveChild(aChild);
   UncacheChildrenInSubtree(aChild);
+  parent->RemoveChild(aChild);
 
   mt.Done();
 }
@@ -1959,8 +2131,8 @@ void DocAccessible::ContentRemoved(nsIContent* aContentNode) {
   // ExplicitChildIterator in order to get its accessible children in the light
   // DOM, since they are not accessible anymore via AllChildrenIterator.
   if (aContentNode->GetShadowRoot()) {
-    dom::ExplicitChildIterator iter = dom::ExplicitChildIterator(aContentNode);
-    while (nsIContent* childNode = iter.GetNextChild()) {
+    for (nsIContent* childNode = aContentNode->GetFirstChild(); childNode;
+         childNode = childNode->GetNextSibling()) {
       ContentRemoved(childNode);
     }
   }
@@ -2188,6 +2360,18 @@ void DocAccessible::PutChildrenBack(
   aChildren->RemoveLastElements(aChildren->Length() - aStartIdx);
 }
 
+void DocAccessible::TrackMovedAccessible(LocalAccessible* aAcc) {
+  // If an Accessible is inserted and moved during the same tick, don't track
+  // it as a move because it hasn't been shown yet.
+  if (!mInsertedAccessibles.Contains(aAcc)) {
+    mMovedAccessibles.EnsureInserted(aAcc);
+  }
+  // When we move an Accessible, we're also moving its descendants.
+  for (uint32_t c = 0, count = aAcc->ContentChildCount(); c < count; ++c) {
+    TrackMovedAccessible(aAcc->ContentChildAt(c));
+  }
+}
+
 bool DocAccessible::MoveChild(LocalAccessible* aChild,
                               LocalAccessible* aNewParent,
                               int32_t aIdxInParent) {
@@ -2227,6 +2411,9 @@ bool DocAccessible::MoveChild(LocalAccessible* aChild,
   if (curParent == aNewParent) {
     MOZ_ASSERT(aChild->IndexInParent() != aIdxInParent, "No move case");
     curParent->RelocateChild(aIdxInParent, aChild);
+    if (mIPCDoc) {
+      TrackMovedAccessible(aChild);
+    }
 
 #ifdef A11Y_LOG
     logging::TreeInfo("move child: parent tree after", logging::eVerbose,
@@ -2253,6 +2440,9 @@ bool DocAccessible::MoveChild(LocalAccessible* aChild,
 
   TreeMutation imut(aNewParent);
   aNewParent->InsertChildAt(aIdxInParent, aChild);
+  if (mIPCDoc) {
+    TrackMovedAccessible(aChild);
+  }
   imut.AfterInsertion(aChild);
   imut.Done();
 
@@ -2311,6 +2501,14 @@ void DocAccessible::CacheChildrenInSubtree(LocalAccessible* aRoot,
 void DocAccessible::UncacheChildrenInSubtree(LocalAccessible* aRoot) {
   aRoot->mStateFlags |= eIsNotInDocument;
   RemoveDependentIDsFor(aRoot);
+
+  // The parent of the removed subtree is about to be cleared, so we must do
+  // this here rather than in LocalAccessible::UnbindFromParent because we need
+  // the ancestry for this to work.
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup() &&
+      (aRoot->IsTable() || aRoot->IsTableCell())) {
+    CachedTableAccessible::Invalidate(aRoot);
+  }
 
   nsTArray<RefPtr<LocalAccessible>>* owned = mARIAOwnsHash.Get(aRoot);
   uint32_t count = aRoot->ContentChildCount();
@@ -2407,74 +2605,33 @@ void DocAccessible::DispatchScrollingEvent(nsINode* aTarget,
     return;
   }
 
-  LayoutDevicePoint scrollPoint;
-  LayoutDeviceRect scrollRange;
-  nsIScrollableFrame* sf = acc == this
-                               ? mPresShell->GetRootScrollFrameAsScrollable()
-                               : frame->GetScrollTargetFrame();
+  auto [scrollPoint, scrollRange] = ComputeScrollData(acc);
 
-  // If there is no scrollable frame, it's likely a scroll in a popup, like
-  // <select>. Just send an event with no scroll info. The scroll info
-  // is currently only used on Android, and popups are rendered natively
-  // there.
-  if (sf) {
-    int32_t appUnitsPerDevPixel =
-        mPresShell->GetPresContext()->AppUnitsPerDevPixel();
-    scrollPoint = LayoutDevicePoint::FromAppUnits(sf->GetScrollPosition(),
-                                                  appUnitsPerDevPixel) *
-                  mPresShell->GetResolution();
+  int32_t appUnitsPerDevPixel =
+      mPresShell->GetPresContext()->AppUnitsPerDevPixel();
 
-    scrollRange = LayoutDeviceRect::FromAppUnits(sf->GetScrollRange(),
-                                                 appUnitsPerDevPixel);
-    scrollRange.ScaleRoundOut(mPresShell->GetResolution());
-  }
+  LayoutDeviceIntPoint scrollPointDP = LayoutDevicePoint::FromAppUnitsToNearest(
+      scrollPoint, appUnitsPerDevPixel);
+  LayoutDeviceIntRect scrollRangeDP =
+      LayoutDeviceRect::FromAppUnitsToNearest(scrollRange, appUnitsPerDevPixel);
 
   RefPtr<AccEvent> event =
-      new AccScrollingEvent(aEventType, acc, scrollPoint.x, scrollPoint.y,
-                            scrollRange.width, scrollRange.height);
+      new AccScrollingEvent(aEventType, acc, scrollPointDP.x, scrollPointDP.y,
+                            scrollRangeDP.width, scrollRangeDP.height);
   nsEventShell::FireEvent(event);
 }
 
-void DocAccessible::ARIAActiveDescendantIDMaybeMoved(dom::Element* aElm) {
-  nsINode* focusNode = FocusMgr()->FocusedDOMNode();
-  // The focused element must be within this document.
-  if (!focusNode || focusNode->OwnerDoc() != mDocumentNode) {
-    return;
+void DocAccessible::ARIAActiveDescendantIDMaybeMoved(
+    LocalAccessible* aAccessible) {
+  LocalAccessible* widget = nullptr;
+  if (aAccessible->IsActiveDescendant(&widget) && widget) {
+    // The active descendant might have just been inserted and may not be in the
+    // tree yet. Therefore, schedule this async to ensure the tree is up to
+    // date.
+    mNotificationController
+        ->ScheduleNotification<DocAccessible, LocalAccessible>(
+            this, &DocAccessible::ARIAActiveDescendantChanged, widget);
   }
-
-  dom::Element* focusElm = nullptr;
-  if (focusNode == mDocumentNode) {
-    // The document is focused, so look for aria-activedescendant on the
-    // body/root.
-    focusElm = Elm();
-    if (!focusElm) {
-      return;
-    }
-  } else {
-    MOZ_ASSERT(focusNode->IsElement());
-    focusElm = focusNode->AsElement();
-  }
-
-  // Check if the focus has aria-activedescendant and whether
-  // it refers to the id just set on aElm.
-  nsAutoString id;
-  aElm->GetAttr(kNameSpaceID_None, nsGkAtoms::id, id);
-  if (!focusElm->AttrValueIs(kNameSpaceID_None,
-                             nsGkAtoms::aria_activedescendant, id,
-                             eCaseMatters)) {
-    return;
-  }
-
-  // The aria-activedescendant target has probably changed.
-  LocalAccessible* acc = GetAccessibleEvenIfNotInMapOrContainer(focusNode);
-  if (!acc) {
-    return;
-  }
-
-  // The active descendant might have just been inserted and may not be in the
-  // tree yet. Therefore, schedule this async to ensure the tree is up to date.
-  mNotificationController->ScheduleNotification<DocAccessible, LocalAccessible>(
-      this, &DocAccessible::ARIAActiveDescendantChanged, acc);
 }
 
 void DocAccessible::SetRoleMapEntryForDoc(dom::Element* aElement) {
@@ -2494,4 +2651,64 @@ void DocAccessible::SetRoleMapEntryForDoc(dom::Element* aElement) {
 LocalAccessible* DocAccessible::GetAccessible(nsINode* aNode) const {
   return aNode == mDocumentNode ? const_cast<DocAccessible*>(this)
                                 : mNodeToAccessibleMap.Get(aNode);
+}
+
+bool DocAccessible::HasPrimaryAction() const {
+  if (HyperTextAccessible::HasPrimaryAction()) {
+    return true;
+  }
+  // mContent is normally the body, but there might be a click listener on the
+  // root.
+  dom::Element* root = mDocumentNode->GetRootElement();
+  if (mContent != root) {
+    return nsCoreUtils::HasClickListener(root);
+  }
+  return false;
+}
+
+void DocAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
+  aName.Truncate();
+  if (aIndex != 0) {
+    return;
+  }
+  if (HasPrimaryAction()) {
+    aName.AssignLiteral("click");
+  }
+}
+
+void DocAccessible::MaybeHandleChangeToHiddenNameOrDescription(
+    nsIContent* aChild) {
+  if (!HasLoadState(eTreeConstructed)) {
+    return;
+  }
+  for (nsIContent* content = aChild; content; content = content->GetParent()) {
+    if (HasAccessible(content)) {
+      // This node isn't hidden. Events for name/description dependents will be
+      // fired elsewhere.
+      break;
+    }
+    nsAtom* id = content->GetID();
+    if (!id) {
+      continue;
+    }
+    auto* providers =
+        GetRelProviders(content->AsElement(), nsDependentAtomString(id));
+    if (!providers) {
+      continue;
+    }
+    for (auto& provider : *providers) {
+      if (provider->mRelAttr != nsGkAtoms::aria_labelledby &&
+          provider->mRelAttr != nsGkAtoms::aria_describedby) {
+        continue;
+      }
+      LocalAccessible* dependentAcc = GetAccessible(provider->mContent);
+      if (!dependentAcc) {
+        continue;
+      }
+      FireDelayedEvent(provider->mRelAttr == nsGkAtoms::aria_labelledby
+                           ? nsIAccessibleEvent::EVENT_NAME_CHANGE
+                           : nsIAccessibleEvent::EVENT_DESCRIPTION_CHANGE,
+                       dependentAcc);
+    }
+  }
 }

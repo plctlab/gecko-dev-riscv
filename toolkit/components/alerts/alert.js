@@ -5,7 +5,6 @@
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 // Copied from nsILookAndFeel.h, see comments on eMetric_AlertNotificationOrigin
 const NS_ALERT_HORIZONTAL = 1;
@@ -195,7 +194,7 @@ function onAlertLoad() {
   let alertImageBox = document.getElementById("alertImageBox");
   alertImageBox.style.minHeight = alertTextBox.scrollHeight + "px";
 
-  sizeToContent();
+  window.sizeToContent();
 
   if (gReplacedWindow && !gReplacedWindow.closed) {
     moveWindowToReplace(gReplacedWindow);

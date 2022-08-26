@@ -8,7 +8,7 @@
 # Additionally a field can have the following optional fields:
 # - altname: A string that will be used when writing out the annotation to the
 #   .extra file instead of the annotation name
-# - ping: A boolean that indicates whether the annotation is whitelisted for
+# - ping: A boolean that indicates whether the annotation is allowlisted for
 #   going into the crash ping, if not specified this defaults to false
 
 A11yHandlerRegistered:
@@ -143,6 +143,17 @@ AvailableVirtualMemory:
   type: string
   ping: true
 
+BackgroundTaskMode:
+  description: >
+    True if the app was invoked in background task mode via `--backgroundtask ...`, false otherwise.
+  type: boolean
+
+BackgroundTaskName:
+  description: >
+    If the app was invoked in background task mode via `--backgroundtask <task name>`, the string "task name".
+  type: string
+  ping: true
+
 BlockedDllList:
   description: >
     Comma-separated list of blocked DLLS, Windows-only
@@ -182,12 +193,6 @@ CoMarshalInterfaceFailure:
     Annotation describing the error returned by trying to marshal an object
     via CoMarshalInterface during the creation of an IPC proxy stream.
   type: string
-
-ContainsMemoryReport:
-  description: >
-    Indicates that the crash dump contains a memory report.
-  type: boolean
-  ping: true
 
 ContentSandboxCapabilities:
   description: >
@@ -258,6 +263,11 @@ DeviceResetReason:
     Reason why a DirectX device has been reset, Windows only.
   type: string
 
+DistributionID:
+  description: >
+    Product application's distribution ID.
+  type: string
+
 DOMFissionEnabled:
   description: >
     Set to 1 when DOM fission is enabled, and subframes are potentially loaded
@@ -295,6 +305,12 @@ ExpectedStreamLen:
 ExperimentalFeatures:
   description: >
     Comma-separated list of enabled experimental features from about:preferences#experimental.
+  type: string
+  ping: true
+
+FontName:
+  description: >
+    Set before attempting to load a font to help diagnose crashes during loading.
   type: string
   ping: true
 
@@ -342,10 +358,26 @@ GraphicsDrawShader:
     See file names in gfx/wr/webrender/res/* for the possible values.
   type: string
 
+GraphicsNumActiveRenderers:
+  description: >
+    Number of webrender renderer instances that are not in a paused state.
+  type: integer
+
+GraphicsNumRenderers:
+  description: >
+    Total number of webrender renderer instances.
+  type: integer
+
 GraphicsStartupTest:
   description: >
     Set to 1 by the graphics driver crash guard when it's activated.
   type: boolean
+
+HeadlessMode:
+  description: >
+    True if the app was invoked in headless mode via `--headless ...` or `--backgroundtask ...`, false otherwise.
+  type: boolean
+  ping: true
 
 PHCKind:
   description: >
@@ -546,6 +578,13 @@ JSOutOfMemory:
     to satisfy the allocation.
   type: string
 
+LastInteractionDuration:
+  description: >
+    How long the user had been inactive in seconds if the user was inactive
+    at crash.  The value is not set if the user state was active.
+  type: integer
+  ping: true
+
 MacMemoryPressure:
   description: >
     The current memory pressure state as provided by the macOS memory pressure
@@ -586,6 +625,12 @@ MacAvailableMemorySysctl:
     The value of the available memory sysctl 'kern.memorystatus_level'.
     Expected to be a percentage integer value.
   type: integer
+
+LinuxUnderMemoryPressure:
+  description: >
+    Set to true if the memory pressure watcher was under memory pressure when
+    the crash occurred.
+  type: boolean
 
 LauncherProcessState:
   description: >
@@ -798,12 +843,16 @@ StorageConnectionNotClosed:
     associated with the connection.
   type: string
 
-SubmittedFromInfobar:
+SubmittedFrom:
   description: >
-    This annotation is set to 1 when the crash report has been manually
-    submitted from Firefox info-bar or has been automatically submitted after
-    the user opted-in to auto-submission.
-  type: boolean
+    This annotation can hold one of the following five values depending on how
+    this crash was submitted by the user:
+    * Auto: the user had opted-in to auto-submission
+    * Infobar: the user clicked on the infobar to submit the crash
+    * AboutCrashes: the user sent the crash from the about:crashes page
+    * CrashedTab: the user sent the crash from a crashed tab page
+    * Client: the user sent the crash using the crash reporter client
+  type: string
 
 SystemMemoryUsePercentage:
   description: >
@@ -850,10 +899,13 @@ TextureUsage:
   type: string
   ping: true
 
-ThreadIdNameMapping:
+Throttleable:
   description: >
-    List of thread names with their corresponding thread IDs.
-  type: string
+    Whether Socorro can selectively discard this crash report or not. If set
+    to "0" the crash report will always be processed by Socorro. Do not set
+    this annotation within Gecko code, it's only supposed to be used by the
+    crash reporting machinery.
+  type: boolean
 
 TotalPageFile:
   description: >
@@ -930,6 +982,17 @@ useragent_locale:
     User-agent locale.
   type: string
 
+UtilityProcessStatus:
+  description: >
+    Status of the Utility process, can be set to "Running" or "Destroyed"
+  type: string
+
+UtilityProcessSandboxingKind:
+  description: >
+    The SandboxingKind passed for this Utility process instance
+  type: integer
+  ping: true
+
 Vendor:
   description: >
     Application vendor (e.g. Mozilla).
@@ -945,6 +1008,22 @@ VRProcessStatus:
     Status of the VR process, can be set to "Running" or "Destroyed"
   type: string
 
+WasmLibrarySandboxMallocFailed:
+  description: >
+    Set to 1 if a rlbox wasm library sandbox ran out of memory, causing a
+    malloc inside the sandbox to fail.
+  type: boolean
+
+WindowsPackageFamilyName:
+  description: >
+    If running in a Windows package context, the package family name, per
+    https://docs.microsoft.com/en-us/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefamilyname.
+
+    The package family name is only included when it is likely to have been produced by Mozilla: it
+    starts "Mozilla." or "MozillaCorporation.".
+  type: string
+  ping: true
+
 WindowsErrorReporting:
   description: >
     Set to 1 if this crash was intercepted via the Windows Error Reporting
@@ -959,6 +1038,9 @@ Winsock_LSP:
 
 XPCOMSpinEventLoopStack:
   description: >
-    If we crash while some code is spinning manually the event
-    loop, we will see the stack of nested annotations here.
+    If we crash while some code is spinning manually the event loop on the
+    main thread, we will see the stack of nested annotations here.
+    If the crashing process was killed (e.g. due to an IPC error), this
+    annotation may refer to the parent process that killed it, look out for
+    the prefix ("default" means parent) and see bug 1741131 for details.
   type: string

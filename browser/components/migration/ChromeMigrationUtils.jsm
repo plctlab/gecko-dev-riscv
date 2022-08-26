@@ -5,15 +5,17 @@
 
 var EXPORTED_SYMBOLS = ["ChromeMigrationUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+const lazy = {};
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
   MigrationUtils: "resource:///modules/MigrationUtils.jsm",
   OS: "resource://gre/modules/osfile.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 const S100NS_FROM1601TO1970 = 0x19db1ded53e8000;
@@ -51,7 +53,7 @@ var ChromeMigrationUtils = {
       profileId = await this.getLastUsedProfileId();
     }
     let path = this.getExtensionPath(profileId);
-    let iterator = new OS.File.DirectoryIterator(path);
+    let iterator = new lazy.OS.File.DirectoryIterator(path);
     let extensionList = [];
     await iterator
       .forEach(async entry => {
@@ -82,7 +84,7 @@ var ChromeMigrationUtils = {
     let extensionInformation = null;
     try {
       let manifestPath = this.getExtensionPath(profileId);
-      manifestPath = OS.Path.join(manifestPath, extensionId);
+      manifestPath = lazy.OS.Path.join(manifestPath, extensionId);
       // If there are multiple sub-directories in the extension directory,
       // read the files in the latest directory.
       let directories = await this._getSortedByVersionSubDirectoryNames(
@@ -92,12 +94,14 @@ var ChromeMigrationUtils = {
         return null;
       }
 
-      manifestPath = OS.Path.join(
+      manifestPath = lazy.OS.Path.join(
         manifestPath,
         directories[0],
         "manifest.json"
       );
-      let manifest = await OS.File.read(manifestPath, { encoding: "utf-8" });
+      let manifest = await lazy.OS.File.read(manifestPath, {
+        encoding: "utf-8",
+      });
       manifest = JSON.parse(manifest);
       // No app attribute means this is a Chrome extension not a Chrome app.
       if (!manifest.app) {
@@ -160,20 +164,22 @@ var ChromeMigrationUtils = {
           this._extensionLocaleStrings[profileId] = {};
         }
         let localeFilePath = this.getExtensionPath(profileId);
-        localeFilePath = OS.Path.join(localeFilePath, extensionId);
+        localeFilePath = lazy.OS.Path.join(localeFilePath, extensionId);
         let directories = await this._getSortedByVersionSubDirectoryNames(
           localeFilePath
         );
         // If there are multiple sub-directories in the extension directory,
         // read the files in the latest directory.
-        localeFilePath = OS.Path.join(
+        localeFilePath = lazy.OS.Path.join(
           localeFilePath,
           directories[0],
           "_locales",
           locale,
           "messages.json"
         );
-        localeFile = await OS.File.read(localeFilePath, { encoding: "utf-8" });
+        localeFile = await lazy.OS.File.read(localeFilePath, {
+          encoding: "utf-8",
+        });
         localeFile = JSON.parse(localeFile);
         this._extensionLocaleStrings[profileId][extensionId] = localeFile;
       }
@@ -202,8 +208,8 @@ var ChromeMigrationUtils = {
       profileId = await this.getLastUsedProfileId();
     }
     let extensionPath = this.getExtensionPath(profileId);
-    let isInstalled = await OS.File.exists(
-      OS.Path.join(extensionPath, extensionId)
+    let isInstalled = await lazy.OS.File.exists(
+      lazy.OS.Path.join(extensionPath, extensionId)
     );
     return isInstalled;
   },
@@ -258,14 +264,17 @@ var ChromeMigrationUtils = {
   getDataPath(chromeProjectName = "Chrome") {
     const SUB_DIRECTORIES = {
       win: {
+        Brave: ["BraveSoftware", "Brave-Browser"],
         Chrome: ["Google", "Chrome"],
         "Chrome Beta": ["Google", "Chrome Beta"],
         Chromium: ["Chromium"],
         Canary: ["Google", "Chrome SxS"],
         Edge: ["Microsoft", "Edge"],
         "Edge Beta": ["Microsoft", "Edge Beta"],
+        "360 SE": ["360se6"],
       },
       macosx: {
+        Brave: ["BraveSoftware", "Brave-Browser"],
         Chrome: ["Google", "Chrome"],
         Chromium: ["Chromium"],
         Canary: ["Google", "Chrome Canary"],
@@ -273,6 +282,7 @@ var ChromeMigrationUtils = {
         "Edge Beta": ["Microsoft Edge Beta"],
       },
       linux: {
+        Brave: ["BraveSoftware", "Brave-Browser"],
         Chrome: ["google-chrome"],
         "Chrome Beta": ["google-chrome-beta"],
         "Chrome Dev": ["google-chrome-unstable"],
@@ -288,7 +298,7 @@ var ChromeMigrationUtils = {
 
     let rootDir;
     if (AppConstants.platform == "win") {
-      rootDir = "LocalAppData";
+      rootDir = chromeProjectName === "360 SE" ? "AppData" : "LocalAppData";
       subfolders = subfolders.concat(["User Data"]);
     } else if (AppConstants.platform == "macosx") {
       rootDir = "ULibDir";
@@ -321,7 +331,7 @@ var ChromeMigrationUtils = {
       return this._extensionVersionDirectoryNames[path];
     }
 
-    let iterator = new OS.File.DirectoryIterator(path);
+    let iterator = new lazy.OS.File.DirectoryIterator(path);
     let entries = [];
     await iterator
       .forEach(async entry => {
@@ -394,7 +404,7 @@ var ChromeMigrationUtils = {
       // Just handle these chromium-based browsers for now.
       for (const browserId of this.CONTEXTUAL_LOGIN_IMPORT_BROWSERS) {
         // Skip if there's no profile data.
-        const migrator = await MigrationUtils.getMigrator(browserId);
+        const migrator = await lazy.MigrationUtils.getMigrator(browserId);
         if (!migrator) {
           continue;
         }
@@ -402,15 +412,15 @@ var ChromeMigrationUtils = {
         // Check each profile for logins.
         const dataPath = await migrator.wrappedJSObject._getChromeUserDataPathIfExists();
         for (const profile of await migrator.getSourceProfiles()) {
-          const path = OS.Path.join(dataPath, profile.id, "Login Data");
+          const path = lazy.OS.Path.join(dataPath, profile.id, "Login Data");
           // Skip if login data is missing.
-          if (!(await OS.File.exists(path))) {
+          if (!(await lazy.OS.File.exists(path))) {
             Cu.reportError(`Missing file at ${path}`);
             continue;
           }
 
           try {
-            for (const row of await MigrationUtils.getRowsFromDBWithoutLocks(
+            for (const row of await lazy.MigrationUtils.getRowsFromDBWithoutLocks(
               path,
               `Importable ${browserId} logins`,
               `SELECT origin_url
@@ -420,7 +430,7 @@ var ChromeMigrationUtils = {
               const url = row.getString(0);
               try {
                 // Initialize an array if it doesn't exist for the origin yet.
-                const origin = LoginHelper.getLoginOrigin(url);
+                const origin = lazy.LoginHelper.getLoginOrigin(url);
                 const entries = this._importableLoginsCache.get(origin) || [];
                 if (!entries.length) {
                   this._importableLoginsCache.set(origin, entries);

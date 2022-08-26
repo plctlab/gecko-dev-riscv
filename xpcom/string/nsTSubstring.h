@@ -34,6 +34,7 @@
 // memory checking. (Limited to avoid quadratic behavior.)
 const size_t kNsStringBufferMaxPoison = 16;
 
+class nsStringBuffer;
 template <typename T>
 class nsTSubstringSplitter;
 template <typename T>
@@ -285,6 +286,7 @@ class BulkWriteHandle final {
 template <typename T>
 class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   friend class mozilla::BulkWriteHandle<T>;
+  friend class nsStringBuffer;
 
  public:
   typedef nsTSubstring<T> self_type;
@@ -310,12 +312,15 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
 
   typedef typename base_string_type::const_char_iterator const_char_iterator;
 
+  typedef typename base_string_type::string_view string_view;
+
   typedef typename base_string_type::index_type index_type;
   typedef typename base_string_type::size_type size_type;
 
   // These are only for internal use within the string classes:
   typedef typename base_string_type::DataFlags DataFlags;
   typedef typename base_string_type::ClassFlags ClassFlags;
+  typedef typename base_string_type::LengthStorage LengthStorage;
 
   // this acts like a virtual destructor
   ~nsTSubstring() { Finalize(); }
@@ -433,13 +438,11 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
                                              const fallible_t&);
 
   void NS_FASTCALL AssignASCII(const char* aData) {
-    AssignASCII(aData, mozilla::AssertedCast<size_type, size_t>(strlen(aData)));
+    AssignASCII(aData, strlen(aData));
   }
   [[nodiscard]] bool NS_FASTCALL AssignASCII(const char* aData,
                                              const fallible_t& aFallible) {
-    return AssignASCII(aData,
-                       mozilla::AssertedCast<size_type, size_t>(strlen(aData)),
-                       aFallible);
+    return AssignASCII(aData, strlen(aData), aFallible);
   }
 
   // AssignLiteral must ONLY be called with an actual literal string, or
@@ -550,6 +553,128 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
                       const char_type (&aStr)[N]) {
     ReplaceLiteral(aCutStart, aCutLength, aStr, N - 1);
   }
+
+  /**
+   * |Left|, |Mid|, and |Right| are annoying signatures that seem better almost
+   * any _other_ way than they are now.  Consider these alternatives
+   *
+   * // ...a member function that returns a |Substring|
+   * aWritable = aReadable.Left(17);
+   * // ...a global function that returns a |Substring|
+   * aWritable = Left(aReadable, 17);
+   * // ...a global function that does the assignment
+   * Left(aReadable, 17, aWritable);
+   *
+   * as opposed to the current signature
+   *
+   * // ...a member function that does the assignment
+   * aReadable.Left(aWritable, 17);
+   *
+   * or maybe just stamping them out in favor of |Substring|, they are just
+   * duplicate functionality
+   *
+   * aWritable = Substring(aReadable, 0, 17);
+   */
+  size_type Mid(self_type& aResult, index_type aStartPos,
+                size_type aCount) const;
+
+  size_type Left(self_type& aResult, size_type aCount) const {
+    return Mid(aResult, 0, aCount);
+  }
+
+  size_type Right(self_type& aResult, size_type aCount) const {
+    aCount = XPCOM_MIN(this->Length(), aCount);
+    return Mid(aResult, this->mLength - aCount, aCount);
+  }
+
+  /**
+   *  This method strips whitespace throughout the string.
+   */
+  void StripWhitespace();
+  bool StripWhitespace(const fallible_t&);
+
+  /**
+   *  This method is used to remove all occurrences of aChar from this
+   * string.
+   *
+   *  @param  aChar -- char to be stripped
+   */
+  void StripChar(char_type aChar);
+
+  /**
+   *  This method is used to remove all occurrences of aChars from this
+   * string.
+   *
+   *  @param  aChars -- chars to be stripped
+   */
+  void StripChars(const char_type* aChars);
+
+  /**
+   * This method is used to remove all occurrences of some characters this
+   * from this string.  The characters removed have the corresponding
+   * entries in the bool array set to true; we retain all characters
+   * with code beyond 127.
+   * THE CALLER IS RESPONSIBLE for making sure the complete boolean
+   * array, 128 entries, is properly initialized.
+   *
+   * See also: ASCIIMask class.
+   *
+   *  @param  aToStrip -- Array where each entry is true if the
+   *          corresponding ASCII character is to be stripped.  All
+   *          characters beyond code 127 are retained.  Note that this
+   *          parameter is of ASCIIMaskArray type, but we expand the typedef
+   *          to avoid having to include nsASCIIMask.h in this include file
+   *          as it brings other includes.
+   */
+  void StripTaggedASCII(const std::array<bool, 128>& aToStrip);
+
+  /**
+   * A shortcut to strip \r and \n.
+   */
+  void StripCRLF();
+
+  /**
+   * swaps occurence of 1 string for another
+   */
+  void ReplaceChar(char_type aOldChar, char_type aNewChar);
+  void ReplaceChar(const string_view& aSet, char_type aNewChar);
+
+  /**
+   * Replace all occurrences of aTarget with aNewValue.
+   * The complexity of this function is O(n+m), n being the length of the string
+   * and m being the length of aNewValue.
+   */
+  void ReplaceSubstring(const self_type& aTarget, const self_type& aNewValue);
+  void ReplaceSubstring(const char_type* aTarget, const char_type* aNewValue);
+  [[nodiscard]] bool ReplaceSubstring(const self_type& aTarget,
+                                      const self_type& aNewValue,
+                                      const fallible_t&);
+  [[nodiscard]] bool ReplaceSubstring(const char_type* aTarget,
+                                      const char_type* aNewValue,
+                                      const fallible_t&);
+
+  /**
+   *  This method trims characters found in aSet from either end of the
+   *  underlying string.
+   *
+   *  @param   aSet -- contains chars to be trimmed from both ends
+   *  @param   aTrimLeading
+   *  @param   aTrimTrailing
+   *  @param   aIgnoreQuotes -- if true, causes surrounding quotes to be ignored
+   *  @return  this
+   */
+  void Trim(const std::string_view& aSet, bool aTrimLeading = true,
+            bool aTrimTrailing = true, bool aIgnoreQuotes = false);
+
+  /**
+   *  This method strips whitespace from string.
+   *  You can control whether whitespace is yanked from start and end of
+   *  string as well.
+   *
+   *  @param   aTrimLeading controls stripping of leading ws
+   *  @param   aTrimTrailing controls stripping of trailing ws
+   */
+  void CompressWhitespace(bool aTrimLeading = true, bool aTrimTrailing = true);
 
   void Append(char_type aChar);
 
@@ -893,12 +1018,12 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   size_type GetMutableData(char_type** aData,
                            size_type aNewLen = size_type(-1)) {
     if (!EnsureMutable(aNewLen)) {
-      AllocFailed(aNewLen == size_type(-1) ? base_string_type::mLength
+      AllocFailed(aNewLen == size_type(-1) ? base_string_type::Length()
                                            : aNewLen);
     }
 
     *aData = base_string_type::mData;
-    return base_string_type::mLength;
+    return base_string_type::Length();
   }
 
   size_type GetMutableData(char_type** aData, size_type aNewLen,
@@ -928,11 +1053,11 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
 
   mozilla::Span<char_type> GetMutableData(size_type aNewLen = size_type(-1)) {
     if (!EnsureMutable(aNewLen)) {
-      AllocFailed(aNewLen == size_type(-1) ? base_string_type::mLength
+      AllocFailed(aNewLen == size_type(-1) ? base_string_type::Length()
                                            : aNewLen);
     }
 
-    return mozilla::Span{base_string_type::mData, base_string_type::mLength};
+    return mozilla::Span{base_string_type::mData, base_string_type::Length()};
   }
 
   mozilla::Maybe<mozilla::Span<char_type>> GetMutableData(size_type aNewLen,
@@ -941,7 +1066,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
       return mozilla::Nothing();
     }
     return Some(
-        mozilla::Span{base_string_type::mData, base_string_type::mLength});
+        mozilla::Span{base_string_type::mData, base_string_type::Length()});
   }
 
   /**
@@ -954,18 +1079,12 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   }
 
   void Append(mozilla::Span<const char_type> aSpan) {
-    auto len = aSpan.Length();
-    MOZ_RELEASE_ASSERT(len <= std::numeric_limits<size_type>::max());
-    Append(aSpan.Elements(), len);
+    Append(aSpan.Elements(), aSpan.Length());
   }
 
   [[nodiscard]] bool Append(mozilla::Span<const char_type> aSpan,
                             const fallible_t& aFallible) {
-    auto len = aSpan.Length();
-    if (len > std::numeric_limits<size_type>::max()) {
-      return false;
-    }
-    return Append(aSpan.Elements(), len, aFallible);
+    return Append(aSpan.Elements(), aSpan.Length(), aFallible);
   }
 
   void NS_FASTCALL AssignASCII(mozilla::Span<const char> aData) {
@@ -989,20 +1108,18 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
 
   template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
   void Append(mozilla::Span<const uint8_t> aSpan) {
-    auto len = aSpan.Length();
-    MOZ_RELEASE_ASSERT(len <= std::numeric_limits<size_type>::max());
-    Append(reinterpret_cast<const char*>(aSpan.Elements()), len);
+    Append(reinterpret_cast<const char*>(aSpan.Elements()), aSpan.Length());
   }
 
   template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
   [[nodiscard]] bool Append(mozilla::Span<const uint8_t> aSpan,
                             const fallible_t& aFallible) {
-    auto len = aSpan.Length();
-    if (len > std::numeric_limits<size_type>::max()) {
-      return false;
-    }
-    return Append(reinterpret_cast<const char*>(aSpan.Elements()), len,
-                  aFallible);
+    return Append(reinterpret_cast<const char*>(aSpan.Elements()),
+                  aSpan.Length(), aFallible);
+  }
+
+  void Insert(mozilla::Span<const char_type> aSpan, index_type aPos) {
+    Insert(aSpan.Elements(), aPos, aSpan.Length());
   }
 
   /**
@@ -1011,48 +1128,6 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    */
 
   void NS_FASTCALL SetIsVoid(bool);
-
-  /**
-   *  This method is used to remove all occurrences of aChar from this
-   * string.
-   *
-   *  @param  aChar -- char to be stripped
-   */
-
-  void StripChar(char_type aChar);
-
-  /**
-   *  This method is used to remove all occurrences of aChars from this
-   * string.
-   *
-   *  @param  aChars -- chars to be stripped
-   */
-
-  void StripChars(const char_type* aChars);
-
-  /**
-   * This method is used to remove all occurrences of some characters this
-   * from this string.  The characters removed have the corresponding
-   * entries in the bool array set to true; we retain all characters
-   * with code beyond 127.
-   * THE CALLER IS RESPONSIBLE for making sure the complete boolean
-   * array, 128 entries, is properly initialized.
-   *
-   * See also: ASCIIMask class.
-   *
-   *  @param  aToStrip -- Array where each entry is true if the
-   *          corresponding ASCII character is to be stripped.  All
-   *          characters beyond code 127 are retained.  Note that this
-   *          parameter is of ASCIIMaskArray type, but we expand the typedef
-   *          to avoid having to include nsASCIIMask.h in this include file
-   *          as it brings other includes.
-   */
-  void StripTaggedASCII(const std::array<bool, 128>& aToStrip);
-
-  /**
-   * A shortcut to strip \r and \n.
-   */
-  void StripCRLF();
 
   /**
    * If the string uses a shared buffer, this method
@@ -1145,17 +1220,15 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    */
   nsTSubstring(char_type* aData, size_type aLength, DataFlags aDataFlags,
                ClassFlags aClassFlags)
-// XXXbz or can I just include nscore.h and use NS_BUILD_REFCNT_LOGGING?
-#if defined(DEBUG) || defined(FORCE_BUILD_REFCNT_LOGGING)
+#if defined(NS_BUILD_REFCNT_LOGGING)
 #  define XPCOM_STRING_CONSTRUCTOR_OUT_OF_LINE
       ;
 #else
 #  undef XPCOM_STRING_CONSTRUCTOR_OUT_OF_LINE
       : base_string_type(aData, aLength, aDataFlags, aClassFlags) {
     AssertValid();
-    MOZ_RELEASE_ASSERT(CheckCapacity(aLength), "String is too large.");
   }
-#endif /* DEBUG || FORCE_BUILD_REFCNT_LOGGING */
+#endif /* NS_BUILD_REFCNT_LOGGING */
 
   void SetToEmptyBuffer() {
     base_string_type::mData = char_traits::sEmptyBuffer;
@@ -1164,7 +1237,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
     AssertValid();
   }
 
-  void SetData(char_type* aData, size_type aLength, DataFlags aDataFlags) {
+  void SetData(char_type* aData, LengthStorage aLength, DataFlags aDataFlags) {
     base_string_type::mData = aData;
     base_string_type::mLength = aLength;
     base_string_type::mDataFlags = aDataFlags;
@@ -1261,7 +1334,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    *                        move.
    *
    */
-  mozilla::Result<uint32_t, nsresult> NS_FASTCALL StartBulkWriteImpl(
+  mozilla::Result<size_type, nsresult> NS_FASTCALL StartBulkWriteImpl(
       size_type aCapacity, size_type aPrefixToPreserve = 0,
       bool aAllowShrinking = true, size_type aSuffixLength = 0,
       size_type aOldSuffixStart = 0, size_type aNewSuffixStart = 0);
@@ -1277,7 +1350,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    * SetCapacity().
    */
   MOZ_ALWAYS_INLINE void NS_FASTCALL
-  FinishBulkWriteImplImpl(size_type aLength) {
+  FinishBulkWriteImplImpl(LengthStorage aLength) {
     base_string_type::mData[aLength] = char_type(0);
     base_string_type::mLength = aLength;
 #ifdef DEBUG
@@ -1349,24 +1422,8 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   [[nodiscard]] bool NS_FASTCALL
   EnsureMutable(size_type aNewLen = size_type(-1));
 
-  /**
-   * Checks if the given capacity is valid for this string type.
-   */
-  [[nodiscard]] static bool CheckCapacity(size_type aCapacity) {
-    if (aCapacity > kMaxCapacity) {
-      // Also assert for |aCapacity| equal to |size_type(-1)|, since we used to
-      // use that value to flag immutability.
-      NS_ASSERTION(aCapacity != size_type(-1), "Bogus capacity");
-      return false;
-    }
-
-    return true;
-  }
-
   void NS_FASTCALL ReplaceLiteral(index_type aCutStart, size_type aCutLength,
                                   const char_type* aData, size_type aLength);
-
-  static const size_type kMaxCapacity;
 
  public:
   // NOTE: this method is declared public _only_ for convenience for

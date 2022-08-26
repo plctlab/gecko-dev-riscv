@@ -119,9 +119,9 @@ class CacheFile final : public CacheFileChunkListener,
   nsresult OnFetched();
 
   bool DataSize(int64_t* aSize);
-  void Key(nsACString& aKey) { aKey = mKey; }
+  void Key(nsACString& aKey);
   bool IsDoomed();
-  bool IsPinned() const { return mPinned; }
+  bool IsPinned();
   // Returns true when there is a potentially unfinished write operation.
   bool IsWriteInProgress();
   bool EntryWouldExceedLimit(int64_t aOffset, int64_t aSize, bool aIsAltData);
@@ -140,9 +140,17 @@ class CacheFile final : public CacheFileChunkListener,
 
   virtual ~CacheFile();
 
-  void Lock();
-  void Unlock();
-  void AssertOwnsLock() const;
+  MOZ_PUSH_IGNORE_THREAD_SAFETY
+  void Lock() { mLock->Lock().Lock(); }
+  void Unlock() {
+    // move the elements out of mObjsToRelease
+    // so that they can be released after we unlock
+    nsTArray<RefPtr<nsISupports>> objs = std::move(mObjsToRelease);
+
+    mLock->Lock().Unlock();
+  }
+  MOZ_POP_THREAD_SAFETY
+  void AssertOwnsLock() const { mLock->Lock().AssertCurrentThreadOwns(); }
   void ReleaseOutsideLock(RefPtr<nsISupports> aObject);
 
   enum ECallerType { READER = 0, WRITER = 1, PRELOADER = 2 };

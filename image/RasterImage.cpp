@@ -50,6 +50,7 @@
 #include "nsProperties.h"
 #include "prenv.h"
 #include "prsystem.h"
+#include "WindowRenderer.h"
 
 namespace mozilla {
 
@@ -165,7 +166,7 @@ RasterImage::RequestRefresh(const TimeStamp& aTime) {
   // once for all frames that we've now passed (if AdvanceFrame() was called
   // more than once).
   if (!res.mDirtyRect.IsEmpty() || res.mFrameAdvanced) {
-    auto dirtyRect = UnorientedIntRect::FromUnknownRect(res.mDirtyRect);
+    auto dirtyRect = OrientedIntRect::FromUnknownRect(res.mDirtyRect);
     NotifyProgress(NoProgress, dirtyRect);
   }
 
@@ -204,7 +205,11 @@ RasterImage::GetHeight(int32_t* aHeight) {
 }
 
 //******************************************************************************
-nsresult RasterImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) const {
+void RasterImage::MediaFeatureValuesChangedAllDocuments(
+    const mozilla::MediaFeatureChange& aChange) {}
+
+//******************************************************************************
+nsresult RasterImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) {
   if (mError) {
     return NS_ERROR_FAILURE;
   }
@@ -223,7 +228,7 @@ nsresult RasterImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) const {
 }
 
 //******************************************************************************
-size_t RasterImage::GetNativeSizesLength() const {
+size_t RasterImage::GetNativeSizesLength() {
   if (mError || !LoadHasSize()) {
     return 0;
   }
@@ -272,14 +277,14 @@ RasterImage::GetType(uint16_t* aType) {
 }
 
 NS_IMETHODIMP
-RasterImage::GetProducerId(uint32_t* aId) {
+RasterImage::GetProviderId(uint32_t* aId) {
   NS_ENSURE_ARG_POINTER(aId);
 
-  *aId = ImageResource::GetImageProducerId();
+  *aId = ImageResource::GetImageProviderId();
   return NS_OK;
 }
 
-LookupResult RasterImage::LookupFrameInternal(const UnorientedIntSize& aSize,
+LookupResult RasterImage::LookupFrameInternal(const OrientedIntSize& aSize,
                                               uint32_t aFlags,
                                               PlaybackType aPlaybackType,
                                               bool aMarkUsed) {
@@ -311,7 +316,7 @@ LookupResult RasterImage::LookupFrameInternal(const UnorientedIntSize& aSize,
       aMarkUsed);
 }
 
-LookupResult RasterImage::LookupFrame(const UnorientedIntSize& aSize,
+LookupResult RasterImage::LookupFrame(const OrientedIntSize& aSize,
                                       uint32_t aFlags,
                                       PlaybackType aPlaybackType,
                                       bool aMarkUsed) {
@@ -323,8 +328,8 @@ LookupResult RasterImage::LookupFrame(const UnorientedIntSize& aSize,
     aFlags &= ~FLAG_DECODE_NO_PREMULTIPLY_ALPHA;
   }
 
-  UnorientedIntSize requestedSize =
-      CanDownscaleDuringDecode(aSize, aFlags) ? aSize : ToUnoriented(mSize);
+  OrientedIntSize requestedSize =
+      CanDownscaleDuringDecode(aSize, aFlags) ? aSize : mSize;
   if (requestedSize.IsEmpty()) {
     // Can't decode to a surface of zero size.
     return LookupResult(MatchType::NOT_FOUND);
@@ -338,12 +343,25 @@ LookupResult RasterImage::LookupFrame(const UnorientedIntSize& aSize,
     return LookupResult(MatchType::NOT_FOUND);
   }
 
+  // We want to trigger a decode if and only if:
+  // 1) There is no pending decode
+  // 2) There is no acceptable size decoded
+  // 3) The pending decode has not produced a frame yet, a sync decode is
+  // requested, and we have all the source data. Without the source data, we
+  // will just trigger another async decode anyways.
+  //
+  // TODO(aosmond): We should better handle case 3. We should actually return
+  // TEMPORARY_ERROR or NOT_READY if we don't have all the source data and a
+  // sync decode is requested. If there is a pending decode and we have all the
+  // source data, we should always be able to block on the frame's monitor --
+  // perhaps this could be accomplished by preallocating the first frame buffer
+  // when we create the decoder.
   const bool syncDecode = aFlags & FLAG_SYNC_DECODE;
   const bool avoidRedecode = aFlags & FLAG_AVOID_REDECODE_FOR_SIZE;
   if (result.Type() == MatchType::NOT_FOUND ||
       (result.Type() == MatchType::SUBSTITUTE_BECAUSE_NOT_FOUND &&
        !avoidRedecode) ||
-      (syncDecode && !avoidRedecode && !result)) {
+      (syncDecode && !avoidRedecode && !result && LoadAllSourceData())) {
     // We don't have a copy of this frame, and there's no decoder working on
     // one. (Or we're sync decoding and the existing decoder hasn't even started
     // yet.) Trigger decoding so it'll be available next time.
@@ -356,8 +374,7 @@ LookupResult RasterImage::LookupFrame(const UnorientedIntSize& aSize,
     // decode at. This should only happen if we accept substitutions.
     if (!result.SuggestedSize().IsEmpty()) {
       MOZ_ASSERT(!syncDecode && (aFlags & FLAG_HIGH_QUALITY_SCALING));
-      requestedSize =
-          UnorientedIntSize::FromUnknownSize(result.SuggestedSize());
+      requestedSize = OrientedIntSize::FromUnknownSize(result.SuggestedSize());
     }
 
     bool ranSync = false, failed = false;
@@ -439,10 +456,9 @@ RasterImage::WillDrawOpaqueNow() {
     return false;
   }
 
-  auto size = ToUnoriented(mSize);
   LookupResult result = SurfaceCache::LookupBestMatch(
       ImageKey(this),
-      RasterSurfaceKey(size.ToUnknownSize(), DefaultSurfaceFlags(),
+      RasterSurfaceKey(mSize.ToUnknownSize(), DefaultSurfaceFlags(),
                        PlaybackType::eStatic),
       /* aMarkUsed = */ false);
   MatchType matchType = result.Type();
@@ -480,12 +496,10 @@ void RasterImage::OnSurfaceDiscardedInternal(bool aAnimatedFramesDiscarded) {
 
   if (aAnimatedFramesDiscarded && mAnimationState) {
     MOZ_ASSERT(StaticPrefs::image_mem_animated_discardable_AtStartup());
-    ReleaseImageContainer();
 
-    auto size = ToUnoriented(mSize);
-    IntRect rect = mAnimationState->UpdateState(this, size.ToUnknownSize());
+    IntRect rect = mAnimationState->UpdateState(this, mSize.ToUnknownSize());
 
-    auto dirtyRect = UnorientedIntRect::FromUnknownRect(rect);
+    auto dirtyRect = OrientedIntRect::FromUnknownRect(rect);
     NotifyProgress(NoProgress, dirtyRect);
   }
 
@@ -548,100 +562,30 @@ RasterImage::GetFrame(uint32_t aWhichFrame, uint32_t aFlags) {
 NS_IMETHODIMP_(already_AddRefed<SourceSurface>)
 RasterImage::GetFrameAtSize(const IntSize& aSize, uint32_t aWhichFrame,
                             uint32_t aFlags) {
+  MOZ_ASSERT(aWhichFrame <= FRAME_MAX_VALUE);
+
   AutoProfilerImagePaintMarker PROFILER_RAII(this);
 #ifdef DEBUG
   NotifyDrawingObservers();
 #endif
 
-  auto result =
-      GetFrameInternal(aSize, Nothing(), Nothing(), aWhichFrame, aFlags);
-  return mozilla::Get<2>(result).forget();
-}
-
-Tuple<ImgDrawResult, IntSize, RefPtr<SourceSurface>>
-RasterImage::GetFrameInternal(const IntSize& aSize,
-                              const Maybe<SVGImageContext>& aSVGContext,
-                              const Maybe<ImageIntRegion>& aRegion,
-                              uint32_t aWhichFrame, uint32_t aFlags) {
-  MOZ_ASSERT(aWhichFrame <= FRAME_MAX_VALUE);
+  if (aSize.IsEmpty() || aWhichFrame > FRAME_MAX_VALUE || mError) {
+    return nullptr;
+  }
 
   auto size = OrientedIntSize::FromUnknownSize(aSize);
-
-  if (aSize.IsEmpty() || aWhichFrame > FRAME_MAX_VALUE) {
-    return MakeTuple(ImgDrawResult::BAD_ARGS, aSize, RefPtr<SourceSurface>());
-  }
-
-  if (mError) {
-    return MakeTuple(ImgDrawResult::BAD_IMAGE, aSize, RefPtr<SourceSurface>());
-  }
 
   // Get the frame. If it's not there, it's probably the caller's fault for
   // not waiting for the data to be loaded from the network or not passing
   // FLAG_SYNC_DECODE.
-  LookupResult result =
-      LookupFrame(ToUnoriented(size), aFlags, ToPlaybackType(aWhichFrame),
-                  /* aMarkUsed = */ true);
-  auto resultSuggestedSize =
-      UnorientedIntSize::FromUnknownSize(result.SuggestedSize());
-
-  // The surface cache may have suggested we use a different size than the
-  // given size in the future. This may or may not be accompanied by an
-  // actual surface, depending on what it has in its cache.
-  OrientedIntSize suggestedSize = ToOriented(resultSuggestedSize);
-  if (suggestedSize.IsEmpty()) {
-    suggestedSize = size;
-  }
-  MOZ_ASSERT_IF(result.Type() == MatchType::SUBSTITUTE_BECAUSE_BEST,
-                suggestedSize != size);
-
+  LookupResult result = LookupFrame(size, aFlags, ToPlaybackType(aWhichFrame),
+                                    /* aMarkUsed = */ true);
   if (!result) {
     // The OS threw this frame away and we couldn't redecode it.
-    return MakeTuple(ImgDrawResult::TEMPORARY_ERROR,
-                     suggestedSize.ToUnknownSize(), RefPtr<SourceSurface>());
+    return nullptr;
   }
 
-  RefPtr<SourceSurface> surface = result.Surface()->GetSourceSurface();
-
-  // If this RasterImage requires orientation, we must return a newly created
-  // surface with the oriented image instead of returning the frame's surface
-  // directly.
-  surface = OrientedImage::OrientSurface(mOrientation, surface);
-
-  if (!result.Surface()->IsFinished()) {
-    return MakeTuple(ImgDrawResult::INCOMPLETE, suggestedSize.ToUnknownSize(),
-                     std::move(surface));
-  }
-
-  return MakeTuple(ImgDrawResult::SUCCESS, suggestedSize.ToUnknownSize(),
-                   std::move(surface));
-}
-
-Tuple<ImgDrawResult, IntSize> RasterImage::GetImageContainerSize(
-    WindowRenderer* aRenderer, const IntSize& aRequestedSize, uint32_t aFlags) {
-  if (!LoadHasSize()) {
-    return MakeTuple(ImgDrawResult::NOT_READY, IntSize(0, 0));
-  }
-
-  if (aRequestedSize.IsEmpty()) {
-    return MakeTuple(ImgDrawResult::BAD_ARGS, IntSize(0, 0));
-  }
-
-  // We check the minimum size because while we support downscaling, we do not
-  // support upscaling. If aRequestedSize > mSize, we will never give a larger
-  // surface than mSize. If mSize > aRequestedSize, and mSize > maxTextureSize,
-  // we still want to use image containers if aRequestedSize <= maxTextureSize.
-  int32_t maxTextureSize = aRenderer->GetMaxTextureSize();
-  if (min(mSize.width, aRequestedSize.width) > maxTextureSize ||
-      min(mSize.height, aRequestedSize.height) > maxTextureSize) {
-    return MakeTuple(ImgDrawResult::NOT_SUPPORTED, IntSize(0, 0));
-  }
-
-  auto requestedSize = OrientedIntSize::FromUnknownSize(aRequestedSize);
-  if (!CanDownscaleDuringDecode(ToUnoriented(requestedSize), aFlags)) {
-    return MakeTuple(ImgDrawResult::SUCCESS, mSize.ToUnknownSize());
-  }
-
-  return MakeTuple(ImgDrawResult::SUCCESS, aRequestedSize);
+  return result.Surface()->GetSourceSurface();
 }
 
 NS_IMETHODIMP_(bool)
@@ -651,30 +595,72 @@ RasterImage::IsImageContainerAvailable(WindowRenderer* aRenderer,
 }
 
 NS_IMETHODIMP_(ImgDrawResult)
-RasterImage::GetImageContainerAtSize(WindowRenderer* aRenderer,
-                                     const gfx::IntSize& aSize,
-                                     const Maybe<SVGImageContext>& aSVGContext,
-                                     const Maybe<ImageIntRegion>& aRegion,
-                                     uint32_t aFlags,
-                                     layers::ImageContainer** aOutContainer) {
-  // We do not pass in the given SVG context because in theory it could differ
-  // between calls, but actually have no impact on the actual contents of the
-  // image container.
-  return GetImageContainerImpl(aRenderer, aSize, Nothing(), Nothing(), aFlags,
-                               aOutContainer);
+RasterImage::GetImageProvider(WindowRenderer* aRenderer,
+                              const gfx::IntSize& aSize,
+                              const SVGImageContext& aSVGContext,
+                              const Maybe<ImageIntRegion>& aRegion,
+                              uint32_t aFlags,
+                              WebRenderImageProvider** aProvider) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aRenderer);
+
+  if (mError) {
+    return ImgDrawResult::BAD_IMAGE;
+  }
+
+  if (!LoadHasSize()) {
+    return ImgDrawResult::NOT_READY;
+  }
+
+  if (aSize.IsEmpty()) {
+    return ImgDrawResult::BAD_ARGS;
+  }
+
+  // We check the minimum size because while we support downscaling, we do not
+  // support upscaling. If aRequestedSize > mSize, we will never give a larger
+  // surface than mSize. If mSize > aRequestedSize, and mSize > maxTextureSize,
+  // we still want to use image containers if aRequestedSize <= maxTextureSize.
+  int32_t maxTextureSize = aRenderer->GetMaxTextureSize();
+  if (min(mSize.width, aSize.width) > maxTextureSize ||
+      min(mSize.height, aSize.height) > maxTextureSize) {
+    return ImgDrawResult::NOT_SUPPORTED;
+  }
+
+  AutoProfilerImagePaintMarker PROFILER_RAII(this);
+#ifdef DEBUG
+  NotifyDrawingObservers();
+#endif
+
+  // Get the frame. If it's not there, it's probably the caller's fault for
+  // not waiting for the data to be loaded from the network or not passing
+  // FLAG_SYNC_DECODE.
+  LookupResult result = LookupFrame(OrientedIntSize::FromUnknownSize(aSize),
+                                    aFlags, PlaybackType::eAnimated,
+                                    /* aMarkUsed = */ true);
+  if (!result) {
+    // The OS threw this frame away and we couldn't redecode it.
+    return ImgDrawResult::NOT_READY;
+  }
+
+  if (!result.Surface()->IsFinished()) {
+    result.Surface().TakeProvider(aProvider);
+    return ImgDrawResult::INCOMPLETE;
+  }
+
+  result.Surface().TakeProvider(aProvider);
+  switch (result.Type()) {
+    case MatchType::SUBSTITUTE_BECAUSE_NOT_FOUND:
+    case MatchType::SUBSTITUTE_BECAUSE_PENDING:
+      return ImgDrawResult::WRONG_SIZE;
+    default:
+      return ImgDrawResult::SUCCESS;
+  }
 }
 
 size_t RasterImage::SizeOfSourceWithComputedFallback(
     SizeOfState& aState) const {
   return mSourceBuffer->SizeOfIncludingThisWithComputedFallback(
       aState.mMallocSizeOf);
-}
-
-void RasterImage::CollectSizeOfSurfaces(
-    nsTArray<SurfaceMemoryCounter>& aCounters,
-    MallocSizeOf aMallocSizeOf) const {
-  SurfaceCache::CollectSizeOfSurfaces(ImageKey(this), aCounters, aMallocSizeOf);
-  ImageResource::CollectSizeOfSurfaces(aCounters, aMallocSizeOf);
 }
 
 bool RasterImage::SetMetadata(const ImageMetadata& aMetadata,
@@ -688,7 +674,7 @@ bool RasterImage::SetMetadata(const ImageMetadata& aMetadata,
   mResolution = aMetadata.GetResolution();
 
   if (aMetadata.HasSize()) {
-    auto metadataSize = UnorientedIntSize::FromUnknownSize(aMetadata.GetSize());
+    auto metadataSize = aMetadata.GetSize();
     if (metadataSize.width < 0 || metadataSize.height < 0) {
       NS_WARNING("Image has negative intrinsic size");
       DoError();
@@ -700,7 +686,7 @@ bool RasterImage::SetMetadata(const ImageMetadata& aMetadata,
 
     // If we already have a size, check the new size against the old one.
     if (LoadHasSize() &&
-        (metadataSize != ToUnoriented(mSize) || orientation != mOrientation)) {
+        (metadataSize != mSize || orientation != mOrientation)) {
       NS_WARNING(
           "Image changed size or orientation on redecode! "
           "This should not happen!");
@@ -710,11 +696,10 @@ bool RasterImage::SetMetadata(const ImageMetadata& aMetadata,
 
     // Set the size and flag that we have it.
     mOrientation = orientation;
-    mSize = ToOriented(metadataSize);
+    mSize = metadataSize;
     mNativeSizes.Clear();
     for (const auto& nativeSize : aMetadata.GetNativeSizes()) {
-      mNativeSizes.AppendElement(
-          ToOriented(UnorientedIntSize::FromUnknownSize(nativeSize)));
+      mNativeSizes.AppendElement(nativeSize);
     }
     StoreHasSize(true);
   }
@@ -722,8 +707,7 @@ bool RasterImage::SetMetadata(const ImageMetadata& aMetadata,
   if (LoadHasSize() && aMetadata.HasAnimation() && !mAnimationState) {
     // We're becoming animated, so initialize animation stuff.
     mAnimationState.emplace(mAnimationMode);
-    mFrameAnimator =
-        MakeUnique<FrameAnimator>(this, ToUnoriented(mSize).ToUnknownSize());
+    mFrameAnimator = MakeUnique<FrameAnimator>(this, mSize.ToUnknownSize());
 
     if (!StaticPrefs::image_mem_animated_discardable_AtStartup()) {
       // We don't support discarding animated images (See bug 414259).
@@ -846,7 +830,7 @@ RasterImage::ResetAnimation() {
   mFrameAnimator->ResetAnimation(*mAnimationState);
 
   IntRect area = mAnimationState->FirstFrameRefreshArea();
-  NotifyProgress(NoProgress, UnorientedIntRect::FromUnknownRect(area));
+  NotifyProgress(NoProgress, OrientedIntRect::FromUnknownRect(area));
 
   // Start the animation again. It may not have been running before, if
   // mAnimationFinished was true before entering this function.
@@ -883,8 +867,8 @@ RasterImage::GetImageSpaceInvalidationRect(const IntRect& aRect) {
   return aRect;
 }
 
-nsresult RasterImage::OnImageDataComplete(nsIRequest*, nsISupports*,
-                                          nsresult aStatus, bool aLastPart) {
+nsresult RasterImage::OnImageDataComplete(nsIRequest*, nsresult aStatus,
+                                          bool aLastPart) {
   MOZ_ASSERT(NS_IsMainThread());
 
   // Record that we have all the data we're going to get now.
@@ -950,7 +934,7 @@ void RasterImage::NotifyForLoadEvent(Progress aProgress) {
   NotifyProgress(aProgress);
 }
 
-nsresult RasterImage::OnImageDataAvailable(nsIRequest*, nsISupports*,
+nsresult RasterImage::OnImageDataAvailable(nsIRequest*,
                                            nsIInputStream* aInputStream,
                                            uint64_t, uint32_t aCount) {
   nsresult rv = mSourceBuffer->AppendFromInputStream(aInputStream, aCount);
@@ -1006,12 +990,9 @@ void RasterImage::Discard() {
   SurfaceCache::RemoveImage(ImageKey(this));
 
   if (mAnimationState) {
-    ReleaseImageContainer();
+    IntRect rect = mAnimationState->UpdateState(this, mSize.ToUnknownSize());
 
-    auto size = ToUnoriented(mSize);
-    IntRect rect = mAnimationState->UpdateState(this, size.ToUnknownSize());
-
-    auto dirtyRect = UnorientedIntRect::FromUnknownRect(rect);
+    auto dirtyRect = OrientedIntRect::FromUnknownRect(rect);
     NotifyProgress(NoProgress, dirtyRect);
   }
 
@@ -1057,10 +1038,24 @@ bool RasterImage::StartDecodingWithResult(uint32_t aFlags,
 
   uint32_t flags = (aFlags & FLAG_ASYNC_NOTIFY) | FLAG_SYNC_DECODE_IF_FAST |
                    FLAG_HIGH_QUALITY_SCALING;
-  LookupResult result =
-      RequestDecodeForSizeInternal(ToUnoriented(mSize), flags, aWhichFrame);
+  LookupResult result = RequestDecodeForSizeInternal(mSize, flags, aWhichFrame);
   DrawableSurface surface = std::move(result.Surface());
   return surface && surface->IsFinished();
+}
+
+bool RasterImage::HasDecodedPixels() {
+  LookupResult result = SurfaceCache::LookupBestMatch(
+      ImageKey(this),
+      RasterSurfaceKey(mSize.ToUnknownSize(), DefaultSurfaceFlags(),
+                       PlaybackType::eStatic),
+      /* aMarkUsed = */ false);
+  MatchType matchType = result.Type();
+  if (matchType == MatchType::NOT_FOUND || matchType == MatchType::PENDING ||
+      !bool(result.Surface())) {
+    return false;
+  }
+
+  return !result.Surface()->GetDecodedRect().IsEmpty();
 }
 
 imgIContainer::DecodeResult RasterImage::RequestDecodeWithResult(
@@ -1072,8 +1067,7 @@ imgIContainer::DecodeResult RasterImage::RequestDecodeWithResult(
   }
 
   uint32_t flags = aFlags | FLAG_ASYNC_NOTIFY;
-  LookupResult result =
-      RequestDecodeForSizeInternal(ToUnoriented(mSize), flags, aWhichFrame);
+  LookupResult result = RequestDecodeForSizeInternal(mSize, flags, aWhichFrame);
   DrawableSurface surface = std::move(result.Surface());
   if (surface && surface->IsFinished()) {
     return imgIContainer::DECODE_SURFACE_AVAILABLE;
@@ -1093,15 +1087,14 @@ RasterImage::RequestDecodeForSize(const IntSize& aSize, uint32_t aFlags,
     return NS_ERROR_FAILURE;
   }
 
-  RequestDecodeForSizeInternal(
-      ToUnoriented(OrientedIntSize::FromUnknownSize(aSize)), aFlags,
-      aWhichFrame);
+  RequestDecodeForSizeInternal(OrientedIntSize::FromUnknownSize(aSize), aFlags,
+                               aWhichFrame);
 
   return NS_OK;
 }
 
 LookupResult RasterImage::RequestDecodeForSizeInternal(
-    const UnorientedIntSize& aSize, uint32_t aFlags, uint32_t aWhichFrame) {
+    const OrientedIntSize& aSize, uint32_t aFlags, uint32_t aWhichFrame) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (aWhichFrame > FRAME_MAX_VALUE) {
@@ -1155,7 +1148,7 @@ static bool LaunchDecodingTask(IDecodingTask* aTask, RasterImage* aImage,
   return false;
 }
 
-void RasterImage::Decode(const UnorientedIntSize& aSize, uint32_t aFlags,
+void RasterImage::Decode(const OrientedIntSize& aSize, uint32_t aFlags,
                          PlaybackType aPlaybackType, bool& aOutRanSync,
                          bool& aOutFailed) {
   MOZ_ASSERT(NS_IsMainThread());
@@ -1212,14 +1205,13 @@ void RasterImage::Decode(const UnorientedIntSize& aSize, uint32_t aFlags,
   if (animated) {
     size_t currentFrame = mAnimationState->GetCurrentAnimationFrameIndex();
     rv = DecoderFactory::CreateAnimationDecoder(
-        mDecoderType, WrapNotNull(this), mSourceBuffer,
-        ToUnoriented(mSize).ToUnknownSize(), decoderFlags, surfaceFlags,
-        currentFrame, getter_AddRefs(task));
+        mDecoderType, WrapNotNull(this), mSourceBuffer, mSize.ToUnknownSize(),
+        decoderFlags, surfaceFlags, currentFrame, getter_AddRefs(task));
   } else {
-    rv = DecoderFactory::CreateDecoder(
-        mDecoderType, WrapNotNull(this), mSourceBuffer,
-        ToUnoriented(mSize).ToUnknownSize(), aSize.ToUnknownSize(),
-        decoderFlags, surfaceFlags, getter_AddRefs(task));
+    rv = DecoderFactory::CreateDecoder(mDecoderType, WrapNotNull(this),
+                                       mSourceBuffer, mSize.ToUnknownSize(),
+                                       aSize.ToUnknownSize(), decoderFlags,
+                                       surfaceFlags, getter_AddRefs(task));
   }
 
   if (rv == NS_ERROR_ALREADY_INITIALIZED) {
@@ -1238,8 +1230,7 @@ void RasterImage::Decode(const UnorientedIntSize& aSize, uint32_t aFlags,
 #ifdef DEBUG
     IntRect rect =
 #endif
-        mAnimationState->UpdateState(this, ToUnoriented(mSize).ToUnknownSize(),
-                                     false);
+        mAnimationState->UpdateState(this, mSize.ToUnknownSize(), false);
     MOZ_ASSERT(rect.IsEmpty());
   }
 
@@ -1279,7 +1270,7 @@ RasterImage::DecodeMetadata(uint32_t aFlags) {
   return NS_OK;
 }
 
-void RasterImage::RecoverFromInvalidFrames(const UnorientedIntSize& aSize,
+void RasterImage::RecoverFromInvalidFrames(const OrientedIntSize& aSize,
                                            uint32_t aFlags) {
   if (!LoadHasSize()) {
     return;
@@ -1300,8 +1291,8 @@ void RasterImage::RecoverFromInvalidFrames(const UnorientedIntSize& aSize,
   // Animated images require some special handling, because we normally require
   // that they never be discarded.
   if (mAnimationState) {
-    Decode(ToUnoriented(mSize), aFlags | FLAG_SYNC_DECODE,
-           PlaybackType::eAnimated, unused1, unused2);
+    Decode(mSize, aFlags | FLAG_SYNC_DECODE, PlaybackType::eAnimated, unused1,
+           unused2);
     ResetAnimation();
     return;
   }
@@ -1310,7 +1301,7 @@ void RasterImage::RecoverFromInvalidFrames(const UnorientedIntSize& aSize,
   Decode(aSize, aFlags, PlaybackType::eStatic, unused1, unused2);
 }
 
-bool RasterImage::CanDownscaleDuringDecode(const UnorientedIntSize& aSize,
+bool RasterImage::CanDownscaleDuringDecode(const OrientedIntSize& aSize,
                                            uint32_t aFlags) {
   // Check basic requirements: downscale-during-decode is enabled, Skia is
   // available, this image isn't transient, we have all the source data and know
@@ -1327,8 +1318,7 @@ bool RasterImage::CanDownscaleDuringDecode(const UnorientedIntSize& aSize,
   }
 
   // Never upscale.
-  UnorientedIntSize ourSize = ToUnoriented(mSize);
-  if (aSize.width >= ourSize.width || aSize.height >= ourSize.height) {
+  if (aSize.width >= mSize.width || aSize.height >= mSize.height) {
     return false;
   }
 
@@ -1347,7 +1337,7 @@ bool RasterImage::CanDownscaleDuringDecode(const UnorientedIntSize& aSize,
 
 ImgDrawResult RasterImage::DrawInternal(DrawableSurface&& aSurface,
                                         gfxContext* aContext,
-                                        const UnorientedIntSize& aSize,
+                                        const OrientedIntSize& aSize,
                                         const ImageRegion& aRegion,
                                         SamplingFilter aSamplingFilter,
                                         uint32_t aFlags, float aOpacity) {
@@ -1365,10 +1355,10 @@ ImgDrawResult RasterImage::DrawInternal(DrawableSurface&& aSurface,
   IntSize finalSize = aSurface->GetSize();
   bool couldRedecodeForBetterFrame = false;
   if (finalSize != aSize.ToUnknownSize()) {
-    gfx::Size scale(double(aSize.width) / finalSize.width,
-                    double(aSize.height) / finalSize.height);
-    aContext->Multiply(gfxMatrix::Scaling(scale.width, scale.height));
-    region.Scale(1.0 / scale.width, 1.0 / scale.height);
+    gfx::MatrixScales scale(double(aSize.width) / finalSize.width,
+                            double(aSize.height) / finalSize.height);
+    aContext->Multiply(gfx::Matrix::Scaling(scale));
+    region.Scale(1.0 / scale.xScale, 1.0 / scale.yScale);
 
     couldRedecodeForBetterFrame = CanDownscaleDuringDecode(aSize, aFlags);
   }
@@ -1391,7 +1381,7 @@ NS_IMETHODIMP_(ImgDrawResult)
 RasterImage::Draw(gfxContext* aContext, const IntSize& aSize,
                   const ImageRegion& aRegion, uint32_t aWhichFrame,
                   SamplingFilter aSamplingFilter,
-                  const Maybe<SVGImageContext>& /*aSVGContext - ignored*/,
+                  const SVGImageContext& /*aSVGContext - ignored*/,
                   uint32_t aFlags, float aOpacity) {
   if (aWhichFrame > FRAME_MAX_VALUE) {
     return ImgDrawResult::BAD_ARGS;
@@ -1412,7 +1402,7 @@ RasterImage::Draw(gfxContext* aContext, const IntSize& aSize,
     return ImgDrawResult::BAD_ARGS;
   }
 
-  if (mAnimationConsumers == 0) {
+  if (mAnimationConsumers == 0 && mAnimationState) {
     SendOnUnlockedDraw(aFlags);
   }
 
@@ -1422,7 +1412,7 @@ RasterImage::Draw(gfxContext* aContext, const IntSize& aSize,
                        ? aFlags
                        : aFlags & ~FLAG_HIGH_QUALITY_SCALING;
 
-  auto size = ToUnoriented(OrientedIntSize::FromUnknownSize(aSize));
+  auto size = OrientedIntSize::FromUnknownSize(aSize);
   LookupResult result = LookupFrame(size, flags, ToPlaybackType(aWhichFrame),
                                     /* aMarkUsed = */ true);
   if (!result) {
@@ -1436,26 +1426,9 @@ RasterImage::Draw(gfxContext* aContext, const IntSize& aSize,
   bool shouldRecordTelemetry =
       !mDrawStartTime.IsNull() && result.Surface()->IsFinished();
 
-  ImgDrawResult drawResult;
-  {
-    gfxContextMatrixAutoSaveRestore asr;
-    ImageRegion region(aRegion);
-
-    if (!mOrientation.IsIdentity()) {
-      // Apply a transform so that the unoriented image is drawn in the
-      // orientation expected by the caller.
-      gfxMatrix matrix = OrientationMatrix(size);
-      asr.SetContext(aContext);
-      aContext->Multiply(matrix);
-
-      // Convert the region to unoriented coordinates.
-      gfxMatrix inverseMatrix = OrientationMatrix(size, /* aInvert = */ true);
-      region.TransformBoundsBy(inverseMatrix);
-    }
-
-    drawResult = DrawInternal(std::move(result.Surface()), aContext, size,
-                              region, aSamplingFilter, flags, aOpacity);
-  }
+  ImgDrawResult drawResult =
+      DrawInternal(std::move(result.Surface()), aContext, size, aRegion,
+                   aSamplingFilter, flags, aOpacity);
 
   if (shouldRecordTelemetry) {
     TimeDuration drawLatency = TimeStamp::Now() - mDrawStartTime;
@@ -1560,7 +1533,7 @@ void RasterImage::DoError() {
   SurfaceCache::RemoveImage(ImageKey(this));
 
   // Invalidate to get rid of any partially-drawn image content.
-  auto dirtyRect = UnorientedIntRect({0, 0}, ToUnoriented(mSize));
+  auto dirtyRect = OrientedIntRect({0, 0}, mSize);
   NotifyProgress(NoProgress, dirtyRect);
 
   MOZ_LOG(gImgLog, LogLevel::Error,
@@ -1603,7 +1576,7 @@ RasterImage::GetFramesNotified(uint32_t* aFramesNotified) {
 
 void RasterImage::NotifyProgress(
     Progress aProgress,
-    const UnorientedIntRect& aInvalidRect /* = UnorientedIntRect() */,
+    const OrientedIntRect& aInvalidRect /* = OrientedIntRect() */,
     const Maybe<uint32_t>& aFrameCount /* = Nothing() */,
     DecoderFlags aDecoderFlags /* = DefaultDecoderFlags() */,
     SurfaceFlags aSurfaceFlags /* = DefaultSurfaceFlags() */) {
@@ -1612,7 +1585,7 @@ void RasterImage::NotifyProgress(
   // Ensure that we stay alive long enough to finish notifying.
   RefPtr<RasterImage> image = this;
 
-  UnorientedIntRect invalidRect = aInvalidRect;
+  OrientedIntRect invalidRect = aInvalidRect;
 
   if (!(aDecoderFlags & DecoderFlags::FIRST_FRAME_ONLY)) {
     // We may have decoded new animation frames; update our animation state.
@@ -1628,32 +1601,22 @@ void RasterImage::NotifyProgress(
     }
 
     if (mAnimationState) {
-      auto size = ToUnoriented(mSize);
-      IntRect rect = mAnimationState->UpdateState(this, size.ToUnknownSize());
+      IntRect rect = mAnimationState->UpdateState(this, mSize.ToUnknownSize());
 
       invalidRect.UnionRect(invalidRect,
-                            UnorientedIntRect::FromUnknownRect(rect));
+                            OrientedIntRect::FromUnknownRect(rect));
     }
   }
 
-  const bool wasDefaultFlags = aSurfaceFlags == DefaultSurfaceFlags();
-
-  auto orientedInvalidRect = ToOriented(invalidRect);
-
-  if (!orientedInvalidRect.IsEmpty() && wasDefaultFlags) {
-    // Update our image container since we're invalidating.
-    UpdateImageContainer(Some(orientedInvalidRect.ToUnknownRect()));
-  }
-
   // Tell the observers what happened.
-  image->mProgressTracker->SyncNotifyProgress(
-      aProgress, orientedInvalidRect.ToUnknownRect());
+  image->mProgressTracker->SyncNotifyProgress(aProgress,
+                                              invalidRect.ToUnknownRect());
 }
 
 void RasterImage::NotifyDecodeComplete(
     const DecoderFinalStatus& aStatus, const ImageMetadata& aMetadata,
     const DecoderTelemetry& aTelemetry, Progress aProgress,
-    const UnorientedIntRect& aInvalidRect, const Maybe<uint32_t>& aFrameCount,
+    const OrientedIntRect& aInvalidRect, const Maybe<uint32_t>& aFrameCount,
     DecoderFlags aDecoderFlags, SurfaceFlags aSurfaceFlags) {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -1668,8 +1631,7 @@ void RasterImage::NotifyDecodeComplete(
     // This indicates a serious error that requires us to discard all existing
     // surfaces and redecode to recover. We'll drop the results from this
     // decoder on the floor, since they aren't valid.
-    RecoverFromInvalidFrames(ToUnoriented(mSize),
-                             FromSurfaceFlags(aSurfaceFlags));
+    RecoverFromInvalidFrames(mSize, FromSurfaceFlags(aSurfaceFlags));
     return;
   }
 
@@ -1704,11 +1666,10 @@ void RasterImage::NotifyDecodeComplete(
       // expect anymore.
       mAnimationState->NotifyDecodeComplete();
 
-      auto size = ToUnoriented(mSize);
-      IntRect rect = mAnimationState->UpdateState(this, size.ToUnknownSize());
+      IntRect rect = mAnimationState->UpdateState(this, mSize.ToUnknownSize());
 
       if (!rect.IsEmpty()) {
-        auto dirtyRect = UnorientedIntRect::FromUnknownRect(rect);
+        auto dirtyRect = OrientedIntRect::FromUnknownRect(rect);
         NotifyProgress(NoProgress, dirtyRect);
       }
     }
@@ -1750,9 +1711,11 @@ void RasterImage::NotifyDecodeComplete(
     // If we were a metadata decode and a full decode was requested, do it.
     if (LoadWantFullDecode()) {
       StoreWantFullDecode(false);
-      RequestDecodeForSize(mSize.ToUnknownSize(),
-                           DECODE_FLAGS_DEFAULT | FLAG_HIGH_QUALITY_SCALING,
-                           FRAME_CURRENT);
+      RequestDecodeForSizeInternal(mSize,
+                                   DECODE_FLAGS_DEFAULT |
+                                       FLAG_HIGH_QUALITY_SCALING |
+                                       FLAG_AVOID_REDECODE_FOR_SIZE,
+                                   FRAME_CURRENT);
     }
   }
 }
@@ -1806,89 +1769,12 @@ IntSize RasterImage::OptimalImageSizeForDest(const gfxSize& aDest,
       IntSize::Ceil(aDest.width, aDest.height));
 
   if (aSamplingFilter == SamplingFilter::GOOD &&
-      CanDownscaleDuringDecode(ToUnoriented(dest), aFlags)) {
+      CanDownscaleDuringDecode(dest, aFlags)) {
     return dest.ToUnknownSize();
   }
 
   // We can't scale to this size. Use our intrinsic size for now.
   return mSize.ToUnknownSize();
-}
-
-gfxMatrix RasterImage::OrientationMatrix(const UnorientedIntSize& aSize,
-                                         bool aInvert) const {
-  return OrientedImage::OrientationMatrix(mOrientation, aSize.ToUnknownSize(),
-                                          aInvert);
-}
-
-/**
- * Rotate aRect by the given angle within the space specified by aSize.
- *
- * For example, with aRect = [20, 10, 5, 5] and aSize = [100, 100], rotating
- * with Angle::D90 will result in aRect = [85, 20, 5, 5].
- */
-static void Rotate(IntRect& aRect, const IntSize& aSize, Angle aAngle) {
-  switch (aAngle) {
-    case Angle::D0:
-      break;
-    case Angle::D90:
-      aRect = {aSize.height - aRect.YMost(), aRect.x, aRect.height,
-               aRect.width};
-      break;
-    case Angle::D180:
-      aRect.MoveTo(aSize.width - aRect.XMost(), aSize.height - aRect.YMost());
-      break;
-    case Angle::D270:
-      aRect = {aRect.y, aSize.width - aRect.XMost(), aRect.height, aRect.width};
-      break;
-  }
-}
-
-/**
- * Flip aRect along the central axis within aSize.
- *
- * For example, with aRect = [20, 10, 5, 5] and aSize = [100, 100], flipping
- * with Flip::Horizontal will result in aRect = [75, 10, 5, 5].
- */
-static void Flip(IntRect& aRect, const IntSize& aSize, Flip aFlip) {
-  switch (aFlip) {
-    case Flip::Unflipped:
-      break;
-    case Flip::Horizontal:
-      aRect.x = aSize.width - aRect.XMost();
-      break;
-  }
-}
-
-OrientedIntRect RasterImage::ToOriented(UnorientedIntRect aRect) const {
-  IntRect rect = aRect.ToUnknownRect();
-  auto size = ToUnoriented(mSize);
-
-  MOZ_ASSERT(!mOrientation.flipFirst,
-             "flipFirst should only be used by OrientedImage");
-
-  // mOrientation specifies the transformation from a correctly oriented image
-  // to the pixels stored in the file, so we need to rotate by the negation of
-  // the given angle.
-  Angle angle = Orientation::InvertAngle(mOrientation.rotation);
-  Rotate(rect, size.ToUnknownSize(), angle);
-
-  // Use mSize instead of size, since after the Rotate call, the size of the
-  // space that rect is in has had its width and height swapped.
-  Flip(rect, mSize.ToUnknownSize(), mOrientation.flip);
-
-  return OrientedIntRect::FromUnknownRect(rect);
-}
-
-UnorientedIntRect RasterImage::ToUnoriented(OrientedIntRect aRect) const {
-  IntRect rect = aRect.ToUnknownRect();
-
-  Flip(rect, mSize.ToUnknownSize(), mOrientation.flip);
-  Rotate(rect, mSize.ToUnknownSize(), mOrientation.rotation);
-
-  MOZ_ASSERT(!mOrientation.flipFirst,
-             "flipFirst should only be used by OrientedImage");
-
-  return UnorientedIntRect::FromUnknownRect(rect);
 }
 
 }  // namespace image

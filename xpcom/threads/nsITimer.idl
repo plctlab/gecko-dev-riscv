@@ -26,6 +26,7 @@ class nsITimer;
 typedef void (*nsTimerCallbackFunc) (nsITimer *aTimer, void *aClosure);
 %}
 
+native MallocSizeOf(mozilla::MallocSizeOf);
 native nsTimerCallbackFunc(nsTimerCallbackFunc);
 [ref] native TimeDuration(mozilla::TimeDuration);
 
@@ -158,7 +159,7 @@ interface nsITimer : nsISupports
    * @param aDelay     The high resolution interval
    * @param aType      Timer type per TYPE* consts defined above
    */
-  [noscript] void InitHighResolutionWithCallback(in nsITimerCallback aCallback,
+  [noscript] void initHighResolutionWithCallback(in nsITimerCallback aCallback,
                                                  [const] in TimeDuration aDelay,
                                                  in unsigned long aType);
 
@@ -186,6 +187,23 @@ interface nsITimer : nsISupports
                                             in unsigned long aDelay,
                                             in unsigned long aType,
                                             in string aName);
+
+  /**
+   * Initialize a timer to fire after the high resolution TimeDuration.
+   * This version takes a named function callback.
+   *
+   * @param aFunc      The function to invoke
+   * @param aClosure   An opaque pointer to pass to that function
+   * @param aDelay     The high resolution interval
+   * @param aType      Timer type per TYPE* consts defined above
+   * @param aName      The timer's name
+   */
+  [noscript] void initHighResolutionWithNamedFuncCallback(
+                      in nsTimerCallbackFunc aCallback,
+                      in voidPtr aClosure,
+                      [const] in TimeDuration aDelay,
+                      in unsigned long aType,
+                      in string aName);
 
   /**
    * The millisecond delay of the timeout.
@@ -225,9 +243,7 @@ interface nsITimer : nsISupports
    */
   [noscript] readonly attribute unsigned long allowedEarlyFiringMicroseconds;
 
-%{C++
-  virtual size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const = 0;
-%}
+  [notxpcom, nostdcall] size_t sizeOfIncludingThis(in MallocSizeOf aMallocSizeOf);
 };
 
 %{C++
@@ -317,7 +333,22 @@ NS_NewTimerWithFuncCallback(nsTimerCallbackFunc aCallback,
                             const char* aNameString,
                             nsIEventTarget* aTarget = nullptr);
 
-#define NS_TIMER_CONTRACTID "@mozilla.org/timer;1"
+nsresult
+NS_NewTimerWithFuncCallback(nsITimer** aTimer,
+                            nsTimerCallbackFunc aCallback,
+                            void* aClosure,
+                            const mozilla::TimeDuration& aDelay,
+                            uint32_t aType,
+                            const char* aNameString,
+                            nsIEventTarget* aTarget = nullptr);
+mozilla::Result<nsCOMPtr<nsITimer>, nsresult>
+NS_NewTimerWithFuncCallback(nsTimerCallbackFunc aCallback,
+                            void* aClosure,
+                            const mozilla::TimeDuration& aDelay,
+                            uint32_t aType,
+                            const char* aNameString,
+                            nsIEventTarget* aTarget = nullptr);
+
 #define NS_TIMER_CALLBACK_TOPIC "timer-callback"
 
 #ifndef RELEASE_OR_BETA

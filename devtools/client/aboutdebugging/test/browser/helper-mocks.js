@@ -152,7 +152,7 @@ class Mocks {
     this._usbRuntimes.push({
       deviceId: runtimeInfo.deviceId || "test device id",
       deviceName: runtimeInfo.deviceName || "test device name",
-      id: id,
+      id,
       isFenix: runtimeInfo.isFenix,
       shortName: runtimeInfo.shortName || "testshort",
       socketPath: runtimeInfo.socketPath || "test/path",
@@ -222,7 +222,7 @@ const silenceWorkerUpdates = function() {
   const {
     removeMockedModule,
     setMockedModule,
-  } = require("devtools/client/shared/browser-loader-mocks");
+  } = require("devtools/shared/loader/browser-loader-mocks");
 
   const mock = {
     WorkersListener: () => {

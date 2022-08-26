@@ -6,25 +6,26 @@
 
 const EXPORTED_SYMBOLS = ["SecurityInfo"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const wpl = Ci.nsIWebProgressListener;
+const lazy = {};
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "NSSErrorsService",
   "@mozilla.org/nss_errors_service;1",
   "nsINSSErrorsService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "sss",
   "@mozilla.org/ssservice;1",
   "nsISiteSecurityService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "pkps",
   "@mozilla.org/security/publickeypinningservice;1",
   "nsIPublicKeyPinningService"
@@ -109,7 +110,7 @@ const SecurityInfo = {
 
     securityInfo.QueryInterface(Ci.nsITransportSecurityInfo);
 
-    if (NSSErrorsService.isNSSErrorCode(securityInfo.errorCode)) {
+    if (lazy.NSSErrorsService.isNSSErrorCode(securityInfo.errorCode)) {
       // The connection failed.
       info.state = "broken";
       info.errorMessage = securityInfo.errorMessage;
@@ -188,19 +189,8 @@ const SecurityInfo = {
 
     // HSTS and static pinning if available.
     if (uri && uri.host) {
-      // SiteSecurityService uses different storage if the channel is
-      // private. Thus we must give isSecureURI correct flags or we
-      // might get incorrect results.
-      let flags = 0;
-      if (
-        channel instanceof Ci.nsIPrivateBrowsingChannel &&
-        channel.isChannelPrivate
-      ) {
-        flags = Ci.nsISocketProvider.NO_PERMANENT_STORAGE;
-      }
-
-      info.hsts = sss.isSecureURI(uri, flags);
-      info.hpkp = pkps.hostHasPins(uri);
+      info.hsts = lazy.sss.isSecureURI(uri, channel.loadInfo.originAttributes);
+      info.hpkp = lazy.pkps.hostHasPins(uri);
     } else {
       info.hsts = false;
       info.hpkp = false;

@@ -12,7 +12,7 @@
 #include "nsDebug.h"
 #include "nsToolkit.h"
 #include "nsUXThemeConstants.h"
-#include "WinContentSystemParameters.h"
+#include "gfxWindowsPlatform.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -27,6 +27,21 @@ bool nsUXThemeData::sCommandButtonBoxMetricsInitialized = false;
 
 bool nsUXThemeData::sTitlebarInfoPopulatedAero = false;
 bool nsUXThemeData::sTitlebarInfoPopulatedThemed = false;
+
+/**
+ * Windows themes we currently detect.
+ */
+enum class WindowsTheme {
+  Generic = 0,  // unrecognized theme
+  Classic,
+  Aero,
+  Luna,
+  Royale,
+  Zune,
+  AeroLite
+};
+
+static WindowsTheme sThemeId = WindowsTheme::Generic;
 
 nsUXThemeData::ThemeHandle::~ThemeHandle() { Close(); }
 
@@ -49,7 +64,7 @@ void nsUXThemeData::ThemeHandle::Close() {
 }
 
 nsUXThemeData::ThemeHandle::operator HANDLE() {
-  return mHandle.isSome() ? mHandle.value() : nullptr;
+  return mHandle.valueOr(nullptr);
 }
 
 void nsUXThemeData::Invalidate() {
@@ -71,8 +86,6 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
       return L"Button";
     case eUXEdit:
       return L"Edit";
-    case eUXTooltip:
-      return L"Tooltip";
     case eUXRebar:
       return L"Rebar";
     case eUXMediaRebar:
@@ -91,8 +104,6 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
       return L"Progress";
     case eUXTab:
       return L"Tab";
-    case eUXScrollbar:
-      return L"Scrollbar";
     case eUXTrackbar:
       return L"Trackbar";
     case eUXSpin:
@@ -218,8 +229,8 @@ void nsUXThemeData::UpdateTitlebarInfo(HWND aWnd) {
   // We try to avoid activating this window, but on Aero basic (aero without
   // compositor) and aero lite (special theme for win server 2012/2013) we may
   // get the wrong information if the window isn't activated, so we have to:
-  if (sThemeId == LookAndFeel::eWindowsTheme_AeroLite ||
-      (sThemeId == LookAndFeel::eWindowsTheme_Aero &&
+  if (sThemeId == WindowsTheme::AeroLite ||
+      (sThemeId == WindowsTheme::Aero &&
        !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled())) {
     showType = SW_SHOW;
   }
@@ -264,29 +275,17 @@ void nsUXThemeData::UpdateTitlebarInfo(HWND aWnd) {
 //      theme color (silver, olive, blue)
 //        system colors
 
-struct THEMELIST {
+const struct {
   LPCWSTR name;
-  int type;
-};
-
-const THEMELIST knownThemes[] = {{L"aero.msstyles", WINTHEME_AERO},
-                                 {L"aerolite.msstyles", WINTHEME_AERO_LITE},
-                                 {L"luna.msstyles", WINTHEME_LUNA},
-                                 {L"zune.msstyles", WINTHEME_ZUNE},
-                                 {L"royale.msstyles", WINTHEME_ROYALE}};
-
-const THEMELIST knownColors[] = {{L"normalcolor", WINTHEMECOLOR_NORMAL},
-                                 {L"homestead", WINTHEMECOLOR_HOMESTEAD},
-                                 {L"metallic", WINTHEMECOLOR_METALLIC}};
-
-LookAndFeel::WindowsTheme nsUXThemeData::sThemeId =
-    LookAndFeel::eWindowsTheme_Generic;
+  WindowsTheme type;
+} kKnownThemes[] = {{L"aero.msstyles", WindowsTheme::Aero},
+                    {L"aerolite.msstyles", WindowsTheme::AeroLite},
+                    {L"luna.msstyles", WindowsTheme::Luna},
+                    {L"zune.msstyles", WindowsTheme::Zune},
+                    {L"royale.msstyles", WindowsTheme::Royale}};
 
 bool nsUXThemeData::sIsDefaultWindowsTheme = false;
 bool nsUXThemeData::sIsHighContrastOn = false;
-
-// static
-LookAndFeel::WindowsTheme nsUXThemeData::GetNativeThemeId() { return sThemeId; }
 
 // static
 bool nsUXThemeData::IsDefaultWindowTheme() { return sIsDefaultWindowsTheme; }
@@ -299,7 +298,7 @@ void nsUXThemeData::UpdateNativeThemeInfo() {
   sTitlebarInfoPopulatedThemed = false;
 
   sIsDefaultWindowsTheme = false;
-  sThemeId = LookAndFeel::eWindowsTheme_Generic;
+  sThemeId = WindowsTheme::Generic;
 
   HIGHCONTRAST highContrastInfo;
   highContrastInfo.cbSize = sizeof(HIGHCONTRAST);
@@ -310,7 +309,7 @@ void nsUXThemeData::UpdateNativeThemeInfo() {
   }
 
   if (!nsUXThemeData::IsAppThemed()) {
-    sThemeId = LookAndFeel::eWindowsTheme_Classic;
+    sThemeId = WindowsTheme::Classic;
     return;
   }
 
@@ -318,94 +317,42 @@ void nsUXThemeData::UpdateNativeThemeInfo() {
   WCHAR themeColor[MAX_PATH + 1];
   if (FAILED(GetCurrentThemeName(themeFileName, MAX_PATH, themeColor, MAX_PATH,
                                  nullptr, 0))) {
-    sThemeId = LookAndFeel::eWindowsTheme_Classic;
+    sThemeId = WindowsTheme::Classic;
     return;
   }
 
   LPCWSTR themeName = wcsrchr(themeFileName, L'\\');
   themeName = themeName ? themeName + 1 : themeFileName;
 
-  WindowsTheme theme = WINTHEME_UNRECOGNIZED;
-  for (size_t i = 0; i < ArrayLength(knownThemes); ++i) {
-    if (!lstrcmpiW(themeName, knownThemes[i].name)) {
-      theme = (WindowsTheme)knownThemes[i].type;
-      break;
+  sThemeId = [&] {
+    for (const auto& theme : kKnownThemes) {
+      if (!lstrcmpiW(themeName, theme.name)) {
+        return theme.type;
+      }
     }
-  }
-
-  if (theme == WINTHEME_UNRECOGNIZED) return;
+    return WindowsTheme::Generic;
+  }();
 
   // We're using the default theme if we're using any of Aero, Aero Lite, or
   // luna. However, on Win8, GetCurrentThemeName (see above) returns
   // AeroLite.msstyles for the 4 builtin highcontrast themes as well. Those
   // themes "don't count" as default themes, so we specifically check for high
   // contrast mode in that situation.
-  if (!(IsWin8OrLater() && sIsHighContrastOn) &&
-      (theme == WINTHEME_AERO || theme == WINTHEME_AERO_LITE ||
-       theme == WINTHEME_LUNA)) {
-    sIsDefaultWindowsTheme = true;
-  }
-
-  if (theme != WINTHEME_LUNA) {
-    switch (theme) {
-      case WINTHEME_AERO:
-        sThemeId = LookAndFeel::eWindowsTheme_Aero;
-        return;
-      case WINTHEME_AERO_LITE:
-        sThemeId = LookAndFeel::eWindowsTheme_AeroLite;
-        return;
-      case WINTHEME_ZUNE:
-        sThemeId = LookAndFeel::eWindowsTheme_Zune;
-        return;
-      case WINTHEME_ROYALE:
-        sThemeId = LookAndFeel::eWindowsTheme_Royale;
-        return;
-      default:
-        NS_WARNING("unhandled theme type.");
-        return;
+  sIsDefaultWindowsTheme = [&] {
+    if (sIsHighContrastOn && IsWin8OrLater()) {
+      return false;
     }
-  }
-
-  // calculate the luna color scheme
-  WindowsThemeColor color = WINTHEMECOLOR_UNRECOGNIZED;
-  for (size_t i = 0; i < ArrayLength(knownColors); ++i) {
-    if (!lstrcmpiW(themeColor, knownColors[i].name)) {
-      color = (WindowsThemeColor)knownColors[i].type;
-      break;
-    }
-  }
-
-  switch (color) {
-    case WINTHEMECOLOR_NORMAL:
-      sThemeId = LookAndFeel::eWindowsTheme_LunaBlue;
-      return;
-    case WINTHEMECOLOR_HOMESTEAD:
-      sThemeId = LookAndFeel::eWindowsTheme_LunaOlive;
-      return;
-    case WINTHEMECOLOR_METALLIC:
-      sThemeId = LookAndFeel::eWindowsTheme_LunaSilver;
-      return;
-    default:
-      NS_WARNING("unhandled theme color.");
-      return;
-  }
+    return sThemeId == WindowsTheme::Aero ||
+           sThemeId == WindowsTheme::AeroLite || sThemeId == WindowsTheme::Luna;
+  }();
 }
 
 // static
 bool nsUXThemeData::AreFlatMenusEnabled() {
-  if (XRE_IsContentProcess()) {
-    return WinContentSystemParameters::GetSingleton()->AreFlatMenusEnabled();
-  }
-
   BOOL useFlat = FALSE;
   return !!::SystemParametersInfo(SPI_GETFLATMENU, 0, &useFlat, 0) ? useFlat
                                                                    : false;
 }
 
 // static
-bool nsUXThemeData::IsAppThemed() {
-  if (XRE_IsContentProcess()) {
-    return WinContentSystemParameters::GetSingleton()->IsAppThemed();
-  }
-  return !!::IsAppThemed();
-}
+bool nsUXThemeData::IsAppThemed() { return !!::IsAppThemed(); }

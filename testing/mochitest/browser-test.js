@@ -11,7 +11,6 @@ var gConfig;
 var { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
   this,
@@ -232,8 +231,8 @@ function Tester(aTests, structuredLogger, aCallback) {
 
   this._coverageCollector = null;
 
-  const { XPCOMUtils } = ChromeUtils.import(
-    "resource://gre/modules/XPCOMUtils.jsm"
+  const { XPCOMUtils } = ChromeUtils.importESModule(
+    "resource://gre/modules/XPCOMUtils.sys.mjs"
   );
 
   // Avoid failing tests when XPCOMUtils.defineLazyScriptGetter is used.
@@ -260,6 +259,19 @@ function Tester(aTests, structuredLogger, aCallback) {
       this._scriptLoader
     ),
   });
+
+  let env = Cc["@mozilla.org/process/environment;1"].getService(
+    Ci.nsIEnvironment
+  );
+
+  // ensure the mouse is reset before each test run
+  if (env.exists("MOZ_AUTOMATION")) {
+    this.EventUtils.synthesizeNativeMouseEvent({
+      type: "mousemove",
+      screenX: 1000,
+      screenY: 10,
+    });
+  }
 }
 Tester.prototype = {
   EventUtils: {},
@@ -544,6 +556,32 @@ Tester.prototype = {
     }
   },
 
+  async ensureVsyncDisabled() {
+    // The WebExtension process keeps vsync enabled forever in headless mode.
+    // See bug 1782541.
+    let env = Cc["@mozilla.org/process/environment;1"].getService(
+      Ci.nsIEnvironment
+    );
+    if (env.get("MOZ_HEADLESS")) {
+      return;
+    }
+
+    try {
+      await this.TestUtils.waitForCondition(
+        () => !ChromeUtils.vsyncEnabled(),
+        "waiting for vsync to be disabled"
+      );
+    } catch (e) {
+      this.Assert.ok(false, e);
+      this.Assert.ok(
+        false,
+        "vsync remained enabled at the end of the test. " +
+          "Is there an animation still running? " +
+          "Consider talking to the performance team for tips to solve this."
+      );
+    }
+  },
+
   async nextTest() {
     if (this.currentTest) {
       if (this._coverageCollector) {
@@ -624,6 +662,7 @@ Tester.prototype = {
       this.PromiseTestUtils.ensureDOMPromiseRejectionsProcessed();
       this.PromiseTestUtils.assertNoUncaughtRejections();
       this.PromiseTestUtils.assertNoMoreExpectedRejections();
+      await this.ensureVsyncDisabled();
 
       Object.keys(window).forEach(function(prop) {
         if (parseInt(prop) == prop) {
@@ -796,6 +835,45 @@ Tester.prototype = {
         { category: "Test", startTime: this.lastStartTimestamp },
         name
       );
+
+      // See if we should upload a profile of a failing test.
+      if (this.currentTest.failCount) {
+        let env = Cc["@mozilla.org/process/environment;1"].getService(
+          Ci.nsIEnvironment
+        );
+        // If MOZ_PROFILER_SHUTDOWN is set, the profiler got started from --profiler
+        // and a profile will be shown even if there's no test failure.
+        if (
+          env.exists("MOZ_UPLOAD_DIR") &&
+          !env.exists("MOZ_PROFILER_SHUTDOWN") &&
+          Services.profiler.IsActive()
+        ) {
+          let filename = `profile_${name}.json`;
+          let path = env.get("MOZ_UPLOAD_DIR");
+          let profilePath = PathUtils.join(path, filename);
+          try {
+            let profileData = await Services.profiler.getProfileDataAsGzippedArrayBuffer();
+            await IOUtils.write(profilePath, new Uint8Array(profileData));
+            this.currentTest.addResult(
+              new testResult({
+                name:
+                  "Found unexpected failures during the test; profile uploaded in " +
+                  filename,
+              })
+            );
+          } catch (e) {
+            // If the profile is large, we may encounter out of memory errors.
+            this.currentTest.addResult(
+              new testResult({
+                name:
+                  "Found unexpected failures during the test; failed to upload profile: " +
+                  e,
+              })
+            );
+          }
+        }
+      }
+
       let time = Date.now() - this.lastStartTime;
 
       this.structuredLogger.testEnd(
@@ -941,6 +1019,89 @@ Tester.prototype = {
     });
   },
 
+  async handleTask(task, currentTest, PromiseTestUtils, isSetup = false) {
+    let currentScope = currentTest.scope;
+    let desc = isSetup ? "setup" : "test";
+    currentScope.SimpleTest.info(`Entering ${desc} ${task.name}`);
+    let startTimestamp = performance.now();
+    try {
+      let result = await task();
+      if (isGenerator(result)) {
+        currentScope.SimpleTest.ok(false, "Task returned a generator");
+      }
+    } catch (ex) {
+      if (currentTest.timedOut) {
+        currentTest.addResult(
+          new testResult({
+            name: `Uncaught exception received from previously timed out ${desc}`,
+            pass: false,
+            ex,
+            stack: typeof ex == "object" && "stack" in ex ? ex.stack : null,
+            allowFailure: currentTest.allowFailure,
+          })
+        );
+        // We timed out, so we've already cleaned up for this test, just get outta here.
+        return;
+      }
+      currentTest.addResult(
+        new testResult({
+          name: `Uncaught exception in ${desc}`,
+          pass: currentScope.SimpleTest.isExpectingUncaughtException(),
+          ex,
+          stack: typeof ex == "object" && "stack" in ex ? ex.stack : null,
+          allowFailure: currentTest.allowFailure,
+        })
+      );
+    }
+    PromiseTestUtils.assertNoUncaughtRejections();
+    ChromeUtils.addProfilerMarker(
+      isSetup ? "setup-task" : "task",
+      { category: "Test", startTime: startTimestamp },
+      task.name.replace(/^bound /, "") || undefined
+    );
+    currentScope.SimpleTest.info(`Leaving ${desc} ${task.name}`);
+  },
+
+  async _runTaskBasedTest(currentTest) {
+    let currentScope = currentTest.scope;
+
+    // First run all the setups:
+    let setupFn;
+    while ((setupFn = currentScope.__setups.shift())) {
+      await this.handleTask(
+        setupFn,
+        currentTest,
+        this.PromiseTestUtils,
+        true /* is setup task */
+      );
+    }
+
+    // Allow for a task to be skipped; we need only use the structured logger
+    // for this, whilst deactivating log buffering to ensure that messages
+    // are always printed to stdout.
+    let skipTask = task => {
+      let logger = this.structuredLogger;
+      logger.deactivateBuffering();
+      logger.testStatus(this.currentTest.path, task.name, "SKIP");
+      logger.warning("Skipping test " + task.name);
+      logger.activateBuffering();
+    };
+
+    let task;
+    while ((task = currentScope.__tasks.shift())) {
+      if (
+        task.__skipMe ||
+        (currentScope.__runOnlyThisTask &&
+          task != currentScope.__runOnlyThisTask)
+      ) {
+        skipTask(task);
+        continue;
+      }
+      await this.handleTask(task, currentTest, this.PromiseTestUtils);
+    }
+    currentScope.finish();
+  },
+
   execTest: function Tester_execTest() {
     this.structuredLogger.testStart(this.currentTest.path);
 
@@ -963,6 +1124,13 @@ Tester.prototype = {
       window.SpecialPowers.pushPrefEnv({
         set: [["dom.security.https_first", false]],
       });
+    }
+
+    if (currentTest.allow_xul_xbl) {
+      window.SpecialPowers.pushPermissions([
+        { type: "allowXULXBL", allow: true, context: "http://mochi.test:8888" },
+        { type: "allowXULXBL", allow: true, context: "http://example.org" },
+      ]);
     }
 
     // Import utils in the test scope.
@@ -1062,73 +1230,9 @@ Tester.prototype = {
             "Cannot run both a add_task test and a normal test at the same time."
           );
         }
-        let PromiseTestUtils = this.PromiseTestUtils;
-
-        // Allow for a task to be skipped; we need only use the structured logger
-        // for this, whilst deactivating log buffering to ensure that messages
-        // are always printed to stdout.
-        let skipTask = task => {
-          let logger = this.structuredLogger;
-          logger.deactivateBuffering();
-          logger.testStatus(this.currentTest.path, task.name, "SKIP");
-          logger.warning("Skipping test " + task.name);
-          logger.activateBuffering();
-        };
-
-        (async function() {
-          let task;
-          while ((task = this.__tasks.shift())) {
-            if (
-              task.__skipMe ||
-              (this.__runOnlyThisTask && task != this.__runOnlyThisTask)
-            ) {
-              skipTask(task);
-              continue;
-            }
-            this.SimpleTest.info("Entering test " + task.name);
-            let startTimestamp = performance.now();
-            try {
-              let result = await task();
-              if (isGenerator(result)) {
-                this.SimpleTest.ok(false, "Task returned a generator");
-              }
-            } catch (ex) {
-              if (currentTest.timedOut) {
-                currentTest.addResult(
-                  new testResult({
-                    name:
-                      "Uncaught exception received from previously timed out test",
-                    pass: false,
-                    ex,
-                    stack:
-                      typeof ex == "object" && "stack" in ex ? ex.stack : null,
-                    allowFailure: currentTest.allowFailure,
-                  })
-                );
-                // We timed out, so we've already cleaned up for this test, just get outta here.
-                return;
-              }
-              currentTest.addResult(
-                new testResult({
-                  name: "Uncaught exception",
-                  pass: this.SimpleTest.isExpectingUncaughtException(),
-                  ex,
-                  stack:
-                    typeof ex == "object" && "stack" in ex ? ex.stack : null,
-                  allowFailure: currentTest.allowFailure,
-                })
-              );
-            }
-            PromiseTestUtils.assertNoUncaughtRejections();
-            ChromeUtils.addProfilerMarker(
-              "task",
-              { category: "Test", startTime: startTimestamp },
-              task.name.replace(/^bound /, "") || undefined
-            );
-            this.SimpleTest.info("Leaving test " + task.name);
-          }
-          this.finish();
-        }.call(currentScope));
+        // Spin off the async work without waiting for it to complete.
+        // It'll call finish() when it's done.
+        this._runTaskBasedTest(this.currentTest);
       } else if (typeof scope.test == "function") {
         scope.test();
       } else {
@@ -1578,6 +1682,7 @@ function decorateTaskFn(fn) {
 testScope.prototype = {
   __done: true,
   __tasks: null,
+  __setups: [],
   __runOnlyThisTask: null,
   __waitTimer: null,
   __cleanupFunctions: [],
@@ -1632,6 +1737,15 @@ testScope.prototype = {
     }
     let bound = decorateTaskFn.call(this, aFunction);
     this.__tasks.push(bound);
+    return bound;
+  },
+
+  add_setup(aFunction) {
+    if (!this.__setups.length) {
+      this.waitForExplicitFinish();
+    }
+    let bound = aFunction.bind(this);
+    this.__setups.push(bound);
     return bound;
   },
 

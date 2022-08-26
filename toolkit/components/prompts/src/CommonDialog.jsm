@@ -4,9 +4,9 @@
 
 var EXPORTED_SYMBOLS = ["CommonDialog"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "EnableDelayHelper",
   "resource://gre/modules/SharedPromptUtils.jsm"
 );
@@ -224,7 +224,7 @@ CommonDialog.prototype = {
     }
 
     if (this.args.enableDelay) {
-      this.delayHelper = new EnableDelayHelper({
+      this.delayHelper = new lazy.EnableDelayHelper({
         disableDialog: () => this.setButtonsEnabledState(false),
         enableDialog: () => this.setButtonsEnabledState(true),
         focusTarget: this.ui.focusTarget,
@@ -236,7 +236,7 @@ CommonDialog.prototype = {
     try {
       if (commonDialogEl && this.soundID && !this.args.openedWithTabDialog) {
         Cc["@mozilla.org/sound;1"]
-          .createInstance(Ci.nsISound)
+          .getService(Ci.nsISound)
           .playEventSound(this.soundID);
       }
     } catch (e) {
@@ -316,7 +316,7 @@ CommonDialog.prototype = {
       if (isOSX && !(this.ui.infoRow && this.ui.infoRow.hidden)) {
         this.ui.infoBody.focus();
       } else {
-        button.focus({ preventFocusRing: true });
+        button.focus({ focusVisible: false });
       }
     } else if (this.args.promptType == "promptPassword") {
       // When the prompt is initialized, focus and select the textbox

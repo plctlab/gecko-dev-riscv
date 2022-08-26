@@ -10,14 +10,6 @@ registerCleanupFunction(() => {
   Services.prefs.clearUserPref("security.allow_eval_with_system_principal");
 });
 
-var testFormatter = {
-  format: function format(message) {
-    return (
-      message.loggerName + "\t" + message.levelDesc + "\t" + message.message
-    );
-  },
-};
-
 class MockAppender extends Log.Appender {
   constructor(formatter) {
     super(formatter);
@@ -64,31 +56,6 @@ add_task(function test_Logger_parent() {
   Assert.equal(gpAppender.messages.length, 1);
   Assert.ok(gpAppender.messages[0].indexOf("child info test") > 0);
 });
-
-/*
- * A utility method for checking object equivalence.
- * Fields with a reqular expression value in expected will be tested
- * against the corresponding value in actual. Otherwise objects
- * are expected to have the same keys and equal values.
- */
-function checkObjects(expected, actual) {
-  Assert.ok(expected instanceof Object);
-  Assert.ok(actual instanceof Object);
-  for (let key in expected) {
-    Assert.notEqual(actual[key], undefined);
-    if (expected[key] instanceof RegExp) {
-      Assert.ok(expected[key].test(actual[key].toString()));
-    } else if (expected[key] instanceof Object) {
-      checkObjects(expected[key], actual[key]);
-    } else {
-      Assert.equal(expected[key], actual[key]);
-    }
-  }
-
-  for (let key in actual) {
-    Assert.notEqual(expected[key], undefined);
-  }
-}
 
 /*
  * Test parameter formatting.
@@ -419,8 +386,7 @@ add_task(async function format_errors() {
     // lineNumber:columnNumber.
     Assert.ok(str.includes(":1:11)"));
     // Make sure that we use human-readable stack traces
-    // Check that the error doesn't contain any reference to "Promise.jsm" or "Task.jsm"
-    Assert.ok(!str.includes("Promise.jsm"));
+    // Check that the error doesn't contain any reference to "Task.jsm"
     Assert.ok(!str.includes("Task.jsm"));
     Assert.ok(str.includes("format_errors"));
   }

@@ -9,6 +9,12 @@
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/ProfilerThreadRegistry.h"
 #include "nsString.h"
+#ifdef MOZ_GECKO_PROFILER
+#  include "platform.h"
+#else
+#  define profiler_mark_thread_awake()
+#  define profiler_mark_thread_asleep()
+#endif
 
 namespace mozilla::profiler {
 
@@ -41,21 +47,15 @@ ThreadRegistration::ThreadRegistration(const char* aName, const void* aStackTop)
 
   tls->set(this);
   ThreadRegistry::Register(OnThreadRef{*this});
+  profiler_mark_thread_awake();
 }
 
 ThreadRegistration::~ThreadRegistration() {
-#ifdef DEBUG
   MOZ_ASSERT(profiler_current_thread_id() == mData.mInfo.ThreadId(),
              "ThreadRegistration must be destroyed on its thread");
   MOZ_ASSERT(!mDataMutex.IsLockedOnCurrentThread(),
              "Mutex shouldn't be locked here, as it's about to be destroyed "
              "in ~ThreadRegistration()");
-  MOZ_ASSERT(mDataMutex.TryLock(),
-             "Mutex shouldn't be locked in any thread, as it's about to be "
-             "destroyed in ~ThreadRegistration()");
-  // Undo the above successful TryLock.
-  mDataMutex.Unlock();
-#endif  // DEBUG
   auto* tls = GetTLS();
   if (MOZ_UNLIKELY(!tls)) {
     // No TLS, nothing can be done without it.
@@ -72,7 +72,22 @@ ThreadRegistration::~ThreadRegistration() {
       return;
     }
 
+    profiler_mark_thread_asleep();
+#ifdef NIGHTLY_BUILD
+    mData.RecordWakeCount();
+#endif
     ThreadRegistry::Unregister(OnThreadRef{*this});
+#ifdef DEBUG
+    // After ThreadRegistry::Unregister, other threads should not be able to
+    // find this ThreadRegistration, and shouldn't have kept any reference to
+    // it across the ThreadRegistry mutex.
+    MOZ_ASSERT(mDataMutex.TryLock(),
+               "Mutex shouldn't be locked in any thread, as it's about to be "
+               "destroyed in ~ThreadRegistration()");
+    // Undo the above successful TryLock.
+    mDataMutex.Unlock();
+#endif  // DEBUG
+
     tls->set(nullptr);
     return;
   }

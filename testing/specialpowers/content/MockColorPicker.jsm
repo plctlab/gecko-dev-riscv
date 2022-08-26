@@ -4,15 +4,12 @@
 
 var EXPORTED_SYMBOLS = ["MockColorPicker"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WrapPrivileged",
   "resource://specialpowers/WrapPrivileged.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
 );
 
 const Cm = Components.manager;
@@ -26,14 +23,8 @@ var oldClassID = "";
 var newClassID = Services.uuid.generateUUID();
 var newFactory = function(window) {
   return {
-    createInstance(aOuter, aIID) {
-      if (aOuter) {
-        throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-      }
+    createInstance(aIID) {
       return new MockColorPickerInstance(window).QueryInterface(aIID);
-    },
-    lockFactory(aLock) {
-      throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     },
     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
   };
@@ -100,7 +91,7 @@ MockColorPickerInstance.prototype = {
           if (MockColorPicker.showCallback != this.showCallback) {
             this.showCallback = MockColorPicker.showCallback;
             if (Cu.isXrayWrapper(this.window)) {
-              this.showCallbackWrapped = WrapPrivileged.wrapCallback(
+              this.showCallbackWrapped = lazy.WrapPrivileged.wrapCallback(
                 MockColorPicker.showCallback,
                 this.window
               );

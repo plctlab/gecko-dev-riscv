@@ -13,12 +13,13 @@ const {
   RIGHT_CLICK_REQUEST,
   SEND_CUSTOM_REQUEST,
   SET_EVENT_STREAM_FLAG,
-  TOGGLE_RECORDING,
+  SET_RECORDING_STATE,
   UPDATE_REQUEST,
 } = require("devtools/client/netmonitor/src/constants");
 const {
   getSelectedRequest,
   getRequestById,
+  getRecordingState,
 } = require("devtools/client/netmonitor/src/selectors/index");
 const {
   fetchNetworkUpdatePacket,
@@ -142,10 +143,13 @@ function removeSelectedCustomRequest() {
     type: REMOVE_SELECTED_CUSTOM_REQUEST,
   };
 }
-
+/**
+ * Clear all requests
+ */
 function clearRequests() {
-  return {
-    type: CLEAR_REQUESTS,
+  return ({ dispatch, connector }) => {
+    dispatch({ type: CLEAR_REQUESTS });
+    connector.clear();
   };
 }
 
@@ -153,8 +157,17 @@ function clearRequests() {
  * Toggle monitoring
  */
 function toggleRecording() {
-  return {
-    type: TOGGLE_RECORDING,
+  return async ({ dispatch, getState, connector }) => {
+    const recording = !getRecordingState(getState());
+    if (recording) {
+      await connector.resume();
+    } else {
+      connector.pause();
+    }
+    dispatch({
+      type: SET_RECORDING_STATE,
+      recording,
+    });
   };
 }
 

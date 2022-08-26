@@ -5,7 +5,7 @@
 /* import-globals-from aboutaddonsCommon.js */
 /* import-globals-from abuse-reports.js */
 /* import-globals-from view-controller.js */
-/* global MozXULElement, windowRoot */
+/* global windowRoot */
 
 "use strict";
 
@@ -33,17 +33,22 @@ XPCOMUtils.defineLazyGetter(this, "brandBundle", () => {
     "chrome://branding/locale/brand.properties"
   );
 });
-XPCOMUtils.defineLazyGetter(this, "extBundle", function() {
-  return Services.strings.createBundle(
-    "chrome://mozapps/locale/extensions/extensions.properties"
-  );
-});
 XPCOMUtils.defineLazyGetter(this, "extensionStylesheets", () => {
   const { ExtensionParent } = ChromeUtils.import(
     "resource://gre/modules/ExtensionParent.jsm"
   );
   return ExtensionParent.extensionStylesheets;
 });
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  ColorwayClosetOpener: "resource:///modules/ColorwayClosetOpener.jsm",
+});
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "manifestV3enabled",
+  "extensions.manifestV3.enabled"
+);
 
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
@@ -59,6 +64,19 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "XPINSTALL_ENABLED",
   "xpinstall.enabled",
   true
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "COLORWAY_CLOSET_ENABLED",
+  "browser.theme.colorway-closet",
+  false
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "ACTIVE_THEME_ID",
+  "extensions.activeThemeID"
 );
 
 const UPDATES_RECENT_TIMESPAN = 2 * 24 * 3600000; // 2 days (in milliseconds)
@@ -102,6 +120,14 @@ const PRIVATE_BROWSING_PERMS = {
   permissions: [PRIVATE_BROWSING_PERM_NAME],
   origins: [],
 };
+
+const L10N_ID_MAPPING = {
+  "theme-disabled-heading": "theme-disabled-heading2",
+};
+
+function getL10nIdMapping(id) {
+  return L10N_ID_MAPPING[id] || id;
+}
 
 function shouldSkipAnimations() {
   return (
@@ -234,7 +260,7 @@ AddonManagerListenerHandler.addListener(AddonCardListenerHandler);
 function isAbuseReportSupported(addon) {
   return (
     ABUSE_REPORT_ENABLED &&
-    ["extension", "theme"].includes(addon.type) &&
+    AbuseReporter.isSupportedAddonType(addon.type) &&
     !(addon.isBuiltin || addon.isSystem)
   );
 }
@@ -255,30 +281,20 @@ function isInState(install, state) {
 
 async function getAddonMessageInfo(addon) {
   const { name } = addon;
-  const appName = brandBundle.GetStringFromName("brandShortName");
   const { STATE_BLOCKED, STATE_SOFTBLOCKED } = Ci.nsIBlocklistService;
-
-  const formatString = (name, args) =>
-    extBundle.formatStringFromName(
-      `details.notification.${name}`,
-      args,
-      args.length
-    );
-  const getString = name =>
-    extBundle.GetStringFromName(`details.notification.${name}`);
 
   if (addon.blocklistState === STATE_BLOCKED) {
     return {
-      linkText: getString("blocked.link"),
       linkUrl: await addon.getBlocklistURL(),
-      message: formatString("blocked", [name]),
+      messageId: "details-notification-blocked",
+      messageArgs: { name },
       type: "error",
     };
   } else if (isDisabledUnsigned(addon)) {
     return {
-      linkText: getString("unsigned.link"),
       linkUrl: SUPPORT_URL + "unsigned-addons",
-      message: formatString("unsignedAndDisabled", [name, appName]),
+      messageId: "details-notification-unsigned-and-disabled",
+      messageArgs: { name },
       type: "error",
     };
   } else if (
@@ -287,30 +303,28 @@ async function getAddonMessageInfo(addon) {
       addon.blocklistState !== STATE_SOFTBLOCKED)
   ) {
     return {
-      message: formatString("incompatible", [
-        name,
-        appName,
-        Services.appinfo.version,
-      ]),
+      messageId: "details-notification-incompatible",
+      messageArgs: { name, version: Services.appinfo.version },
       type: "warning",
     };
   } else if (!isCorrectlySigned(addon)) {
     return {
-      linkText: getString("unsigned.link"),
       linkUrl: SUPPORT_URL + "unsigned-addons",
-      message: formatString("unsigned", [name, appName]),
+      messageId: "details-notification-unsigned",
+      messageArgs: { name },
       type: "warning",
     };
   } else if (addon.blocklistState === STATE_SOFTBLOCKED) {
     return {
-      linkText: getString("softblocked.link"),
       linkUrl: await addon.getBlocklistURL(),
-      message: formatString("softblocked", [name]),
+      messageId: "details-notification-softblocked",
+      messageArgs: { name },
       type: "warning",
     };
   } else if (addon.isGMPlugin && !addon.isInstalled && addon.isActive) {
     return {
-      message: formatString("gmpPending", [name]),
+      messageId: "details-notification-gmp-pending",
+      messageArgs: { name },
       type: "warning",
     };
   }
@@ -763,14 +777,6 @@ class PanelList extends HTMLElement {
     let leftOffset;
     let leftAlignX = anchorLeft;
     let rightAlignX = anchorLeft + anchorWidth - panelWidth;
-    if (!Services.prefs.getBoolPref("browser.proton.enabled")) {
-      // NOTE: Remove arrow from HTML template when this branch is removed.
-      // The tip of the arrow is 25px from the edge of the panel,
-      // but 26px looks right.
-      let arrowOffset = 26;
-      leftAlignX += anchorWidth / 2 - arrowOffset;
-      rightAlignX += -anchorWidth / 2 + arrowOffset;
-    }
 
     if (Services.locale.isAppLocaleRTL) {
       // Prefer aligning on the right.
@@ -1819,12 +1825,6 @@ class CategoriesBox extends customElements.get("button-group") {
   }
 
   async initialize() {
-    let addonTypesObjects = AddonManager.addonTypes;
-    let addonTypes = new Set();
-    for (let type in addonTypesObjects) {
-      addonTypes.add(type);
-    }
-
     let hiddenTypes = new Set([]);
 
     for (let button of this.children) {
@@ -1832,7 +1832,7 @@ class CategoriesBox extends customElements.get("button-group") {
       button.hidden =
         !button.isVisible || (defaultHidden && this.shouldHideCategory(name));
 
-      if (defaultHidden && addonTypes.has(name)) {
+      if (defaultHidden && AddonManager.hasAddonType(name)) {
         hiddenTypes.add(name);
       }
     }
@@ -2247,25 +2247,6 @@ class FiveStarRating extends HTMLElement {
 }
 customElements.define("five-star-rating", FiveStarRating);
 
-class ContentSelectDropdown extends HTMLElement {
-  connectedCallback() {
-    if (this.children.length) {
-      return;
-    }
-    // This creates the menulist and menupopup elements needed for the inline
-    // browser to support <select> elements and context menus.
-    this.appendChild(
-      MozXULElement.parseXULToFragment(`
-      <menulist popuponly="true" id="ContentSelectDropdown" hidden="true">
-        <menupopup rolluponmousewheel="true" activateontab="true"
-                   position="after_start" level="parent"/>
-      </menulist>
-    `)
-    );
-  }
-}
-customElements.define("content-select-dropdown", ContentSelectDropdown);
-
 class ProxyContextMenu extends HTMLElement {
   openPopupAtScreen(...args) {
     // prettier-ignore
@@ -2363,7 +2344,6 @@ class InlineOptionsBrowser extends HTMLElement {
     browser.setAttribute("id", "addon-inline-options");
     browser.setAttribute("transparent", "true");
     browser.setAttribute("forcemessagemanager", "true");
-    browser.setAttribute("selectmenulist", "ContentSelectDropdown");
     browser.setAttribute("autocompletepopup", "PopupAutoComplete");
 
     // The outer about:addons document listens for key presses to focus
@@ -2572,19 +2552,35 @@ class AddonPermissionsList extends HTMLElement {
 
   async render() {
     let appName = brandBundle.GetStringFromName("brandShortName");
+
+    let empty = { origins: [], permissions: [] };
+    let requiredPerms = { ...(this.addon.userPermissions ?? empty) };
+    let optionalPerms = { ...(this.addon.optionalPermissions ?? empty) };
+    let grantedPerms = await ExtensionPermissions.get(this.addon.id);
+
+    if (manifestV3enabled) {
+      // If optional permissions include <all_urls>, extension can request and
+      // be granted permission for individual sites not listed in the manifest.
+      // Include them as well in the optional origins list.
+      optionalPerms.origins = [
+        ...optionalPerms.origins,
+        ...grantedPerms.origins.filter(o => !requiredPerms.origins.includes(o)),
+      ];
+    }
+
     let permissions = Extension.formatPermissionStrings(
       {
-        permissions: this.addon.userPermissions,
-        optionalPermissions: this.addon.optionalPermissions,
+        permissions: requiredPerms,
+        optionalPermissions: optionalPerms,
         appName,
       },
-      browserBundle
+      browserBundle,
+      { buildOptionalOrigins: manifestV3enabled }
     );
     let optionalEntries = [
       ...Object.entries(permissions.optionalPermissions),
       ...Object.entries(permissions.optionalOrigins),
     ];
-    let perms = await ExtensionPermissions.get(this.addon.id);
 
     this.textContent = "";
     let frag = importTemplate("addon-permissions-list");
@@ -2601,6 +2597,7 @@ class AddonPermissionsList extends HTMLElement {
         list.appendChild(item);
       }
     }
+
     if (optionalEntries.length) {
       let section = frag.querySelector(".addon-permissions-optional");
       section.hidden = false;
@@ -2627,7 +2624,10 @@ class AddonPermissionsList extends HTMLElement {
 
         toggle.setAttribute("permission-type", type);
         toggle.setAttribute("type", "checkbox");
-        if (perms.permissions.includes(perm) || perms.origins.includes(perm)) {
+        if (
+          grantedPerms.permissions.includes(perm) ||
+          grantedPerms.origins.includes(perm)
+        ) {
           toggle.checked = true;
           item.classList.add("permission-checked");
         }
@@ -2648,17 +2648,61 @@ class AddonPermissionsList extends HTMLElement {
 }
 customElements.define("addon-permissions-list", AddonPermissionsList);
 
+class AddonSitePermissionsList extends HTMLElement {
+  setAddon(addon) {
+    this.addon = addon;
+    this.render();
+  }
+
+  async render() {
+    let appName = brandBundle.GetStringFromName("brandShortName");
+    let permissions = Extension.formatPermissionStrings(
+      {
+        sitePermissions: this.addon.sitePermissions,
+        siteOrigin: this.addon.siteOrigin,
+        appName,
+      },
+      browserBundle
+    );
+
+    this.textContent = "";
+    let frag = importTemplate("addon-sitepermissions-list");
+
+    if (permissions.msgs.length) {
+      let section = frag.querySelector(".addon-permissions-required");
+      section.hidden = false;
+      let list = section.querySelector(".addon-permissions-list");
+      let header = section.querySelector(".permission-header");
+      document.l10n.setAttributes(header, "addon-sitepermissions-required", {
+        hostname: new URL(this.addon.siteOrigin).hostname,
+      });
+
+      for (let msg of permissions.msgs) {
+        let item = document.createElement("li");
+        item.classList.add("permission-info", "permission-checked");
+        item.appendChild(document.createTextNode(msg));
+        list.appendChild(item);
+      }
+    }
+
+    this.appendChild(frag);
+  }
+}
+customElements.define("addon-sitepermissions-list", AddonSitePermissionsList);
+
 class AddonDetails extends HTMLElement {
   connectedCallback() {
     if (!this.children.length) {
       this.render();
     }
     this.deck.addEventListener("view-changed", this);
+    this.descriptionShowMoreButton.addEventListener("click", this);
   }
 
   disconnectedCallback() {
     this.inlineOptions.destroyBrowser();
     this.deck.removeEventListener("view-changed", this);
+    this.descriptionShowMoreButton.removeEventListener("click", this);
   }
 
   handleEvent(e) {
@@ -2688,6 +2732,11 @@ class AddonDetails extends HTMLElement {
       // unconditionally shown. So if any other tab is selected, do not save
       // the current scroll offset, but start at the top of the page instead.
       ScrollOffsets.canRestore = this.deck.selectedViewName === "details";
+    } else if (
+      e.type == "click" &&
+      e.target == this.descriptionShowMoreButton
+    ) {
+      this.toggleDescription();
     }
   }
 
@@ -2717,6 +2766,23 @@ class AddonDetails extends HTMLElement {
     if (this.deck.selectedViewName === "preferences") {
       this.inlineOptions.ensureBrowserCreated();
     }
+  }
+
+  toggleDescription() {
+    this.descriptionCollapsed = !this.descriptionCollapsed;
+
+    this.descriptionWrapper.classList.toggle(
+      "addon-detail-description-collapse",
+      this.descriptionCollapsed
+    );
+
+    this.descriptionShowMoreButton.hidden = false;
+    document.l10n.setAttributes(
+      this.descriptionShowMoreButton,
+      this.descriptionCollapsed
+        ? "addon-detail-description-expand"
+        : "addon-detail-description-collapse"
+    );
   }
 
   get releaseNotesUri() {
@@ -2771,6 +2837,36 @@ class AddonDetails extends HTMLElement {
     }
   }
 
+  renderDescription(addon) {
+    this.descriptionWrapper = this.querySelector(
+      ".addon-detail-description-wrapper"
+    );
+    this.descriptionContents = this.querySelector(".addon-detail-description");
+    this.descriptionShowMoreButton = this.querySelector(
+      ".addon-detail-description-toggle"
+    );
+
+    if (addon.getFullDescription) {
+      this.descriptionContents.appendChild(addon.getFullDescription(document));
+    } else if (addon.fullDescription) {
+      this.descriptionContents.appendChild(nl2br(addon.fullDescription));
+    }
+
+    this.descriptionCollapsed = false;
+
+    requestAnimationFrame(() => {
+      const remSize = parseFloat(
+        getComputedStyle(document.documentElement).fontSize
+      );
+      const { height } = this.descriptionContents.getBoundingClientRect();
+
+      // collapse description if there are too many lines,i.e. height > (20 rem)
+      if (height > 20 * remSize) {
+        this.toggleDescription();
+      }
+    });
+  }
+
   async render() {
     let { addon } = this;
     if (!addon) {
@@ -2787,18 +2883,20 @@ class AddonDetails extends HTMLElement {
     this.permissionsList = this.querySelector("addon-permissions-list");
     this.permissionsList.setAddon(addon);
 
+    // Set the add-on for the sitepermissions section.
+    this.sitePermissionsList = this.querySelector("addon-sitepermissions-list");
+    if (addon.type == "sitepermission") {
+      this.sitePermissionsList.setAddon(addon);
+    }
+    this.querySelector(".addon-detail-sitepermissions").hidden =
+      addon.type !== "sitepermission";
+
     // Set the add-on for the preferences section.
     this.inlineOptions = this.querySelector("inline-options-browser");
     this.inlineOptions.setAddon(addon);
 
     // Full description.
-    let description = this.querySelector(".addon-detail-description");
-    if (addon.getFullDescription) {
-      description.appendChild(addon.getFullDescription(document));
-    } else if (addon.fullDescription) {
-      description.appendChild(nl2br(addon.fullDescription));
-    }
-
+    this.renderDescription(addon);
     this.querySelector(
       ".addon-detail-contribute"
     ).hidden = !addon.contributionURL;
@@ -2808,7 +2906,7 @@ class AddonDetails extends HTMLElement {
     );
 
     // By default, all private browsing rows are hidden. Possibly show one.
-    if (addon.type != "extension") {
+    if (addon.type != "extension" && addon.type != "sitepermission") {
       // All add-addons of this type are allowed in private browsing mode, so
       // do not show any UI.
     } else if (addon.incognito == "not_allowed") {
@@ -3001,11 +3099,12 @@ class AddonCard extends HTMLElement {
       }
       permissions = [permission];
     } else if (type == "origin") {
-      if (
-        action == "add" &&
-        !addon.optionalPermissions.origins.includes(permission)
-      ) {
-        throw new Error("origin missing from manifest");
+      if (action === "add") {
+        let { origins } = addon.optionalPermissions;
+        let patternSet = new MatchPatternSet(origins, { ignorePath: true });
+        if (!patternSet.subsumes(new MatchPattern(permission))) {
+          throw new Error("origin missing from manifest");
+        }
       }
       origins = [permission];
     } else {
@@ -3291,7 +3390,8 @@ class AddonCard extends HTMLElement {
 
     // Update the name.
     let name = this.addonNameEl;
-    if (addon.isActive) {
+    let setDisabledStyle = !(addon.isActive || addon.type === "theme");
+    if (!setDisabledStyle) {
       name.textContent = addon.name;
       name.removeAttribute("data-l10n-id");
     } else {
@@ -3310,7 +3410,10 @@ class AddonCard extends HTMLElement {
           toggleDisabledButton,
           `${toggleDisabledAction}-addon-button`
         );
-      } else if (addon.type === "extension") {
+      } else if (
+        addon.type === "extension" ||
+        addon.type === "sitepermission"
+      ) {
         toggleDisabledButton.checked = !addon.userDisabled;
       }
     }
@@ -3339,7 +3442,10 @@ class AddonCard extends HTMLElement {
     }
 
     // Set the private browsing badge visibility.
-    if (addon.type == "extension" && addon.incognito != "not_allowed") {
+    if (
+      addon.incognito != "not_allowed" &&
+      (addon.type == "extension" || addon.type == "sitepermission")
+    ) {
       // Keep update synchronous, the badge can appear later.
       isAllowedInPrivateBrowsing(addon).then(isAllowed => {
         card.querySelector(
@@ -3372,25 +3478,39 @@ class AddonCard extends HTMLElement {
   }
 
   async updateMessage() {
-    let { addon, card } = this;
-    let messageBar = card.querySelector(".addon-card-message");
-    let link = messageBar.querySelector("button");
+    const messageBar = this.card.querySelector(".addon-card-message");
 
-    let { message, type = "", linkText, linkUrl } = await getAddonMessageInfo(
-      addon
-    );
+    const {
+      linkUrl,
+      messageId,
+      messageArgs,
+      type = "",
+    } = await getAddonMessageInfo(this.addon);
 
-    if (message) {
-      messageBar.querySelector("span").textContent = message;
-      messageBar.setAttribute("type", type);
-      if (linkText) {
-        link.textContent = linkText;
+    if (messageId) {
+      document.l10n.pauseObserving();
+      document.l10n.setAttributes(
+        messageBar.querySelector("span"),
+        messageId,
+        messageArgs
+      );
+
+      const link = messageBar.querySelector("button");
+      if (linkUrl) {
+        document.l10n.setAttributes(link, `${messageId}-link`);
         link.setAttribute("url", linkUrl);
+        link.hidden = false;
+      } else {
+        link.hidden = true;
       }
-    }
 
-    messageBar.hidden = !message;
-    link.hidden = !linkText;
+      document.l10n.resumeObserving();
+      await document.l10n.translateFragment(messageBar);
+      messageBar.setAttribute("type", type);
+      messageBar.hidden = false;
+    } else {
+      messageBar.hidden = true;
+    }
   }
 
   showPrefs() {
@@ -3413,17 +3533,17 @@ class AddonCard extends HTMLElement {
       throw new Error("addon-card must be initialized with setAddon()");
     }
 
-    let headingId = ExtensionCommon.makeWidgetId(`${addon.name}-heading`);
-    this.setAttribute("aria-labelledby", headingId);
     this.setAttribute("addon-id", addon.id);
 
     this.card = importTemplate("card").firstElementChild;
+    let headingId = ExtensionCommon.makeWidgetId(`${addon.id}-heading`);
+    this.card.setAttribute("aria-labelledby", headingId);
 
     // Remove the toggle-disabled button(s) based on type.
     if (addon.type != "theme") {
       this.card.querySelector(".theme-enable-button").remove();
     }
-    if (addon.type != "extension") {
+    if (addon.type != "extension" && addon.type != "sitepermission") {
       this.card.querySelector(".extension-enable-button").remove();
     }
 
@@ -3431,6 +3551,7 @@ class AddonCard extends HTMLElement {
     let headingLevel = this.expanded ? "h1" : "h3";
     let nameHeading = document.createElement(headingLevel);
     nameHeading.classList.add("addon-name");
+    nameHeading.id = headingId;
     if (!this.expanded) {
       let name = document.createElement("a");
       name.classList.add("addon-name-link");
@@ -3556,6 +3677,122 @@ class AddonCard extends HTMLElement {
   }
 }
 customElements.define("addon-card", AddonCard);
+
+class ColorwayClosetCard extends HTMLElement {
+  connectedCallback() {
+    if (this.childElementCount === 0) {
+      this.render();
+    }
+
+    AddonManagerListenerHandler.addListener(this);
+  }
+
+  disconnectedCallback() {
+    AddonManagerListenerHandler.removeListener(this);
+  }
+
+  onEnabled(addon) {
+    if (addon.type !== "theme") {
+      return;
+    }
+
+    // Listen for changes to actively selected theme.
+    // Update button label for Colorway Closet card, according to
+    // whether or not a colorway theme is currently enabled.
+    const isCurrentThemeColorway = BuiltInThemes.isMonochromaticTheme(addon.id);
+    let colorwaysButton = document.querySelector("[action='open-colorways']");
+
+    document.l10n.setAttributes(
+      colorwaysButton,
+      isCurrentThemeColorway
+        ? "theme-colorways-button-colorway-enabled"
+        : "theme-colorways-button"
+    );
+  }
+
+  render() {
+    let card = importTemplate("card").firstElementChild;
+    let heading = card.querySelector(".addon-name-container");
+    // remove elipsis button
+    heading.textContent = "";
+    heading.append(importTemplate("colorways-card-container"));
+    this.setCardPreviewText(card);
+    this.setCardContent(card);
+    this.append(card);
+  }
+
+  setCardPreviewText(card) {
+    // Create new elements for card preview text
+    let colorwayPreviewHeading = document.createElement("h3");
+    let colorwayPreviewSubHeading = document.createElement("p");
+    let colorwayPreviewTextContainer = document.createElement("div");
+
+    const collection = BuiltInThemes.findActiveColorwayCollection?.();
+    if (collection) {
+      const { l10nId } = collection;
+      document.l10n.setAttributes(colorwayPreviewHeading, l10nId.title);
+      document.l10n.setAttributes(
+        colorwayPreviewSubHeading,
+        `${l10nId.title}-short-description`
+      );
+    }
+
+    colorwayPreviewTextContainer.appendChild(colorwayPreviewHeading);
+    colorwayPreviewTextContainer.appendChild(colorwayPreviewSubHeading);
+    colorwayPreviewTextContainer.id = "colorways-preview-text-container";
+
+    // Insert colorway card preview text
+    let cardHeadingImage = card.querySelector(".card-heading-image");
+    cardHeadingImage.parentNode.insertBefore(
+      colorwayPreviewTextContainer,
+      cardHeadingImage
+    );
+  }
+
+  setCardContent(card) {
+    card.querySelector(".addon-icon").hidden = true;
+
+    const collection = BuiltInThemes.findActiveColorwayCollection?.();
+    if (!collection) {
+      return;
+    }
+
+    const preview = card.querySelector(".card-heading-image");
+    const { cardImagePath, expiry } = collection;
+    if (cardImagePath) {
+      preview.src = cardImagePath;
+    }
+
+    let colorwayExpiryDateSpan = card.querySelector(
+      "#colorways-expiry-date > span"
+    );
+    document.l10n.setAttributes(
+      colorwayExpiryDateSpan,
+      "colorway-collection-expiry-label",
+      {
+        expiryDate: expiry.getTime(),
+      }
+    );
+
+    let colorwaysButton = card.querySelector("[action='open-colorways']");
+    const isCurrentThemeColorway = BuiltInThemes.isMonochromaticTheme(
+      ACTIVE_THEME_ID
+    );
+
+    document.l10n.setAttributes(
+      colorwaysButton,
+      isCurrentThemeColorway
+        ? "theme-colorways-button-colorway-enabled"
+        : "theme-colorways-button"
+    );
+
+    colorwaysButton.hidden = false;
+    colorwaysButton.onclick = () => {
+      ColorwayClosetOpener.openModal();
+    };
+  }
+}
+customElements.define("colorways-card", ColorwayClosetCard);
 
 /**
  * A child element of `<recommended-addon-list>`. It should be initialized
@@ -3883,8 +4120,9 @@ class AddonList extends HTMLElement {
     }
 
     // Sort the add-ons in each section.
-    for (let section of sectionedAddons) {
-      section.sort(this.sortByFn);
+    for (let [index, section] of sectionedAddons.entries()) {
+      let sortByFn = this.sections[index].sortByFn || this.sortByFn;
+      section.sort(sortByFn);
     }
 
     return sectionedAddons;
@@ -3936,7 +4174,11 @@ class AddonList extends HTMLElement {
   }
 
   createSectionHeading(headingIndex) {
-    let { headingId, subheadingId } = this.sections[headingIndex];
+    let {
+      headingId,
+      subheadingId,
+      sectionPreambleCustomElement,
+    } = this.sections[headingIndex];
     let frag = document.createDocumentFragment();
     let heading = document.createElement("h2");
     heading.classList.add("list-section-heading");
@@ -3946,36 +4188,56 @@ class AddonList extends HTMLElement {
     if (subheadingId) {
       let subheading = document.createElement("h3");
       subheading.classList.add("list-section-subheading");
-      heading.className = "header-name";
       document.l10n.setAttributes(subheading, subheadingId);
+      // Preserve the old colorway section header styling
+      // while the colorway closet section is not yet ready to be enabled
+      if (!COLORWAY_CLOSET_ENABLED) {
+        heading.className = "header-name";
+      }
       frag.append(subheading);
+    }
+
+    if (sectionPreambleCustomElement) {
+      frag.append(document.createElement(sectionPreambleCustomElement));
     }
 
     return frag;
   }
 
   createEmptyListMessage() {
+    let emptyMessage = "list-empty-get-extensions-message";
+    let linkPref = "extensions.getAddons.link.url";
+
+    if (this.sections && this.sections.length) {
+      if (this.sections[0].headingId == "locale-enabled-heading") {
+        emptyMessage = "list-empty-get-language-packs-message";
+        linkPref = "browser.dictionaries.download.url";
+      } else if (this.sections[0].headingId == "dictionary-enabled-heading") {
+        emptyMessage = "list-empty-get-dictionaries-message";
+        linkPref = "browser.dictionaries.download.url";
+      }
+    }
+
     let messageContainer = document.createElement("p");
     messageContainer.id = "empty-addons-message";
     let a = document.createElement("a");
-    a.href = Services.urlFormatter.formatURLPref(
-      "extensions.getAddons.link.url"
-    );
+    a.href = Services.urlFormatter.formatURLPref(linkPref);
     a.setAttribute("target", "_blank");
     a.setAttribute("data-l10n-name", "get-extensions");
-    document.l10n.setAttributes(
-      messageContainer,
-      "list-empty-get-extensions-message",
-      { domain: a.hostname }
-    );
+    document.l10n.setAttributes(messageContainer, emptyMessage, {
+      domain: a.hostname,
+    });
     messageContainer.appendChild(a);
     return messageContainer;
   }
 
   updateSectionIfEmpty(section) {
-    // The header is added before any add-on cards, so if there's only one
-    // child then it's the header. In that case we should empty out the section.
-    if (section.children.length == 1) {
+    // We should empty out the section if there are no more cards to display,
+    // (unless the section is configured to stay visible and rendered even when
+    // there is no addon listed, e.g. the "Colorways Closet" section).
+    const sectionIndex = parseInt(section.getAttribute("section"));
+    const { shouldRenderIfEmpty } = this.sections[sectionIndex];
+    if (!this.getCards(section).length && !shouldRenderIfEmpty) {
       section.textContent = "";
     }
   }
@@ -3984,8 +4246,12 @@ class AddonList extends HTMLElement {
     let section = this.getSection(sectionIndex);
     let sectionCards = this.getCards(section);
 
-    // If this is the first card in the section, create the heading.
-    if (!sectionCards.length) {
+    const { shouldRenderIfEmpty } = this.sections[sectionIndex];
+
+    // If this is the first card in the section, and the section
+    // isn't configure to render the headers even when empty,
+    // we have to create the section heading first.
+    if (!shouldRenderIfEmpty && !sectionCards.length) {
       section.appendChild(this.createSectionHeading(sectionIndex));
     }
 
@@ -4175,19 +4441,24 @@ class AddonList extends HTMLElement {
   }
 
   renderSection(addons, index) {
+    const { sectionClass, shouldRenderIfEmpty } = this.sections[index];
+
     let section = document.createElement("section");
     section.setAttribute("section", index);
+    if (sectionClass) {
+      section.setAttribute("class", sectionClass);
+    }
 
     // Render the heading and add-ons if there are any.
-    if (addons.length) {
+    if (shouldRenderIfEmpty || addons.length) {
       section.appendChild(this.createSectionHeading(index));
+    }
 
-      for (let addon of addons) {
-        let card = document.createElement("addon-card");
-        card.setAddon(addon);
-        card.render();
-        section.appendChild(card);
-      }
+    for (let addon of addons) {
+      let card = document.createElement("addon-card");
+      card.setAddon(addon);
+      card.render();
+      section.appendChild(card);
     }
 
     return section;
@@ -4581,20 +4852,16 @@ customElements.define("discovery-pane", DiscoveryPane);
 
 // Define views
 gViewController.defineView("list", async type => {
-  if (!(type in AddonManager.addonTypes)) {
+  if (!AddonManager.hasAddonType(type)) {
     return null;
   }
 
-  // If monochromatic themes are enabled and any are builtin to Firefox, we
-  // display those themes together in a separate subsection.
-  let isMonochromaticTheme = addon =>
-    addon.id.endsWith("-colorway@mozilla.org");
-
-  let monochromaticEnabled = Services.prefs.getBoolPref(
-    "browser.theme.colorways.enabled",
-    true
-  );
-
+  const areColorwayThemesInstalled = async () =>
+    (await AddonManager.getAllAddons()).some(
+      addon =>
+        BuiltInThemes.isMonochromaticTheme(addon.id) &&
+        !BuiltInThemes.themeIsExpired(addon.id)
+    );
   let frag = document.createDocumentFragment();
   let list = document.createElement("addon-list");
   list.type = type;
@@ -4602,32 +4869,93 @@ gViewController.defineView("list", async type => {
   let sections = [
     {
       headingId: type + "-enabled-heading",
+      sectionClass: `${type}-enabled-section`,
       filterFn: addon =>
         !addon.hidden && addon.isActive && !isPending(addon, "uninstall"),
     },
-    {
-      headingId: type + "-disabled-heading",
-      filterFn: addon =>
-        !addon.hidden &&
-        !addon.isActive &&
-        !isPending(addon, "uninstall") &&
-        !isMonochromaticTheme(addon),
-    },
   ];
 
-  if (type == "theme" && monochromaticEnabled) {
+  if (type == "theme" && COLORWAY_CLOSET_ENABLED) {
+    MozXULElement.insertFTLIfNeeded("browser/colorways.ftl");
+
+    const hasActiveColorways = !!BuiltInThemes.findActiveColorwayCollection?.();
     sections.push({
-      headingId: type + "-monochromatic-heading",
-      subheadingId: type + "-monochromatic-subheading",
+      headingId: "theme-monochromatic-heading",
+      subheadingId: "theme-monochromatic-subheading",
+      sectionClass: "colorways-section",
+      // Insert colorway closet card as the first element in the colorways
+      // section so that it is above any retained colorway themes.
+      sectionPreambleCustomElement: hasActiveColorways
+        ? "colorways-card"
+        : null,
+      // This section should also be rendered when there is no addons that
+      // match the filterFn, because we still want to show the headers and
+      // colorways-card. But, we only expect the colorways-card to be visible
+      // when there is an active colorway collection.
+      shouldRenderIfEmpty: hasActiveColorways,
       filterFn: addon =>
         !addon.hidden &&
         !addon.isActive &&
         !isPending(addon, "uninstall") &&
-        isMonochromaticTheme(addon),
+        // For performance related details about this check see the
+        // documentation for themeIsExpired in BuiltInThemeConfig.jsm.
+        BuiltInThemes.isMonochromaticTheme(addon.id) &&
+        BuiltInThemes.isRetainedExpiredTheme(addon.id),
     });
   }
+
+  const disabledAddonsFilterFn = addon =>
+    !addon.hidden && !addon.isActive && !isPending(addon, "uninstall");
+
+  const disabledThemesFilterFn = addon =>
+    disabledAddonsFilterFn(addon) &&
+    ((BuiltInThemes.isRetainedExpiredTheme(addon.id) &&
+      !COLORWAY_CLOSET_ENABLED) ||
+      !BuiltInThemes.isMonochromaticTheme(addon.id));
+
+  sections.push({
+    headingId: getL10nIdMapping(`${type}-disabled-heading`),
+    sectionClass: `${type}-disabled-section`,
+    filterFn: addon => {
+      if (addon.type === "theme") {
+        return disabledThemesFilterFn(addon);
+      }
+      return disabledAddonsFilterFn(addon);
+    },
+  });
+
   list.setSections(sections);
   frag.appendChild(list);
+
+  // Add old colorways section if the new colorway closet is not enabled.
+  // If monochromatic themes are enabled and any are builtin to Firefox, we
+  // display those themes together in a separate subsection.
+  if (
+    type == "theme" &&
+    !COLORWAY_CLOSET_ENABLED &&
+    (await areColorwayThemesInstalled())
+  ) {
+    let monochromaticList = document.createElement("addon-list");
+    monochromaticList.classList.add("monochromatic-addon-list");
+    monochromaticList.type = type;
+    monochromaticList.setSections([
+      {
+        headingId: type + "-monochromatic-heading",
+        subheadingId: type + "-monochromatic-subheading",
+        filterFn: addon =>
+          !addon.hidden &&
+          BuiltInThemes.isMonochromaticTheme(addon.id) &&
+          !BuiltInThemes.themeIsExpired(addon.id),
+        sortByFn: (theme1, theme2) => {
+          return (
+            BuiltInThemes.monochromaticSortIndices.get(theme1.id) -
+            BuiltInThemes.monochromaticSortIndices.get(theme2.id)
+          );
+        },
+      },
+    ]);
+    frag.appendChild(monochromaticList);
+  }
 
   // Show recommendations for themes and extensions.
   if (

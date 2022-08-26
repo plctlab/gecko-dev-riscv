@@ -5,7 +5,7 @@ use crate::{
     id,
     instance::{Adapter, HalSurface, Instance, Surface},
     pipeline::{ComputePipeline, RenderPipeline, ShaderModule},
-    resource::{Buffer, QuerySet, Sampler, Texture, TextureView},
+    resource::{Buffer, QuerySet, Sampler, Texture, TextureClearMode, TextureView},
     Epoch, Index,
 };
 
@@ -16,30 +16,51 @@ use wgt::Backend;
 use std::cell::Cell;
 use std::{fmt::Debug, marker::PhantomData, mem, ops};
 
-/// A simple structure to manage identities of objects.
-#[derive(Debug)]
+/// A simple structure to allocate [`Id`] identifiers.
+///
+/// Calling [`alloc`] returns a fresh, never-before-seen id. Calling [`free`]
+/// marks an id as dead; it will never be returned again by `alloc`.
+///
+/// Use `IdentityManager::default` to construct new instances.
+///
+/// `IdentityManager` returns `Id`s whose index values are suitable for use as
+/// indices into a `Storage<T>` that holds those ids' referents:
+///
+/// - Every live id has a distinct index value. Each live id's index selects a
+///   distinct element in the vector.
+///
+/// - `IdentityManager` prefers low index numbers. If you size your vector to
+///   accommodate the indices produced here, the vector's length will reflect
+///   the highwater mark of actual occupancy.
+///
+/// - `IdentityManager` reuses the index values of freed ids before returning
+///   ids with new index values. Freed vector entries get reused.
+///
+/// [`Id`]: crate::id::Id
+/// [`Backend`]: wgt::Backend;
+/// [`alloc`]: IdentityManager::alloc
+/// [`free`]: IdentityManager::free
+#[derive(Debug, Default)]
 pub struct IdentityManager {
+    /// Available index values. If empty, then `epochs.len()` is the next index
+    /// to allocate.
     free: Vec<Index>,
+
+    /// The next or currently-live epoch value associated with each `Id` index.
+    ///
+    /// If there is a live id with index `i`, then `epochs[i]` is its epoch; any
+    /// id with the same index but an older epoch is dead.
+    ///
+    /// If index `i` is currently unused, `epochs[i]` is the epoch to use in its
+    /// next `Id`.
     epochs: Vec<Epoch>,
 }
 
-impl Default for IdentityManager {
-    fn default() -> Self {
-        Self {
-            free: Default::default(),
-            epochs: Default::default(),
-        }
-    }
-}
-
 impl IdentityManager {
-    pub fn from_index(min_index: u32) -> Self {
-        Self {
-            free: (0..min_index).collect(),
-            epochs: vec![1; min_index as usize],
-        }
-    }
-
+    /// Allocate a fresh, never-before-seen id with the given `backend`.
+    ///
+    /// The backend is incorporated into the id, so that ids allocated with
+    /// different `backend` values are always distinct.
     pub fn alloc<I: id::TypedId>(&mut self, backend: Backend) -> I {
         match self.free.pop() {
             Some(index) => I::zip(index, self.epochs[index as usize], backend),
@@ -52,23 +73,34 @@ impl IdentityManager {
         }
     }
 
+    /// Free `id`. It will never be returned from `alloc` again.
     pub fn free<I: id::TypedId + Debug>(&mut self, id: I) {
         let (index, epoch, _backend) = id.unzip();
-        // avoid doing this check in release
-        if cfg!(debug_assertions) {
-            assert!(!self.free.contains(&index));
-        }
         let pe = &mut self.epochs[index as usize];
         assert_eq!(*pe, epoch);
-        *pe += 1;
-        self.free.push(index);
+        // If the epoch reaches EOL, the index doesn't go
+        // into the free list, will never be reused again.
+        if epoch < id::EPOCH_MASK {
+            *pe = epoch + 1;
+            self.free.push(index);
+        }
     }
 }
 
+/// An entry in a `Storage::map` table.
 #[derive(Debug)]
 enum Element<T> {
+    /// There are no live ids with this index.
     Vacant,
+
+    /// There is one live id with this index, allocated at the given
+    /// epoch.
     Occupied(T, Epoch),
+
+    /// Like `Occupied`, but an error occurred when creating the
+    /// resource.
+    ///
+    /// The given `String` is the resource's descriptor label.
     Error(Epoch, String),
 }
 
@@ -89,6 +121,11 @@ impl StorageReport {
 #[derive(Clone, Debug)]
 pub(crate) struct InvalidId;
 
+/// A table of `T` values indexed by the id type `I`.
+///
+/// The table is represented as a vector indexed by the ids' index
+/// values, so you should use an id allocator like `IdentityManager`
+/// that keeps the index values dense and close to zero.
 #[derive(Debug)]
 pub struct Storage<T, I: id::TypedId> {
     map: Vec<Element<T>>,
@@ -112,11 +149,12 @@ impl<T, I: id::TypedId> ops::IndexMut<id::Valid<I>> for Storage<T, I> {
 impl<T, I: id::TypedId> Storage<T, I> {
     pub(crate) fn contains(&self, id: I) -> bool {
         let (index, epoch, _) = id.unzip();
-        match self.map[index as usize] {
-            Element::Vacant => false,
-            Element::Occupied(_, storage_epoch) | Element::Error(storage_epoch, ..) => {
-                epoch == storage_epoch
+        match self.map.get(index as usize) {
+            Some(&Element::Vacant) => false,
+            Some(&Element::Occupied(_, storage_epoch) | &Element::Error(storage_epoch, _)) => {
+                storage_epoch == epoch
             }
+            None => false,
         }
     }
 
@@ -124,10 +162,11 @@ impl<T, I: id::TypedId> Storage<T, I> {
     /// Panics if there is an epoch mismatch, or the entry is empty.
     pub(crate) fn get(&self, id: I) -> Result<&T, InvalidId> {
         let (index, epoch, _) = id.unzip();
-        let (result, storage_epoch) = match self.map[index as usize] {
-            Element::Occupied(ref v, epoch) => (Ok(v), epoch),
-            Element::Vacant => panic!("{}[{}] does not exist", self.kind, index),
-            Element::Error(epoch, ..) => (Err(InvalidId), epoch),
+        let (result, storage_epoch) = match self.map.get(index as usize) {
+            Some(&Element::Occupied(ref v, epoch)) => (Ok(v), epoch),
+            Some(&Element::Vacant) => panic!("{}[{}] does not exist", self.kind, index),
+            Some(&Element::Error(epoch, ..)) => (Err(InvalidId), epoch),
+            None => return Err(InvalidId),
         };
         assert_eq!(
             epoch, storage_epoch,
@@ -141,10 +180,11 @@ impl<T, I: id::TypedId> Storage<T, I> {
     /// Panics if there is an epoch mismatch, or the entry is empty.
     pub(crate) fn get_mut(&mut self, id: I) -> Result<&mut T, InvalidId> {
         let (index, epoch, _) = id.unzip();
-        let (result, storage_epoch) = match self.map[index as usize] {
-            Element::Occupied(ref mut v, epoch) => (Ok(v), epoch),
-            Element::Vacant => panic!("{}[{}] does not exist", self.kind, index),
-            Element::Error(epoch, ..) => (Err(InvalidId), epoch),
+        let (result, storage_epoch) = match self.map.get_mut(index as usize) {
+            Some(&mut Element::Occupied(ref mut v, epoch)) => (Ok(v), epoch),
+            Some(&mut Element::Vacant) => panic!("{}[{}] does not exist", self.kind, index),
+            Some(&mut Element::Error(epoch, ..)) => (Err(InvalidId), epoch),
+            None => return Err(InvalidId),
         };
         assert_eq!(
             epoch, storage_epoch,
@@ -154,10 +194,18 @@ impl<T, I: id::TypedId> Storage<T, I> {
         result
     }
 
+    pub(crate) unsafe fn get_unchecked(&self, id: u32) -> &T {
+        match self.map[id as usize] {
+            Element::Occupied(ref v, _) => v,
+            Element::Vacant => panic!("{}[{}] does not exist", self.kind, id),
+            Element::Error(_, _) => panic!(""),
+        }
+    }
+
     pub(crate) fn label_for_invalid_id(&self, id: I) -> &str {
         let (index, _, _) = id.unzip();
-        match self.map[index as usize] {
-            Element::Error(_, ref label) => label,
+        match self.map.get(index as usize) {
+            Some(&Element::Error(_, ref label)) => label,
             _ => "",
         }
     }
@@ -226,6 +274,10 @@ impl<T, I: id::TypedId> Storage<T, I> {
             })
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
     fn generate_report(&self) -> StorageReport {
         let mut report = StorageReport {
             element_size: mem::size_of::<T>(),
@@ -243,10 +295,10 @@ impl<T, I: id::TypedId> Storage<T, I> {
 }
 
 /// Type system for enforcing the lock order on shared HUB structures.
-/// If type A implements `Access<A>`, that means we are allowed to proceed
+/// If type A implements `Access<B>`, that means we are allowed to proceed
 /// with locking resource `B` after we lock `A`.
 ///
-/// The implenentations basically describe the edges in a directed graph
+/// The implementations basically describe the edges in a directed graph
 /// of lock transitions. As long as it doesn't have loops, we can have
 /// multiple concurrent paths on this graph (from multiple threads) without
 /// deadlocks, i.e. there is always a path whose next resource is not locked
@@ -258,56 +310,56 @@ pub enum Root {}
 impl Access<Instance> for Root {}
 impl Access<Surface> for Root {}
 impl Access<Surface> for Instance {}
-impl<A: hal::Api> Access<Adapter<A>> for Root {}
-impl<A: hal::Api> Access<Adapter<A>> for Surface {}
-impl<A: hal::Api> Access<Device<A>> for Root {}
-impl<A: hal::Api> Access<Device<A>> for Surface {}
-impl<A: hal::Api> Access<Device<A>> for Adapter<A> {}
-impl<A: hal::Api> Access<PipelineLayout<A>> for Root {}
-impl<A: hal::Api> Access<PipelineLayout<A>> for Device<A> {}
-impl<A: hal::Api> Access<PipelineLayout<A>> for RenderBundle {}
-impl<A: hal::Api> Access<BindGroupLayout<A>> for Root {}
-impl<A: hal::Api> Access<BindGroupLayout<A>> for Device<A> {}
-impl<A: hal::Api> Access<BindGroupLayout<A>> for PipelineLayout<A> {}
-impl<A: hal::Api> Access<BindGroup<A>> for Root {}
-impl<A: hal::Api> Access<BindGroup<A>> for Device<A> {}
-impl<A: hal::Api> Access<BindGroup<A>> for BindGroupLayout<A> {}
-impl<A: hal::Api> Access<BindGroup<A>> for PipelineLayout<A> {}
-impl<A: hal::Api> Access<BindGroup<A>> for CommandBuffer<A> {}
-impl<A: hal::Api> Access<CommandBuffer<A>> for Root {}
-impl<A: hal::Api> Access<CommandBuffer<A>> for Device<A> {}
-impl<A: hal::Api> Access<RenderBundle> for Device<A> {}
-impl<A: hal::Api> Access<RenderBundle> for CommandBuffer<A> {}
-impl<A: hal::Api> Access<ComputePipeline<A>> for Device<A> {}
-impl<A: hal::Api> Access<ComputePipeline<A>> for BindGroup<A> {}
-impl<A: hal::Api> Access<RenderPipeline<A>> for Device<A> {}
-impl<A: hal::Api> Access<RenderPipeline<A>> for BindGroup<A> {}
-impl<A: hal::Api> Access<RenderPipeline<A>> for ComputePipeline<A> {}
-impl<A: hal::Api> Access<QuerySet<A>> for Root {}
-impl<A: hal::Api> Access<QuerySet<A>> for Device<A> {}
-impl<A: hal::Api> Access<QuerySet<A>> for CommandBuffer<A> {}
-impl<A: hal::Api> Access<QuerySet<A>> for RenderPipeline<A> {}
-impl<A: hal::Api> Access<QuerySet<A>> for ComputePipeline<A> {}
-impl<A: hal::Api> Access<QuerySet<A>> for Sampler<A> {}
-impl<A: hal::Api> Access<ShaderModule<A>> for Device<A> {}
-impl<A: hal::Api> Access<ShaderModule<A>> for BindGroupLayout<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for Root {}
-impl<A: hal::Api> Access<Buffer<A>> for Device<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for BindGroupLayout<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for BindGroup<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for CommandBuffer<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for ComputePipeline<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for RenderPipeline<A> {}
-impl<A: hal::Api> Access<Buffer<A>> for QuerySet<A> {}
-impl<A: hal::Api> Access<Texture<A>> for Root {}
-impl<A: hal::Api> Access<Texture<A>> for Device<A> {}
-impl<A: hal::Api> Access<Texture<A>> for Buffer<A> {}
-impl<A: hal::Api> Access<TextureView<A>> for Root {}
-impl<A: hal::Api> Access<TextureView<A>> for Device<A> {}
-impl<A: hal::Api> Access<TextureView<A>> for Texture<A> {}
-impl<A: hal::Api> Access<Sampler<A>> for Root {}
-impl<A: hal::Api> Access<Sampler<A>> for Device<A> {}
-impl<A: hal::Api> Access<Sampler<A>> for TextureView<A> {}
+impl<A: HalApi> Access<Adapter<A>> for Root {}
+impl<A: HalApi> Access<Adapter<A>> for Surface {}
+impl<A: HalApi> Access<Device<A>> for Root {}
+impl<A: HalApi> Access<Device<A>> for Surface {}
+impl<A: HalApi> Access<Device<A>> for Adapter<A> {}
+impl<A: HalApi> Access<PipelineLayout<A>> for Root {}
+impl<A: HalApi> Access<PipelineLayout<A>> for Device<A> {}
+impl<A: HalApi> Access<PipelineLayout<A>> for RenderBundle<A> {}
+impl<A: HalApi> Access<BindGroupLayout<A>> for Root {}
+impl<A: HalApi> Access<BindGroupLayout<A>> for Device<A> {}
+impl<A: HalApi> Access<BindGroupLayout<A>> for PipelineLayout<A> {}
+impl<A: HalApi> Access<BindGroup<A>> for Root {}
+impl<A: HalApi> Access<BindGroup<A>> for Device<A> {}
+impl<A: HalApi> Access<BindGroup<A>> for BindGroupLayout<A> {}
+impl<A: HalApi> Access<BindGroup<A>> for PipelineLayout<A> {}
+impl<A: HalApi> Access<BindGroup<A>> for CommandBuffer<A> {}
+impl<A: HalApi> Access<CommandBuffer<A>> for Root {}
+impl<A: HalApi> Access<CommandBuffer<A>> for Device<A> {}
+impl<A: HalApi> Access<RenderBundle<A>> for Device<A> {}
+impl<A: HalApi> Access<RenderBundle<A>> for CommandBuffer<A> {}
+impl<A: HalApi> Access<ComputePipeline<A>> for Device<A> {}
+impl<A: HalApi> Access<ComputePipeline<A>> for BindGroup<A> {}
+impl<A: HalApi> Access<RenderPipeline<A>> for Device<A> {}
+impl<A: HalApi> Access<RenderPipeline<A>> for BindGroup<A> {}
+impl<A: HalApi> Access<RenderPipeline<A>> for ComputePipeline<A> {}
+impl<A: HalApi> Access<QuerySet<A>> for Root {}
+impl<A: HalApi> Access<QuerySet<A>> for Device<A> {}
+impl<A: HalApi> Access<QuerySet<A>> for CommandBuffer<A> {}
+impl<A: HalApi> Access<QuerySet<A>> for RenderPipeline<A> {}
+impl<A: HalApi> Access<QuerySet<A>> for ComputePipeline<A> {}
+impl<A: HalApi> Access<QuerySet<A>> for Sampler<A> {}
+impl<A: HalApi> Access<ShaderModule<A>> for Device<A> {}
+impl<A: HalApi> Access<ShaderModule<A>> for BindGroupLayout<A> {}
+impl<A: HalApi> Access<Buffer<A>> for Root {}
+impl<A: HalApi> Access<Buffer<A>> for Device<A> {}
+impl<A: HalApi> Access<Buffer<A>> for BindGroupLayout<A> {}
+impl<A: HalApi> Access<Buffer<A>> for BindGroup<A> {}
+impl<A: HalApi> Access<Buffer<A>> for CommandBuffer<A> {}
+impl<A: HalApi> Access<Buffer<A>> for ComputePipeline<A> {}
+impl<A: HalApi> Access<Buffer<A>> for RenderPipeline<A> {}
+impl<A: HalApi> Access<Buffer<A>> for QuerySet<A> {}
+impl<A: HalApi> Access<Texture<A>> for Root {}
+impl<A: HalApi> Access<Texture<A>> for Device<A> {}
+impl<A: HalApi> Access<Texture<A>> for Buffer<A> {}
+impl<A: HalApi> Access<TextureView<A>> for Root {}
+impl<A: HalApi> Access<TextureView<A>> for Device<A> {}
+impl<A: HalApi> Access<TextureView<A>> for Texture<A> {}
+impl<A: HalApi> Access<Sampler<A>> for Root {}
+impl<A: HalApi> Access<Sampler<A>> for Device<A> {}
+impl<A: HalApi> Access<Sampler<A>> for TextureView<A> {}
 
 #[cfg(debug_assertions)]
 thread_local! {
@@ -374,7 +426,7 @@ impl<I: id::TypedId + Debug> IdentityHandler<I> for Mutex<IdentityManager> {
 
 pub trait IdentityHandlerFactory<I> {
     type Filter: IdentityHandler<I>;
-    fn spawn(&self, min_index: Index) -> Self::Filter;
+    fn spawn(&self) -> Self::Filter;
 }
 
 #[derive(Debug)]
@@ -382,8 +434,8 @@ pub struct IdentityManagerFactory;
 
 impl<I: id::TypedId + Debug> IdentityHandlerFactory<I> for IdentityManagerFactory {
     type Filter = Mutex<IdentityManager>;
-    fn spawn(&self, min_index: Index) -> Self::Filter {
-        Mutex::new(IdentityManager::from_index(min_index))
+    fn spawn(&self) -> Self::Filter {
+        Mutex::new(IdentityManager::default())
     }
 }
 
@@ -432,7 +484,7 @@ pub struct Registry<T: Resource, I: id::TypedId, F: IdentityHandlerFactory<I>> {
 impl<T: Resource, I: id::TypedId, F: IdentityHandlerFactory<I>> Registry<T, I, F> {
     fn new(backend: Backend, factory: &F) -> Self {
         Self {
-            identity: factory.spawn(0),
+            identity: factory.spawn(),
             data: RwLock::new(Storage {
                 map: Vec::new(),
                 kind: T::TYPE,
@@ -444,7 +496,7 @@ impl<T: Resource, I: id::TypedId, F: IdentityHandlerFactory<I>> Registry<T, I, F
 
     fn without_backend(factory: &F, kind: &'static str) -> Self {
         Self {
-            identity: factory.spawn(1),
+            identity: factory.spawn(),
             data: RwLock::new(Storage {
                 map: Vec::new(),
                 kind,
@@ -574,7 +626,7 @@ impl HubReport {
     }
 }
 
-pub struct Hub<A: hal::Api, F: GlobalIdentityHandlerFactory> {
+pub struct Hub<A: HalApi, F: GlobalIdentityHandlerFactory> {
     pub adapters: Registry<Adapter<A>, id::AdapterId, F>,
     pub devices: Registry<Device<A>, id::DeviceId, F>,
     pub pipeline_layouts: Registry<PipelineLayout<A>, id::PipelineLayoutId, F>,
@@ -582,7 +634,7 @@ pub struct Hub<A: hal::Api, F: GlobalIdentityHandlerFactory> {
     pub bind_group_layouts: Registry<BindGroupLayout<A>, id::BindGroupLayoutId, F>,
     pub bind_groups: Registry<BindGroup<A>, id::BindGroupId, F>,
     pub command_buffers: Registry<CommandBuffer<A>, id::CommandBufferId, F>,
-    pub render_bundles: Registry<RenderBundle, id::RenderBundleId, F>,
+    pub render_bundles: Registry<RenderBundle<A>, id::RenderBundleId, F>,
     pub render_pipelines: Registry<RenderPipeline<A>, id::RenderPipelineId, F>,
     pub compute_pipelines: Registry<ComputePipeline<A>, id::ComputePipelineId, F>,
     pub query_sets: Registry<QuerySet<A>, id::QuerySetId, F>,
@@ -644,19 +696,12 @@ impl<A: HalApi, F: GlobalIdentityHandlerFactory> Hub<A, F> {
                 }
             }
         }
-        {
-            let textures = self.textures.data.read();
-            for element in self.texture_views.data.write().map.drain(..) {
-                if let Element::Occupied(texture_view, _) = element {
-                    // the texture should generally be present, unless it's a surface
-                    // texture, and we are in emergency shutdown.
-                    if textures.contains(texture_view.parent_id.value.0) {
-                        let texture = &textures[texture_view.parent_id.value];
-                        let device = &devices[texture.device_id.value];
-                        unsafe {
-                            device.raw.destroy_texture_view(texture_view.raw);
-                        }
-                    }
+
+        for element in self.texture_views.data.write().map.drain(..) {
+            if let Element::Occupied(texture_view, _) = element {
+                let device = &devices[texture_view.device_id.value];
+                unsafe {
+                    device.raw.destroy_texture_view(texture_view.raw);
                 }
             }
         }
@@ -667,6 +712,13 @@ impl<A: HalApi, F: GlobalIdentityHandlerFactory> Hub<A, F> {
                 if let TextureInner::Native { raw: Some(raw) } = texture.inner {
                     unsafe {
                         device.raw.destroy_texture(raw);
+                    }
+                }
+                if let TextureClearMode::RenderPass { clear_views, .. } = texture.clear_mode {
+                    for view in clear_views {
+                        unsafe {
+                            device.raw.destroy_texture_view(view);
+                        }
                     }
                 }
             }
@@ -867,6 +919,29 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         }
     }
 
+    /// # Safety
+    ///
+    /// - The raw handle obtained from the hal Instance must not be manually destroyed
+    pub unsafe fn instance_as_hal<A: HalApi, F: FnOnce(Option<&A::Instance>) -> R, R>(
+        &self,
+        hal_instance_callback: F,
+    ) -> R {
+        let hal_instance = A::instance_as_hal(&self.instance);
+        hal_instance_callback(hal_instance)
+    }
+
+    /// # Safety
+    ///
+    /// - The raw handles obtained from the Instance must not be manually destroyed
+    pub unsafe fn from_instance(factory: G, instance: Instance) -> Self {
+        profiling::scope!("new", "Global");
+        Self {
+            instance,
+            surfaces: Registry::without_backend(&factory, "Surface"),
+            hubs: Hubs::new(&factory),
+        }
+    }
+
     pub fn clear_backend<A: HalApi>(&self, _dummy: ()) {
         let mut surface_guard = self.surfaces.data.write();
         let hub = A::hub(self);
@@ -951,9 +1026,29 @@ impl<G: GlobalIdentityHandlerFactory> Drop for Global<G> {
 pub trait HalApi: hal::Api {
     const VARIANT: Backend;
     fn create_instance_from_hal(name: &str, hal_instance: Self::Instance) -> Instance;
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance>;
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G>;
     fn get_surface(surface: &Surface) -> &HalSurface<Self>;
     fn get_surface_mut(surface: &mut Surface) -> &mut HalSurface<Self>;
+}
+
+impl HalApi for hal::api::Empty {
+    const VARIANT: Backend = Backend::Empty;
+    fn create_instance_from_hal(_: &str, _: Self::Instance) -> Instance {
+        unimplemented!("called empty api")
+    }
+    fn instance_as_hal(_: &Instance) -> Option<&Self::Instance> {
+        unimplemented!("called empty api")
+    }
+    fn hub<G: GlobalIdentityHandlerFactory>(_: &Global<G>) -> &Hub<Self, G> {
+        unimplemented!("called empty api")
+    }
+    fn get_surface(_: &Surface) -> &HalSurface<Self> {
+        unimplemented!("called empty api")
+    }
+    fn get_surface_mut(_: &mut Surface) -> &mut HalSurface<Self> {
+        unimplemented!("called empty api")
+    }
 }
 
 #[cfg(vulkan)]
@@ -965,6 +1060,9 @@ impl HalApi for hal::api::Vulkan {
             vulkan: Some(hal_instance),
             ..Default::default()
         }
+    }
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance> {
+        instance.vulkan.as_ref()
     }
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G> {
         &global.hubs.vulkan
@@ -984,7 +1082,11 @@ impl HalApi for hal::api::Metal {
         Instance {
             name: name.to_owned(),
             metal: Some(hal_instance),
+            ..Default::default()
         }
+    }
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance> {
+        instance.metal.as_ref()
     }
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G> {
         &global.hubs.metal
@@ -1007,6 +1109,9 @@ impl HalApi for hal::api::Dx12 {
             ..Default::default()
         }
     }
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance> {
+        instance.dx12.as_ref()
+    }
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G> {
         &global.hubs.dx12
     }
@@ -1018,10 +1123,19 @@ impl HalApi for hal::api::Dx12 {
     }
 }
 
-/*
 #[cfg(dx11)]
 impl HalApi for hal::api::Dx11 {
     const VARIANT: Backend = Backend::Dx11;
+    fn create_instance_from_hal(name: &str, hal_instance: Self::Instance) -> Instance {
+        Instance {
+            name: name.to_owned(),
+            dx11: Some(hal_instance),
+            ..Default::default()
+        }
+    }
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance> {
+        instance.dx11.as_ref()
+    }
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G> {
         &global.hubs.dx11
     }
@@ -1032,17 +1146,20 @@ impl HalApi for hal::api::Dx11 {
         surface.dx11.as_mut().unwrap()
     }
 }
-*/
 
 #[cfg(gl)]
 impl HalApi for hal::api::Gles {
     const VARIANT: Backend = Backend::Gl;
     fn create_instance_from_hal(name: &str, hal_instance: Self::Instance) -> Instance {
+        #[allow(clippy::needless_update)]
         Instance {
             name: name.to_owned(),
             gl: Some(hal_instance),
             ..Default::default()
         }
+    }
+    fn instance_as_hal(instance: &Instance) -> Option<&Self::Instance> {
+        instance.gl.as_ref()
     }
     fn hub<G: GlobalIdentityHandlerFactory>(global: &Global<G>) -> &Hub<Self, G> {
         &global.hubs.gl
@@ -1059,4 +1176,18 @@ impl HalApi for hal::api::Gles {
 fn _test_send_sync(global: &Global<IdentityManagerFactory>) {
     fn test_internal<T: Send + Sync>(_: T) {}
     test_internal(global)
+}
+
+#[test]
+fn test_epoch_end_of_life() {
+    use id::TypedId as _;
+    let mut man = IdentityManager::default();
+    man.epochs.push(id::EPOCH_MASK);
+    man.free.push(0);
+    let id1 = man.alloc::<id::BufferId>(Backend::Empty);
+    assert_eq!(id1.unzip().0, 0);
+    man.free(id1);
+    let id2 = man.alloc::<id::BufferId>(Backend::Empty);
+    // confirm that the index 0 is no longer re-used
+    assert_eq!(id2.unzip().0, 1);
 }

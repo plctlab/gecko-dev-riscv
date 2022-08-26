@@ -9,7 +9,7 @@ import os
 import sys
 
 from ipdl.ast import CxxInclude, Decl, Loc, QualifiedId, StructDecl
-from ipdl.ast import TypeSpec, UnionDecl, UsingStmt, Visitor
+from ipdl.ast import TypeSpec, UnionDecl, UsingStmt, Visitor, StringLiteral
 from ipdl.ast import ASYNC, SYNC, INTR
 from ipdl.ast import IN, OUT, INOUT
 from ipdl.ast import NOT_NESTED, INSIDE_SYNC_NESTED, INSIDE_CPOW_NESTED
@@ -163,12 +163,13 @@ VOID = VoidType()
 
 
 class ImportedCxxType(Type):
-    def __init__(self, qname, refcounted, moveonly):
+    def __init__(self, qname, refcounted, sendmoveonly, datamoveonly):
         assert isinstance(qname, QualifiedId)
         self.loc = qname.loc
         self.qname = qname
         self.refcounted = refcounted
-        self.moveonly = moveonly
+        self.sendmoveonly = sendmoveonly
+        self.datamoveonly = datamoveonly
 
     def isCxx(self):
         return True
@@ -179,8 +180,11 @@ class ImportedCxxType(Type):
     def isRefcounted(self):
         return self.refcounted
 
-    def isMoveonly(self):
-        return self.moveonly
+    def isSendMoveOnly(self):
+        return self.sendmoveonly
+
+    def isDataMoveOnly(self):
+        return self.datamoveonly
 
     def name(self):
         return self.qname.baseid
@@ -348,7 +352,7 @@ class MessageType(IPDLType):
 
 
 class ProtocolType(IPDLType):
-    def __init__(self, qname, nested, sendSemantics, refcounted):
+    def __init__(self, qname, nested, sendSemantics, refcounted, needsotherpid):
         self.qname = qname
         self.nestedRange = (NOT_NESTED, nested)
         self.sendSemantics = sendSemantics
@@ -356,12 +360,16 @@ class ProtocolType(IPDLType):
         self.manages = []
         self.hasDelete = False
         self.refcounted = refcounted
+        self.needsotherpid = needsotherpid
 
     def isProtocol(self):
         return True
 
     def isRefcounted(self):
         return self.refcounted
+
+    def hasOtherPid(self):
+        return all(top.needsotherpid for top in self.toplevels())
 
     def name(self):
         return self.qname.baseid
@@ -859,12 +867,19 @@ class GatherDecls(TcheckVisitor):
                         attr.name,
                     )
             elif isinstance(aspec, (list, tuple)):
-                if attr.value not in aspec:
+                if not any(
+                    isinstance(attr.value, s)
+                    if isinstance(s, type)
+                    else attr.value == s
+                    for s in aspec
+                ):
                     self.error(
                         attr.loc,
                         "invalid value for attribute `%s', expected one of: %s",
                         attr.name,
-                        ", ".join(str(s) for s in aspec),
+                        ", ".join(
+                            s.__name__ if isinstance(s, type) else str(s) for s in aspec
+                        ),
                     )
             elif callable(aspec):
                 if not aspec(attr.value):
@@ -905,6 +920,17 @@ class GatherDecls(TcheckVisitor):
 
             p = tu.protocol
 
+            self.checkAttributes(
+                p.attributes,
+                {
+                    "ManualDealloc": None,
+                    "NestedUpTo": ("not", "inside_sync", "inside_cpow"),
+                    "NeedsOtherPid": None,
+                    "ChildImpl": ("virtual", StringLiteral),
+                    "ParentImpl": ("virtual", StringLiteral),
+                },
+            )
+
             # FIXME/cjones: it's a little weird and counterintuitive
             # to put both the namespace and non-namespaced name in the
             # global scope.  try to figure out something better; maybe
@@ -915,7 +941,11 @@ class GatherDecls(TcheckVisitor):
             p.decl = self.declare(
                 loc=p.loc,
                 type=ProtocolType(
-                    qname, p.nestedUpTo(), p.sendSemantics, "RefCounted" in p.attributes
+                    qname,
+                    p.nestedUpTo(),
+                    p.sendSemantics,
+                    "ManualDealloc" not in p.attributes,
+                    "NeedsOtherPid" in p.attributes,
                 ),
                 shortname=p.name,
                 fullname=None if 0 == len(qname.quals) else fullname,
@@ -1107,7 +1137,7 @@ class GatherDecls(TcheckVisitor):
         self.checkAttributes(
             using.attributes,
             {
-                "MoveOnly": None,
+                "MoveOnly": (None, "data", "send"),
                 "RefCounted": None,
             },
         )
@@ -1120,7 +1150,10 @@ class GatherDecls(TcheckVisitor):
             ipdltype = FDType(using.type.spec)
         else:
             ipdltype = ImportedCxxType(
-                using.type.spec, using.isRefcounted(), using.isMoveonly()
+                using.type.spec,
+                using.isRefcounted(),
+                using.isSendMoveOnly(),
+                using.isDataMoveOnly(),
             )
             existingType = self.symtab.lookup(ipdltype.fullname())
             if existingType and existingType.fullname == ipdltype.fullname():
@@ -1130,7 +1163,10 @@ class GatherDecls(TcheckVisitor):
                         "inconsistent refcounted status of type `%s`",
                         str(using.type),
                     )
-                if ipdltype.isMoveonly() != existingType.type.isMoveonly():
+                if (
+                    ipdltype.isSendMoveOnly() != existingType.type.isSendMoveOnly()
+                    or ipdltype.isDataMoveOnly() != existingType.type.isDataMoveOnly()
+                ):
                     self.error(
                         using.loc,
                         "inconsistent moveonly status of type `%s`",
@@ -1166,14 +1202,6 @@ class GatherDecls(TcheckVisitor):
         if not (p.managers or p.messageDecls or p.managesStmts):
             self.error(p.loc, "top-level protocol `%s' cannot be empty", p.name)
 
-        self.checkAttributes(
-            p.attributes,
-            {
-                "RefCounted": None,
-                "NestedUpTo": ("not", "inside_sync", "inside_cpow"),
-            },
-        )
-
         setattr(self, "currentProtocolDecl", p.decl)
         for msg in p.messageDecls:
             msg.accept(self)
@@ -1187,6 +1215,9 @@ class GatherDecls(TcheckVisitor):
                 _DELETE_MSG,
                 p.name,
             )
+
+        if not p.decl.type.isToplevel() and p.decl.type.needsotherpid:
+            self.error(p.loc, "[NeedsOtherPid] only applies to toplevel protocols")
 
         # FIXME/cjones declare all the little C++ thingies that will
         # be generated.  they're not relevant to IPDL itself, but
@@ -1261,8 +1292,16 @@ class GatherDecls(TcheckVisitor):
                 "Compress": (None, "all"),
                 "Priority": ("normal", "input", "vsync", "mediumhigh", "control"),
                 "Nested": ("not", "inside_sync", "inside_cpow"),
+                "LegacyIntr": None,
             },
         )
+
+        if md.sendSemantics is INTR and "LegacyIntr" not in md.attributes:
+            self.error(
+                loc,
+                "intr message `%s' allowed only with [LegacyIntr]; DO NOT USE IN SHIPPING CODE",
+                msgname,
+            )
 
         if md.sendSemantics is INTR and "Priority" in md.attributes:
             self.error(loc, "intr message `%s' cannot specify [Priority]", msgname)

@@ -11,35 +11,30 @@
 
 var EXPORTED_SYMBOLS = ["TelemetryEventPing", "Policy"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { TelemetryUtils } = ChromeUtils.import(
+  "resource://gre/modules/TelemetryUtils.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   TelemetrySession: "resource://gre/modules/TelemetrySession.jsm",
   TelemetryController: "resource://gre/modules/TelemetryController.jsm",
   Log: "resource://gre/modules/Log.jsm",
 });
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "clearTimeout",
   "resource://gre/modules/Timer.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryUtils",
-  "resource://gre/modules/TelemetryUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
 );
 
 const Utils = TelemetryUtils;
@@ -56,10 +51,10 @@ const LOGGER_PREFIX = "TelemetryEventPing::";
 const EVENT_LIMIT_REACHED_TOPIC = "event-telemetry-storage-limit-reached";
 
 var Policy = {
-  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
-  clearTimeout: id => clearTimeout(id),
+  setTimeout: (callback, delayMs) => lazy.setTimeout(callback, delayMs),
+  clearTimeout: id => lazy.clearTimeout(id),
   sendPing: (type, payload, options) =>
-    TelemetryController.submitExternalPing(type, payload, options),
+    lazy.TelemetryController.submitExternalPing(type, payload, options),
 };
 
 var TelemetryEventPing = {
@@ -201,7 +196,7 @@ var TelemetryEventPing = {
     }
 
     // The reason doesn't matter as it will just be echo'd back.
-    let sessionMeta = TelemetrySession.getMetadata(reason);
+    let sessionMeta = lazy.TelemetrySession.getMetadata(reason);
 
     let payload = {
       reason,
@@ -251,7 +246,7 @@ var TelemetryEventPing = {
 
   get _log() {
     if (!this._logger) {
-      this._logger = Log.repository.getLoggerWithMessagePrefix(
+      this._logger = lazy.Log.repository.getLoggerWithMessagePrefix(
         LOGGER_NAME,
         LOGGER_PREFIX + "::"
       );

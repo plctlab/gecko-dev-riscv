@@ -4,15 +4,15 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
 const PREF_LOGLEVEL = "browser.policies.loglevel";
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     prefix: "ProxyPolicies.jsm",
@@ -33,7 +33,7 @@ var PROXY_TYPES_MAP = new Map([
   ["autoConfig", Ci.nsIProtocolProxyService.PROXYCONFIG_PAC],
 ]);
 
-var EXPORTED_SYMBOLS = ["ProxyPolicies"];
+var EXPORTED_SYMBOLS = ["ProxyPolicies", "PROXY_TYPES_MAP"];
 
 var ProxyPolicies = {
   configureProxySettings(param, setPref) {
@@ -55,7 +55,7 @@ var ProxyPolicies = {
 
     if (param.SOCKSVersion !== undefined) {
       if (param.SOCKSVersion != 4 && param.SOCKSVersion != 5) {
-        log.error("Invalid SOCKS version");
+        lazy.log.error("Invalid SOCKS version");
       } else {
         setPref("network.proxy.socks_version", param.SOCKSVersion);
       }
@@ -73,7 +73,7 @@ var ProxyPolicies = {
     }
 
     if (param.FTPProxy) {
-      log.warn("FTPProxy support was removed in bug 1574475");
+      lazy.log.warn("FTPProxy support was removed in bug 1574475");
     }
 
     function setProxyHostAndPort(type, address) {
@@ -83,7 +83,7 @@ var ProxyPolicies = {
         // instead of parsing manually.
         url = new URL(`https://${address}`);
       } catch (e) {
-        log.error(`Invalid address for ${type} proxy: ${address}`);
+        lazy.log.error(`Invalid address for ${type} proxy: ${address}`);
         return;
       }
 

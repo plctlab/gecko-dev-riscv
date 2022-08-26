@@ -39,6 +39,7 @@
 #include "nsPresContextInlines.h"
 #include "nsRefreshDriver.h"
 #include "js/PropertyAndElement.h"  // JS_DefineProperty
+#include "WindowRenderer.h"
 
 namespace mozilla {
 
@@ -144,7 +145,8 @@ void KeyframeEffect::SetComposite(const CompositeOperation& aComposite) {
   }
 
   if (mTarget) {
-    RefPtr<ComputedStyle> computedStyle = GetTargetComputedStyle(Flush::None);
+    RefPtr<const ComputedStyle> computedStyle =
+        GetTargetComputedStyle(Flush::None);
     if (computedStyle) {
       UpdateProperties(computedStyle);
     }
@@ -240,7 +242,7 @@ void KeyframeEffect::SetKeyframes(JSContext* aContext,
     return;
   }
 
-  RefPtr<ComputedStyle> style = GetTargetComputedStyle(Flush::None);
+  RefPtr<const ComputedStyle> style = GetTargetComputedStyle(Flush::None);
   SetKeyframes(std::move(keyframes), style);
 }
 
@@ -524,7 +526,7 @@ void KeyframeEffect::EnsureBaseStyles(
              " we should have also failed to calculate the computed values"
              " passed-in as aProperties");
 
-  RefPtr<ComputedStyle> baseComputedStyle;
+  RefPtr<const ComputedStyle> baseComputedStyle;
   for (const AnimationProperty& property : aProperties) {
     EnsureBaseStyle(property, presContext, aComputedValues, baseComputedStyle);
   }
@@ -542,7 +544,7 @@ void KeyframeEffect::EnsureBaseStyles(
 void KeyframeEffect::EnsureBaseStyle(
     const AnimationProperty& aProperty, nsPresContext* aPresContext,
     const ComputedStyle* aComputedStyle,
-    RefPtr<ComputedStyle>& aBaseComputedStyle) {
+    RefPtr<const ComputedStyle>& aBaseComputedStyle) {
   bool hasAdditiveValues = false;
 
   for (const AnimationPropertySegment& segment : aProperty.mSegments) {
@@ -741,12 +743,6 @@ void KeyframeEffect::ResetPartialPrerendered() {
   }
 }
 
-static bool IsSupportedPseudoForWebAnimation(PseudoStyleType aType) {
-  // FIXME: Bug 1615469: Support first-line and first-letter for Web Animation.
-  return aType == PseudoStyleType::before || aType == PseudoStyleType::after ||
-         aType == PseudoStyleType::marker;
-}
-
 static const KeyframeEffectOptions& KeyframeEffectOptionsFromUnion(
     const UnrestrictedDoubleOrKeyframeEffectOptions& aOptions) {
   MOZ_ASSERT(aOptions.IsKeyframeEffectOptions());
@@ -792,7 +788,7 @@ static KeyframeEffectParams KeyframeEffectParamsFromUnion(
   }
 
   result.mPseudoType = *pseudoType;
-  if (!IsSupportedPseudoForWebAnimation(result.mPseudoType)) {
+  if (!AnimationUtils::IsSupportedPseudoForAnimations(result.mPseudoType)) {
     // Per the spec, we throw SyntaxError for unsupported pseudos.
     aRv.ThrowSyntaxError(
         nsPrintfCString("'%s' is an unsupported pseudo-element.",
@@ -918,7 +914,8 @@ void KeyframeEffect::UpdateTarget(Element* aElement,
 
   if (mTarget) {
     UpdateTargetRegistration();
-    RefPtr<ComputedStyle> computedStyle = GetTargetComputedStyle(Flush::None);
+    RefPtr<const ComputedStyle> computedStyle =
+        GetTargetComputedStyle(Flush::None);
     if (computedStyle) {
       UpdateProperties(computedStyle);
     }
@@ -1004,7 +1001,7 @@ void KeyframeEffect::RequestRestyle(
   }
 }
 
-already_AddRefed<ComputedStyle> KeyframeEffect::GetTargetComputedStyle(
+already_AddRefed<const ComputedStyle> KeyframeEffect::GetTargetComputedStyle(
     Flush aFlushType) const {
   if (!GetRenderedDocument()) {
     return nullptr;
@@ -1100,7 +1097,7 @@ void KeyframeEffect::SetPseudoElement(const nsAString& aPseudoElement,
     return;
   }
 
-  if (!IsSupportedPseudoForWebAnimation(*pseudoType)) {
+  if (!AnimationUtils::IsSupportedPseudoForAnimations(*pseudoType)) {
     // Per the spec, we throw SyntaxError for unsupported pseudos.
     aRv.ThrowSyntaxError(
         nsPrintfCString("'%s' is an unsupported pseudo-element.",
@@ -1113,7 +1110,7 @@ void KeyframeEffect::SetPseudoElement(const nsAString& aPseudoElement,
 
 static void CreatePropertyValue(
     nsCSSPropertyID aProperty, float aOffset,
-    const Maybe<ComputedTimingFunction>& aTimingFunction,
+    const Maybe<StyleComputedTimingFunction>& aTimingFunction,
     const AnimationValue& aValue, dom::CompositeOperation aComposite,
     const RawServoStyleSet* aRawSet, AnimationPropertyValueDetails& aResult) {
   aResult.mOffset = aOffset;
@@ -1229,7 +1226,7 @@ void KeyframeEffect::GetKeyframes(JSContext* aCx, nsTArray<JSObject*>& aResult,
   // be consistent with Gecko, we just expand the variables (assuming we have
   // enough context to do so). For that we need to grab the ComputedStyle so we
   // know what custom property values to provide.
-  RefPtr<ComputedStyle> computedStyle;
+  RefPtr<const ComputedStyle> computedStyle;
   if (isCSSAnimation) {
     // The following will flush style but that's ok since if you update
     // a variable's computed value, you expect to see that updated value in the
@@ -1686,9 +1683,13 @@ bool KeyframeEffect::ShouldBlockAsyncTransformAnimations(
     return true;
   }
 
+  MOZ_ASSERT(mAnimation);
+  // Note: If the geometric animations are using scroll-timeline, we don't need
+  // to synchronize transform animations with them.
   const bool enableMainthreadSynchronizationWithGeometricAnimations =
       StaticPrefs::
-          dom_animations_mainthread_synchronization_with_geometric_animations();
+          dom_animations_mainthread_synchronization_with_geometric_animations() &&
+      !mAnimation->UsingScrollTimeline();
 
   for (const AnimationProperty& property : mProperties) {
     // If there is a property for animations level that is overridden by
@@ -1751,7 +1752,7 @@ void KeyframeEffect::SetPerformanceWarning(
   }
 }
 
-already_AddRefed<ComputedStyle>
+already_AddRefed<const ComputedStyle>
 KeyframeEffect::CreateComputedStyleForAnimationValue(
     nsCSSPropertyID aProperty, const AnimationValue& aValue,
     nsPresContext* aPresContext, const ComputedStyle* aBaseComputedStyle) {
@@ -1822,16 +1823,20 @@ void KeyframeEffect::CalculateCumulativeChangeHint(
         continue;
       }
 
-      RefPtr<ComputedStyle> fromContext = CreateComputedStyleForAnimationValue(
-          property.mProperty, segment.mFromValue, presContext, aComputedStyle);
+      RefPtr<const ComputedStyle> fromContext =
+          CreateComputedStyleForAnimationValue(property.mProperty,
+                                               segment.mFromValue, presContext,
+                                               aComputedStyle);
       if (!fromContext) {
         mCumulativeChangeHint = ~nsChangeHint_Hints_CanIgnoreIfNotVisible;
         mNeedsStyleData = true;
         return;
       }
 
-      RefPtr<ComputedStyle> toContext = CreateComputedStyleForAnimationValue(
-          property.mProperty, segment.mToValue, presContext, aComputedStyle);
+      RefPtr<const ComputedStyle> toContext =
+          CreateComputedStyleForAnimationValue(property.mProperty,
+                                               segment.mToValue, presContext,
+                                               aComputedStyle);
       if (!toContext) {
         mCumulativeChangeHint = ~nsChangeHint_Hints_CanIgnoreIfNotVisible;
         mNeedsStyleData = true;
@@ -1856,6 +1861,8 @@ void KeyframeEffect::SetAnimation(Animation* aAnimation) {
   RequestRestyle(EffectCompositor::RestyleType::Layer);
 
   mAnimation = aAnimation;
+
+  UpdateNormalizedTiming();
 
   // The order of these function calls is important:
   // NotifyAnimationTimingUpdated() need the updated mIsRelevant flag to check
@@ -1942,8 +1949,8 @@ bool KeyframeEffect::ContainsAnimatedScale(const nsIFrame* aFrame) const {
 
     AnimationValue baseStyle = BaseStyle(prop.mProperty);
     if (!baseStyle.IsNull()) {
-      gfx::Size size = baseStyle.GetScaleValue(aFrame);
-      if (size != gfx::Size(1.0f, 1.0f)) {
+      gfx::MatrixScales size = baseStyle.GetScaleValue(aFrame);
+      if (size != gfx::MatrixScales()) {
         return true;
       }
     }
@@ -1953,14 +1960,14 @@ bool KeyframeEffect::ContainsAnimatedScale(const nsIFrame* aFrame) const {
     // really matter.
     for (const AnimationPropertySegment& segment : prop.mSegments) {
       if (!segment.mFromValue.IsNull()) {
-        gfx::Size from = segment.mFromValue.GetScaleValue(aFrame);
-        if (from != gfx::Size(1.0f, 1.0f)) {
+        gfx::MatrixScales from = segment.mFromValue.GetScaleValue(aFrame);
+        if (from != gfx::MatrixScales()) {
           return true;
         }
       }
       if (!segment.mToValue.IsNull()) {
-        gfx::Size to = segment.mToValue.GetScaleValue(aFrame);
-        if (to != gfx::Size(1.0f, 1.0f)) {
+        gfx::MatrixScales to = segment.mToValue.GetScaleValue(aFrame);
+        if (to != gfx::MatrixScales()) {
           return true;
         }
       }
@@ -2024,6 +2031,22 @@ KeyframeEffect::MatchForCompositor KeyframeEffect::IsMatchForCompositor(
     return KeyframeEffect::MatchForCompositor::NoAndBlockThisProperty;
   }
 
+  if (mAnimation->UsingScrollTimeline()) {
+    const ScrollTimeline* scrollTimeline =
+        mAnimation->GetTimeline()->AsScrollTimeline();
+    // We don't send this animation to the compositor if
+    // 1. the APZ is disabled entirely or for the source, or
+    // 2. the associated scroll-timeline is inactive, or
+    // 3. the scrolling direction is not available (i.e. no scroll range).
+    // 4. the scroll style of the scroller is overflow:hidden.
+    if (!scrollTimeline->APZIsActiveForSource() ||
+        !scrollTimeline->IsActive() ||
+        !scrollTimeline->ScrollingDirectionIsAvailable() ||
+        scrollTimeline->SourceScrollStyle() == StyleOverflow::Hidden) {
+      return KeyframeEffect::MatchForCompositor::No;
+    }
+  }
+
   if (!HasEffectiveAnimationOfPropertySet(aPropertySet, aEffects)) {
     return KeyframeEffect::MatchForCompositor::No;
   }
@@ -2042,11 +2065,12 @@ KeyframeEffect::MatchForCompositor KeyframeEffect::IsMatchForCompositor(
     }
 
     // We don't yet support off-main-thread background-color animations on
-    // canvas frame or on <body> which genarate nsDisplayCanvasBackgroundColor
-    // or nsDisplaySolidColor display item.
+    // canvas frame or on <html> or <body> which genarate
+    // nsDisplayCanvasBackgroundColor or nsDisplaySolidColor display item.
     if (nsCSSRendering::IsCanvasFrame(aFrame) ||
         (aFrame->GetContent() &&
-         aFrame->GetContent()->IsHTMLElement(nsGkAtoms::body))) {
+         (aFrame->GetContent()->IsHTMLElement(nsGkAtoms::body) ||
+          aFrame->GetContent()->IsHTMLElement(nsGkAtoms::html)))) {
       return KeyframeEffect::MatchForCompositor::No;
     }
   }

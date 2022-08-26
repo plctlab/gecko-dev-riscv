@@ -8,6 +8,9 @@
  */
 
 add_task(async function() {
+  // This test explicitly asserts some insecure domains.
+  await pushPref("dom.security.https_first", false);
+
   const TEST_DATA = [
     {
       desc: "http request",
@@ -116,8 +119,7 @@ add_task(async function() {
         " after request has been completed."
     );
 
-    info("Clearing requests.");
-    store.dispatch(Actions.clearRequests());
+    await clearNetworkEvents(monitor);
   }
 
   return teardown(monitor);

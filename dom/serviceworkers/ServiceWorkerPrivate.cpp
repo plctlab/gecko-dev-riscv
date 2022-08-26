@@ -49,17 +49,18 @@
 #include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "mozilla/Services.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/Unused.h"
 #include "nsIReferrerInfo.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::PrincipalInfo;
 
@@ -182,8 +183,12 @@ class CheckScriptEvaluationWithCallback final : public WorkerDebuggeeRunnable {
   }
 
   nsresult Cancel() override {
+    // We need to check first if cancel is permitted
+    nsresult rv = WorkerRunnable::Cancel();
+    NS_ENSURE_SUCCESS(rv, rv);
+
     ReportScriptEvaluationResult(false);
-    return WorkerRunnable::Cancel();
+    return NS_OK;
   }
 
  private:
@@ -295,11 +300,13 @@ class KeepAliveHandler final : public ExtendableEvent::ExtensionsHandler,
     return true;
   }
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     RemovePromise(Resolved);
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     RemovePromise(Rejected);
   }
 
@@ -600,10 +607,14 @@ class LifecycleEventWorkerRunnable : public ExtendableEventWorkerRunnable {
   }
 
   nsresult Cancel() override {
+    // We need to check first if cancel is permitted
+    nsresult rv = WorkerRunnable::Cancel();
+    NS_ENSURE_SUCCESS(rv, rv);
+
     mCallback->SetResult(false);
     MOZ_ALWAYS_SUCCEEDS(mWorkerPrivate->DispatchToMainThread(mCallback));
 
-    return WorkerRunnable::Cancel();
+    return NS_OK;
   }
 
  private:
@@ -1342,11 +1353,14 @@ class FetchEventRunnable : public ExtendableFunctionalEventWorkerRunnable,
   }
 
   nsresult Cancel() override {
+    // We need to check first if cancel is permitted
+    nsresult rv = WorkerRunnable::Cancel();
+    NS_ENSURE_SUCCESS(rv, rv);
+
     nsCOMPtr<nsIRunnable> runnable = new ResumeRequest(mInterceptedChannel);
     if (NS_FAILED(mWorkerPrivate->DispatchToMainThread(runnable))) {
       NS_WARNING("Failed to resume channel on FetchEventRunnable::Cancel()!\n");
     }
-    WorkerRunnable::Cancel();
     return NS_OK;
   }
 
@@ -1587,6 +1601,24 @@ nsresult ServiceWorkerPrivate::SendFetchEvent(
   return NS_OK;
 }
 
+Result<RefPtr<ServiceWorkerPrivate::PromiseExtensionWorkerHasListener>,
+       nsresult>
+ServiceWorkerPrivate::WakeForExtensionAPIEvent(
+    const nsAString& aExtensionAPINamespace,
+    const nsAString& aExtensionAPIEventName) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (mInner) {
+    return mInner->WakeForExtensionAPIEvent(aExtensionAPINamespace,
+                                            aExtensionAPIEventName);
+  }
+
+  MOZ_ASSERT_UNREACHABLE(
+      "WakeForExtensionAPIEvent unsupported in parent intercept mode.");
+
+  return Err(NS_ERROR_NOT_IMPLEMENTED);
+}
+
 nsresult ServiceWorkerPrivate::SpawnWorkerIfNeeded(WakeUpReason aWhy,
                                                    bool* aNewWorkerCreated,
                                                    nsILoadGroup* aLoadGroup) {
@@ -1671,21 +1703,48 @@ nsresult ServiceWorkerPrivate::SpawnWorkerIfNeeded(WakeUpReason aWhy,
 
   info.mPrincipal = mInfo->Principal();
   info.mLoadingPrincipal = info.mPrincipal;
-  // PartitionedPrincipal for ServiceWorkers is equal to mPrincipal because, at
-  // the moment, ServiceWorkers are not exposed in partitioned contexts.
-  info.mPartitionedPrincipal = info.mPrincipal;
+
   info.mCookieJarSettings =
       mozilla::net::CookieJarSettings::Create(info.mPrincipal);
 
   MOZ_ASSERT(info.mCookieJarSettings);
 
-  net::CookieJarSettings::Cast(info.mCookieJarSettings)
-      ->SetPartitionKey(info.mResolvedScriptURI);
+  // We can get the partitionKey from the principal of the ServiceWorker because
+  // it's a foreign partitioned principal. In other words, the principal will
+  // have the partitionKey if it's in a third-party context. Otherwise, we can
+  // set the partitionKey via the script URI because it's in the first-party
+  // context.
+  if (!info.mPrincipal->OriginAttributesRef().mPartitionKey.IsEmpty()) {
+    net::CookieJarSettings::Cast(info.mCookieJarSettings)
+        ->SetPartitionKey(info.mPrincipal->OriginAttributesRef().mPartitionKey);
+  } else {
+    net::CookieJarSettings::Cast(info.mCookieJarSettings)
+        ->SetPartitionKey(info.mResolvedScriptURI);
+  }
+
+  if (StaticPrefs::privacy_partition_serviceWorkers()) {
+    nsCOMPtr<nsIPrincipal> partitionedPrincipal;
+    StoragePrincipalHelper::CreatePartitionedPrincipalForServiceWorker(
+        info.mPrincipal, info.mCookieJarSettings,
+        getter_AddRefs(partitionedPrincipal));
+
+    info.mPartitionedPrincipal = partitionedPrincipal;
+  } else {
+    // The partitioned principal will be the same as the mPrincipal if
+    // partitioned service worker is disabled.
+    info.mPartitionedPrincipal = info.mPrincipal;
+  }
 
   info.mStorageAccess =
       StorageAllowedForServiceWorker(info.mPrincipal, info.mCookieJarSettings);
 
   info.mOriginAttributes = mInfo->GetOriginAttributes();
+
+  // We don't have a good way to know if a service worker is regsitered under a
+  // third-party context. The only information we can rely on is if the service
+  // worker is running under a partitioned principal.
+  info.mIsThirdPartyContextToTopWindow =
+      !mInfo->Principal()->OriginAttributesRef().mPartitionKey.IsEmpty();
 
   // Verify that we don't have any CSP on pristine client.
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
@@ -1700,7 +1759,9 @@ nsresult ServiceWorkerPrivate::SpawnWorkerIfNeeded(WakeUpReason aWhy,
   // Default CSP permissions for now.  These will be overrided if necessary
   // based on the script CSP headers during load in ScriptLoader.
   info.mEvalAllowed = true;
-  info.mReportCSPViolations = false;
+  info.mReportEvalCSPViolations = false;
+  info.mWasmEvalAllowed = true;
+  info.mReportWasmEvalCSPViolations = false;
 
   WorkerPrivate::OverrideLoadInfoLoadGroup(info, info.mPrincipal);
 
@@ -2102,5 +2163,4 @@ void ServiceWorkerPrivate::SetHandlesFetch(bool aValue) {
   mInfo->SetHandlesFetch(aValue);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

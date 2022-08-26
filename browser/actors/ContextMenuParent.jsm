@@ -39,6 +39,18 @@ class ContextMenuParent extends JSWindowActorParent {
     });
   }
 
+  getImageText(targetIdentifier) {
+    return this.sendQuery("ContextMenu:GetImageText", {
+      targetIdentifier,
+    });
+  }
+
+  toggleRevealPassword(targetIdentifier) {
+    this.sendAsyncMessage("ContextMenu:ToggleRevealPassword", {
+      targetIdentifier,
+    });
+  }
+
   reloadImage(targetIdentifier) {
     this.sendAsyncMessage("ContextMenu:ReloadImage", { targetIdentifier });
   }
@@ -79,13 +91,6 @@ class ContextMenuParent extends JSWindowActorParent {
   getSearchFieldBookmarkData(targetIdentifier) {
     return this.sendQuery("ContextMenu:SearchFieldBookmarkData", {
       targetIdentifier,
-    });
-  }
-
-  doCustomCommand(generatedItemId, handlingUserInput) {
-    this.sendAsyncMessage("ContextMenu:DoCustomCommand", {
-      generatedItemId,
-      handlingUserInput,
     });
   }
 }

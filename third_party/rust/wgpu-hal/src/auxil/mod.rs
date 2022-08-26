@@ -1,3 +1,6 @@
+#[cfg(any(feature = "dx11", feature = "dx12"))]
+pub(super) mod dxgi;
+
 #[cfg(feature = "renderdoc")]
 pub(super) mod renderdoc;
 
@@ -15,11 +18,28 @@ pub mod db {
     }
 }
 
+/// Maximum binding size for the shaders that only support `i32` indexing.
+/// Interestingly, the index itself can't reach that high, because the minimum
+/// element size is 4 bytes, but the compiler toolchain still computes the
+/// offset at some intermediate point, internally, as i32.
+pub const MAX_I32_BINDING_SIZE: u32 = 1 << 31;
+
 pub fn map_naga_stage(stage: naga::ShaderStage) -> wgt::ShaderStages {
     match stage {
         naga::ShaderStage::Vertex => wgt::ShaderStages::VERTEX,
         naga::ShaderStage::Fragment => wgt::ShaderStages::FRAGMENT,
         naga::ShaderStage::Compute => wgt::ShaderStages::COMPUTE,
+    }
+}
+
+pub fn align_to(value: u32, alignment: u32) -> u32 {
+    if alignment.is_power_of_two() {
+        (value + alignment - 1) & !(alignment - 1)
+    } else {
+        match value % alignment {
+            0 => value,
+            other => value - other + alignment,
+        }
     }
 }
 

@@ -14,6 +14,7 @@
 #include "XULFrameElement.h"
 #include "XULMenuElement.h"
 #include "XULPopupElement.h"
+#include "XULResizerElement.h"
 #include "XULTextElement.h"
 #include "XULTooltipElement.h"
 #include "XULTreeElement.h"
@@ -155,6 +156,10 @@ nsXULElement* nsXULElement::Construct(
   // them into account, otherwise you'll start getting "Illegal constructor"
   // exceptions in chrome code.
   RefPtr<mozilla::dom::NodeInfo> nodeInfo = aNodeInfo;
+  if (nodeInfo->Equals(nsGkAtoms::resizer)) {
+    return NS_NewXULResizerElement(nodeInfo.forget());
+  }
+
   if (nodeInfo->Equals(nsGkAtoms::label) ||
       nodeInfo->Equals(nsGkAtoms::description)) {
     auto* nim = nodeInfo->NodeInfoManager();
@@ -433,16 +438,6 @@ bool nsXULElement::IsFocusableInternal(int32_t* aTabIndex, bool aWithMouse) {
   return shouldFocus;
 }
 
-int32_t nsXULElement::ScreenX() {
-  nsIFrame* frame = GetPrimaryFrame(FlushType::Layout);
-  return frame ? frame->GetScreenRect().x : 0;
-}
-
-int32_t nsXULElement::ScreenY() {
-  nsIFrame* frame = GetPrimaryFrame(FlushType::Layout);
-  return frame ? frame->GetScreenRect().y : 0;
-}
-
 bool nsXULElement::HasMenu() {
   nsMenuFrame* menu = do_QueryFrame(GetPrimaryFrame(FlushType::Frames));
   return !!menu;
@@ -458,7 +453,7 @@ void nsXULElement::OpenMenu(bool aOpenFlag) {
   if (pm) {
     if (aOpenFlag) {
       // Nothing will happen if this element isn't a menu.
-      pm->ShowMenu(this, false, false);
+      pm->ShowMenu(this, false);
     } else {
       // Nothing will happen if this element isn't a menu.
       pm->HideMenu(this);
@@ -1172,27 +1167,6 @@ bool nsXULElement::BoolAttrIsTrue(nsAtom* aName) const {
          attr->GetAtomValue() == nsGkAtoms::_true;
 }
 
-void nsXULElement::RecompileScriptEventListeners() {
-  int32_t i, count = mAttrs.AttrCount();
-  for (i = 0; i < count; ++i) {
-    const nsAttrName* name = mAttrs.AttrNameAt(i);
-
-    // Eventlistenener-attributes are always in the null namespace
-    if (!name->IsAtom()) {
-      continue;
-    }
-
-    nsAtom* attr = name->Atom();
-    if (!nsContentUtils::IsEventAttributeName(attr, EventNameType_XUL)) {
-      continue;
-    }
-
-    nsAutoString value;
-    GetAttr(kNameSpaceID_None, attr, value);
-    SetEventHandler(attr, value, true);
-  }
-}
-
 bool nsXULElement::IsEventAttributeNameInternal(nsAtom* aName) {
   return nsContentUtils::IsEventAttributeName(aName, EventNameType_XUL);
 }
@@ -1578,17 +1552,10 @@ nsXULPrototypeScript::nsXULPrototypeScript(uint32_t aLineNo)
       mStencil(nullptr) {}
 
 static nsresult WriteStencil(nsIObjectOutputStream* aStream, JSContext* aCx,
-                             const JS::ReadOnlyCompileOptions& aOptions,
                              JS::Stencil* aStencil) {
-  uint8_t flags = 0;  // We don't have flags anymore.
-  nsresult rv = aStream->Write8(flags);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   JS::TranscodeBuffer buffer;
   JS::TranscodeResult code;
-  code = JS::EncodeStencil(aCx, aOptions, aStencil, buffer);
+  code = JS::EncodeStencil(aCx, aStencil, buffer);
 
   if (code != JS::TranscodeResult::Ok) {
     if (code == JS::TranscodeResult::Throw) {
@@ -1604,7 +1571,7 @@ static nsresult WriteStencil(nsIObjectOutputStream* aStream, JSContext* aCx,
   if (size > UINT32_MAX) {
     return NS_ERROR_FAILURE;
   }
-  rv = aStream->Write32(size);
+  nsresult rv = aStream->Write32(size);
   if (NS_SUCCEEDED(rv)) {
     // Ideally we could just pass "buffer" here.  See bug 1566574.
     rv = aStream->WriteBytes(Span(buffer.begin(), size));
@@ -1614,14 +1581,8 @@ static nsresult WriteStencil(nsIObjectOutputStream* aStream, JSContext* aCx,
 }
 
 static nsresult ReadStencil(nsIObjectInputStream* aStream, JSContext* aCx,
-                            const JS::ReadOnlyCompileOptions& aOptions,
+                            const JS::DecodeOptions& aOptions,
                             JS::Stencil** aStencilOut) {
-  uint8_t flags;
-  nsresult rv = aStream->Read8(&flags);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   // We don't serialize mutedError-ness of scripts, which is fine as long as
   // we only serialize system and XUL-y things. We can detect this by checking
   // where the caller wants us to deserialize.
@@ -1633,7 +1594,7 @@ static nsresult ReadStencil(nsIObjectInputStream* aStream, JSContext* aCx,
                      JS::CurrentGlobalOrNull(aCx) == loaderGlobal);
 
   uint32_t size;
-  rv = aStream->Read32(&size);
+  nsresult rv = aStream->Read32(&size);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -1695,16 +1656,11 @@ nsresult nsXULPrototypeScript::Serialize(
   nsresult rv;
   rv = aStream->Write32(mLineNo);
   if (NS_FAILED(rv)) return rv;
-  rv = aStream->Write32(0);  // See bug 1418294.
-  if (NS_FAILED(rv)) return rv;
 
   JSContext* cx = jsapi.cx();
   MOZ_ASSERT(xpc::CompilationScope() == JS::CurrentGlobalOrNull(cx));
 
-  JS::CompileOptions options(cx);
-  FillCompileOptions(options);
-
-  return WriteStencil(aStream, cx, options, mStencil);
+  return WriteStencil(aStream, cx, mStencil);
 }
 
 nsresult nsXULPrototypeScript::SerializeOutOfLine(
@@ -1719,7 +1675,7 @@ nsresult nsXULPrototypeScript::SerializeOutOfLine(
   NS_ASSERTION(cache->IsEnabled(),
                "writing to the cache file, but the XUL cache is off?");
   bool exists;
-  cache->HasData(mSrcURI, &exists);
+  cache->HasScript(mSrcURI, &exists);
 
   /* return will be NS_OK from GetAsciiSpec.
    * that makes no sense.
@@ -1729,14 +1685,14 @@ nsresult nsXULPrototypeScript::SerializeOutOfLine(
   if (exists) return NS_OK;
 
   nsCOMPtr<nsIObjectOutputStream> oos;
-  nsresult rv = cache->GetOutputStream(mSrcURI, getter_AddRefs(oos));
+  nsresult rv = cache->GetScriptOutputStream(mSrcURI, getter_AddRefs(oos));
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsresult tmp = Serialize(oos, aProtoDoc, nullptr);
   if (NS_FAILED(tmp)) {
     rv = tmp;
   }
-  tmp = cache->FinishOutputStream(mSrcURI);
+  tmp = cache->FinishScriptOutputStream(mSrcURI);
   if (NS_FAILED(tmp)) {
     rv = tmp;
   }
@@ -1756,9 +1712,6 @@ nsresult nsXULPrototypeScript::Deserialize(
   // Read basic prototype data
   rv = aStream->Read32(&mLineNo);
   if (NS_FAILED(rv)) return rv;
-  uint32_t dummy;
-  rv = aStream->Read32(&dummy);  // See bug 1418294.
-  if (NS_FAILED(rv)) return rv;
 
   AutoJSAPI jsapi;
   if (!jsapi.Init(xpc::CompilationScope())) {
@@ -1766,9 +1719,7 @@ nsresult nsXULPrototypeScript::Deserialize(
   }
   JSContext* cx = jsapi.cx();
 
-  JS::CompileOptions options(cx);
-  FillCompileOptions(options);
-
+  JS::DecodeOptions options;
   RefPtr<JS::Stencil> newStencil;
   rv = ReadStencil(aStream, cx, options, getter_AddRefs(newStencil));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1808,7 +1759,7 @@ nsresult nsXULPrototypeScript::DeserializeOutOfLine(
 
     if (!mStencil) {
       if (mSrcURI) {
-        rv = cache->GetInputStream(mSrcURI, getter_AddRefs(objectInput));
+        rv = cache->GetScriptInputStream(mSrcURI, getter_AddRefs(objectInput));
       }
       // If !mSrcURI, we have an inline script. We shouldn't have
       // to do anything else in that case, I think.
@@ -1826,7 +1777,7 @@ nsresult nsXULPrototypeScript::DeserializeOutOfLine(
         if (useXULCache && mSrcURI && mSrcURI->SchemeIs("chrome")) {
           cache->PutStencil(mSrcURI, GetStencil());
         }
-        cache->FinishInputStream(mSrcURI);
+        cache->FinishScriptInputStream(mSrcURI);
       } else {
         // If mSrcURI is not in the cache,
         // rv will be NS_ERROR_NOT_AVAILABLE and we'll try to
@@ -1894,7 +1845,7 @@ NotifyOffThreadScriptCompletedRunnable::Run() {
       return NS_ERROR_UNEXPECTED;
     }
     JSContext* cx = jsapi.cx();
-    stencil = JS::FinishOffThreadCompileToStencil(cx, mToken);
+    stencil = JS::FinishCompileToStencilOffThread(cx, mToken);
   }
 
   if (!sReceivers) {
@@ -1979,15 +1930,13 @@ nsresult nsXULPrototypeScript::Compile(
 }
 
 nsresult nsXULPrototypeScript::InstantiateScript(
-    JSContext* aCx, JS::MutableHandleScript aScript) {
+    JSContext* aCx, JS::MutableHandle<JSScript*> aScript) {
   MOZ_ASSERT(mStencil);
 
   JS::CompileOptions options(aCx);
   FillCompileOptions(options);
-  // We don't need setIntroductionType and setFileAndLine here, unlike
-  // nsXULPrototypeScript::Compile.
-  // mStencil already contains the information.
-  aScript.set(JS::InstantiateGlobalStencil(aCx, options, mStencil));
+  JS::InstantiateOptions instantiateOptions(options);
+  aScript.set(JS::InstantiateGlobalStencil(aCx, instantiateOptions, mStencil));
   if (!aScript) {
     JS_ClearPendingException(aCx);
     return NS_ERROR_OUT_OF_MEMORY;

@@ -39,14 +39,13 @@ devtools:
     query:
         - "'node-debugger | 'node-devtools"
         - "'mozlint-eslint"
-        # 'mochitest-devtools-chrome matches "-e10s" and "-fis-e10s"
         # Windows: skip jobs on asan and 32 bits platforms
         - "'mochitest-devtools-chrome | 'mochitest-chrome-1proc 'windows10 !asan !-32"
         # macos: no extra platform to filter out
         - "'mochitest-devtools-chrome | 'mochitest-chrome-1proc 'macosx"
         # Linux is being named "linux1804" and may change over time, so use a more flexible search
         - "'mochitest-devtools-chrome | 'mochitest-chrome-1proc 'linux '64-qr/ !swr"
-        - "'xpcshell-e10s 'linux '64-qr/"
+        - "'xpcshell 'linux !nofis '64-qr/"
 
 devtools-linux:
     selector: fuzzy
@@ -56,7 +55,7 @@ devtools-linux:
         - "'node-debugger | 'node-devtools"
         - "'mozlint-eslint"
         - "'mochitest-devtools-chrome | 'mochitest-chrome-1proc 'linux '64-qr/ !swr"
-        - "'xpcshell-e10s 'linux '64-qr/"
+        - "'xpcshell 'linux !nofis '64-qr/"
 
 fpush-linux-android:
     selector: fuzzy
@@ -71,7 +70,7 @@ fpush-linux-android:
         codebase, while the builds on other platforms catch compilation problems
         that might result from only building locally on one platform.
     query:
-        - "'test-linux1804 'debug- !-shippable !-asan !-fis-"
+        - "'test-linux1804 'debug- !-shippable !-asan"
         - "'test-android-em 'debug"
         - "^build !-shippable !-signing !-asan !-fuzzing !-rusttests !-base-toolchain !-aar-"
 
@@ -84,8 +83,19 @@ geckodriver:
         |mach try --preset geckodriver -xq "'linux"|
     query:
         - "'rusttests"
-        - "'platform 'wdspec 'debug !fis"
-        - "'browsertime 'amazon 'vismet 'shippable 'firefox !fis"
+        - "'platform 'wdspec 'debug 'nofis"
+        - "'browsertime 'amazon 'shippable 'firefox 'nofis"
+
+media-full:
+    selector: fuzzy
+    description: >-
+        Runs tests that exercise media playback and WebRTC code.
+    query:
+        - "mochitest-media !dfpi !nofis"
+        - "mochitest-browser-chrome !dfpi !nofis !a11y"
+        - "web-platform-tests !dfpi !nofis"
+        - "crashtest !wdspec !nofis"
+        - "'gtest"
 
 perf:
     selector: fuzzy
@@ -121,13 +131,13 @@ remote-protocol:
         - "'awsy-base"
         - "'firefox-ui"
         - "'marionette !swr | harness"
-        - "'mochitest-browser !spi !swr 'fis -1$"
+        - "'mochitest-browser !spi !swr !nofis '-1$"
         - "'mochitest-remote !spi !swr"
-        - "'platform 'reftest !swr 'fis | 'android !-lite -1$"
+        - "'platform 'reftest !swr !nofis | 'android !-lite -1$"
         - "'platform 'wdspec !swr"
-        - "'platform !reftest !wdspec !swr 'fis | 'android !-lite -1$"
+        - "'platform !reftest !wdspec !swr !nofis | 'android !-lite -1$"
         - "'puppeteer"
-        - "'reftest !platform !gpu !swr !no-accel 'fis | 'android !-lite -1$"
+        - "'reftest !platform !gpu !swr !no-accel !nofis | 'android !-lite -1$"
         - "'xpcshell !spi !tsan !-lite"
 
 sample-suites:
@@ -185,9 +195,9 @@ webrender-perf:
     description: >-
         Runs the performance tests relevant to WebRender.
     query:
-        - "'-qr !fis-e10s 'svgr"
-        - "'-qr !fis-e10s 'g1"
-        - "'-qr !fis-e10s 'g4"
-        - "'-qr !fis-e10s 'tp5"
-        - "'-qr !fis-e10s 'talos-webgl"
-        - "'-qr !fis-e10s 'motionmark-animometer"
+        - "'-qr 'svgr"
+        - "'-qr 'g1"
+        - "'-qr 'g4"
+        - "'-qr 'tp5"
+        - "'-qr 'talos-webgl"
+        - "'-qr 'motionmark-animometer"

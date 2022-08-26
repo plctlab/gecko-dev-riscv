@@ -95,7 +95,6 @@
 #include "nsIPermissionManager.h"
 #include "nsMimeTypes.h"
 #include "nsIHttpChannelInternal.h"
-#include "nsIClassOfService.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsStreamListenerWrapper.h"
 #include "nsITimedChannel.h"
@@ -113,8 +112,7 @@
 
 using namespace mozilla::net;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Maximum size that we'll grow an ArrayBuffer instead of doubling,
 // once doubling reaches this threshold
@@ -530,14 +528,12 @@ nsresult XMLHttpRequestMainThread::AppendToResponseText(
     uint32_t result;
     size_t read;
     size_t written;
-    bool hadErrors;
-    Tie(result, read, written, hadErrors) =
+    std::tie(result, read, written, std::ignore) =
         mDecoder->DecodeToUTF16(aBuffer, handle.AsSpan().From(len), aLast);
     MOZ_ASSERT(result == kInputEmpty);
     MOZ_ASSERT(read == aBuffer.Length());
     len += written;
     MOZ_ASSERT(len <= destBufferLen.value());
-    Unused << hadErrors;
     handle.Finish(len, false);
   }  // release mutex
 
@@ -1702,7 +1698,8 @@ class FileCreationHandler final : public PromiseNativeHandler {
     aPromise->AppendNativeHandler(handler);
   }
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     if (NS_WARN_IF(!aValue.isObject())) {
       mXHR->LocalFileToBlobCompleted(nullptr);
       return;
@@ -1717,7 +1714,8 @@ class FileCreationHandler final : public PromiseNativeHandler {
     mXHR->LocalFileToBlobCompleted(blob->Impl());
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mXHR->LocalFileToBlobCompleted(nullptr);
   }
 
@@ -1890,7 +1888,7 @@ XMLHttpRequestMainThread::OnStartRequest(nsIRequest* request) {
   // Fallback to 'application/octet-stream'
   nsAutoCString type;
   channel->GetContentType(type);
-  if (type.EqualsLiteral(UNKNOWN_CONTENT_TYPE)) {
+  if (type.IsEmpty() || type.EqualsLiteral(UNKNOWN_CONTENT_TYPE)) {
     channel->SetContentType(nsLiteralCString(APPLICATION_OCTET_STREAM));
   }
 
@@ -1986,7 +1984,7 @@ XMLHttpRequestMainThread::OnStartRequest(nsIRequest* request) {
       }
     } else if (!(type.EqualsLiteral("text/xml") ||
                  type.EqualsLiteral("application/xml") ||
-                 type.RFind("+xml", true, -1, 4) != kNotFound)) {
+                 StringEndsWith(type, "+xml"_ns))) {
       // Follow https://xhr.spec.whatwg.org/
       // If final MIME type is not null, text/html, text/xml, application/xml,
       // or does not end in +xml, return null.
@@ -2041,10 +2039,6 @@ XMLHttpRequestMainThread::OnStartRequest(nsIRequest* request) {
                           responseStatus == 204 || responseStatus == 205 ||
                           responseStatus == 304)) {
       mResponseXML->SetSuppressParserErrorConsoleMessages(true);
-    }
-
-    if (mPrincipal->IsSystemPrincipal()) {
-      mResponseXML->ForceEnableXULXBL();
     }
 
     nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
@@ -2815,6 +2809,10 @@ void XMLHttpRequestMainThread::Send(
     ErrorResult& aRv) {
   NOT_CALLABLE_IN_SYNC_SEND_RV
 
+  if (!CanSend(aRv)) {
+    return;
+  }
+
   if (aData.IsNull()) {
     SendInternal(nullptr, false, aRv);
     return;
@@ -2882,37 +2880,47 @@ nsresult XMLHttpRequestMainThread::MaybeSilentSendFailure(nsresult aRv) {
   return NS_OK;
 }
 
-void XMLHttpRequestMainThread::SendInternal(const BodyExtractorBase* aBody,
-                                            bool aBodyIsDocumentOrString,
-                                            ErrorResult& aRv) {
-  MOZ_ASSERT(NS_IsMainThread());
-
+bool XMLHttpRequestMainThread::CanSend(ErrorResult& aRv) {
   if (!mPrincipal) {
     aRv.Throw(NS_ERROR_NOT_INITIALIZED);
-    return;
+    return false;
   }
 
   // Step 1
   if (mState != XMLHttpRequest_Binding::OPENED) {
     aRv.ThrowInvalidStateError("XMLHttpRequest state must be OPENED.");
-    return;
+    return false;
   }
 
   // Step 2
   if (mFlagSend) {
     aRv.ThrowInvalidStateError("XMLHttpRequest must not be sending.");
-    return;
+    return false;
   }
 
   if (NS_FAILED(CheckCurrentGlobalCorrectness())) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_XHR_HAS_INVALID_CONTEXT);
-    return;
+    return false;
   }
+
+  return true;
+}
+
+void XMLHttpRequestMainThread::SendInternal(const BodyExtractorBase* aBody,
+                                            bool aBodyIsDocumentOrString,
+                                            ErrorResult& aRv) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  // We expect that CanSend has been called before we get here!
+  // We cannot move the remaining two checks below there because
+  // MaybeSilentSendFailure can cause unexpected side effects if called
+  // too early.
 
   // If open() failed to create the channel, then throw a network error
   // as per spec. We really should create the channel here in send(), but
   // we have internal code relying on the channel being created in open().
   if (!mChannel) {
+    mErrorLoad = ErrorType::eChannelOpen;
     mFlagSend = true;  // so CloseRequestWithError sets us to DONE.
     aRv = MaybeSilentSendFailure(NS_ERROR_DOM_NETWORK_ERR);
     return;
@@ -2920,6 +2928,7 @@ void XMLHttpRequestMainThread::SendInternal(const BodyExtractorBase* aBody,
 
   // non-GET requests aren't allowed for blob.
   if (IsBlobURI(mRequestURL) && !mRequestMethod.EqualsLiteral("GET")) {
+    mErrorLoad = ErrorType::eChannelOpen;
     mFlagSend = true;  // so CloseRequestWithError sets us to DONE.
     aRv = MaybeSilentSendFailure(NS_ERROR_DOM_NETWORK_ERR);
     return;
@@ -3060,7 +3069,8 @@ void XMLHttpRequestMainThread::SendInternal(const BodyExtractorBase* aBody,
 
     nsAutoSyncOperation sync(suspendedDoc,
                              SyncOperationBehavior::eSuspendInput);
-    if (!SpinEventLoopUntil([&]() { return !mFlagSyncLooping; })) {
+    if (!SpinEventLoopUntil("XMLHttpRequestMainThread::SendInternal"_ns,
+                            [&]() { return !mFlagSyncLooping; })) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
       return;
     }
@@ -3951,14 +3961,13 @@ nsresult ArrayBufferBuilder::MapToFileInPackage(const nsCString& aFile,
   nsresult rv;
 
   // Open Jar file to get related attributes of target file.
-  RefPtr<nsZipArchive> zip = new nsZipArchive();
-  rv = zip->OpenArchive(aJarFile);
-  if (NS_FAILED(rv)) {
-    return rv;
+  RefPtr<nsZipArchive> zip = nsZipArchive::OpenArchive(aJarFile);
+  if (!zip) {
+    return NS_ERROR_FAILURE;
   }
   nsZipItem* zipItem = zip->GetItem(aFile.get());
   if (!zipItem) {
-    return NS_ERROR_FILE_TARGET_DOES_NOT_EXIST;
+    return NS_ERROR_FILE_NOT_FOUND;
   }
 
   // If file was added to the package as stored(uncompressed), map to the
@@ -4148,5 +4157,4 @@ bool RequestHeaders::CharsetIterator::Next() {
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

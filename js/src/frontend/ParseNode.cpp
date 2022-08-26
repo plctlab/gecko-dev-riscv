@@ -16,9 +16,7 @@
 #include "frontend/Parser.h"      // ParserBase
 #include "frontend/ParserAtom.h"  // ParserAtomsTable, TaggedParserAtomIndex
 #include "frontend/SharedContext.h"
-#include "vm/BigIntType.h"
 #include "vm/Printer.h"
-#include "vm/RegExpObject.h"
 #include "vm/Scope.h"  // GetScopeDataTrailingNames
 
 using namespace js;
@@ -55,7 +53,7 @@ void* ParseNodeAllocator::allocNode(size_t size) {
   LifoAlloc::AutoFallibleScope fallibleAllocator(&alloc);
   void* p = alloc.alloc(size);
   if (!p) {
-    ReportOutOfMemory(cx);
+    ReportOutOfMemory(ec);
   }
   return p;
 }
@@ -188,15 +186,12 @@ void NullaryNode::dumpImpl(ParserBase* parser, GenericPrinter& out,
 void NumericLiteral::dumpImpl(ParserBase* parser, GenericPrinter& out,
                               int indent) {
   ToCStringBuf cbuf;
-  const char* cstr = NumberToCString(nullptr, &cbuf, value());
+  const char* cstr = NumberToCString(&cbuf, value());
+  MOZ_ASSERT(cstr);
   if (!IsFinite(value())) {
     out.put("#");
   }
-  if (cstr) {
-    out.printf("%s", cstr);
-  } else {
-    out.printf("%g", value());
-  }
+  out.printf("%s", cstr);
 }
 
 void BigIntLiteral::dumpImpl(ParserBase* parser, GenericPrinter& out,
@@ -392,16 +387,16 @@ void BaseScopeNode<Kind, ScopeType>::dumpImpl(ParserBase* parser,
 #endif
 
 TaggedParserAtomIndex NumericLiteral::toAtom(
-    JSContext* cx, ParserAtomsTable& parserAtoms) const {
-  return NumberToParserAtom(cx, parserAtoms, value());
+    ErrorContext* ec, ParserAtomsTable& parserAtoms) const {
+  return NumberToParserAtom(ec, parserAtoms, value());
 }
 
 RegExpObject* RegExpLiteral::create(
-    JSContext* cx, ParserAtomsTable& parserAtoms,
+    JSContext* cx, ErrorContext* ec, ParserAtomsTable& parserAtoms,
     CompilationAtomCache& atomCache,
     ExtensibleCompilationStencil& stencil) const {
-  return stencil.regExpData[index_].createRegExpAndEnsureAtom(cx, parserAtoms,
-                                                              atomCache);
+  return stencil.regExpData[index_].createRegExpAndEnsureAtom(
+      cx, ec, parserAtoms, atomCache);
 }
 
 bool js::frontend::IsAnonymousFunctionDefinition(ParseNode* pn) {

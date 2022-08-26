@@ -206,12 +206,12 @@ KeyBinding XULMenuitemAccessible::KeyboardShortcut() const {
   keyElm->GetAttr(kNameSpaceID_None, nsGkAtoms::modifiers, modifiersStr);
 
   uint32_t modifierMask = 0;
-  if (modifiersStr.Find("shift") != -1) modifierMask |= KeyBinding::kShift;
-  if (modifiersStr.Find("alt") != -1) modifierMask |= KeyBinding::kAlt;
-  if (modifiersStr.Find("meta") != -1) modifierMask |= KeyBinding::kMeta;
-  if (modifiersStr.Find("os") != -1) modifierMask |= KeyBinding::kOS;
-  if (modifiersStr.Find("control") != -1) modifierMask |= KeyBinding::kControl;
-  if (modifiersStr.Find("accel") != -1) {
+  if (modifiersStr.Find(u"shift") != -1) modifierMask |= KeyBinding::kShift;
+  if (modifiersStr.Find(u"alt") != -1) modifierMask |= KeyBinding::kAlt;
+  if (modifiersStr.Find(u"meta") != -1) modifierMask |= KeyBinding::kMeta;
+  if (modifiersStr.Find(u"os") != -1) modifierMask |= KeyBinding::kOS;
+  if (modifiersStr.Find(u"control") != -1) modifierMask |= KeyBinding::kControl;
+  if (modifiersStr.Find(u"accel") != -1) {
     modifierMask |= KeyBinding::AccelModifier();
   }
 
@@ -240,24 +240,15 @@ role XULMenuitemAccessible::NativeRole() const {
   return roles::MENUITEM;
 }
 
-int32_t XULMenuitemAccessible::GetLevelInternal() {
+int32_t XULMenuitemAccessible::GetLevel(bool aFast) const {
   return nsAccUtils::GetLevelForXULContainerItem(mContent);
-}
-
-bool XULMenuitemAccessible::DoAction(uint8_t index) const {
-  if (index == eAction_Click) {  // default action
-    DoCommand();
-    return true;
-  }
-
-  return false;
 }
 
 void XULMenuitemAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
   if (aIndex == eAction_Click) aName.AssignLiteral("click");
 }
 
-uint8_t XULMenuitemAccessible::ActionCount() const { return 1; }
+bool XULMenuitemAccessible::HasPrimaryAction() const { return true; }
 
 ////////////////////////////////////////////////////////////////////////////////
 // XULMenuitemAccessible: Widgets
@@ -335,14 +326,7 @@ ENameValueFlag XULMenuSeparatorAccessible::NativeName(nsString& aName) const {
 
 role XULMenuSeparatorAccessible::NativeRole() const { return roles::SEPARATOR; }
 
-bool XULMenuSeparatorAccessible::DoAction(uint8_t index) const { return false; }
-
-void XULMenuSeparatorAccessible::ActionNameAt(uint8_t aIndex,
-                                              nsAString& aName) {
-  aName.Truncate();
-}
-
-uint8_t XULMenuSeparatorAccessible::ActionCount() const { return 0; }
+bool XULMenuSeparatorAccessible::HasPrimaryAction() const { return false; }
 
 ////////////////////////////////////////////////////////////////////////////////
 // XULMenupopupAccessible

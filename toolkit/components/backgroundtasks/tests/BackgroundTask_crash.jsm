@@ -5,16 +5,20 @@
 
 var EXPORTED_SYMBOLS = ["runBackgroundTask"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 async function runBackgroundTask(commandLine) {
   // This task depends on `CrashTestUtils.jsm` and requires the
   // sibling `testcrasher` library to be in the current working
   // directory.  Fail right away if we can't find the module or the
   // native library.
-  let testPath = Services.dirsvc.get("CurWorkD", Ci.nsIFile).path;
+  let cwd = Services.dirsvc.get("CurWorkD", Ci.nsIFile);
+  let protocolHandler = Services.io
+    .getProtocolHandler("resource")
+    .QueryInterface(Ci.nsIResProtocolHandler);
+  var curDirURI = Services.io.newFileURI(cwd);
+  protocolHandler.setSubstitution("test", curDirURI);
+
   const { CrashTestUtils } = ChromeUtils.import(
-    `file://${testPath}/CrashTestUtils.jsm`
+    "resource://test/CrashTestUtils.jsm"
   );
 
   // Get the temp dir.

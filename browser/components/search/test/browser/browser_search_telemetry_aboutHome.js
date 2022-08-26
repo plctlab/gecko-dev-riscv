@@ -2,7 +2,7 @@
 
 const SCALAR_ABOUT_HOME = "browser.engagement.navigation.about_home";
 
-add_task(async function setup() {
+add_setup(async function() {
   // about:home uses IndexedDB. However, the test finishes too quickly and doesn't
   // allow it enougth time to save. So it throws. This disables all the uncaught
   // exception in this file and that's the reason why we split about:home tests
@@ -59,6 +59,7 @@ add_task(async function test_abouthome_activitystream_simpleQuery() {
   // Let's reset the counts.
   Services.telemetry.clearScalars();
   Services.telemetry.clearEvents();
+  Services.fog.testResetFOG();
   let search_hist = TelemetryTestUtils.getAndClearKeyedHistogram(
     "SEARCH_COUNTS"
   );
@@ -120,6 +121,19 @@ add_task(async function test_abouthome_activitystream_simpleQuery() {
       },
     ],
     { category: "navigation", method: "search" }
+  );
+
+  // Also also check Glean events.
+  const record = Glean.newtabSearch.issued.testGetValue();
+  Assert.ok(!!record, "Must have recorded a search issuance");
+  Assert.equal(record.length, 1, "One search, one event");
+  Assert.deepEqual(
+    {
+      search_access_point: "about_home",
+      telemetry_id: "other-MozSearch",
+    },
+    record[0].extra,
+    "Must have recorded the expected information."
   );
 
   BrowserTestUtils.removeTab(tab);

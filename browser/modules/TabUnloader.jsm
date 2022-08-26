@@ -13,12 +13,17 @@
  */
 var EXPORTED_SYMBOLS = ["TabUnloader"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "webrtcUI",
   "resource:///modules/webrtcUI.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "PrivateBrowsingUtils",
+  "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
 // If there are only this many or fewer tabs open, just sort by weight, and close
@@ -29,13 +34,20 @@ const MIN_TABS_COUNT = 10;
 // Weight for non-discardable tabs.
 const NEVER_DISCARD = 100000;
 
+// Default minimum inactive duration.  Tabs that were accessed in the last
+// period of this duration are not unloaded.
+const kMinInactiveDurationInMs = Services.prefs.getIntPref(
+  "browser.tabs.min_inactive_duration_before_unload"
+);
+
 let criteriaTypes = [
   ["isNonDiscardable", NEVER_DISCARD],
   ["isLoading", 8],
-  ["usingPictureInPicture", 4],
-  ["playingMedia", 3],
-  ["usingWebRTC", 3],
+  ["usingPictureInPicture", NEVER_DISCARD],
+  ["playingMedia", NEVER_DISCARD],
+  ["usingWebRTC", NEVER_DISCARD],
   ["isPinned", 2],
+  ["isPrivate", NEVER_DISCARD],
 ];
 
 // Indicies into the criteriaTypes lists.
@@ -75,11 +87,31 @@ let DefaultTabUnloaderMethods = {
   },
 
   usingWebRTC(tab, weight) {
-    return webrtcUI.browserHasStreams(tab.linkedBrowser) ? weight : 0;
+    const browser = tab.linkedBrowser;
+    if (!browser) {
+      return 0;
+    }
+
+    // No need to iterate browser contexts for hasActivePeerConnection
+    // because hasActivePeerConnection is set only in the top window.
+    return lazy.webrtcUI.browserHasStreams(browser) ||
+      browser.browsingContext?.currentWindowGlobal?.hasActivePeerConnections()
+      ? weight
+      : 0;
+  },
+
+  isPrivate(tab, weight) {
+    return lazy.PrivateBrowsingUtils.isBrowserPrivate(tab.linkedBrowser)
+      ? weight
+      : 0;
   },
 
   getMinTabCount() {
     return MIN_TABS_COUNT;
+  },
+
+  getNow() {
+    return Date.now();
   },
 
   *iterateTabs() {
@@ -155,7 +187,7 @@ var TabUnloader = {
   },
 
   // This method is exposed on nsITabUnloader
-  async unloadTabAsync() {
+  async unloadTabAsync(minInactiveDuration = kMinInactiveDurationInMs) {
     const watcher = Cc["@mozilla.org/xpcom/memory-watcher;1"].getService(
       Ci.nsIAvailableMemoryWatcherBase
     );
@@ -174,7 +206,9 @@ var TabUnloader = {
     }
 
     this._isUnloading = true;
-    const isTabUnloaded = await this.unloadLeastRecentlyUsedTab();
+    const isTabUnloaded = await this.unloadLeastRecentlyUsedTab(
+      minInactiveDuration
+    );
     this._isUnloading = false;
 
     watcher.onUnloadAttemptCompleted(
@@ -185,6 +219,10 @@ var TabUnloader = {
   /**
    * Get a list of tabs that can be discarded. This list includes all tabs in
    * all windows and is sorted based on a weighting described below.
+   *
+   * @param minInactiveDuration If this value is a number, tabs that were accessed
+   *        in the last |minInactiveDuration| msec are not unloaded even if they
+   *        are least-recently-used.
    *
    * @param tabMethods an helper object with methods called by this algorithm.
    *
@@ -210,11 +248,24 @@ var TabUnloader = {
    * The tabMethods are used so that unit tests can use false tab objects and
    * override their behaviour.
    */
-  async getSortedTabs(tabMethods = DefaultTabUnloaderMethods) {
+  async getSortedTabs(
+    minInactiveDuration = kMinInactiveDurationInMs,
+    tabMethods = DefaultTabUnloaderMethods
+  ) {
     let tabs = [];
+
+    const now = tabMethods.getNow();
 
     let lowestWeight = 1000;
     for (let tab of tabMethods.iterateTabs()) {
+      if (
+        typeof minInactiveDuration == "number" &&
+        now - tab.tab.lastAccessed < minInactiveDuration
+      ) {
+        // Skip "fresh" tabs, which were accessed within the specified duration.
+        continue;
+      }
+
       let weight = determineTabBaseWeight(tab, tabMethods);
 
       // Don't add tabs that have a weight of -1.
@@ -279,8 +330,10 @@ var TabUnloader = {
    * Select and discard one tab.
    * @returns true if a tab was unloaded, otherwise false.
    */
-  async unloadLeastRecentlyUsedTab() {
-    let sortedTabs = await this.getSortedTabs();
+  async unloadLeastRecentlyUsedTab(
+    minInactiveDuration = kMinInactiveDurationInMs
+  ) {
+    const sortedTabs = await this.getSortedTabs(minInactiveDuration);
 
     for (let tabInfo of sortedTabs) {
       if (!this.isDiscardable(tabInfo)) {

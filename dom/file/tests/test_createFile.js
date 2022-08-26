@@ -1,8 +1,4 @@
 add_task(async function() {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-
   do_get_profile();
 
   let existingFile = Services.dirsvc
@@ -17,7 +13,7 @@ add_task(async function() {
   outStream.init(
     existingFile,
     0x02 | 0x08 | 0x20, // write, create, truncate
-    0666,
+    0o666,
     0
   );
 

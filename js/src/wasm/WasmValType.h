@@ -25,6 +25,7 @@
 
 #include "jit/IonTypes.h"
 #include "wasm/WasmConstants.h"
+#include "wasm/WasmSerialize.h"
 #include "wasm/WasmTypeDecls.h"
 
 namespace js {
@@ -35,39 +36,28 @@ using mozilla::Maybe;
 // A PackedTypeCode represents any value type in an compact POD format.
 union PackedTypeCode {
  public:
-  using PackedRepr = uintptr_t;
+  using PackedRepr = uint32_t;
 
  private:
-#ifdef JS_64BIT
   static constexpr size_t TypeCodeBits = 8;
-  static constexpr size_t TypeIndexBits = 21;
+  static constexpr size_t TypeIndexBits = 20;
   static constexpr size_t NullableBits = 1;
-  static constexpr size_t RttDepthBits = 10;
   static constexpr size_t PointerTagBits = 2;
-#else
-  static constexpr size_t TypeCodeBits = 8;
-  static constexpr size_t TypeIndexBits = 14;
-  static constexpr size_t NullableBits = 1;
-  static constexpr size_t RttDepthBits = 7;
-  static constexpr size_t PointerTagBits = 2;
-#endif
 
-  static_assert(TypeCodeBits + TypeIndexBits + NullableBits + RttDepthBits +
-                        PointerTagBits <=
+  static_assert(TypeCodeBits + TypeIndexBits + NullableBits + PointerTagBits <=
                     (sizeof(PackedRepr) * 8),
                 "enough bits");
-  static_assert(MaxTypeIndex < (1 << TypeIndexBits), "enough bits");
-  static_assert(MaxRttDepth < (1 << RttDepthBits), "enough bits");
-  static_assert(RttDepthNone < (1 << RttDepthBits), "enough bits");
+  static_assert(MaxTypes < (1 << TypeIndexBits), "enough bits");
 
   PackedRepr bits_;
   struct {
     PackedRepr typeCode_ : TypeCodeBits;
     PackedRepr typeIndex_ : TypeIndexBits;
     PackedRepr nullable_ : NullableBits;
-    PackedRepr rttDepth_ : RttDepthBits;
     PackedRepr pointerTag_ : PointerTagBits;
   };
+
+  WASM_CHECK_CACHEABLE_POD(bits_);
 
  public:
   static constexpr uint32_t NoTypeCode = (1 << TypeCodeBits) - 1;
@@ -86,36 +76,28 @@ union PackedTypeCode {
   }
 
   static constexpr PackedTypeCode pack(TypeCode tc, uint32_t refTypeIndex,
-                                       bool isNullable, uint32_t rttDepth) {
+                                       bool isNullable) {
     MOZ_ASSERT(uint32_t(tc) <= ((1 << TypeCodeBits) - 1));
-    MOZ_ASSERT_IF(tc != AbstractReferenceTypeIndexCode && tc != AbstractRttCode,
+    MOZ_ASSERT_IF(tc != AbstractReferenceTypeIndexCode,
                   refTypeIndex == NoTypeIndex);
-    MOZ_ASSERT_IF(tc == AbstractReferenceTypeIndexCode || tc == AbstractRttCode,
+    MOZ_ASSERT_IF(tc == AbstractReferenceTypeIndexCode,
                   refTypeIndex <= MaxTypeIndex);
-    MOZ_ASSERT_IF(tc != AbstractRttCode, rttDepth == 0);
-    MOZ_ASSERT_IF(tc == AbstractRttCode,
-                  rttDepth <= MaxRttDepth || rttDepth == RttDepthNone);
     PackedTypeCode ptc = {};
     ptc.typeCode_ = PackedRepr(tc);
     ptc.typeIndex_ = refTypeIndex;
     ptc.nullable_ = isNullable;
-    ptc.rttDepth_ = rttDepth;
     return ptc;
   }
 
   static constexpr PackedTypeCode pack(TypeCode tc, bool nullable) {
-    return pack(tc, PackedTypeCode::NoTypeIndex, nullable, 0);
+    return pack(tc, PackedTypeCode::NoTypeIndex, nullable);
   }
 
   static constexpr PackedTypeCode pack(TypeCode tc) {
-    return pack(tc, PackedTypeCode::NoTypeIndex, false, 0);
+    return pack(tc, PackedTypeCode::NoTypeIndex, false);
   }
 
   bool isValid() const { return typeCode_ != NoTypeCode; }
-
-  bool isReference() const {
-    return typeCodeAbstracted() == AbstractReferenceTypeCode;
-  }
 
   PackedRepr bits() const { return bits_; }
 
@@ -137,16 +119,18 @@ union PackedTypeCode {
   // what ValType needs, so that this decoding step is not necessary, but that
   // moves complexity elsewhere, and the perf gain here would be only about 1%
   // for baseline compilation throughput.
-  //
-  // TODO: with rtt types this is no longer a simple comparison, we should
-  // re-evaluate the performance of this function.
   TypeCode typeCodeAbstracted() const {
-    MOZ_ASSERT(isValid());
-    TypeCode tc = TypeCode(typeCode_);
-    return (tc < LowestPrimitiveTypeCode && tc != AbstractRttCode)
-               ? AbstractReferenceTypeCode
-               : tc;
+    TypeCode tc = typeCode();
+    return tc < LowestPrimitiveTypeCode ? AbstractReferenceTypeCode : tc;
   }
+
+  // Return whether this type is a reference type.
+  bool isRefType() const {
+    return typeCodeAbstracted() == AbstractReferenceTypeCode;
+  }
+
+  // Return whether this type is represented by a reference at runtime.
+  bool isRefRepr() const { return typeCode() < LowestPrimitiveTypeCode; }
 
   uint32_t typeIndex() const {
     MOZ_ASSERT(isValid());
@@ -163,18 +147,8 @@ union PackedTypeCode {
     return bool(nullable_);
   }
 
-  bool hasRttDepth() const {
-    MOZ_ASSERT(isValid());
-    return uint32_t(rttDepth_) != RttDepthNone;
-  }
-
-  uint32_t rttDepth() const {
-    MOZ_ASSERT(isValid());
-    return uint32_t(rttDepth_);
-  }
-
   PackedTypeCode asNonNullable() const {
-    MOZ_ASSERT(isReference());
+    MOZ_ASSERT(isRefType());
     PackedTypeCode mutated = *this;
     mutated.nullable_ = 0;
     return mutated;
@@ -188,7 +162,9 @@ union PackedTypeCode {
   }
 };
 
-static_assert(sizeof(PackedTypeCode) == sizeof(uintptr_t), "packed");
+WASM_DECLARE_CACHEABLE_POD(PackedTypeCode);
+
+static_assert(sizeof(PackedTypeCode) == sizeof(uint32_t), "packed");
 static_assert(std::is_pod_v<PackedTypeCode>,
               "must be POD to be simply serialized/deserialized");
 
@@ -197,7 +173,7 @@ static_assert(std::is_pod_v<PackedTypeCode>,
 
 enum class TableRepr { Ref, Func };
 
-// The RefType carries more information about types t for which t.isReference()
+// The RefType carries more information about types t for which t.isRefType()
 // is true.
 
 class RefType {
@@ -211,6 +187,8 @@ class RefType {
 
  private:
   PackedTypeCode ptc_;
+
+  WASM_CHECK_CACHEABLE_POD(ptc_);
 
 #ifdef DEBUG
   bool isValid() const {
@@ -235,7 +213,7 @@ class RefType {
 
   RefType(uint32_t refTypeIndex, bool nullable)
       : ptc_(PackedTypeCode::pack(AbstractReferenceTypeIndexCode, refTypeIndex,
-                                  nullable, 0)) {
+                                  nullable)) {
     MOZ_ASSERT(isValid());
   }
 
@@ -287,6 +265,8 @@ class RefType {
   bool operator!=(const RefType& that) const { return ptc_ != that.ptc_; }
 };
 
+WASM_DECLARE_CACHEABLE_POD(RefType);
+
 class FieldTypeTraits {
  public:
   enum Kind {
@@ -297,7 +277,6 @@ class FieldTypeTraits {
     F32 = uint8_t(TypeCode::F32),
     F64 = uint8_t(TypeCode::F64),
     V128 = uint8_t(TypeCode::V128),
-    Rtt = uint8_t(AbstractRttCode),
     Ref = uint8_t(AbstractReferenceTypeCode),
   };
 
@@ -318,7 +297,6 @@ class FieldTypeTraits {
       case TypeCode::ExternRef:
 #ifdef ENABLE_WASM_GC
       case TypeCode::EqRef:
-      case AbstractRttCode:
 #endif
 #ifdef ENABLE_WASM_FUNCTION_REFERENCES
       case AbstractReferenceTypeIndexCode:
@@ -338,7 +316,6 @@ class ValTypeTraits {
     F32 = uint8_t(TypeCode::F32),
     F64 = uint8_t(TypeCode::F64),
     V128 = uint8_t(TypeCode::V128),
-    Rtt = uint8_t(AbstractRttCode),
     Ref = uint8_t(AbstractReferenceTypeCode),
   };
 
@@ -355,7 +332,6 @@ class ValTypeTraits {
       case TypeCode::ExternRef:
 #ifdef ENABLE_WASM_GC
       case TypeCode::EqRef:
-      case AbstractRttCode:
 #endif
 #ifdef ENABLE_WASM_FUNCTION_REFERENCES
       case AbstractReferenceTypeIndexCode:
@@ -378,6 +354,8 @@ class PackedType : public T {
 
  protected:
   PackedTypeCode tc_;
+
+  WASM_CHECK_CACHEABLE_POD(tc_);
 
   explicit PackedType(TypeCode c) : tc_(PackedTypeCode::pack(c)) {
     MOZ_ASSERT(c != AbstractReferenceTypeIndexCode);
@@ -443,11 +421,6 @@ class PackedType : public T {
     return PackedType(tc);
   }
 
-  static PackedType fromRtt(uint32_t typeIndex, uint32_t rttDepth) {
-    return PackedType(
-        PackedTypeCode::pack(AbstractRttCode, typeIndex, false, rttDepth));
-  }
-
   static PackedType fromBitsUnsafe(uint64_t bits) {
     return PackedType(PackedTypeCode::fromBits(bits));
   }
@@ -477,6 +450,11 @@ class PackedType : public T {
     return tc_.bits();
   }
 
+  bool isRefType() const {
+    MOZ_ASSERT(isValid());
+    return tc_.isRefType();
+  }
+
   bool isFuncRef() const { return tc_.typeCode() == TypeCode::FuncRef; }
 
   bool isExternRef() const { return tc_.typeCode() == TypeCode::ExternRef; }
@@ -488,24 +466,22 @@ class PackedType : public T {
     return tc_.typeCode() == AbstractReferenceTypeIndexCode;
   }
 
-  bool isReference() const {
+  bool isRefRepr() const {
     MOZ_ASSERT(isValid());
-    return tc_.isReference();
+    return tc_.isRefRepr();
   }
-
-  bool isRtt() const { return tc_.typeCode() == AbstractRttCode; }
 
   // Returns whether the type has a default value.
   bool isDefaultable() const {
     MOZ_ASSERT(isValid());
-    return !(isRtt() || (isReference() && !isNullable()));
+    return !(isRefType() && !isNullable());
   }
 
   // Returns whether the type has a representation in JS.
   bool isExposable() const {
     MOZ_ASSERT(isValid());
 #if defined(ENABLE_WASM_SIMD) || defined(ENABLE_WASM_GC)
-    return !(kind() == Kind::V128 || isRtt() || isTypeIndex());
+    return !(kind() == Kind::V128 || isTypeIndex());
 #else
     return true;
 #endif
@@ -521,39 +497,19 @@ class PackedType : public T {
     return tc_.typeIndex();
   }
 
-  bool hasRttDepth() const {
-    MOZ_ASSERT(isValid());
-    return tc_.hasRttDepth();
-  }
-
-  uint32_t rttDepth() const {
-    MOZ_ASSERT(isValid());
-    return tc_.rttDepth();
-  }
-
   Kind kind() const {
     MOZ_ASSERT(isValid());
     return Kind(tc_.typeCodeAbstracted());
   }
 
   RefType refType() const {
-    MOZ_ASSERT(isReference());
+    MOZ_ASSERT(isRefType());
     return RefType(tc_);
   }
 
   RefType::Kind refTypeKind() const {
-    MOZ_ASSERT(isReference());
+    MOZ_ASSERT(isRefType());
     return RefType(tc_).kind();
-  }
-
-  void renumber(const RenumberVector& renumbering) {
-    if (!isTypeIndex()) {
-      return;
-    }
-
-    uint32_t newIndex = renumbering[typeIndex()];
-    MOZ_ASSERT(newIndex != UINT32_MAX);
-    *this = RefType::fromTypeIndex(newIndex, isNullable());
   }
 
   // Some types are encoded as JS::Value when they escape from Wasm (when passed
@@ -587,7 +543,6 @@ class PackedType : public T {
         return 8;
       case TypeCode::V128:
         return 16;
-      case AbstractRttCode:
       case AbstractReferenceTypeCode:
         return sizeof(void*);
       default:
@@ -661,6 +616,9 @@ class PackedType : public T {
 using ValType = PackedType<ValTypeTraits>;
 using FieldType = PackedType<FieldTypeTraits>;
 
+WASM_DECLARE_CACHEABLE_POD(ValType);
+WASM_DECLARE_CACHEABLE_POD(FieldType);
+
 // The dominant use of this data type is for locals and args, and profiling
 // with ZenGarden and Tanks suggests an initial size of 16 minimises heap
 // allocation, both in terms of blocks and bytes.
@@ -678,7 +636,6 @@ static inline unsigned SizeOf(ValType vt) {
       return 8;
     case ValType::V128:
       return 16;
-    case ValType::Rtt:
     case ValType::Ref:
       return sizeof(intptr_t);
   }
@@ -702,20 +659,21 @@ static inline jit::MIRType ToMIRType(ValType vt) {
       return jit::MIRType::Double;
     case ValType::V128:
       return jit::MIRType::Simd128;
-    case ValType::Rtt:
     case ValType::Ref:
       return jit::MIRType::RefOrNull;
   }
   MOZ_CRASH("bad type");
 }
 
-static inline bool IsNumberType(ValType vt) { return !vt.isReference(); }
+static inline bool IsNumberType(ValType vt) { return !vt.isRefType(); }
 
 static inline jit::MIRType ToMIRType(const Maybe<ValType>& t) {
   return t ? ToMIRType(ValType(t.ref())) : jit::MIRType::None;
 }
 
 extern bool ToValType(JSContext* cx, HandleValue v, ValType* out);
+extern bool ToRefType(JSContext* cx, JSLinearString* typeLinearStr,
+                      RefType* out);
 
 extern UniqueChars ToString(RefType type);
 

@@ -44,6 +44,8 @@ class nsTDependentSubstring : public nsTSubstring<T> {
 
   typedef typename substring_type::const_char_iterator const_char_iterator;
 
+  typedef typename substring_type::string_view string_view;
+
   typedef typename substring_type::index_type index_type;
   typedef typename substring_type::size_type size_type;
 
@@ -52,15 +54,15 @@ class nsTDependentSubstring : public nsTSubstring<T> {
   typedef typename substring_type::ClassFlags ClassFlags;
 
  public:
-  void Rebind(const substring_type&, uint32_t aStartPos,
-              uint32_t aLength = size_type(-1));
+  void Rebind(const substring_type&, size_type aStartPos,
+              size_type aLength = size_type(-1));
 
   void Rebind(const char_type* aData, size_type aLength);
 
   void Rebind(const char_type* aStart, const char_type* aEnd);
 
-  nsTDependentSubstring(const substring_type& aStr, uint32_t aStartPos,
-                        uint32_t aLength = size_type(-1))
+  nsTDependentSubstring(const substring_type& aStr, size_type aStartPos,
+                        size_type aLength = size_type(-1))
       : substring_type() {
     Rebind(aStr, aStartPos, aLength);
   }
@@ -103,16 +105,16 @@ extern template class nsTDependentSubstring<char>;
 extern template class nsTDependentSubstring<char16_t>;
 
 template <typename T>
-inline const nsTDependentSubstring<T> Substring(
-    const nsTSubstring<T>& aStr, uint32_t aStartPos,
-    uint32_t aLength = uint32_t(-1)) {
+inline const nsTDependentSubstring<T> Substring(const nsTSubstring<T>& aStr,
+                                                size_t aStartPos,
+                                                size_t aLength = size_t(-1)) {
   return nsTDependentSubstring<T>(aStr, aStartPos, aLength);
 }
 
 template <typename T>
-inline const nsTDependentSubstring<T> Substring(
-    const nsTLiteralString<T>& aStr, uint32_t aStartPos,
-    uint32_t aLength = uint32_t(-1)) {
+inline const nsTDependentSubstring<T> Substring(const nsTLiteralString<T>& aStr,
+                                                size_t aStartPos,
+                                                size_t aLength = size_t(-1)) {
   return nsTDependentSubstring<T>(aStr, aStartPos, aLength);
 }
 
@@ -124,7 +126,7 @@ inline const nsTDependentSubstring<T> Substring(
 
 template <typename T>
 inline const nsTDependentSubstring<T> Substring(const T* aData,
-                                                uint32_t aLength) {
+                                                size_t aLength) {
   return nsTDependentSubstring<T>(aData, aLength);
 }
 
@@ -139,7 +141,7 @@ extern template const nsTDependentSubstring<char16_t> Substring(
 
 #if defined(MOZ_USE_CHAR16_WRAPPER)
 inline const nsTDependentSubstring<char16_t> Substring(char16ptr_t aData,
-                                                       uint32_t aLength);
+                                                       size_t aLength);
 
 const nsTDependentSubstring<char16_t> Substring(char16ptr_t aStart,
                                                 char16ptr_t aEnd);
@@ -147,13 +149,13 @@ const nsTDependentSubstring<char16_t> Substring(char16ptr_t aStart,
 
 template <typename T>
 inline const nsTDependentSubstring<T> StringHead(const nsTSubstring<T>& aStr,
-                                                 uint32_t aCount) {
+                                                 size_t aCount) {
   return nsTDependentSubstring<T>(aStr, 0, aCount);
 }
 
 template <typename T>
 inline const nsTDependentSubstring<T> StringTail(const nsTSubstring<T>& aStr,
-                                                 uint32_t aCount) {
+                                                 size_t aCount) {
   return nsTDependentSubstring<T>(aStr, aStr.Length() - aCount, aCount);
 }
 

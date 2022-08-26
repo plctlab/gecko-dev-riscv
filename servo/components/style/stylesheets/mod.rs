@@ -12,6 +12,7 @@ pub mod font_feature_values_rule;
 pub mod import_rule;
 pub mod keyframes_rule;
 pub mod layer_rule;
+pub mod container_rule;
 mod loader;
 mod media_rule;
 mod namespace_rule;
@@ -51,12 +52,13 @@ pub use self::font_face_rule::FontFaceRule;
 pub use self::font_feature_values_rule::FontFeatureValuesRule;
 pub use self::import_rule::ImportRule;
 pub use self::keyframes_rule::KeyframesRule;
-pub use self::layer_rule::LayerRule;
+pub use self::layer_rule::{LayerBlockRule, LayerStatementRule};
 pub use self::loader::StylesheetLoader;
+pub use self::container_rule::ContainerRule;
 pub use self::media_rule::MediaRule;
 pub use self::namespace_rule::NamespaceRule;
 pub use self::origin::{Origin, OriginSet, OriginSetIterator, PerOrigin, PerOriginIter};
-pub use self::page_rule::PageRule;
+pub use self::page_rule::{PageRule, PageSelector, PageSelectors};
 pub use self::rule_list::{CssRules, CssRulesHelpers};
 pub use self::rule_parser::{InsertRuleContext, State, TopLevelRuleParser};
 pub use self::rules_iterator::{AllRules, EffectiveRules};
@@ -253,6 +255,7 @@ pub enum CssRule {
     Import(Arc<Locked<ImportRule>>),
     Style(Arc<Locked<StyleRule>>),
     Media(Arc<Locked<MediaRule>>),
+    Container(Arc<Locked<ContainerRule>>),
     FontFace(Arc<Locked<FontFaceRule>>),
     FontFeatureValues(Arc<Locked<FontFeatureValuesRule>>),
     CounterStyle(Arc<Locked<CounterStyleRule>>),
@@ -261,7 +264,8 @@ pub enum CssRule {
     Supports(Arc<Locked<SupportsRule>>),
     Page(Arc<Locked<PageRule>>),
     Document(Arc<Locked<DocumentRule>>),
-    Layer(Arc<Locked<LayerRule>>),
+    LayerBlock(Arc<Locked<LayerBlockRule>>),
+    LayerStatement(Arc<Locked<LayerStatementRule>>),
     ScrollTimeline(Arc<Locked<ScrollTimelineRule>>),
 }
 
@@ -286,6 +290,10 @@ impl CssRule {
                 lock.unconditional_shallow_size_of(ops) + lock.read_with(guard).size_of(guard, ops)
             },
 
+            CssRule::Container(ref lock) => {
+                lock.unconditional_shallow_size_of(ops) + lock.read_with(guard).size_of(guard, ops)
+            },
+
             CssRule::FontFace(_) => 0,
             CssRule::FontFeatureValues(_) => 0,
             CssRule::CounterStyle(_) => 0,
@@ -304,9 +312,8 @@ impl CssRule {
                 lock.unconditional_shallow_size_of(ops) + lock.read_with(guard).size_of(guard, ops)
             },
 
-            // TODO(emilio): Add memory reporting for @layer rules.
-            CssRule::Layer(_) => 0,
-            CssRule::ScrollTimeline(_) => 0,
+            // TODO(emilio): Add memory reporting for these rules.
+            CssRule::LayerBlock(_) | CssRule::LayerStatement(_) | CssRule::ScrollTimeline(_) => 0,
         }
     }
 }
@@ -341,8 +348,10 @@ pub enum CssRuleType {
     Viewport = 15,
     // After viewport, all rules should return 0 from the API, but we still need
     // a constant somewhere.
-    Layer = 16,
-    ScrollTimeline = 17,
+    LayerBlock = 16,
+    LayerStatement = 17,
+    ScrollTimeline = 18,
+    Container = 19,
 }
 
 #[allow(missing_docs)]
@@ -369,18 +378,10 @@ impl CssRule {
             CssRule::Supports(_) => CssRuleType::Supports,
             CssRule::Page(_) => CssRuleType::Page,
             CssRule::Document(_) => CssRuleType::Document,
-            CssRule::Layer(_) => CssRuleType::Layer,
+            CssRule::LayerBlock(_) => CssRuleType::LayerBlock,
+            CssRule::LayerStatement(_) => CssRuleType::LayerStatement,
             CssRule::ScrollTimeline(_) => CssRuleType::ScrollTimeline,
-        }
-    }
-
-    fn rule_state(&self) -> State {
-        match *self {
-            // CssRule::Charset(..) => State::Start,
-            CssRule::Import(..) => State::Imports,
-            CssRule::Namespace(..) => State::Namespaces,
-            // TODO(emilio): Do we need something for EarlyLayers?
-            _ => State::Body,
+            CssRule::Container(_) => CssRuleType::Container,
         }
     }
 
@@ -458,6 +459,12 @@ impl DeepCloneWithLock for CssRule {
                     lock.wrap(rule.deep_clone_with_lock(lock, guard, params)),
                 ))
             },
+            CssRule::Container(ref arc) => {
+                let rule = arc.read_with(guard);
+                CssRule::Container(Arc::new(
+                    lock.wrap(rule.deep_clone_with_lock(lock, guard, params)),
+                ))
+            },
             CssRule::Media(ref arc) => {
                 let rule = arc.read_with(guard);
                 CssRule::Media(Arc::new(
@@ -504,16 +511,22 @@ impl DeepCloneWithLock for CssRule {
                     lock.wrap(rule.deep_clone_with_lock(lock, guard, params)),
                 ))
             },
-            CssRule::Layer(ref arc) => {
+            CssRule::LayerStatement(ref arc) => {
                 let rule = arc.read_with(guard);
-                CssRule::Layer(Arc::new(
+                CssRule::LayerStatement(Arc::new(
                     lock.wrap(rule.deep_clone_with_lock(lock, guard, params)),
                 ))
-            }
+            },
+            CssRule::LayerBlock(ref arc) => {
+                let rule = arc.read_with(guard);
+                CssRule::LayerBlock(Arc::new(
+                    lock.wrap(rule.deep_clone_with_lock(lock, guard, params)),
+                ))
+            },
             CssRule::ScrollTimeline(ref arc) => {
                 let rule = arc.read_with(guard);
                 CssRule::ScrollTimeline(Arc::new(lock.wrap(rule.clone())))
-            }
+            },
         }
     }
 }
@@ -534,8 +547,10 @@ impl ToCssWithGuard for CssRule {
             CssRule::Supports(ref lock) => lock.read_with(guard).to_css(guard, dest),
             CssRule::Page(ref lock) => lock.read_with(guard).to_css(guard, dest),
             CssRule::Document(ref lock) => lock.read_with(guard).to_css(guard, dest),
-            CssRule::Layer(ref lock) => lock.read_with(guard).to_css(guard, dest),
+            CssRule::LayerBlock(ref lock) => lock.read_with(guard).to_css(guard, dest),
+            CssRule::LayerStatement(ref lock) => lock.read_with(guard).to_css(guard, dest),
             CssRule::ScrollTimeline(ref lock) => lock.read_with(guard).to_css(guard, dest),
+            CssRule::Container(ref lock) => lock.read_with(guard).to_css(guard, dest),
         }
     }
 }

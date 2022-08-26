@@ -5,7 +5,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 with Files("**"):
-    BUG_COMPONENT = ("Core", "Graphics: Layers")
+    BUG_COMPONENT = ("Core", "Graphics")
 
 with Files("apz/**"):
     BUG_COMPONENT = ("Core", "Panning and Zooming")
@@ -25,12 +25,12 @@ EXPORTS += [
     "LayerUserData.h",
     "opengl/OGLShaderConfig.h",
     "opengl/OGLShaderProgram.h",
-    "ReadbackLayer.h",
 ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     SOURCES += [
         "D3D11ShareHandleImage.cpp",
+        "D3D11TextureIMFSampleImage.cpp",
         "D3D11YCbCrImage.cpp",
     ]
     UNIFIED_SOURCES += [
@@ -41,20 +41,23 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
         EXPORTS.mozilla.layers += [
             "d3d11/CompositorD3D11.h",
             "d3d11/DeviceAttachmentsD3D11.h",
-            "d3d11/DiagnosticsD3D11.h",
             "d3d11/HelpersD3D11.h",
-            "d3d11/ReadbackManagerD3D11.h",
             "d3d11/ShaderDefinitionsD3D11.h",
             "d3d11/TextureD3D11.h",
         ]
         UNIFIED_SOURCES += [
-            "d3d11/DiagnosticsD3D11.cpp",
             "d3d11/TextureD3D11.cpp",
         ]
         SOURCES += [
             "d3d11/CompositorD3D11.cpp",
             "d3d11/DeviceAttachmentsD3D11.cpp",
-            "d3d11/ReadbackManagerD3D11.cpp",
+        ]
+    if CONFIG["MOZ_WMF_MEDIA_ENGINE"]:
+        EXPORTS.mozilla.layers += [
+            "DcompSurfaceImage.h",
+        ]
+        UNIFIED_SOURCES += [
+            "DcompSurfaceImage.cpp",
         ]
 
 EXPORTS.gfxipc += [
@@ -94,6 +97,7 @@ EXPORTS.mozilla.layers += [
     "apz/util/ActiveElementManager.h",
     "apz/util/APZCCallbackHelper.h",
     "apz/util/APZEventState.h",
+    "apz/util/APZTaskRunnable.h",
     "apz/util/APZThreadUtils.h",
     "apz/util/ChromeProcessController.h",
     "apz/util/ContentProcessController.h",
@@ -113,7 +117,6 @@ EXPORTS.mozilla.layers += [
     "CanvasRenderer.h",
     "client/CanvasClient.h",
     "client/CompositableClient.h",
-    "client/ContentClient.h",
     "client/GPUVideoTextureClient.h",
     "client/ImageClient.h",
     "client/TextureClient.h",
@@ -131,6 +134,7 @@ EXPORTS.mozilla.layers += [
     "CompositorAnimationStorage.h",
     "CompositorTypes.h",
     "D3D11ShareHandleImage.h",
+    "D3D11TextureIMFSampleImage.h",
     "D3D11YCbCrImage.h",
     "D3D9SurfaceImage.h",
     "DirectionUtils.h",
@@ -145,6 +149,7 @@ EXPORTS.mozilla.layers += [
     "ipc/CanvasThread.h",
     "ipc/CanvasTranslator.h",
     "ipc/CompositableForwarder.h",
+    "ipc/CompositableInProcessManager.h",
     "ipc/CompositableTransactionParent.h",
     "ipc/CompositorBridgeChild.h",
     "ipc/CompositorBridgeParent.h",
@@ -158,7 +163,6 @@ EXPORTS.mozilla.layers += [
     "ipc/ImageBridgeParent.h",
     "ipc/ISurfaceAllocator.h",
     "ipc/KnowsCompositor.h",
-    "ipc/LayerAnimationUtils.h",
     "ipc/LayersMessageUtils.h",
     "ipc/LayerTreeOwnerTracker.h",
     "ipc/RefCountedShmem.h",
@@ -177,8 +181,6 @@ EXPORTS.mozilla.layers += [
     "ipc/VideoBridgeParent.h",
     "ipc/VideoBridgeUtils.h",
     "LayerAttributes.h",
-    "LayerManager.h",
-    "LayersHelpers.h",
     "LayersTypes.h",
     "MemoryPressureObserver.h",
     "NativeLayer.h",
@@ -191,6 +193,7 @@ EXPORTS.mozilla.layers += [
     "opengl/TextureHostOGL.h",
     "PersistentBufferProvider.h",
     "ProfilerScreenshots.h",
+    "RemoteTextureMap.h",
     "RepaintRequest.h",
     "SampleTime.h",
     "ScreenshotGrabber.h",
@@ -252,7 +255,6 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     EXPORTS.mozilla.layers += [
         "NativeLayerCA.h",
         "SurfacePoolCA.h",
-        "TextureSync.h",
     ]
     EXPORTS += [
         "MacIOSurfaceHelpers.h",
@@ -261,7 +263,6 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     UNIFIED_SOURCES += [
         "NativeLayerCA.mm",
         "SurfacePoolCA.mm",
-        "TextureSync.cpp",
     ]
     SOURCES += [
         "MacIOSurfaceHelpers.cpp",
@@ -322,6 +323,7 @@ UNIFIED_SOURCES += [
     "apz/util/ActiveElementManager.cpp",
     "apz/util/APZCCallbackHelper.cpp",
     "apz/util/APZEventState.cpp",
+    "apz/util/APZTaskRunnable.cpp",
     "apz/util/APZThreadUtils.cpp",
     "apz/util/CheckerboardReportService.cpp",
     "apz/util/ChromeProcessController.cpp",
@@ -367,6 +369,7 @@ UNIFIED_SOURCES += [
     "ipc/CanvasThread.cpp",
     "ipc/CanvasTranslator.cpp",
     "ipc/CompositableForwarder.cpp",
+    "ipc/CompositableInProcessManager.cpp",
     "ipc/CompositableTransactionParent.cpp",
     "ipc/CompositorBench.cpp",
     "ipc/CompositorBridgeChild.cpp",
@@ -380,7 +383,6 @@ UNIFIED_SOURCES += [
     "ipc/ImageBridgeParent.cpp",
     "ipc/ISurfaceAllocator.cpp",
     "ipc/KnowsCompositor.cpp",
-    "ipc/LayerAnimationUtils.cpp",
     "ipc/LayerTreeOwnerTracker.cpp",
     "ipc/RefCountedShmem.cpp",
     "ipc/RemoteContentController.cpp",
@@ -392,19 +394,16 @@ UNIFIED_SOURCES += [
     "ipc/UiCompositorControllerParent.cpp",
     "ipc/VideoBridgeChild.cpp",
     "ipc/VideoBridgeParent.cpp",
-    "LayerManager.cpp",
     "Layers.cpp",
-    "LayersHelpers.cpp",
     "LayersTypes.cpp",
     "MemoryPressureObserver.cpp",
     "opengl/CompositingRenderTargetOGL.cpp",
     "opengl/CompositorOGL.cpp",
-    "opengl/GLBlitTextureImageHelper.cpp",
     "opengl/OGLShaderProgram.cpp",
     "opengl/TextureClientOGL.cpp",
     "opengl/TextureHostOGL.cpp",
     "ProfilerScreenshots.cpp",
-    "ReadbackProcessor.cpp",
+    "RemoteTextureMap.cpp",
     "RepaintRequest.cpp",
     "SampleTime.cpp",
     "ScreenshotGrabber.cpp",
@@ -476,7 +475,7 @@ IPDL_SOURCES += [
 
 include("/ipc/chromium/chromium-config.mozbuild")
 
-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+if CONFIG["COMPILE_ENVIRONMENT"] and CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     GeneratedFile(
         "CompositorD3D11Shaders.h",
         script="d3d11/genshaders.py",
@@ -507,14 +506,15 @@ if CONFIG["ENABLE_TESTS"]:
 MOCHITEST_MANIFESTS += ["apz/test/mochitest/mochitest.ini"]
 BROWSER_CHROME_MANIFESTS += ["apz/test/mochitest/browser.ini"]
 
-CXXFLAGS += CONFIG["TK_CFLAGS"]
+if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
+
 CXXFLAGS += ["-Werror=switch"]
 
 LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
 
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]
-    # Suppress warnings in third-party code.
+# Suppress warnings in third-party code.
+if CONFIG["CC_TYPE"] == "gcc":
     CXXFLAGS += ["-Wno-maybe-uninitialized"]
 
 UNIFIED_SOURCES += []

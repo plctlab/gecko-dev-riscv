@@ -4,8 +4,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function MainProcessSingleton() {}
 MainProcessSingleton.prototype = {
   classID: Components.ID("{0636a680-45cb-11e4-916c-0800200c9a66}"),
@@ -17,10 +15,8 @@ MainProcessSingleton.prototype = {
   observe(subject, topic, data) {
     switch (topic) {
       case "app-startup": {
-        ChromeUtils.import(
-          "resource://gre/modules/CustomElementsListener.jsm",
-          null
-        );
+        // Imported for side-effects.
+        ChromeUtils.import("resource://gre/modules/CustomElementsListener.jsm");
 
         Services.ppmm.loadProcessScript(
           "chrome://global/content/process-content.js",

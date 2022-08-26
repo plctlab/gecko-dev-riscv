@@ -20,7 +20,7 @@ const TELEMETRY_OBJECT = "nimbus_experiment";
 const EXPERIMENT_TYPE = "nimbus";
 const EVENT_FILTER = { category: TELEMETRY_CATEGORY };
 
-add_task(async function setup() {
+add_setup(async function() {
   let sandbox = sinon.createSandbox();
   // stub the `observe` method to make sure the Experiment Manager
   // pref listener doesn't trigger and cause side effects
@@ -110,6 +110,45 @@ add_task(async function test_experiment_expose_Telemetry() {
         extra: {
           branchSlug: experiment.branch.slug,
           featureId,
+        },
+      },
+    ],
+    EVENT_FILTER
+  );
+
+  await cleanup();
+});
+
+add_task(async function test_rollout_expose_Telemetry() {
+  const featureManifest = {
+    description: "Test feature",
+    exposureDescription: "Used in tests",
+  };
+  const cleanup = await ExperimentFakes.enrollWithRollout({
+    featureId: "test-feature",
+    value: { enabled: false },
+  });
+
+  let rollout = ExperimentAPI.getRolloutMetaData({
+    featureId: "test-feature",
+  });
+
+  Assert.ok(rollout.slug, "Found enrolled experiment");
+
+  const feature = new ExperimentFeature("test-feature", featureManifest);
+
+  Services.telemetry.clearEvents();
+  feature.recordExposureEvent();
+
+  TelemetryTestUtils.assertEvents(
+    [
+      {
+        method: "expose",
+        object: TELEMETRY_OBJECT,
+        value: rollout.slug,
+        extra: {
+          branchSlug: rollout.branch.slug,
+          featureId: feature.featureId,
         },
       },
     ],

@@ -2,9 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-%include ../../shared/customizableui/panelUI.inc.css
+@import "chrome://browser/skin/customizableui/panelUI-shared.css";
 
-@media (-moz-proton) {
 #customizationui-widget-panel[viewId="PanelUI-profiler"][type="arrow"][side="top"],
 #customizationui-widget-panel[viewId="PanelUI-profiler"][type="arrow"][side="bottom"] {
   margin-inline: -13px;
@@ -18,36 +17,25 @@
 #notification-popup {
   margin-block: -4px;
 }
-} /** END Proton **/
 
 /* bookmark panel submenus */
 
-/* Override the menupopup shadow rule from windows/global/popup.css */
-#PlacesToolbar menupopup,
-#BMB_bookmarksPopup {
-  -moz-window-shadow: none;
-}
-
 #PlacesToolbar menupopup {
-  margin-top: -2px;
+  margin-top: -4px;
 }
 
 #PlacesToolbar menupopup,
 #BMB_bookmarksPopup menupopup {
   appearance: none;
   border: none;
-  padding-inline-start: 3px;
 }
 
 #BMB_bookmarksPopup menupopup {
-  -moz-window-shadow: none;
   margin-top: -13px; /* 8px of padding, 4px of shadow margin, 1px of border */
 }
 
 #PlacesToolbar menupopup {
   background: transparent;
-  padding-top: 4px;
-  margin-inline-start: -3px;
 }
 
 #BMB_bookmarksPopup menupopup::part(content) {
@@ -61,12 +49,16 @@
   background: var(--arrowpanel-background);
   color: var(--arrowpanel-color);
   border: 1px solid var(--arrowpanel-border-color);
-  margin-block: -3px 4px;
-  margin-inline: 0 4px;
+  margin: 4px;
+}
+
+menupopup::part(drop-indicator) {
+  /* To account for the shadow margin + border of the panel */
+  margin-inline-start: 5px;
 }
 
 /* Add border-radius on Windows 7 */
-@media (-moz-os-version: windows-win7) {
+@media (-moz-platform: windows-win7) {
   #BMB_bookmarksPopup menupopup::part(content) {
     border-radius: 3.5px;
   }
@@ -81,8 +73,7 @@
 
 /* bookmark panel separator */
 #BMB_bookmarksPopup menuseparator {
-  padding-top: 0;
-  padding-bottom: 0;
+  padding-block: 0;
 }
 
 /* Disabled empty item looks too small otherwise, because it has no icon. */

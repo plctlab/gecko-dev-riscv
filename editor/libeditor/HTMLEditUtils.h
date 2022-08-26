@@ -6,15 +6,25 @@
 #ifndef mozilla_HTMLEditUtils_h
 #define mozilla_HTMLEditUtils_h
 
+/**
+ * This header declares/defines static helper methods as members of
+ * HTMLEditUtils.  If you want to create or look for helper trivial classes for
+ * HTMLEditor, see HTMLEditHelpers.h.
+ */
+
 #include "mozilla/Attributes.h"
 #include "mozilla/EditorBase.h"
 #include "mozilla/EditorDOMPoint.h"
+#include "mozilla/EditorForwards.h"
 #include "mozilla/EditorUtils.h"
 #include "mozilla/EnumSet.h"
+#include "mozilla/IntegerRange.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/Result.h"
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/HTMLBRElement.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/dom/Text.h"
 #include "nsContentUtils.h"
@@ -28,7 +38,14 @@ class nsPresContext;
 
 namespace mozilla {
 
-enum class EditAction;
+enum class CollectChildrenOption {
+  // Ignore non-editable nodes
+  IgnoreNonEditableChildren,
+  // Collect list children too.
+  CollectListChildren,
+  // Collect table children too.
+  CollectTableChildren,
+};
 
 class HTMLEditUtils final {
   using AbstractRange = dom::AbstractRange;
@@ -38,7 +55,7 @@ class HTMLEditUtils final {
 
  public:
   static constexpr char16_t kNewLine = '\n';
-  static constexpr char16_t kCarridgeReturn = '\r';
+  static constexpr char16_t kCarriageReturn = '\r';
   static constexpr char16_t kTab = '\t';
   static constexpr char16_t kSpace = ' ';
   static constexpr char16_t kNBSP = 0x00A0;
@@ -180,7 +197,7 @@ class HTMLEditUtils final {
   static bool IsLink(nsINode* aNode);
   static bool IsNamedAnchor(const nsINode* aNode);
   static bool IsMozDiv(nsINode* aNode);
-  static bool IsMailCite(nsINode* aNode);
+  static bool IsMailCite(const Element& aElement);
   static bool IsFormWidget(const nsINode* aNode);
   static bool SupportsAlignAttr(nsINode& aNode);
 
@@ -295,8 +312,8 @@ class HTMLEditUtils final {
    * https://w3c.github.io/editing/execCommand.html#non-list-single-line-container
    * https://w3c.github.io/editing/execCommand.html#single-line-container
    */
-  static bool IsNonListSingleLineContainer(nsINode& aNode);
-  static bool IsSingleLineContainer(nsINode& aNode);
+  static bool IsNonListSingleLineContainer(const nsINode& aNode);
+  static bool IsSingleLineContainer(const nsINode& aNode);
 
   /**
    * IsVisibleTextNode() returns true if aText has visible text.  If it has
@@ -317,17 +334,27 @@ class HTMLEditUtils final {
    * last line in a block element visible, or an invisible <br> element.
    */
   static bool IsVisibleBRElement(const nsIContent& aContent) {
-    if (!aContent.IsHTMLElement(nsGkAtoms::br)) {
-      return false;
+    if (const dom::HTMLBRElement* brElement =
+            dom::HTMLBRElement::FromNode(&aContent)) {
+      return IsVisibleBRElement(*brElement);
     }
+    return false;
+  }
+  static bool IsVisibleBRElement(const dom::HTMLBRElement& aBRElement) {
     // If followed by a block boundary without visible content, it's invisible
     // <br> element.
     return !HTMLEditUtils::GetElementOfImmediateBlockBoundary(
-        aContent, WalkTreeDirection::Forward);
+        aBRElement, WalkTreeDirection::Forward);
   }
   static bool IsInvisibleBRElement(const nsIContent& aContent) {
-    return aContent.IsHTMLElement(nsGkAtoms::br) &&
-           !HTMLEditUtils::IsVisibleBRElement(aContent);
+    if (const dom::HTMLBRElement* brElement =
+            dom::HTMLBRElement::FromNode(&aContent)) {
+      return IsInvisibleBRElement(*brElement);
+    }
+    return false;
+  }
+  static bool IsInvisibleBRElement(const dom::HTMLBRElement& aBRElement) {
+    return !HTMLEditUtils::IsVisibleBRElement(aBRElement);
   }
 
   /**
@@ -353,11 +380,12 @@ class HTMLEditUtils final {
     // If there are some other characters in the text node, it's a visible
     // linefeed.
     if (!aPoint.IsAtLastContent()) {
-      if (EditorUtils::IsWhiteSpacePreformatted(*aPoint.ContainerAsText())) {
+      if (EditorUtils::IsWhiteSpacePreformatted(
+              *aPoint.template ContainerAs<Text>())) {
         return true;
       }
       const nsTextFragment& textFragment =
-          aPoint.ContainerAsText()->TextFragment();
+          aPoint.template ContainerAs<Text>()->TextFragment();
       for (uint32_t offset = aPoint.Offset() + 1;
            offset < textFragment.GetLength(); ++offset) {
         char16_t ch = textFragment.CharAt(AssertedCast<int32_t>(offset));
@@ -371,7 +399,7 @@ class HTMLEditUtils final {
     // linefeed.
     Element* followingBlockElement =
         HTMLEditUtils::GetElementOfImmediateBlockBoundary(
-            *aPoint.ContainerAsText(), WalkTreeDirection::Forward);
+            *aPoint.template ContainerAs<Text>(), WalkTreeDirection::Forward);
     if (aFollowingBlockElement) {
       *aFollowingBlockElement = followingBlockElement;
     }
@@ -395,8 +423,8 @@ class HTMLEditUtils final {
    * ShouldInsertLinefeedCharacter() returns true if the caller should insert
    * a linefeed character instead of <br> element.
    */
-  static bool ShouldInsertLinefeedCharacter(EditorDOMPoint& aPointToInsert,
-                                            const Element& aEditingHost);
+  static bool ShouldInsertLinefeedCharacter(
+      const EditorDOMPoint& aPointToInsert, const Element& aEditingHost);
 
   /**
    * IsEmptyNode() returns false if aNode has some visible content nodes,
@@ -414,6 +442,7 @@ class HTMLEditUtils final {
     TreatSingleBRElementAsVisible,
     TreatListItemAsVisible,
     TreatTableCellAsVisible,
+    IgnoreEditableState,  // TODO: Change to "TreatNonEditableContentAsVisible"
     SafeToAskLayout,
   };
   using EmptyCheckOptions = EnumSet<EmptyCheckOption, uint32_t>;
@@ -428,14 +457,14 @@ class HTMLEditUtils final {
   }
 
   /**
-   * IsEmptyInlineContent() returns true if aContent is an inline node and it
-   * does not have meaningful content.
+   * IsEmptyInlineContainer() returns true if aContent is an inline element
+   * which can have children and does not have meaningful content.
    */
-  static bool IsEmptyInlineContent(const nsIContent& aContent) {
+  static bool IsEmptyInlineContainer(const nsIContent& aContent,
+                                     const EmptyCheckOptions& aOptions) {
     return HTMLEditUtils::IsInlineElement(aContent) &&
            HTMLEditUtils::IsContainerNode(aContent) &&
-           HTMLEditUtils::IsEmptyNode(
-               aContent, {EmptyCheckOption::TreatSingleBRElementAsVisible});
+           HTMLEditUtils::IsEmptyNode(aContent, aOptions);
   }
 
   /**
@@ -473,7 +502,8 @@ class HTMLEditUtils final {
         brElementHasFound = true;
         continue;
       }
-      if (!HTMLEditUtils::IsEmptyInlineContent(content)) {
+      if (!HTMLEditUtils::IsEmptyInlineContainer(
+              content, {EmptyCheckOption::TreatSingleBRElementAsVisible})) {
         return false;
       }
     }
@@ -499,14 +529,15 @@ class HTMLEditUtils final {
     // XXX Assuming it's not in an empty text node because it's unrealistic edge
     //     case.
     bool maybeStartOfAnchor = aPoint.IsStartOfContainer();
-    for (EditorRawDOMPoint point(aPoint.GetContainer());
+    for (EditorRawDOMPoint point(aPoint.template ContainerAs<nsIContent>());
          point.IsSet() && (maybeStartOfAnchor ? point.IsStartOfContainer()
                                               : point.IsAtLastContent());
-         point.Set(point.GetContainer())) {
+         point = point.ParentPoint()) {
       if (HTMLEditUtils::IsLink(point.GetContainer())) {
         // Now, we're at start or end of <a href>.
         if (aFoundLinkElement) {
-          *aFoundLinkElement = do_AddRef(point.ContainerAsElement()).take();
+          *aFoundLinkElement =
+              do_AddRef(point.template ContainerAs<Element>()).take();
         }
         return true;
       }
@@ -790,7 +821,7 @@ class HTMLEditUtils final {
              *editableContent)) ||
         (HTMLEditUtils::GetInclusiveAncestorAnyTableElement(*editableContent) !=
          HTMLEditUtils::GetInclusiveAncestorAnyTableElement(
-             *aPoint.ContainerAsContent()))) {
+             *aPoint.template ContainerAs<nsIContent>()))) {
       return nullptr;
     }
 
@@ -992,13 +1023,14 @@ class HTMLEditUtils final {
     }
     if (aStartPoint.IsInTextNode()) {
       return HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-          *aStartPoint.ContainerAsText(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<Text>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
-    if (!HTMLEditUtils::IsContainerNode(*aStartPoint.ContainerAsContent())) {
+    if (!HTMLEditUtils::IsContainerNode(
+            *aStartPoint.template ContainerAs<nsIContent>())) {
       return HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-          *aStartPoint.ContainerAsContent(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<nsIContent>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
 
     nsCOMPtr<nsIContent> nextContent = aStartPoint.GetChild();
@@ -1010,8 +1042,8 @@ class HTMLEditUtils final {
 
       // We are at end of non-block container
       return HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-          *aStartPoint.ContainerAsContent(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<nsIContent>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
 
     // We have a next node.  If it's a block, return it.
@@ -1130,13 +1162,14 @@ class HTMLEditUtils final {
     }
     if (aStartPoint.IsInTextNode()) {
       return HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-          *aStartPoint.ContainerAsText(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<Text>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
-    if (!HTMLEditUtils::IsContainerNode(*aStartPoint.ContainerAsContent())) {
+    if (!HTMLEditUtils::IsContainerNode(
+            *aStartPoint.template ContainerAs<nsIContent>())) {
       return HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-          *aStartPoint.ContainerAsContent(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<nsIContent>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
 
     if (aStartPoint.IsStartOfContainer()) {
@@ -1147,8 +1180,8 @@ class HTMLEditUtils final {
 
       // We are at start of non-block container
       return HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-          *aStartPoint.ContainerAsContent(), aCurrentBlock, aLeafNodeTypes,
-          aAncestorLimiter);
+          *aStartPoint.template ContainerAs<nsIContent>(), aCurrentBlock,
+          aLeafNodeTypes, aAncestorLimiter);
     }
 
     nsCOMPtr<nsIContent> previousContent =
@@ -1334,7 +1367,7 @@ class HTMLEditUtils final {
     MOZ_ASSERT(HTMLEditUtils::IsAnyListElement(&aListElement));
     for (nsIContent* maybeFirstListItem = aListElement.GetFirstChild();
          maybeFirstListItem;
-         maybeFirstListItem = maybeFirstListItem->GetNextNode()) {
+         maybeFirstListItem = maybeFirstListItem->GetNextNode(&aListElement)) {
       if (HTMLEditUtils::IsListItem(maybeFirstListItem)) {
         return maybeFirstListItem->AsElement();
       }
@@ -1375,6 +1408,54 @@ class HTMLEditUtils final {
       }
     }
     return nullptr;
+  }
+
+  /**
+   * GetFirstTableCellElementChild() and GetLastTableCellElementChild()
+   * return the first/last element child of <tr> element if it's a table
+   * cell element.
+   */
+  static Element* GetFirstTableCellElementChild(
+      const Element& aTableRowElement) {
+    MOZ_ASSERT(aTableRowElement.IsHTMLElement(nsGkAtoms::tr));
+    Element* firstElementChild = aTableRowElement.GetFirstElementChild();
+    return firstElementChild && HTMLEditUtils::IsTableCell(firstElementChild)
+               ? firstElementChild
+               : nullptr;
+  }
+  static Element* GetLastTableCellElementChild(
+      const Element& aTableRowElement) {
+    MOZ_ASSERT(aTableRowElement.IsHTMLElement(nsGkAtoms::tr));
+    Element* lastElementChild = aTableRowElement.GetLastElementChild();
+    return lastElementChild && HTMLEditUtils::IsTableCell(lastElementChild)
+               ? lastElementChild
+               : nullptr;
+  }
+
+  /**
+   * GetPreviousTableCellElementSibling() and GetNextTableCellElementSibling()
+   * return a table cell element of previous/next element sibling of given
+   * content node if and only if the element sibling is a table cell element.
+   */
+  static Element* GetPreviousTableCellElementSibling(
+      const nsIContent& aChildOfTableRow) {
+    MOZ_ASSERT(aChildOfTableRow.GetParentNode());
+    MOZ_ASSERT(aChildOfTableRow.GetParentNode()->IsHTMLElement(nsGkAtoms::tr));
+    Element* previousElementSibling =
+        aChildOfTableRow.GetPreviousElementSibling();
+    return previousElementSibling &&
+                   HTMLEditUtils::IsTableCell(previousElementSibling)
+               ? previousElementSibling
+               : nullptr;
+  }
+  static Element* GetNextTableCellElementSibling(
+      const nsIContent& aChildOfTableRow) {
+    MOZ_ASSERT(aChildOfTableRow.GetParentNode());
+    MOZ_ASSERT(aChildOfTableRow.GetParentNode()->IsHTMLElement(nsGkAtoms::tr));
+    Element* nextElementSibling = aChildOfTableRow.GetNextElementSibling();
+    return nextElementSibling && HTMLEditUtils::IsTableCell(nextElementSibling)
+               ? nextElementSibling
+               : nullptr;
   }
 
   /**
@@ -1543,6 +1624,28 @@ class HTMLEditUtils final {
   }
 
   /**
+   * Get the first <br> element in aElement.  This scans only leaf nodes so
+   * if a <br> element has children illegally, it'll be ignored.
+   *
+   * @param aElement    The element which may have a <br> element.
+   * @return            First <br> element node in aElement if there is.
+   */
+  static dom::HTMLBRElement* GetFirstBRElement(const dom::Element& aElement) {
+    for (nsIContent* content = HTMLEditUtils::GetFirstLeafContent(
+             aElement, {LeafNodeType::OnlyLeafNode});
+         content; content = HTMLEditUtils::GetNextContent(
+                      *content,
+                      {WalkTreeOption::IgnoreDataNodeExceptText,
+                       WalkTreeOption::IgnoreWhiteSpaceOnlyText},
+                      &aElement)) {
+      if (auto* brElement = dom::HTMLBRElement::FromNode(*content)) {
+        return brElement;
+      }
+    }
+    return nullptr;
+  }
+
+  /**
    * IsInTableCellSelectionMode() returns true when Gecko's editor thinks that
    * selection is in a table cell selection mode.
    * Note that Gecko's editor traditionally treats selection as in table cell
@@ -1575,7 +1678,7 @@ class HTMLEditUtils final {
       const WalkTextOptions& aWalkTextOptions = {}) {
     MOZ_ASSERT(aPoint.IsSetAndValid());
     return GetPreviousNonCollapsibleCharOffset(
-        *aPoint.ContainerAsText(), aPoint.Offset(), aWalkTextOptions);
+        *aPoint.ContainerAs<Text>(), aPoint.Offset(), aWalkTextOptions);
   }
   static Maybe<uint32_t> GetPreviousNonCollapsibleCharOffset(
       const Text& aTextNode, uint32_t aOffset,
@@ -1593,9 +1696,9 @@ class HTMLEditUtils final {
       // TODO: Perhaps, nsTextFragment should have scanner methods because
       //       the text may be in per-one-byte storage or per-two-byte storage,
       //       and `CharAt` needs to check it everytime.
-      switch (textFragment.CharAt(AssertedCast<int32_t>(i - 1))) {
+      switch (textFragment.CharAt(i - 1)) {
         case HTMLEditUtils::kSpace:
-        case HTMLEditUtils::kCarridgeReturn:
+        case HTMLEditUtils::kCarriageReturn:
         case HTMLEditUtils::kTab:
           if (!isWhiteSpaceCollapsible) {
             return Some(i - 1);
@@ -1612,8 +1715,7 @@ class HTMLEditUtils final {
           }
           break;
         default:
-          MOZ_ASSERT(!nsCRT::IsAsciiSpace(
-              textFragment.CharAt(AssertedCast<int32_t>(i - 1))));
+          MOZ_ASSERT(!nsCRT::IsAsciiSpace(textFragment.CharAt(i - 1)));
           return Some(i - 1);
       }
     }
@@ -1628,7 +1730,7 @@ class HTMLEditUtils final {
       const EditorDOMPointInText& aPoint,
       const WalkTextOptions& aWalkTextOptions = {}) {
     MOZ_ASSERT(aPoint.IsSetAndValid());
-    return GetNextNonCollapsibleCharOffset(*aPoint.ContainerAsText(),
+    return GetNextNonCollapsibleCharOffset(*aPoint.ContainerAs<Text>(),
                                            aPoint.Offset(), aWalkTextOptions);
   }
   static Maybe<uint32_t> GetNextNonCollapsibleCharOffset(
@@ -1647,7 +1749,7 @@ class HTMLEditUtils final {
       const WalkTextOptions& aWalkTextOptions = {}) {
     MOZ_ASSERT(aPoint.IsSetAndValid());
     return GetInclusiveNextNonCollapsibleCharOffset(
-        *aPoint.ContainerAsText(), aPoint.Offset(), aWalkTextOptions);
+        *aPoint.ContainerAs<Text>(), aPoint.Offset(), aWalkTextOptions);
   }
   static Maybe<uint32_t> GetInclusiveNextNonCollapsibleCharOffset(
       const Text& aTextNode, uint32_t aOffset,
@@ -1665,9 +1767,9 @@ class HTMLEditUtils final {
       // TODO: Perhaps, nsTextFragment should have scanner methods because
       //       the text may be in per-one-byte storage or per-two-byte storage,
       //       and `CharAt` needs to check it everytime.
-      switch (textFragment.CharAt(AssertedCast<int32_t>(i))) {
+      switch (textFragment.CharAt(i)) {
         case HTMLEditUtils::kSpace:
-        case HTMLEditUtils::kCarridgeReturn:
+        case HTMLEditUtils::kCarriageReturn:
         case HTMLEditUtils::kTab:
           if (!isWhiteSpaceCollapsible) {
             return Some(i);
@@ -1684,8 +1786,7 @@ class HTMLEditUtils final {
           }
           break;
         default:
-          MOZ_ASSERT(!nsCRT::IsAsciiSpace(
-              textFragment.CharAt(AssertedCast<int32_t>(i))));
+          MOZ_ASSERT(!nsCRT::IsAsciiSpace(textFragment.CharAt(i)));
           return Some(i);
       }
     }
@@ -1710,7 +1811,7 @@ class HTMLEditUtils final {
         !aWalkTextOptions.contains(WalkTextOption::TreatNBSPsCollapsible),
         aPoint.IsCharCollapsibleASCIISpace());
     return GetFirstWhiteSpaceOffsetCollapsedWith(
-        *aPoint.ContainerAsText(), aPoint.Offset(), aWalkTextOptions);
+        *aPoint.ContainerAs<Text>(), aPoint.Offset(), aWalkTextOptions);
   }
   static uint32_t GetFirstWhiteSpaceOffsetCollapsedWith(
       const Text& aTextNode, uint32_t aOffset,
@@ -1744,15 +1845,15 @@ class HTMLEditUtils final {
   static EditorDOMPointType GetPreviousPreformattedNewLineInTextNode(
       const ArgEditorDOMPointType& aPoint) {
     if (!aPoint.IsInTextNode() || aPoint.IsStartOfContainer() ||
-        !EditorUtils::IsNewLinePreformatted(*aPoint.ContainerAsText())) {
+        !EditorUtils::IsNewLinePreformatted(
+            *aPoint.template ContainerAs<Text>())) {
       return EditorDOMPointType();
     }
-    Text* textNode = aPoint.ContainerAsText();
+    Text* textNode = aPoint.template ContainerAs<Text>();
     const nsTextFragment& textFragment = textNode->TextFragment();
     MOZ_ASSERT(aPoint.Offset() <= textFragment.GetLength());
     for (uint32_t offset = aPoint.Offset(); offset; --offset) {
-      if (textFragment.CharAt(AssertedCast<int32_t>(offset - 1)) ==
-          HTMLEditUtils::kNewLine) {
+      if (textFragment.CharAt(offset - 1) == HTMLEditUtils::kNewLine) {
         return EditorDOMPointType(textNode, offset - 1);
       }
     }
@@ -1769,15 +1870,15 @@ class HTMLEditUtils final {
   static EditorDOMPointType GetInclusiveNextPreformattedNewLineInTextNode(
       const ArgEditorDOMPointType& aPoint) {
     if (!aPoint.IsInTextNode() || aPoint.IsEndOfContainer() ||
-        !EditorUtils::IsNewLinePreformatted(*aPoint.ContainerAsText())) {
+        !EditorUtils::IsNewLinePreformatted(
+            *aPoint.template ContainerAs<Text>())) {
       return EditorDOMPointType();
     }
-    Text* textNode = aPoint.ContainerAsText();
+    Text* textNode = aPoint.template ContainerAs<Text>();
     const nsTextFragment& textFragment = textNode->TextFragment();
     for (uint32_t offset = aPoint.Offset(); offset < textFragment.GetLength();
          ++offset) {
-      if (textFragment.CharAt(AssertedCast<int32_t>(offset)) ==
-          HTMLEditUtils::kNewLine) {
+      if (textFragment.CharAt(offset) == HTMLEditUtils::kNewLine) {
         return EditorDOMPointType(textNode, offset);
       }
     }
@@ -1856,6 +1957,19 @@ class HTMLEditUtils final {
       const Element& aEditingHost);
 
   /**
+   * ComputePointToPutCaretInElementIfOutside() returns a good point in aElement
+   * to put caret if aCurrentPoint is outside of aElement.
+   *
+   * @param aElement        The result is a point in aElement.
+   * @param aCurrentPoint   The current (candidate) caret point.  Only if this
+   *                        is outside aElement, returns a point in aElement.
+   */
+  template <typename EditorDOMPointType, typename EditorDOMPointTypeInput>
+  static Result<EditorDOMPointType, nsresult>
+  ComputePointToPutCaretInElementIfOutside(
+      const Element& aElement, const EditorDOMPointTypeInput& aCurrentPoint);
+
+  /**
    * Content-based query returns true if <aProperty aAttribute=aValue> effects
    * aNode.  If <aProperty aAttribute=aValue> contains aNode, but
    * <aProperty aAttribute=SomeOtherValue> also contains aNode and the second is
@@ -1904,6 +2018,40 @@ class HTMLEditUtils final {
     }
     return false;
   }
+
+  /**
+   * CollectChildren() collects child nodes of aNode (starting from
+   * first editable child, but may return non-editable children after it).
+   *
+   * @param aNode               Parent node of retrieving children.
+   * @param aOutArrayOfContents [out] This method will inserts found children
+   *                            into this array.
+   * @param aIndexToInsertChildren      Starting from this index, found
+   *                                    children will be inserted to the array.
+   * @param aOptions            Options to scan the children.
+   * @return                    Number of found children.
+   */
+  static size_t CollectChildren(
+      nsINode& aNode, nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+      size_t aIndexToInsertChildren, const CollectChildrenOptions& aOptions);
+
+  /**
+   * CollectEmptyInlineContainerDescendants() appends empty inline elements in
+   * aNode to aOutArrayOfContents.  Although it's array of nsIContent, the
+   * instance will be elements.
+   *
+   * @param aNode               The node whose descendants may have empty inline
+   *                            elements.
+   * @param aOutArrayOfContents [out] This method will append found descendants
+   *                            into this array.
+   * @param aOptions            The option which element should be treated as
+   *                            empty.
+   * @return                    Number of found elements.
+   */
+  static size_t CollectEmptyInlineContainerDescendants(
+      const nsINode& aNode,
+      nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+      const EmptyCheckOptions& aOptions);
 
  private:
   static bool CanNodeContain(nsHTMLTag aParentTagId, nsHTMLTag aChildTagId);
@@ -2036,9 +2184,12 @@ class MOZ_STACK_CLASS SelectedTableCellScanner final {
     }
     mSelectedCellElements.SetCapacity(aSelection.RangeCount());
     mSelectedCellElements.AppendElement(*firstSelectedCellElement);
-    for (uint32_t i = 1; i < aSelection.RangeCount(); i++) {
+    const uint32_t rangeCount = aSelection.RangeCount();
+    for (const uint32_t i : IntegerRange(1u, rangeCount)) {
+      MOZ_ASSERT(aSelection.RangeCount() == rangeCount);
       nsRange* range = aSelection.GetRangeAt(i);
-      if (NS_WARN_IF(!range) || NS_WARN_IF(!range->IsPositioned())) {
+      if (MOZ_UNLIKELY(NS_WARN_IF(!range)) ||
+          MOZ_UNLIKELY(NS_WARN_IF(!range->IsPositioned()))) {
         continue;  // Shouldn't occur in normal conditions.
       }
       // Just ignore selection ranges which do not select only one table
@@ -2051,32 +2202,7 @@ class MOZ_STACK_CLASS SelectedTableCellScanner final {
     }
   }
 
-  explicit SelectedTableCellScanner(const AutoRangeArray& aRanges) {
-    if (aRanges.Ranges().IsEmpty()) {
-      return;
-    }
-    Element* firstSelectedCellElement =
-        HTMLEditUtils::GetTableCellElementIfOnlyOneSelected(
-            aRanges.FirstRangeRef());
-    if (!firstSelectedCellElement) {
-      return;  // We're not in table cell selection mode.
-    }
-    mSelectedCellElements.SetCapacity(aRanges.Ranges().Length());
-    mSelectedCellElements.AppendElement(*firstSelectedCellElement);
-    for (uint32_t i = 1; i < aRanges.Ranges().Length(); i++) {
-      nsRange* range = aRanges.Ranges()[i];
-      if (NS_WARN_IF(!range) || NS_WARN_IF(!range->IsPositioned())) {
-        continue;  // Shouldn't occur in normal conditions.
-      }
-      // Just ignore selection ranges which do not select only one table
-      // cell element.  This is possible case if web apps sets multiple
-      // selections and first range selects a table cell element.
-      if (Element* selectedCellElement =
-              HTMLEditUtils::GetTableCellElementIfOnlyOneSelected(*range)) {
-        mSelectedCellElements.AppendElement(*selectedCellElement);
-      }
-    }
-  }
+  explicit SelectedTableCellScanner(const AutoRangeArray& aRanges);
 
   bool IsInTableCellSelectionMode() const {
     return !mSelectedCellElements.IsEmpty();

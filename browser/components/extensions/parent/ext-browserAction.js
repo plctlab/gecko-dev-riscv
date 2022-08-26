@@ -111,7 +111,7 @@ class BrowserAction extends BrowserActionBase {
   }
 }
 
-this.browserAction = class extends ExtensionAPI {
+this.browserAction = class extends ExtensionAPIPersistent {
   static for(extension) {
     return browserActionMap.get(extension);
   }
@@ -202,6 +202,7 @@ this.browserAction = class extends ExtensionAPI {
       tooltiptext: this.action.getProperty(null, "title"),
       defaultArea: browserAreas[this.action.getDefaultArea()],
       showInPrivateBrowsing: this.extension.privateBrowsingAllowed,
+      disallowSubView: true,
 
       // Don't attempt to load properties from the built-in widget string
       // bundle.
@@ -212,6 +213,8 @@ this.browserAction = class extends ExtensionAPI {
         view.id = this.viewId;
         view.setAttribute("flex", "1");
         view.setAttribute("extension", true);
+        view.setAttribute("neverhidden", true);
+        view.setAttribute("disallowSubView", true);
 
         document.getElementById("appMenu-viewCache").appendChild(view);
 
@@ -449,13 +452,7 @@ this.browserAction = class extends ExtensionAPI {
         ];
 
         if (contexts.includes(menu.id) && node && node.contains(trigger)) {
-          const action =
-            this.extension.manifestVersion < 3 ? "onBrowserAction" : "onAction";
-          global.actionContextMenu({
-            extension: this.extension,
-            [action]: true,
-            menu: menu,
-          });
+          this.updateContextMenu(menu);
         }
         break;
 
@@ -464,9 +461,11 @@ this.browserAction = class extends ExtensionAPI {
           return;
         }
 
-        let { gBrowser } = window;
-        if (this.action.getProperty(gBrowser.selectedTab, "enabled")) {
-          this.action.dispatchClick(gBrowser.selectedTab, {
+        let tab = window.gBrowser.selectedTab;
+        if (this.action.getProperty(tab, "enabled")) {
+          this.action.setActiveTabForPreload(null);
+          this.tabManager.addActiveTabPermission(tab);
+          this.action.dispatchClick(tab, {
             button: 1,
             modifiers: clickModifiersFromEvent(event),
           });
@@ -475,6 +474,23 @@ this.browserAction = class extends ExtensionAPI {
         }
         break;
     }
+  }
+
+  /**
+   * Updates the given context menu with the extension's actions.
+   *
+   * @param {Element} menu
+   *        The context menu element that should be updated.
+   */
+  updateContextMenu(menu) {
+    const action =
+      this.extension.manifestVersion < 3 ? "onBrowserAction" : "onAction";
+
+    global.actionContextMenu({
+      extension: this.extension,
+      [action]: true,
+      menu,
+    });
   }
 
   /**
@@ -512,15 +528,12 @@ this.browserAction = class extends ExtensionAPI {
       pendingPopup.destroy();
     }
 
-    let fixedWidth =
-      this.widget.areaType == CustomizableUI.TYPE_MENU_PANEL ||
-      this.widget.forWindow(window).overflowed;
     return new ViewPopup(
       this.extension,
       window,
       popupURL,
       this.browserStyle,
-      fixedWidth,
+      false,
       blockParser
     );
   }
@@ -631,9 +644,35 @@ this.browserAction = class extends ExtensionAPI {
     }
   }
 
+  PERSISTENT_EVENTS = {
+    onClicked({ context, fire }) {
+      const { extension } = this;
+      const { tabManager } = extension;
+      async function listener(_event, tab, clickInfo) {
+        if (fire.wakeup) {
+          await fire.wakeup();
+        }
+        // TODO: we should double-check if the tab is already being closed by the time
+        // the background script got started and we converted the primed listener.
+        context?.withPendingBrowser(tab.linkedBrowser, () =>
+          fire.sync(tabManager.convert(tab), clickInfo)
+        );
+      }
+      this.on("click", listener);
+      return {
+        unregister: () => {
+          this.off("click", listener);
+        },
+        convert(newFire, extContext) {
+          fire = newFire;
+          context = extContext;
+        },
+      };
+    },
+  };
+
   getAPI(context) {
     let { extension } = context;
-    let { tabManager } = extension;
     let { action } = this;
     let namespace = extension.manifestVersion < 3 ? "browserAction" : "action";
 
@@ -643,19 +682,12 @@ this.browserAction = class extends ExtensionAPI {
 
         onClicked: new EventManager({
           context,
-          name: `${namespace}.onClicked`,
+          // module name is "browserAction" because it the name used in the
+          // ext-browser.json, indipendently from the manifest version.
+          module: "browserAction",
+          event: "onClicked",
           inputHandling: true,
-          register: fire => {
-            let listener = (event, tab, clickInfo) => {
-              context.withPendingBrowser(tab.linkedBrowser, () =>
-                fire.sync(tabManager.convert(tab), clickInfo)
-              );
-            };
-            this.on("click", listener);
-            return () => {
-              this.off("click", listener);
-            };
-          },
+          extensionApi: this,
         }).api(),
 
         openPopup: () => {

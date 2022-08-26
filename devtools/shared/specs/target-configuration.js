@@ -14,11 +14,10 @@ const {
 types.addDictType("target-configuration.configuration", {
   cacheDisabled: "nullable:boolean",
   colorSchemeSimulation: "nullable:string",
+  customFormatters: "nullable:boolean",
   customUserAgent: "nullable:string",
-  isNewPerfPanelEnabled: "nullable:boolean",
   javascriptEnabled: "nullable:boolean",
   overrideDPPX: "nullable:number",
-  paintFlashing: "nullable:boolean",
   printSimulationEnabled: "nullable:boolean",
   rdmPaneOrientation: "nullable:json",
   reloadOnTouchSimulationToggle: "nullable:boolean",

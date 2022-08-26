@@ -1,8 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
 var {
@@ -10,27 +13,37 @@ var {
   UrlbarProvider,
   UrlbarQueryContext,
   UrlbarUtils,
-} = ChromeUtils.import("resource:///modules/UrlbarUtils.jsm");
+} = ChromeUtils.importESModule("resource:///modules/UrlbarUtils.sys.mjs");
+
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+  UrlbarController: "resource:///modules/UrlbarController.sys.mjs",
+  UrlbarInput: "resource:///modules/UrlbarInput.sys.mjs",
+  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+});
+
 XPCOMUtils.defineLazyModuleGetters(this, {
   AddonTestUtils: "resource://testing-common/AddonTestUtils.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   HttpServer: "resource://testing-common/httpd.js",
-  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   TestUtils: "resource://testing-common/TestUtils.jsm",
-  UrlbarController: "resource:///modules/UrlbarController.jsm",
-  UrlbarInput: "resource:///modules/UrlbarInput.jsm",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
-  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.jsm",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
-  UrlbarResult: "resource:///modules/UrlbarResult.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.jsm",
 });
 const { sinon } = ChromeUtils.import("resource://testing-common/Sinon.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "QuickSuggestTestUtils", () => {
+  const { QuickSuggestTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/QuickSuggestTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
+});
 
 SearchTestUtils.init(this);
 AddonTestUtils.init(this, false);
@@ -44,7 +57,7 @@ AddonTestUtils.createAppInfo(
 const SUGGESTIONS_ENGINE_NAME = "Suggestions";
 const TAIL_SUGGESTIONS_ENGINE_NAME = "Tail Suggestions";
 
-add_task(async function initXPCShellDependencies() {
+add_setup(async function initXPCShellDependencies() {
   await UrlbarTestUtils.initXPCShellDependencies();
 });
 
@@ -361,7 +374,7 @@ function frecencyForUrl(aURI) {
   let url = aURI;
   if (aURI instanceof Ci.nsIURI) {
     url = aURI.spec;
-  } else if (aURI instanceof URL) {
+  } else if (URL.isInstance(aURI)) {
     url = aURI.href;
   }
   let stmt = DBConn().createStatement(
@@ -824,6 +837,7 @@ async function check_results({
   incompleteSearch,
   autofilled,
   completed,
+  hasAutofillTitle,
   matches = [],
 } = {}) {
   if (!context) {
@@ -876,6 +890,11 @@ async function check_results({
         "The completed autofill value is correct."
       );
     }
+    Assert.equal(
+      context.results[0].autofill.hasTitle,
+      hasAutofillTitle,
+      "The hasTitle flag is correct."
+    );
   }
   if (context.results.length != matches.length) {
     info("Actual results: " + JSON.stringify(context.results));
@@ -921,6 +940,11 @@ async function check_results({
       expected.heuristic,
       `result.heuristic at result index ${i}`
     );
+    Assert.equal(
+      actual.isBestMatch,
+      expected.isBestMatch,
+      `result.isBestMatch at result index ${i}`
+    );
     if (expected.providerName) {
       Assert.equal(
         actual.providerName,
@@ -928,11 +952,14 @@ async function check_results({
         `result.providerName at result index ${i}`
       );
     }
-    Assert.deepEqual(
-      getPayload(actual),
-      getPayload(expected),
-      `result.payload at result index ${i}`
-    );
+
+    if (expected.payload) {
+      Assert.deepEqual(
+        getPayload(actual),
+        getPayload(expected),
+        `result.payload at result index ${i}`
+      );
+    }
   }
 }
 

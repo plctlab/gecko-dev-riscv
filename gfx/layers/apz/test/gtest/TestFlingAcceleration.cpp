@@ -14,8 +14,8 @@ class APZCFlingAccelerationTester : public APZCTreeManagerTester {
   void SetUp() {
     APZCTreeManagerTester::SetUp();
     const char* treeShape = "x";
-    nsIntRegion layerVisibleRegion[] = {
-        nsIntRegion(IntRect(0, 0, 800, 1000)),
+    LayerIntRegion layerVisibleRegion[] = {
+        LayerIntRect(0, 0, 800, 1000),
     };
     CreateScrollData(treeShape, layerVisibleRegion);
     SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
@@ -39,8 +39,7 @@ class APZCFlingAccelerationTester : public APZCTreeManagerTester {
     APZEventResult result = TouchDown(apzc, aStartPoint, mcc->Time());
 
     // Allowed touch behaviours must be set after sending touch-start.
-    if (result.GetStatus() != nsEventStatus_eConsumeNoDefault &&
-        StaticPrefs::layout_css_touch_action_enabled()) {
+    if (result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
       SetDefaultAllowedTouchBehavior(apzc, result.mInputBlockId);
     }
 

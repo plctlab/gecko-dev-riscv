@@ -22,8 +22,6 @@
     <vbox class="panel-subview-body">
       <vbox id="appMenu-proton-addon-banners"/>
       <toolbarbutton id="appMenu-proton-update-banner" class="panel-banner-item"
-                     data-l10n-id="appmenuitem-update-banner3"
-                     data-l10n-attrs="label-update-downloading, label-update-available, label-update-manual, label-update-unsupported, label-update-restart"
                      oncommand="PanelUI._onBannerItemSelected(event)"
                      wrap="true"
                      hidden="true"/>
@@ -90,11 +88,7 @@
                      class="subviewbutton"
                      data-l10n-id="appmenuitem-print"
                      key="printKb"
-#ifdef XP_MACOSX
                      command="cmd_print"
-#else
-                     command="cmd_printPreview"
-#endif
                      />
       <toolbarbutton id="appMenu-save-file-button2"
                      class="subviewbutton"
@@ -106,7 +100,7 @@
                      data-l10n-id="appmenuitem-find-in-page"
                      key="key_find"
                      command="cmd_find"/>
-      <toolbaritem id="appMenu-zoom-controls2" class="subviewbutton toolbaritem-combined-buttons" closemenu="none">
+      <toolbaritem id="appMenu-zoom-controls" class="subviewbutton toolbaritem-combined-buttons" closemenu="none">
         <label class="toolbarbutton-text" data-l10n-id="appmenuitem-zoom"/>
         <toolbarbutton id="appMenu-zoomReduce-button2"
                        class="subviewbutton subviewbutton-iconic"
@@ -125,11 +119,17 @@
         <toolbarbutton id="appMenu-fullscreen-button2"
                        class="subviewbutton subviewbutton-iconic"
                        data-l10n-id="appmenuitem-fullscreen"
-                       observes="View:FullScreen"
                        type="checkbox"
-                       closemenu="auto"
-                       onclick="if (event.button == 0) this.closest('panel').hidePopup();"
-                       tooltip="dynamic-shortcut-tooltip"/>
+# Note that we're custom-handling this click to make sure the panel disappears
+# before entering fullscreen, as it does some odd moving about on the screen
+# in the middle of the fullscreen transition otherwise.
+                       oncommand="
+                         this.closest('panel').hidePopup();
+                         setTimeout(() => BrowserFullScreen(), 0);
+                       "
+                       tooltip="dynamic-shortcut-tooltip">
+           <observes element="View:FullScreen" attribute="checked"/>
+        </toolbarbutton>
       </toolbaritem>
       <toolbarseparator/>
       <toolbarbutton id="appMenu-settings-button"
@@ -216,11 +216,11 @@
       <toolbarbutton id="panelMenuBookmarkThisPage"
                      class="subviewbutton"
                      command="Browser:AddBookmarkAs"
-                     onclick="PanelUI.hide();"/>
+                     />
       <toolbarbutton id="panelMenu_searchBookmarks"
                      data-l10n-id="bookmarks-search"
                      class="subviewbutton"
-                     oncommand="PlacesCommandHook.searchBookmarks(); PanelUI.hide();"/>
+                     oncommand="PlacesCommandHook.searchBookmarks();"/>
       <toolbarbutton id="panelMenu_viewBookmarksToolbar"
                      class="subviewbutton"
                      data-l10n-id="bookmarks-tools-toolbar-visibility-panel"
@@ -245,7 +245,7 @@
                    data-l10n-id="bookmarks-manage-bookmarks"
                    class="subviewbutton panel-subview-footer-button"
                    command="Browser:ShowAllBookmarks"
-                   onclick="PanelUI.hide();"/>
+                   />
   </panelview>
 
   <panelview id="PanelUI-profiler" flex="1" descriptionheightworkaround="true">
@@ -270,13 +270,13 @@
                 <image class="PanelUI-profiler-info-icon" />
               </vbox>
             </hbox>
-            <label data-l10n-id="profiler-popup-description-title" />
-            <description data-l10n-id="profiler-popup-description" />
+            <label class="PanelUI-profiler-description-title" data-l10n-id="profiler-popup-description-title" />
+            <description class="PanelUI-profiler-description" data-l10n-id="profiler-popup-description" />
             <hbox>
               <button id="PanelUI-profiler-learn-more"
+                      class="PanelUI-profiler-button-link text-link"
                       tabindex="-1"
-                      data-l10n-id="profiler-popup-learn-more" />
-              <space flex="1" />
+                      data-l10n-id="profiler-popup-learn-more-button" />
             </hbox>
           </vbox>
         </hbox>
@@ -294,15 +294,16 @@
                   attribute will get updated to "true" once the presets have been
                   built. -->
               <menuitem id="PanelUI-profiler-presets-custom"
-                        data-l10n-id="profiler-popup-presets-custom"
+                        data-l10n-id="profiler-popup-presets-custom-label"
                         value="custom"/>
             </menupopup>
           </menulist>
           <!-- The following description gets inserted dynamically. -->
           <description id="PanelUI-profiler-content-description" />
-          <hbox id="PanelUI-profiler-content-custom">
-            <button id="PanelUI-profiler-content-custom-button"
-                    data-l10n-id="profiler-popup-edit-settings">
+          <hbox>
+            <button id="PanelUI-profiler-content-edit-settings"
+                    class="PanelUI-profiler-button-link text-link"
+                    data-l10n-id="profiler-popup-edit-settings-button">
             </button>
           </hbox>
         </vbox>
@@ -312,8 +313,6 @@
           <label class="PanelUI-profiler-recording-label" data-l10n-id="profiler-popup-recording-screen" />
           <spacer flex="1" />
         </hbox>
-        <description id="PanelUI-profiler-locked"
-                     data-l10n-id="profiler-popup-disabled" />
         <hbox id="PanelUI-profiler-inactive" class="PanelUI-profiler-buttons">
           <spacer flex="1" />
           <vbox>
@@ -407,6 +406,7 @@
   <panelview id="PanelUI-savetopocket"
              flex="1" class="PanelUI-subView"
              remote="true"
+             neverhidden="true"
              closemenu="none">
     <vbox class="PanelUI-savetopocket-container">
     </vbox>
@@ -679,5 +679,26 @@
               class="panelMenu-toggleWhatsNew-checkbox"
               onclick="ToolbarPanelHub.toggleWhatsNewPref(event)"
               data-l10n-id="whatsnew-panel-footer-checkbox"/>
+  </panelview>
+
+  <panelview id="unified-extensions-view"
+             class="cui-widget-panelview PanelUI-subView"
+             flex="1">
+    <vbox class="unified-extensions-panel-header">
+      <html:h1 data-l10n-id="unified-extensions-header-title"/>
+    </vbox>
+
+    <toolbarseparator />
+
+    <vbox class="panel-subview-body unified-extensions-list">
+      <!-- active visible extensions go here -->
+    </vbox>
+
+    <toolbarseparator />
+
+    <toolbarbutton id="unified-extensions-manage-extensions"
+                   class="subviewbutton panel-subview-footer-button unified-extensions-manage-extensions"
+                   data-l10n-id="unified-extensions-manage-extensions"
+                   oncommand="BrowserOpenAddonsMgr('addons://list/extension');" />
   </panelview>
 </html:template>

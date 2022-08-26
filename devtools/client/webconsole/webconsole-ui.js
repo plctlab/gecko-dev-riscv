@@ -6,19 +6,18 @@
 
 const EventEmitter = require("devtools/shared/event-emitter");
 const Services = require("Services");
-const {
-  WebConsoleConnectionProxy,
-} = require("devtools/client/webconsole/webconsole-connection-proxy");
 const KeyShortcuts = require("devtools/client/shared/key-shortcuts");
 const { l10n } = require("devtools/client/webconsole/utils/messages");
 
 var ChromeUtils = require("ChromeUtils");
 const { BrowserLoader } = ChromeUtils.import(
-  "resource://devtools/client/shared/browser-loader.js"
+  "resource://devtools/shared/loader/browser-loader.js"
 );
 const {
   getAdHocFrontOrPrimitiveGrip,
 } = require("devtools/client/fronts/object");
+
+const { PREFS } = require("devtools/client/webconsole/constants");
 
 const FirefoxDataProvider = require("devtools/client/netmonitor/src/connector/firefox-data-provider");
 
@@ -43,6 +42,7 @@ loader.lazyRequireGetter(
 const ZoomKeys = require("devtools/client/shared/zoom-keys");
 
 const PREF_SIDEBAR_ENABLED = "devtools.webconsole.sidebarToggle";
+const PREF_BROWSERTOOLBOX_SCOPE = "devtools.browsertoolbox.scope";
 
 /**
  * A WebConsoleUI instance is an interactive console initialized *per target*
@@ -62,7 +62,7 @@ class WebConsoleUI {
     this.isBrowserConsole = this.hud.isBrowserConsole;
 
     this.isBrowserToolboxConsole =
-      this.hud.commands.descriptorFront.isParentProcessDescriptor &&
+      this.hud.commands.descriptorFront.isBrowserProcessDescriptor &&
       !this.isBrowserConsole;
     this.fissionSupport = Services.prefs.getBoolPref(
       constants.PREFS.FEATURES.BROWSER_TOOLBOX_FISSION
@@ -77,7 +77,16 @@ class WebConsoleUI {
     this._onTargetAvailable = this._onTargetAvailable.bind(this);
     this._onTargetDestroyed = this._onTargetDestroyed.bind(this);
     this._onResourceAvailable = this._onResourceAvailable.bind(this);
-    this._onResourceUpdated = this._onResourceUpdated.bind(this);
+    this._onNetworkResourceUpdated = this._onNetworkResourceUpdated.bind(this);
+    this.clearPrivateMessages = this.clearPrivateMessages.bind(this);
+    this._onScopePrefChanged = this._onScopePrefChanged.bind(this);
+
+    if (this.isBrowserConsole) {
+      Services.prefs.addObserver(
+        PREF_BROWSERTOOLBOX_SCOPE,
+        this._onScopePrefChanged
+      );
+    }
 
     EventEmitter.decorate(this);
   }
@@ -87,51 +96,7 @@ class WebConsoleUI {
    * @type object
    */
   get webConsoleFront() {
-    const proxy = this.getProxy();
-
-    if (!proxy) {
-      return null;
-    }
-
-    return proxy.webConsoleFront;
-  }
-
-  /**
-   * Return the main target proxy, i.e. the proxy for MainProcessTarget in BrowserConsole,
-   * and the proxy for the target passed from the Toolbox to WebConsole.
-   *
-   * @returns {WebConsoleConnectionProxy}
-   */
-  getProxy() {
-    return this.proxy;
-  }
-
-  /**
-   * Return all the proxies we're currently managing (i.e. the "main" one, and the
-   * possible additional ones).
-   *
-   * @param {Boolean} filterDisconnectedProxies: True by default, if false, this
-   *   function also returns not-already-connected or already disconnected proxies.
-   *
-   * @returns {Array<WebConsoleConnectionProxy>}
-   */
-  getAllProxies(filterDisconnectedProxies = true) {
-    let proxies = [this.getProxy()];
-
-    if (this.additionalProxies) {
-      proxies = proxies.concat([...this.additionalProxies.values()]);
-    }
-
-    // Ignore Fronts that are already destroyed
-    if (filterDisconnectedProxies) {
-      proxies = proxies.filter(proxy => {
-        return (
-          proxy && proxy.webConsoleFront && !!proxy.webConsoleFront.actorID
-        );
-      });
-    }
-
-    return proxies;
+    return this._webConsoleFront;
   }
 
   /**
@@ -179,20 +144,17 @@ class WebConsoleUI {
   }
 
   destroy() {
-    if (!this.hud) {
+    if (this._destroyed) {
       return;
     }
+
+    this._destroyed = true;
 
     this.React = this.ReactDOM = this.FrameView = null;
 
     if (this.wrapper) {
       this.wrapper.getStore().dispatch(START_IGNORE_ACTION);
-    }
-
-    if (this.outputNode) {
-      // We do this because it's much faster than letting React handle the ConsoleOutput
-      // unmounting.
-      this.outputNode.innerHTML = "";
+      this.wrapper.destroy();
     }
 
     if (this.jsterm) {
@@ -207,12 +169,19 @@ class WebConsoleUI {
       toolbox.off("select", this._onChangeSplitConsoleState);
     }
 
+    if (this.isBrowserConsole) {
+      Services.prefs.removeObserver(
+        PREF_BROWSERTOOLBOX_SCOPE,
+        this._onScopePrefChanged
+      );
+    }
+
     // Stop listening for targets
-    this.hud.commands.targetCommand.unwatchTargets(
-      this.hud.commands.targetCommand.ALL_TYPES,
-      this._onTargetAvailable,
-      this._onTargetDestroy
-    );
+    this.hud.commands.targetCommand.unwatchTargets({
+      types: this.hud.commands.targetCommand.ALL_TYPES,
+      onAvailable: this._onTargetAvailable,
+      onDestroyed: this._onTargetDestroyed,
+    });
 
     const resourceCommand = this.hud.resourceCommand;
     resourceCommand.unwatchResources(
@@ -220,25 +189,20 @@ class WebConsoleUI {
         resourceCommand.TYPES.CONSOLE_MESSAGE,
         resourceCommand.TYPES.ERROR_MESSAGE,
         resourceCommand.TYPES.PLATFORM_MESSAGE,
-        resourceCommand.TYPES.NETWORK_EVENT,
-        resourceCommand.TYPES.NETWORK_EVENT_STACKTRACE,
         resourceCommand.TYPES.CLONED_CONTENT_PROCESS_MESSAGE,
         resourceCommand.TYPES.DOCUMENT_EVENT,
       ],
-      {
-        onAvailable: this._onResourceAvailable,
-        onUpdated: this._onResourceUpdated,
-      }
+      { onAvailable: this._onResourceAvailable }
     );
     resourceCommand.unwatchResources([resourceCommand.TYPES.CSS_MESSAGE], {
       onAvailable: this._onResourceAvailable,
     });
 
-    for (const proxy of this.getAllProxies()) {
-      proxy.disconnect();
-    }
-    this.proxy = null;
-    this.additionalProxies = null;
+    this.stopWatchingNetworkResources();
+
+    this._webConsoleFront = null;
+    this.networkDataProvider.destroy();
+    this.networkDataProvider = null;
 
     // Nullify `hud` last as it nullify also target which is used on destroy
     this.window = this.hud = this.wrapper = null;
@@ -255,7 +219,7 @@ class WebConsoleUI {
    * @param object event
    *        If the event exists, calls preventDefault on it.
    */
-  clearOutput(clearStorage, event) {
+  async clearOutput(clearStorage, event) {
     if (event) {
       event.preventDefault();
     }
@@ -264,14 +228,39 @@ class WebConsoleUI {
     }
 
     if (clearStorage) {
-      this.clearMessagesCache();
+      await this.clearMessagesCache();
     }
     this.emitForTests("messages-cleared");
   }
 
-  clearMessagesCache() {
-    for (const proxy of this.getAllProxies()) {
-      proxy.webConsoleFront.clearMessagesCache();
+  async clearMessagesCache() {
+    if (this._destroyed) {
+      return;
+    }
+
+    const {
+      hasWebConsoleClearMessagesCacheAsync,
+    } = this.hud.commands.client.mainRoot.traits;
+
+    // This can be called during console destruction and getAllFronts would reject in such case.
+    try {
+      const consoleFronts = await this.hud.commands.targetCommand.getAllFronts(
+        this.hud.commands.targetCommand.ALL_TYPES,
+        "console"
+      );
+      const promises = [];
+      for (const consoleFront of consoleFronts) {
+        // @backward-compat { version 104 } clearMessagesCacheAsync was added in 104
+        promises.push(
+          hasWebConsoleClearMessagesCacheAsync
+            ? consoleFront.clearMessagesCacheAsync()
+            : consoleFront.clearMessagesCache()
+        );
+      }
+      await Promise.all(promises);
+      this.emitForTests("messages-cache-cleared");
+    } catch (e) {
+      console.warn("Exception in clearMessagesCache", e);
     }
   }
 
@@ -281,10 +270,12 @@ class WebConsoleUI {
    * This method emits the "private-messages-cleared" notification.
    */
   clearPrivateMessages() {
-    if (this.wrapper) {
-      this.wrapper.dispatchPrivateMessagesClear();
-      this.emitForTests("private-messages-cleared");
+    if (this._destroyed) {
+      return;
     }
+
+    this.wrapper.dispatchPrivateMessagesClear();
+    this.emitForTests("private-messages-cleared");
   }
 
   inspectObjectActor(objectActor) {
@@ -302,6 +293,13 @@ class WebConsoleUI {
       true
     );
     return this.wrapper;
+  }
+
+  disableAllNetworkMessages() {
+    if (this._destroyed) {
+      return;
+    }
+    this.wrapper.dispatchNetworkMessagesDisable();
   }
 
   getPanelWindow() {
@@ -323,9 +321,7 @@ class WebConsoleUI {
    *         A promise object that is resolved/reject based on the proxies connections.
    */
   async _attachTargets() {
-    this.additionalProxies = new Map();
-
-    const { commands } = this.hud;
+    const { commands, resourceCommand } = this.hud;
     this.networkDataProvider = new FirefoxDataProvider({
       commands,
       actions: {
@@ -341,40 +337,57 @@ class WebConsoleUI {
     // - workers, for similar reason. When we open a toolbox
     // for just a worker, the top level target is a worker target.
     // - processes, as we want to spawn additional proxies for them.
-    await commands.targetCommand.watchTargets(
-      commands.targetCommand.ALL_TYPES,
-      this._onTargetAvailable,
-      this._onTargetDestroy
-    );
+    await commands.targetCommand.watchTargets({
+      types: this.hud.commands.targetCommand.ALL_TYPES,
+      onAvailable: this._onTargetAvailable,
+      onDestroyed: this._onTargetDestroyed,
+    });
 
-    const resourceCommand = commands.resourceCommand;
     await resourceCommand.watchResources(
       [
         resourceCommand.TYPES.CONSOLE_MESSAGE,
         resourceCommand.TYPES.ERROR_MESSAGE,
         resourceCommand.TYPES.PLATFORM_MESSAGE,
-        resourceCommand.TYPES.NETWORK_EVENT,
-        resourceCommand.TYPES.NETWORK_EVENT_STACKTRACE,
         resourceCommand.TYPES.CLONED_CONTENT_PROCESS_MESSAGE,
         resourceCommand.TYPES.DOCUMENT_EVENT,
       ],
+      { onAvailable: this._onResourceAvailable }
+    );
+
+    if (this.isBrowserConsole || this.isBrowserToolboxConsole) {
+      const shouldEnableNetworkMonitoring = Services.prefs.getBoolPref(
+        PREFS.UI.ENABLE_NETWORK_MONITORING
+      );
+      if (shouldEnableNetworkMonitoring) {
+        await this.startWatchingNetworkResources();
+      } else {
+        await this.stopWatchingNetworkResources();
+      }
+    } else {
+      // We should always watch for network resources in the webconsole
+      await this.startWatchingNetworkResources();
+    }
+  }
+
+  async startWatchingNetworkResources() {
+    const { commands, resourceCommand } = this.hud;
+    await resourceCommand.watchResources(
+      [
+        resourceCommand.TYPES.NETWORK_EVENT,
+        resourceCommand.TYPES.NETWORK_EVENT_STACKTRACE,
+      ],
       {
         onAvailable: this._onResourceAvailable,
-        onUpdated: this._onResourceUpdated,
+        onUpdated: this._onNetworkResourceUpdated,
       }
     );
 
-    // @backward-compat { version 93 } Starts supporting setSaveRequestAndResponseBodies.
-    //                                 But until we enable NETWORK_EVENT server watcher in the browser toolbox
-    //                                 we still have to support the console actor codepath.
-    //                                 We will be able to remove the trait check via hasTargetWatcherSupport
-    //                                 once we drop support for 92.
+    // Until we enable NETWORK_EVENT server watcher in the browser toolbox
+    // we still have to support the console actor codepath.
     const hasNetworkResourceCommandSupport = resourceCommand.hasResourceCommandSupport(
       resourceCommand.TYPES.NETWORK_EVENT
     );
-    const supportsWatcherRequest = commands.targetCommand.hasTargetWatcherSupport(
-      "saveRequestAndResponseBodies"
-    );
+    const supportsWatcherRequest = commands.targetCommand.hasTargetWatcherSupport();
     if (hasNetworkResourceCommandSupport && supportsWatcherRequest) {
       const networkFront = await commands.watcherFront.getNetworkParentActor();
       //
@@ -387,6 +400,23 @@ class WebConsoleUI {
         );
       await networkFront.setSaveRequestAndResponseBodies(saveBodies);
     }
+  }
+
+  async stopWatchingNetworkResources() {
+    if (this._destroyed) {
+      return;
+    }
+
+    await this.hud.resourceCommand.unwatchResources(
+      [
+        this.hud.resourceCommand.TYPES.NETWORK_EVENT,
+        this.hud.resourceCommand.TYPES.NETWORK_EVENT_STACKTRACE,
+      ],
+      {
+        onAvailable: this._onResourceAvailable,
+        onUpdated: this._onNetworkResourceUpdated,
+      }
+    );
   }
 
   handleDocumentEvent(resource) {
@@ -416,6 +446,9 @@ class WebConsoleUI {
    *        object by the page itself.
    */
   async handleNavigated({ hasNativeConsoleAPI }) {
+    // Updates instant evaluation on page navigation
+    this.wrapper.dispatchUpdateInstantEvaluationResultForCurrentExpression();
+
     // Wait for completion of any async dispatch before notifying that the console
     // is fully updated after a page reload
     await this.wrapper.waitAsyncDispatches();
@@ -439,9 +472,10 @@ class WebConsoleUI {
   }
 
   _onResourceAvailable(resources) {
-    if (!this.hud) {
+    if (this._destroyed) {
       return;
     }
+
     const messages = [];
     for (const resource of resources) {
       const { TYPES } = this.hud.resourceCommand;
@@ -485,16 +519,20 @@ class WebConsoleUI {
     this.wrapper.dispatchMessagesAdd(messages);
   }
 
-  _onResourceUpdated(updates) {
-    const messageUpdates = updates
-      .filter(
-        ({ resource }) =>
-          resource.resourceType == this.hud.resourceCommand.TYPES.NETWORK_EVENT
-      )
-      .map(({ resource }) => {
+  _onNetworkResourceUpdated(updates) {
+    if (this._destroyed) {
+      return;
+    }
+
+    const messageUpdates = [];
+    for (const { resource } of updates) {
+      if (
+        resource.resourceType == this.hud.resourceCommand.TYPES.NETWORK_EVENT
+      ) {
         this.networkDataProvider?.onNetworkResourceUpdated(resource);
-        return resource;
-      });
+        messageUpdates.push(resource);
+      }
+    }
     this.wrapper.dispatchMessagesUpdate(messageUpdates);
   }
 
@@ -509,70 +547,57 @@ class WebConsoleUI {
    *        composed of a WindowGlobalTargetFront or ContentProcessTargetFront.
    */
   async _onTargetAvailable({ targetFront }) {
-    const dispatchTargetAvailable = () => {
-      const store = this.wrapper && this.wrapper.getStore();
-      if (store) {
-        this.wrapper.getStore().dispatch({
-          type: constants.TARGET_AVAILABLE,
-          targetType: targetFront.targetType,
-        });
-      }
-    };
+    if (this._destroyed) {
+      return;
+    }
 
-    // This is a top level target. It may update on process switches
-    // when navigating to another domain.
+    // Once we support only server watcher for NETWORK_EVENT, we will be able to drop this.
+    // We have to wait for the fully enabling of NETWORK_EVENT watchers, especially on the Browser Toolbox.
+    const { targetCommand, resourceCommand } = this.hud.commands;
+    const hasNetworkResourceCommandSupport = resourceCommand.hasResourceCommandSupport(
+      resourceCommand.TYPES.NETWORK_EVENT
+    );
+    const supportsWatcherRequest = targetCommand.hasTargetWatcherSupport();
+    if (!hasNetworkResourceCommandSupport || !supportsWatcherRequest) {
+      // There is no way to view response bodies from the Browser Console, so do
+      // not waste the memory.
+      const saveBodies =
+        !this.isBrowserConsole &&
+        Services.prefs.getBoolPref(
+          "devtools.netmonitor.saveRequestAndResponseBodies"
+        );
+
+      const front = await targetFront.getFront("console");
+      // Make sure the web console client connection is established first.
+      await front.setPreferences({
+        "NetworkMonitor.saveRequestAndResponseBodies": saveBodies,
+      });
+    }
+
     if (targetFront.isTopLevel) {
-      this.proxy = new WebConsoleConnectionProxy(this, targetFront);
-      await this.proxy.connect();
-      dispatchTargetAvailable();
-      return;
+      this._webConsoleFront = await targetFront.getFront("console");
+      if (this.isBrowserConsole || this.isBrowserToolboxConsole) {
+        // Private messages only need to be removed from the output in Browser Console/Browser Toolbox
+        this.webConsoleFront.on(
+          "lastPrivateContextExited",
+          this.clearPrivateMessages
+        );
+      }
     }
-
-    // Allow frame, but only in content toolbox, i.e. still ignore them in
-    // the context of the browser toolbox as we inspect messages via the process targets
-    const listenForFrames = this.hud.commands.descriptorFront.isLocalTab;
-
-    const { TYPES } = this.hud.commands.targetCommand;
-    const isWorkerTarget =
-      targetFront.targetType == TYPES.WORKER ||
-      targetFront.targetType == TYPES.SHARED_WORKER ||
-      targetFront.targetType == TYPES.SERVICE_WORKER;
-
-    const acceptTarget =
-      // Unconditionally accept all process targets, this should only happens in the
-      // multiprocess browser toolbox/console
-      targetFront.targetType == TYPES.PROCESS ||
-      (targetFront.targetType == TYPES.FRAME && listenForFrames) ||
-      // Accept worker targets if the platform dispatching of worker messages to the main
-      // thread is disabled (e.g. we get them directly from the worker target).
-      (isWorkerTarget &&
-        !this.hud.commands.targetCommand.rootFront.traits
-          .workerConsoleApiMessagesDispatchedToMainThread);
-
-    if (!acceptTarget) {
-      return;
-    }
-
-    const proxy = new WebConsoleConnectionProxy(this, targetFront);
-    this.additionalProxies.set(targetFront, proxy);
-    await proxy.connect();
-    dispatchTargetAvailable();
   }
 
-  /**
-   * Called any time a target has been destroyed.
-   *
-   * @private
-   * See _onTargetAvailable for param's description.
-   */
-  _onTargetDestroyed({ targetFront }) {
-    if (targetFront.isTopLevel) {
-      this.proxy.disconnect();
-      this.proxy = null;
-    } else {
-      const proxy = this.additionalProxies.get(targetFront);
-      proxy.disconnect();
-      this.additionalProxies.delete(targetFront);
+  _onTargetDestroyed({ targetFront, isModeSwitching }) {
+    // Don't try to do anything if the WebConsole is being destroyed
+    if (this._destroyed) {
+      return;
+    }
+
+    // We only want to remove messages from a target destroyed when we're switching mode
+    // in the Browser Console/Browser Toolbox Console.
+    // For regular cases, we want to keep the message history (the output will still be
+    // cleared when the top level target navigates, if "Persist Logs" isn't true, via handleWillNavigate)
+    if (isModeSwitching) {
+      this.wrapper.dispatchTargetMessagesRemove(targetFront);
     }
   }
 
@@ -680,7 +705,14 @@ class WebConsoleUI {
       );
 
       ZoomKeys.register(this.window, shortcuts);
-      shortcuts.on("CmdOrCtrl+Alt+R", quickRestart);
+
+      /* This is the same as DevelopmentHelpers.quickRestart, but it runs in all
+       * builds (even official). This allows a user to do a restart + session restore
+       * with Ctrl+Shift+J (open Browser Console) and then Ctrl+Alt+R (restart).
+       */
+      shortcuts.on("CmdOrCtrl+Alt+R", () => {
+        this.hud.commands.targetCommand.reloadTopLevelTarget();
+      });
     } else if (Services.prefs.getBoolPref(PREF_SIDEBAR_ENABLED)) {
       shortcuts.on("Esc", event => {
         this.wrapper.dispatchSidebarClose();
@@ -708,6 +740,12 @@ class WebConsoleUI {
     this.wrapper.dispatchSplitConsoleCloseButtonToggle();
   }
 
+  _onScopePrefChanged() {
+    if (this.isBrowserConsole) {
+      this.hud.updateWindowTitle();
+    }
+  }
+
   getInputCursor() {
     return this.jsterm && this.jsterm.getSelectionStart();
   }
@@ -720,64 +758,10 @@ class WebConsoleUI {
     this[id] = node;
   }
 
-  /**
-   * Retrieves the actorID of the debugger's currently selected FrameFront.
-   *
-   * @return {String} actorID of the FrameFront
-   */
-  getFrameActor() {
-    const state = this.hud.getDebuggerFrames();
-    if (!state) {
-      return null;
-    }
-
-    const frame = state.frames[state.selected];
-
-    if (!frame) {
-      return null;
-    }
-
-    return frame.actor;
-  }
-
-  getWebconsoleFront({ frameActorId } = {}) {
-    if (frameActorId) {
-      const frameFront = this.hud.getFrontByID(frameActorId);
-      return frameFront.getWebConsoleFront();
-    }
-
-    if (!this.hud.toolbox) {
-      return this.webConsoleFront;
-    }
-
-    const targetFront = this.hud.toolbox.getSelectedTargetFront();
-    if (!targetFront) {
-      return this.webConsoleFront;
-    }
-
-    return targetFront.getFront("console");
-  }
-
   getSelectedNodeActorID() {
     const inspectorSelection = this.hud.getInspectorSelection();
     return inspectorSelection?.nodeFront?.actorID;
   }
-}
-
-/* This is the same as DevelopmentHelpers.quickRestart, but it runs in all
- * builds (even official). This allows a user to do a restart + session restore
- * with Ctrl+Shift+J (open Browser Console) and then Ctrl+Shift+R (restart).
- */
-function quickRestart() {
-  const { Cc, Ci } = require("chrome");
-  Services.obs.notifyObservers(null, "startupcache-invalidate");
-  const env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  env.set("MOZ_DISABLE_SAFE_MODE_KEY", "1");
-  Services.startup.quit(
-    Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart
-  );
 }
 
 exports.WebConsoleUI = WebConsoleUI;

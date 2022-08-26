@@ -144,7 +144,8 @@ struct JITFrameInfoForBufferRange final {
 struct JITFrameInfo final {
   JITFrameInfo() : mUniqueStrings(mozilla::MakeUnique<UniqueJSONStrings>()) {}
 
-  MOZ_IMPLICIT JITFrameInfo(const JITFrameInfo& aOther);
+  MOZ_IMPLICIT JITFrameInfo(const JITFrameInfo& aOther,
+                            mozilla::ProgressLogger aProgressLogger);
 
   // Creates a new JITFrameInfoForBufferRange object in mRanges by looking up
   // information about the provided JIT return addresses using aCx.
@@ -311,7 +312,9 @@ class UniqueStacks {
     }
   };
 
-  explicit UniqueStacks(JITFrameInfo&& aJITFrameInfo);
+  explicit UniqueStacks(
+      JITFrameInfo&& aJITFrameInfo,
+      ProfilerCodeAddressService* aCodeAddressService = nullptr);
 
   // Return a StackKey for aFrame as the stack's root frame (no prefix).
   [[nodiscard]] StackKey BeginStack(const FrameKey& aFrame);

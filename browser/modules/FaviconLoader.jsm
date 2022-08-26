@@ -6,20 +6,15 @@
 
 const EXPORTED_SYMBOLS = ["FaviconLoader"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["Blob", "FileReader"]);
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PromiseUtils",
   "resource://gre/modules/PromiseUtils.jsm"
 );
@@ -169,7 +164,7 @@ class FaviconLoad {
   }
 
   load() {
-    this._deferred = PromiseUtils.defer();
+    this._deferred = lazy.PromiseUtils.defer();
 
     // Clear the references when we succeed or fail.
     let cleanup = () => {
@@ -252,7 +247,7 @@ class FaviconLoad {
         this._deferred.reject(
           Components.Exception(
             `Favicon at "${this.icon.iconUri.spec}" failed to load: ${this.channel.responseStatusText}.`,
-            Cr.NS_ERROR_FAILURE
+            { data: { httpStatus: this.channel.responseStatus } }
           )
         );
         return;
@@ -590,7 +585,9 @@ class IconLoader {
       });
     } catch (e) {
       if (e.result != Cr.NS_BINDING_ABORTED) {
-        Cu.reportError(e);
+        if (typeof e.data?.wrappedJSObject?.httpStatus !== "number") {
+          Cu.reportError(e);
+        }
 
         // Used mainly for tests currently.
         this.actor.sendAsyncMessage("Link:SetFailedIcon", {
@@ -629,7 +626,7 @@ class FaviconLoader {
     this.richIconLoader = new IconLoader(actor);
     this.tabIconLoader = new IconLoader(actor);
 
-    this.iconTask = new DeferredTask(
+    this.iconTask = new lazy.DeferredTask(
       () => this.loadIcons(),
       FAVICON_PARSING_TIMEOUT
     );

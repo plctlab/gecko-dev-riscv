@@ -2,20 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-import { createThread, createFrame } from "./create";
+import { createFrame } from "./create";
 import { makePendingLocationId } from "../../utils/breakpoint";
 
 import Reps from "devtools/client/shared/components/reps/index";
 
-let targets;
 let commands;
 let breakpoints;
 
+// The maximal number of stackframes to retrieve when pausing
 const CALL_STACK_PAGE_SIZE = 1000;
 
 function setupCommands(innerCommands) {
   commands = innerCommands;
-  targets = {};
   breakpoints = {};
 }
 
@@ -60,22 +59,15 @@ function releaseActor(actor) {
   }
 }
 
-// Get a copy of the current targets.
-function getTargetsMap() {
-  return Object.assign({}, targets);
-}
-
 function lookupTarget(thread) {
   if (thread == currentThreadFront().actor) {
     return currentTarget();
   }
 
-  const targetsMap = getTargetsMap();
-  if (!targetsMap[thread]) {
-    throw new Error(`Unknown thread front: ${thread}`);
-  }
-
-  return targetsMap[thread];
+  const targets = commands.targetCommand.getAllTargets(
+    commands.targetCommand.ALL_TYPES
+  );
+  return targets.find(target => target.targetForm.threadActor == thread);
 }
 
 function lookupThreadFront(thread) {
@@ -84,8 +76,10 @@ function lookupThreadFront(thread) {
 }
 
 function listThreadFronts() {
-  const list = Object.values(getTargetsMap());
-  return list.map(target => target.threadFront).filter(t => !!t);
+  const targets = commands.targetCommand.getAllTargets(
+    commands.targetCommand.ALL_TYPES
+  );
+  return targets.map(target => target.threadFront).filter(front => !!front);
 }
 
 function forEachThread(iteratee) {
@@ -95,7 +89,7 @@ function forEachThread(iteratee) {
   // resolve in FIFO order, and this could result in client and server state
   // going out of sync.
 
-  const promises = [currentThreadFront(), ...listThreadFronts()].map(
+  const promises = listThreadFronts().map(
     // If a thread shuts down while sending the message then it will
     // throw. Ignore these exceptions.
     t => iteratee(t).catch(e => console.log(e))
@@ -177,6 +171,10 @@ async function removeWatchpoint(object, property) {
 
 function hasBreakpoint(location) {
   return !!breakpoints[makePendingLocationId(location)];
+}
+
+function getServerBreakpointsList() {
+  return Object.values(breakpoints);
 }
 
 async function setBreakpoint(location, options) {
@@ -318,12 +316,36 @@ async function pauseOnExceptions(
   });
 }
 
-async function blackBox(sourceActor, isBlackBoxed, range) {
-  const sourceFront = currentThreadFront().source({ actor: sourceActor.actor });
-  if (isBlackBoxed) {
-    await sourceFront.unblackBox(range);
+async function blackBox(sourceActor, shouldBlackBox, ranges) {
+  const hasWatcherSupport = commands.targetCommand.hasTargetWatcherSupport();
+  if (hasWatcherSupport) {
+    const blackboxingFront = await commands.targetCommand.watcherFront.getBlackboxingActor();
+    if (shouldBlackBox) {
+      await blackboxingFront.blackbox(sourceActor.url, ranges);
+    } else {
+      await blackboxingFront.unblackbox(sourceActor.url, ranges);
+    }
   } else {
+    const sourceFront = currentThreadFront().source({
+      actor: sourceActor.actor,
+    });
+    // If there are no ranges, the whole source is being blackboxed
+    if (!ranges.length) {
+      await toggleBlackBoxSourceFront(sourceFront, shouldBlackBox);
+      return;
+    }
+    // Blackbox the specific ranges
+    for (const range of ranges) {
+      await toggleBlackBoxSourceFront(sourceFront, shouldBlackBox, range);
+    }
+  }
+}
+
+async function toggleBlackBoxSourceFront(sourceFront, shouldBlackBox, range) {
+  if (shouldBlackBox) {
     await sourceFront.blackBox(range);
+  } else {
+    await sourceFront.unblackBox(range);
   }
 }
 
@@ -334,11 +356,7 @@ async function setSkipPausing(shouldSkip) {
 }
 
 async function setEventListenerBreakpoints(ids) {
-  // @backward-compat { version 94 } The `event-breakpoints` trait check is no longer needed, but
-  // keep the check for target watcher support to fallback for unsupported targets (e.g webextensions)
-  const hasWatcherSupport = commands.targetCommand.hasTargetWatcherSupport(
-    "event-breakpoints"
-  );
+  const hasWatcherSupport = commands.targetCommand.hasTargetWatcherSupport();
   if (!hasWatcherSupport) {
     return forEachThread(thread => thread.setActiveEventBreakpoints(ids));
   }
@@ -347,23 +365,7 @@ async function setEventListenerBreakpoints(ids) {
 }
 
 async function getEventListenerBreakpointTypes() {
-  let categories;
-  try {
-    categories = await currentThreadFront().getAvailableEventBreakpoints();
-
-    if (!Array.isArray(categories)) {
-      // When connecting to older browser that had our placeholder
-      // implementation of the 'getAvailableEventBreakpoints' endpoint, we
-      // actually get back an object with a 'value' property containing
-      // the categories. Since that endpoint wasn't actually backed with a
-      // functional implementation, we just bail here instead of storing the
-      // 'value' property into the categories.
-      categories = null;
-    }
-  } catch (err) {
-    // Event bps aren't supported on this firefox version.
-  }
-  return categories || [];
+  return currentThreadFront().getAvailableEventBreakpoints();
 }
 
 function pauseGrip(thread, func) {
@@ -374,18 +376,6 @@ async function toggleEventLogging(logEventBreakpoints) {
   await commands.threadConfigurationCommand.updateConfiguration({
     logEventBreakpoints,
   });
-}
-
-async function addThread(targetFront) {
-  const threadActorID = targetFront.targetForm.threadActor;
-  if (!targets[threadActorID]) {
-    targets[threadActorID] = targetFront;
-  }
-  return createThread(threadActorID, targetFront);
-}
-
-function removeThread(thread) {
-  delete targets[thread.actor];
 }
 
 function getMainThread() {
@@ -399,24 +389,14 @@ async function getSourceActorBreakpointPositions({ thread, actor }, range) {
 }
 
 async function getSourceActorBreakableLines({ thread, actor }) {
-  let sourceFront;
   let actorLines = [];
   try {
     const sourceThreadFront = lookupThreadFront(thread);
-    sourceFront = sourceThreadFront.source({ actor });
+    const sourceFront = sourceThreadFront.source({ actor });
     actorLines = await sourceFront.getBreakableLines();
   } catch (e) {
-    // Handle backward compatibility
-    if (
-      e.message &&
-      e.message.match(/does not recognize the packet type getBreakableLines/)
-    ) {
-      const pos = await sourceFront.getBreakpointPositionsCompressed();
-      actorLines = Object.keys(pos).map(line => Number(line));
-    } else {
-      // Other exceptions could be due to the target thread being shut down.
-      console.warn(`getSourceActorBreakableLines failed: ${e}`);
-    }
+    // Exceptions could be due to the target thread being shut down.
+    console.warn(`getSourceActorBreakableLines failed: ${e}`);
   }
 
   return actorLines;
@@ -447,6 +427,7 @@ const clientCommands = {
   getSourceActorBreakpointPositions,
   getSourceActorBreakableLines,
   hasBreakpoint,
+  getServerBreakpointsList,
   setBreakpoint,
   setXHRBreakpoint,
   removeXHRBreakpoint,
@@ -460,13 +441,10 @@ const clientCommands = {
   getFrames,
   pauseOnExceptions,
   toggleEventLogging,
-  addThread,
-  removeThread,
   getMainThread,
   setSkipPausing,
   setEventListenerBreakpoints,
   getEventListenerBreakpointTypes,
-  lookupTarget,
   getFrontByID,
   fetchAncestorFramePositions,
   toggleJavaScriptEnabled,

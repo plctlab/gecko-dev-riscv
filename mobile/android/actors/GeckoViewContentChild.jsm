@@ -6,11 +6,9 @@ const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 // This needs to match ScreenLength.java
 const SCREEN_LENGTH_TYPE_PIXEL = 0;
@@ -23,8 +21,12 @@ const SCREEN_LENGTH_DOCUMENT_HEIGHT = 4;
 const SCROLL_BEHAVIOR_SMOOTH = 0;
 const SCROLL_BEHAVIOR_AUTO = 1;
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  E10SUtils: "resource://gre/modules/E10SUtils.jsm",
+const SCREEN_ORIENTATION_PORTRAIT = 0;
+const SCREEN_ORIENTATION_LANDSCAPE = 1;
+
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   PrivacyFilter: "resource://gre/modules/sessionstore/PrivacyFilter.jsm",
   SessionHistory: "resource://gre/modules/sessionstore/SessionHistory.jsm",
   Utils: "resource://gre/modules/sessionstore/Utils.jsm",
@@ -33,6 +35,11 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 var EXPORTED_SYMBOLS = ["GeckoViewContentChild"];
 
 class GeckoViewContentChild extends GeckoViewActorChild {
+  constructor() {
+    super();
+    this.lastOrientation = SCREEN_ORIENTATION_PORTRAIT;
+  }
+
   actorCreated() {
     super.actorCreated();
 
@@ -74,7 +81,7 @@ class GeckoViewContentChild extends GeckoViewActorChild {
 
   collectSessionState() {
     const { docShell, contentWindow } = this;
-    const history = SessionHistory.collect(docShell);
+    const history = lazy.SessionHistory.collect(docShell);
     let formdata = SessionStoreUtils.collectFormData(contentWindow);
     let scrolldata = SessionStoreUtils.collectScrollPosition(contentWindow);
 
@@ -98,9 +105,22 @@ class GeckoViewContentChild extends GeckoViewActorChild {
 
     scrolldata.zoom.displaySize = displaySize;
 
-    formdata = PrivacyFilter.filterFormData(formdata || {});
+    formdata = lazy.PrivacyFilter.filterFormData(formdata || {});
 
     return { history, formdata, scrolldata };
+  }
+
+  orientation() {
+    const currentOrientationType = this.contentWindow?.screen.orientation.type;
+    if (!currentOrientationType) {
+      // Unfortunately, we don't know current screen orientation.
+      // Return portrait as default.
+      return SCREEN_ORIENTATION_PORTRAIT;
+    }
+    if (currentOrientationType.startsWith("landscape")) {
+      return SCREEN_ORIENTATION_LANDSCAPE;
+    }
+    return SCREEN_ORIENTATION_PORTRAIT;
   }
 
   receiveMessage(message) {
@@ -109,10 +129,13 @@ class GeckoViewContentChild extends GeckoViewActorChild {
 
     switch (name) {
       case "GeckoView:DOMFullscreenEntered":
+        this.lastOrientation = this.orientation();
         this.contentWindow?.windowUtils.handleFullscreenRequests();
         break;
       case "GeckoView:DOMFullscreenExited":
-        this.contentWindow?.windowUtils.exitFullscreen();
+        // During fullscreen, window size is changed. So don't restore viewport size.
+        const restoreViewSize = this.orientation() == this.lastOrientation;
+        this.contentWindow?.windowUtils.exitFullscreen(!restoreViewSize);
         break;
       case "GeckoView:ZoomToInput": {
         const { contentWindow } = this;
@@ -168,7 +191,7 @@ class GeckoViewContentChild extends GeckoViewActorChild {
       case "RestoreHistoryAndNavigate": {
         const { history, switchId } = message.data;
         if (history) {
-          SessionHistory.restore(this.docShell, history);
+          lazy.SessionHistory.restore(this.docShell, history);
           const historyIndex = history.requestedIndex - 1;
           const webNavigation = this.docShell.QueryInterface(
             Ci.nsIWebNavigation
@@ -244,20 +267,28 @@ class GeckoViewContentChild extends GeckoViewActorChild {
     const { formdata, scrolldata } = message.data;
 
     if (formdata) {
-      Utils.restoreFrameTreeData(contentWindow, formdata, (frame, data) => {
-        // restore() will return false, and thus abort restoration for the
-        // current |frame| and its descendants, if |data.url| is given but
-        // doesn't match the loaded document's URL.
-        return SessionStoreUtils.restoreFormData(frame.document, data);
-      });
+      lazy.Utils.restoreFrameTreeData(
+        contentWindow,
+        formdata,
+        (frame, data) => {
+          // restore() will return false, and thus abort restoration for the
+          // current |frame| and its descendants, if |data.url| is given but
+          // doesn't match the loaded document's URL.
+          return SessionStoreUtils.restoreFormData(frame.document, data);
+        }
+      );
     }
 
     if (scrolldata) {
-      Utils.restoreFrameTreeData(contentWindow, scrolldata, (frame, data) => {
-        if (data.scroll) {
-          SessionStoreUtils.restoreScrollPosition(frame, data);
+      lazy.Utils.restoreFrameTreeData(
+        contentWindow,
+        scrolldata,
+        (frame, data) => {
+          if (data.scroll) {
+            SessionStoreUtils.restoreScrollPosition(frame, data);
+          }
         }
-      });
+      );
     }
 
     if (scrolldata && scrolldata.zoom && scrolldata.zoom.displaySize) {
@@ -274,10 +305,6 @@ class GeckoViewContentChild extends GeckoViewActorChild {
   // eslint-disable-next-line complexity
   handleEvent(aEvent) {
     debug`handleEvent: ${aEvent.type}`;
-    if (!this.isContentWindow) {
-      // This is not a GeckoView-controlled window
-      return;
-    }
 
     switch (aEvent.type) {
       case "pageshow": {

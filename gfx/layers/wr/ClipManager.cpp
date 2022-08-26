@@ -8,10 +8,12 @@
 
 #include "DisplayItemClipChain.h"
 #include "FrameMetrics.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "nsDisplayList.h"
+#include "nsRefreshDriver.h"
 #include "nsStyleStructInlines.h"
 #include "UnitTransforms.h"
 
@@ -132,8 +134,18 @@ wr::WrSpatialId ClipManager::SpatialIdAfterOverride(
   return it->second.top();
 }
 
-wr::WrSpaceAndClipChain ClipManager::SwitchItem(nsDisplayItem* aItem) {
+wr::WrSpaceAndClipChain ClipManager::SwitchItem(nsDisplayListBuilder* aBuilder,
+                                                nsDisplayItem* aItem) {
   const DisplayItemClipChain* clip = aItem->GetClipChain();
+  if (mBuilder->GetInheritedClipChain() &&
+      mBuilder->GetInheritedClipChain() != clip) {
+    if (!clip) {
+      clip = mBuilder->GetInheritedClipChain();
+    } else {
+      clip = aBuilder->CreateClipChainIntersection(
+          mBuilder->GetInheritedClipChain(), clip);
+    }
+  }
   const ActiveScrolledRoot* asr = aItem->GetActiveScrolledRoot();
   CLIP_LOG("processing item %p (%s) asr %p\n", aItem,
            DisplayItemTypeName(aItem->GetType()), asr);
@@ -322,9 +334,18 @@ Maybe<wr::WrSpatialId> ClipManager::DefineScrollLayers(
   LayoutDevicePoint scrollOffset = LayoutDevicePoint::FromAppUnitsRounded(
       scrollableFrame->GetScrollPosition(), auPerDevPixel);
 
+  // Currently we track scroll-linked effects at the granularity of documents,
+  // not scroll frames, so we consider a scroll frame to have a scroll-linked
+  // effect whenever its containing document does.
+  nsPresContext* presContext = aItem->Frame()->PresContext();
+  const bool hasScrollLinkedEffect =
+      presContext->Document()->HasScrollLinkedEffect();
+
   return Some(mBuilder->DefineScrollLayer(
       viewId, parent, wr::ToLayoutRect(contentRect),
-      wr::ToLayoutRect(clipBounds), wr::ToLayoutPoint(scrollOffset),
+      wr::ToLayoutRect(clipBounds), wr::ToLayoutVector2D(scrollOffset),
+      wr::ToWrAPZScrollGeneration(scrollableFrame->ScrollGenerationOnApz()),
+      wr::ToWrHasScrollLinkedEffect(hasScrollLinkedEffect),
       wr::SpatialKey(uint64_t(scrollFrame), 0, wr::SpatialKeyKind::Scroll)));
 }
 

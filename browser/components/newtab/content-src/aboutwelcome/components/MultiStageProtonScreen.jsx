@@ -2,57 +2,239 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import React from "react";
+import React, { useEffect } from "react";
 import { Localized } from "./MSLocalized";
-import { Colorways } from "./Colorways";
+import { Colorways } from "./MRColorways";
+import { MobileDownloads } from "./MobileDownloads";
 import { Themes } from "./Themes";
 import { SecondaryCTA, StepsIndicator } from "./MultiStageAboutWelcome";
+import { LanguageSwitcher } from "./LanguageSwitcher";
+import { CTAParagraph } from "./CTAParagraph";
+import { HeroImage } from "./HeroImage";
 
-export class MultiStageProtonScreen extends React.PureComponent {
+export const MultiStageProtonScreen = props => {
+  const { autoAdvance, handleAction, order } = props;
+  useEffect(() => {
+    if (autoAdvance) {
+      const timer = setTimeout(() => {
+        handleAction({
+          currentTarget: {
+            value: autoAdvance,
+          },
+          name: "AUTO_ADVANCE",
+        });
+      }, 20000);
+      return () => clearTimeout(timer);
+    }
+    return () => {};
+  }, [autoAdvance, handleAction, order]);
+
+  return (
+    <ProtonScreen
+      content={props.content}
+      id={props.id}
+      order={props.order}
+      activeTheme={props.activeTheme}
+      totalNumberOfScreens={props.totalNumberOfScreens}
+      handleAction={props.handleAction}
+      isFirstCenteredScreen={props.isFirstCenteredScreen}
+      isLastCenteredScreen={props.isLastCenteredScreen}
+      stepOrder={props.stepOrder}
+      autoAdvance={props.autoAdvance}
+      isRtamo={props.isRtamo}
+      addonName={props.addonName}
+      isTheme={props.isTheme}
+      iconURL={props.iconURL}
+      messageId={props.messageId}
+      negotiatedLanguage={props.negotiatedLanguage}
+      langPackInstallPhase={props.langPackInstallPhase}
+    />
+  );
+};
+
+export class ProtonScreen extends React.PureComponent {
   componentDidMount() {
     this.mainContentHeader.focus();
   }
 
-  render() {
-    const { autoClose, content, totalNumberOfScreens: total } = this.props;
-    const isWelcomeScreen = this.props.order === 0;
-    const isLastScreen = this.props.order === total;
-    const autoCloseTime = 20000;
-    // Assign proton screen style 'screen-1' or 'screen-2' by checking
-    // if screen order is even or odd.
-    const screenClassName = isWelcomeScreen
-      ? "screen-0"
-      : `${this.props.order === 1 ? `dialog-initial` : ``} ${
-          this.props.order === total ? `dialog-last` : ``
-        } screen-${this.props.order % 2 !== 0 ? 1 : 2}`;
+  getScreenClassName(
+    isFirstCenteredScreen,
+    isLastCenteredScreen,
+    includeNoodles
+  ) {
+    const screenClass = `screen-${this.props.order % 2 !== 0 ? 1 : 2}`;
+    return `${isFirstCenteredScreen ? `dialog-initial` : ``} ${
+      isLastCenteredScreen ? `dialog-last` : ``
+    } ${includeNoodles ? `with-noodles` : ``} ${screenClass}`;
+  }
 
-    if (this.props.order === total && autoClose) {
-      let currentURL = window.location.href;
-      setTimeout(function() {
-        if (window.location.href === currentURL) {
-          window.location.href = "about:home";
-        }
-      }, autoCloseTime);
-    }
-
+  renderLogo({
+    imageURL = "chrome://branding/content/about-logo.svg",
+    alt = "",
+    darkModeImageURL,
+    height,
+  }) {
     return (
-      <main className={`screen ${this.props.id} ${screenClassName}`}>
-        {isWelcomeScreen ? (
-          <div className="section-left">
+      <picture className="logo-container">
+        <source
+          srcSet={darkModeImageURL}
+          media="(prefers-color-scheme: dark)"
+        />
+        <img
+          className="brand-logo"
+          style={{ height }}
+          src={imageURL}
+          alt={alt}
+          role={alt ? null : "presentation"}
+        />
+      </picture>
+    );
+  }
+
+  renderContentTiles() {
+    const { content } = this.props;
+    return (
+      <React.Fragment>
+        {content.tiles &&
+        content.tiles.type === "colorway" &&
+        content.tiles.colorways ? (
+          <Colorways
+            content={content}
+            activeTheme={this.props.activeTheme}
+            handleAction={this.props.handleAction}
+          />
+        ) : null}
+        {content.tiles &&
+        content.tiles.type === "theme" &&
+        content.tiles.data ? (
+          <Themes
+            content={content}
+            activeTheme={this.props.activeTheme}
+            handleAction={this.props.handleAction}
+          />
+        ) : null}
+        {content.tiles &&
+        content.tiles.type === "mobile_downloads" &&
+        content.tiles.data ? (
+          <MobileDownloads
+            data={content.tiles.data}
+            handleAction={this.props.handleAction}
+          />
+        ) : null}
+      </React.Fragment>
+    );
+  }
+
+  renderNoodles() {
+    return (
+      <React.Fragment>
+        <div className={"noodle orange-L"} />
+        <div className={"noodle purple-C"} />
+        <div className={"noodle solid-L"} />
+        <div className={"noodle outline-L"} />
+        <div className={"noodle yellow-circle"} />
+      </React.Fragment>
+    );
+  }
+
+  renderLanguageSwitcher() {
+    return this.props.content.languageSwitcher ? (
+      <LanguageSwitcher
+        content={this.props.content}
+        handleAction={this.props.handleAction}
+        negotiatedLanguage={this.props.negotiatedLanguage}
+        langPackInstallPhase={this.props.langPackInstallPhase}
+        messageId={this.props.messageId}
+      />
+    ) : null;
+  }
+
+  renderDismissButton() {
+    return (
+      <button
+        className="dismiss-button"
+        onClick={this.props.handleAction}
+        value="dismiss_button"
+        data-l10n-id={"spotlight-dialog-close-button"}
+      ></button>
+    );
+  }
+
+  renderSecondarySection(content) {
+    return (
+      <div
+        className="section-secondary"
+        style={
+          content.background
+            ? {
+                background: content.background,
+                "--mr-secondary-background-position-y":
+                  content.split_narrow_bkg_position,
+              }
+            : {}
+        }
+      >
+        {content.hero_image ? (
+          <HeroImage url={content.hero_image.url} />
+        ) : (
+          <React.Fragment>
             <div className="message-text">
               <div className="spacer-top" />
-              <Localized text={content.subtitle}>
+              <Localized text={content.hero_text}>
                 <h1 />
               </Localized>
               <div className="spacer-bottom" />
             </div>
-            {content.help_text && content.help_text.text ? (
-              <Localized text={content.help_text.text}>
-                <span className="attrib-text" />
-              </Localized>
-            ) : null}
-          </div>
-        ) : null}
+            <Localized text={content.help_text}>
+              <span className="attrib-text" />
+            </Localized>
+          </React.Fragment>
+        )}
+      </div>
+    );
+  }
+
+  render() {
+    const {
+      autoAdvance,
+      content,
+      isRtamo,
+      isTheme,
+      isFirstCenteredScreen,
+      isLastCenteredScreen,
+      totalNumberOfScreens: total,
+    } = this.props;
+    const includeNoodles = content.has_noodles;
+    // The default screen position is "center"
+    const isCenterPosition = content.position === "center" || !content.position;
+    const hideStepsIndicator =
+      autoAdvance || (isFirstCenteredScreen && isLastCenteredScreen);
+    const textColorClass = content.text_color
+      ? `${content.text_color}-text`
+      : "";
+    // Assign proton screen style 'screen-1' or 'screen-2' to centered screens
+    // by checking if screen order is even or odd.
+    const screenClassName = isCenterPosition
+      ? this.getScreenClassName(
+          isFirstCenteredScreen,
+          isLastCenteredScreen,
+          includeNoodles
+        )
+      : "";
+
+    return (
+      <main
+        className={`screen ${this.props.id ||
+          ""} ${screenClassName} ${textColorClass}`}
+        role="dialog"
+        pos={content.position || "center"}
+        tabIndex="-1"
+        aria-labelledby="mainContentHeader"
+        ref={input => {
+          this.mainContentHeader = input;
+        }}
+      >
+        {isCenterPosition ? null : this.renderSecondarySection(content)}
         <div className="section-main">
           {content.secondary_button_top ? (
             <SecondaryCTA
@@ -61,63 +243,55 @@ export class MultiStageProtonScreen extends React.PureComponent {
               position="top"
             />
           ) : null}
-          <div className={`noodle orange-L`} />
-          <div className={`noodle purple-C`} />
-          {isWelcomeScreen ? <div className={`noodle solid-L`} /> : null}
-          <div className={`noodle outline-L`} />
-          <div className={`noodle yellow-circle`} />
-          <div className="main-content">
-            <div className={`brand-logo ${content.hideLogo ? "hide" : ""}`} />
-            {isLastScreen && content.hasFancyTitle ? (
-              <div className="confetti" />
-            ) : null}
+          {includeNoodles ? this.renderNoodles() : null}
+          <div
+            className={`main-content ${hideStepsIndicator ? "no-steps" : ""}`}
+            style={
+              content.background && isCenterPosition
+                ? { background: content.background }
+                : {}
+            }
+          >
+            {content.dismiss_button ? this.renderDismissButton() : null}
+
+            {content.logo ? this.renderLogo(content.logo) : null}
+
+            <div className={`${isRtamo ? "rtamo-icon" : "hide-rtamo-icon"}`}>
+              <img
+                className={`${isTheme ? "rtamo-theme-icon" : ""}`}
+                src={this.props.iconURL}
+                role="presentation"
+                alt=""
+              />
+            </div>
             <div className="main-content-inner">
-              <div
-                className={`welcome-text ${
-                  content.hasFancyTitle ? "fancy-headings" : ""
-                }`}
-              >
+              <div className={`welcome-text ${content.title_style || ""}`}>
                 <Localized text={content.title}>
-                  <h1
-                    tabIndex="-1"
-                    ref={input => {
-                      this.mainContentHeader = input;
-                    }}
+                  <h1 id="mainContentHeader" />
+                </Localized>
+                <Localized text={content.subtitle}>
+                  <h2
+                    data-l10n-args={JSON.stringify({
+                      "addon-name": this.props.addonName,
+                      ...this.props.appAndSystemLocaleInfo?.displayNames,
+                    })}
                   />
                 </Localized>
-                {!isWelcomeScreen ? (
-                  <Localized text={content.subtitle}>
-                    <h2 />
-                  </Localized>
+                {content.cta_paragraph ? (
+                  <CTAParagraph
+                    content={content.cta_paragraph}
+                    handleAction={this.props.handleAction}
+                  />
                 ) : null}
               </div>
-              {content.tiles &&
-              content.tiles.type === "colorway" &&
-              content.tiles.colorways ? (
-                <Colorways
-                  content={content}
-                  activeTheme={this.props.activeTheme}
-                  handleAction={this.props.handleAction}
-                />
-              ) : null}
-              {content.tiles &&
-              content.tiles.type === "theme" &&
-              content.tiles.data ? (
-                <Themes
-                  content={content}
-                  activeTheme={this.props.activeTheme}
-                  handleAction={this.props.handleAction}
-                />
-              ) : null}
-              <div>
-                <Localized
-                  text={
-                    content.primary_button ? content.primary_button.label : null
-                  }
-                >
+              {this.renderContentTiles()}
+              {this.renderLanguageSwitcher()}
+              <div className="action-buttons">
+                <Localized text={content.primary_button?.label}>
                   <button
                     className="primary"
                     value="primary_button"
+                    disabled={content.primary_button?.disabled === true}
                     onClick={this.props.handleAction}
                   />
                 </Localized>
@@ -129,24 +303,28 @@ export class MultiStageProtonScreen extends React.PureComponent {
                 ) : null}
               </div>
             </div>
-            {!isWelcomeScreen ? (
-              <nav
-                className="steps"
-                data-l10n-id={"onboarding-welcome-steps-indicator"}
+            {hideStepsIndicator ? null : (
+              <div
+                className={`steps ${
+                  content.progress_bar ? "progress-bar" : ""
+                }`}
+                data-l10n-id={"onboarding-welcome-steps-indicator2"}
                 data-l10n-args={JSON.stringify({
                   current: this.props.order,
                   total,
                 })}
+                data-l10n-attrs="aria-valuetext"
+                role="meter"
+                aria-valuenow={this.props.order}
+                aria-valuemin={1}
+                aria-valuemax={total}
               >
-                {/* These empty elements are here to help trigger the nav for screen readers. */}
-                <br />
-                <p />
                 <StepsIndicator
-                  order={this.props.order - 1}
+                  order={this.props.stepOrder}
                   totalNumberOfScreens={total}
                 />
-              </nav>
-            ) : null}
+              </div>
+            )}
           </div>
         </div>
       </main>

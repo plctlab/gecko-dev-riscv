@@ -6,31 +6,32 @@
 
 var EXPORTED_SYMBOLS = ["FormHistoryChild"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CreditCard",
   "resource://gre/modules/CreditCard.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
-XPCOMUtils.defineLazyPreferenceGetter(this, "gDebug", "browser.formfill.debug");
+XPCOMUtils.defineLazyPreferenceGetter(lazy, "gDebug", "browser.formfill.debug");
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gEnabled",
   "browser.formfill.enable"
 );
 
 function log(message) {
-  if (!gDebug) {
+  if (!lazy.gDebug) {
     return;
   }
   dump("satchelFormListener: " + message + "\n");
@@ -53,8 +54,8 @@ class FormHistoryChild extends JSWindowActorChild {
   onDOMFormBeforeSubmit(event) {
     let form = event.target;
     if (
-      !gEnabled ||
-      PrivateBrowsingUtils.isContentWindowPrivate(form.ownerGlobal)
+      !lazy.gEnabled ||
+      lazy.PrivateBrowsingUtils.isContentWindowPrivate(form.ownerGlobal)
     ) {
       return;
     }
@@ -70,7 +71,7 @@ class FormHistoryChild extends JSWindowActorChild {
 
     let entries = [];
     for (let input of form.elements) {
-      if (ChromeUtils.getClassName(input) !== "HTMLInputElement") {
+      if (!HTMLInputElement.isInstance(input)) {
         continue;
       }
 
@@ -94,15 +95,22 @@ class FormHistoryChild extends JSWindowActorChild {
         continue;
       }
 
-      let value = input.value.trim();
+      const value = input.lastInteractiveValue?.trim();
 
-      // Don't save empty or unchanged values.
-      if (!value || value == input.defaultValue.trim()) {
+      // Only save user entered values even if they match the default value.
+      // Any script input is ignored.
+      // See Bug 1642570 for details.
+      if (!value) {
+        continue;
+      }
+
+      // Save only when user input was last.
+      if (value != input.value.trim()) {
         continue;
       }
 
       // Don't save credit card numbers.
-      if (CreditCard.isValidNumber(value)) {
+      if (lazy.CreditCard.isValidNumber(value)) {
         log("skipping saving a credit card number");
         continue;
       }

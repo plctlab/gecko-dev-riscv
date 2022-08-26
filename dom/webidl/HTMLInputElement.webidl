@@ -134,6 +134,9 @@ interface HTMLInputElement : HTMLElement {
   [Throws]
   void setSelectionRange(unsigned long start, unsigned long end, optional DOMString direction);
 
+  [Throws, Pref="dom.input.showPicker"]
+  void showPicker();
+
   // also has obsolete members
 };
 
@@ -170,6 +173,10 @@ partial interface HTMLInputElement {
   [ChromeOnly]
   void mozSetDndFilesAndDirectories(sequence<(File or Directory)> list);
 
+  // This method is meant to use for testing only.
+  [ChromeOnly, NewObject]
+  Promise<sequence<(File or Directory)>> getFilesAndDirectories();
+
   boolean mozIsTextField(boolean aExcludePassword);
 
   [ChromeOnly]
@@ -178,10 +185,20 @@ partial interface HTMLInputElement {
   [ChromeOnly]
   attribute DOMString previewValue;
 
+  // Last value entered by the user, not by a script.
+  // NOTE(emilio): As of right now some execCommand triggered changes might be
+  // considered interactive.
+  [ChromeOnly]
+  readonly attribute DOMString lastInteractiveValue;
+
   [ChromeOnly]
   // This function will return null if @autocomplete is not defined for the
   // current @type
   AutocompleteInfo? getAutocompleteInfo();
+
+  [ChromeOnly]
+  // The reveal password state for a type=password control.
+  attribute boolean revealPassword;
 };
 
 interface mixin MozEditableElement {
@@ -210,23 +227,6 @@ interface mixin MozEditableElement {
 };
 
 HTMLInputElement includes MozEditableElement;
-
-partial interface HTMLInputElement {
-  [Pref="dom.input.dirpicker", SetterThrows]
-  attribute boolean allowdirs;
-
-  [Pref="dom.input.dirpicker"]
-  readonly attribute boolean isFilesAndDirectoriesSupported;
-
-  [Throws, Pref="dom.input.dirpicker"]
-  Promise<sequence<(File or Directory)>> getFilesAndDirectories();
-
-  [Throws, Pref="dom.input.dirpicker"]
-  Promise<sequence<File>> getFiles(optional boolean recursiveFlag = false);
-
-  [Throws, Pref="dom.input.dirpicker"]
-  void chooseDirectory();
-};
 
 HTMLInputElement includes MozImageLoadingContent;
 

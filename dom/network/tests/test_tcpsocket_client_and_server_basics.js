@@ -1,6 +1,5 @@
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 // Bug 788960 and later bug 1329245 have taught us that attempting to connect to
 // a port that is not listening or is no longer listening fails to consistently
 // result in the error (or any) event we expect on Darwin/OSX/"OS X".
@@ -589,3 +588,27 @@ async function test_basics() {
 }
 
 add_task(test_basics);
+
+/**
+ * Test that TCPSocket works with ipv6 address.
+ */
+add_task(async function test_ipv6() {
+  const { HttpServer } = ChromeUtils.import(
+    "resource://testing-common/httpd.js"
+  );
+  let deferred = defer();
+  let httpServer = new HttpServer();
+  httpServer.start_ipv6(-1);
+
+  let clientSocket = new TCPSocket("::1", httpServer.identity.primaryPort);
+  clientSocket.onopen = () => {
+    ok(true, "Connect to ipv6 address succeeded");
+    deferred.resolve();
+  };
+  clientSocket.onerror = () => {
+    ok(false, "Connect to ipv6 address failed");
+    deferred.reject();
+  };
+  await deferred.promise;
+  await httpServer.stop();
+});

@@ -60,6 +60,14 @@
       ["cookies"]
     ]
   },
+  "declarativeNetRequest": {
+    "url": "chrome://extensions/content/parent/ext-declarativeNetRequest.js",
+    "schema": "chrome://extensions/content/schemas/declarative_net_request.json",
+    "scopes": ["addon_parent"],
+    "paths": [
+      ["declarativeNetRequest"]
+    ]
+  },
   "dns": {
     "url": "chrome://extensions/content/parent/ext-dns.js",
     "schema": "chrome://extensions/content/schemas/dns.json",
@@ -162,7 +170,8 @@
     "settings": true,
     "paths": [
       ["proxy"]
-    ]
+    ],
+    "startupBlocking": true
   },
   "runtime": {
     "url": "chrome://extensions/content/parent/ext-runtime.js",
@@ -170,6 +179,14 @@
     "scopes": ["addon_parent", "content_parent", "devtools_parent"],
     "paths": [
       ["runtime"]
+    ]
+  },
+  "scripting": {
+    "url": "chrome://extensions/content/parent/ext-scripting.js",
+    "schema": "chrome://extensions/content/schemas/scripting.json",
+    "scopes": ["addon_parent"],
+    "paths": [
+      ["scripting"]
     ]
   },
   "storage": {
@@ -230,6 +247,7 @@
     "scopes": ["addon_parent"],
     "paths": [
       ["webRequest"]
-    ]
+    ],
+    "startupBlocking": true
   }
 }

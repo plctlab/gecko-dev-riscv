@@ -46,10 +46,7 @@ function run_test() {
   );
 
   // Ensure we're using system-properties
-  const prefs = Cc["@mozilla.org/preferences-service;1"].getService(
-    Ci.nsIPrefBranch
-  );
-  prefs.setIntPref(
+  Services.prefs.setIntPref(
     "network.proxy.type",
     Ci.nsIProtocolProxyService.PROXYCONFIG_SYSTEM
   );
@@ -71,7 +68,8 @@ function redirect(metadata, response) {
   // If called second time, just return the PAC but set failed-flag
   if (called) {
     failed = true;
-    return pac(metadata, response);
+    pac(metadata, response);
+    return;
   }
 
   called = true;

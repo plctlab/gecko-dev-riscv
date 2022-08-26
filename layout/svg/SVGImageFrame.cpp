@@ -10,6 +10,7 @@
 #include "gfxContext.h"
 #include "gfxPlatform.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/image/WebRenderImageProvider.h"
 #include "mozilla/layers/RenderRootStateManager.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
 #include "imgIContainer.h"
@@ -398,9 +399,9 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
       // come from width/height *attributes* in SVG). They influence the region
       // of the SVG image's internal document that is visible, in combination
       // with preserveAspectRatio and viewBox.
-      const Maybe<SVGImageContext> context(Some(
-          SVGImageContext(Some(CSSIntSize::Truncate(width, height)),
-                          Some(imgElem->mPreserveAspectRatio.GetAnimValue()))));
+      const SVGImageContext context(
+          Some(CSSIntSize::Truncate(width, height)),
+          Some(imgElem->mPreserveAspectRatio.GetAnimValue()));
 
       // For the actual draw operation to draw crisply (and at the right size),
       // our destination rect needs to be |width|x|height|, *in dev pixels*.
@@ -419,7 +420,7 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
       aImgParams.result &= nsLayoutUtils::DrawSingleUnscaledImage(
           aContext, PresContext(), mImageContainer,
           nsLayoutUtils::GetSamplingFilterForFrame(this), nsPoint(0, 0),
-          aDirtyRect ? &dirtyRect : nullptr, Nothing(), flags);
+          aDirtyRect ? &dirtyRect : nullptr, SVGImageContext(), flags);
     }
 
     if (opacity != 1.0f ||
@@ -476,6 +477,9 @@ bool SVGImageFrame::CreateWebRenderCommands(
   }
 
   uint32_t flags = aDisplayListBuilder->GetImageDecodeFlags();
+  if (mForceSyncDecoding) {
+    flags |= imgIContainer::FLAG_SYNC_DECODE;
+  }
 
   // Compute bounds of the image
   nscoord appUnitsPerDevPx = PresContext()->AppUnitsPerDevPixel();
@@ -512,6 +516,8 @@ bool SVGImageFrame::CreateWebRenderCommands(
         // Image has no size; nothing to draw
         return true;
       }
+
+      mImageContainer->GetResolution().ApplyTo(nativeWidth, nativeHeight);
 
       auto preserveAspectRatio = imgElem->mPreserveAspectRatio.GetAnimValue();
       uint16_t align = preserveAspectRatio.GetAlign();
@@ -602,14 +608,15 @@ bool SVGImageFrame::CreateWebRenderCommands(
     }
   }
 
-  Maybe<SVGImageContext> svgContext;
+  SVGImageContext svgContext;
   if (mImageContainer->GetType() == imgIContainer::TYPE_VECTOR) {
     if (StaticPrefs::image_svg_blob_image()) {
       flags |= imgIContainer::FLAG_RECORD_BLOB;
     }
     // Forward preserveAspectRatio to inner SVGs
-    svgContext.emplace(Some(CSSIntSize::Truncate(width, height)),
-                       Some(imgElem->mPreserveAspectRatio.GetAnimValue()));
+    svgContext.SetViewportSize(Some(CSSIntSize::Truncate(width, height)));
+    svgContext.SetPreserveAspectRatio(
+        Some(imgElem->mPreserveAspectRatio.GetAnimValue()));
   }
 
   Maybe<ImageIntRegion> region;
@@ -617,17 +624,16 @@ bool SVGImageFrame::CreateWebRenderCommands(
       mImageContainer, this, destRect, clipRect, aSc, flags, svgContext,
       region);
 
-  RefPtr<layers::ImageContainer> container;
-  ImgDrawResult drawResult = mImageContainer->GetImageContainerAtSize(
+  RefPtr<image::WebRenderImageProvider> provider;
+  ImgDrawResult drawResult = mImageContainer->GetImageProvider(
       aManager->LayerManager(), decodeSize, svgContext, region, flags,
-      getter_AddRefs(container));
+      getter_AddRefs(provider));
 
   // While we got a container, it may not contain a fully decoded surface. If
   // that is the case, and we have an image we were previously displaying which
   // has a fully decoded surface, then we should prefer the previous image.
   switch (drawResult) {
     case ImgDrawResult::NOT_READY:
-    case ImgDrawResult::INCOMPLETE:
     case ImgDrawResult::TEMPORARY_ERROR:
       // nothing to draw (yet)
       return true;
@@ -645,17 +651,11 @@ bool SVGImageFrame::CreateWebRenderCommands(
     // If the image container is empty, we don't want to fallback. Any other
     // failure will be due to resource constraints and fallback is unlikely to
     // help us. Hence we can ignore the return value from PushImage.
-    if (container) {
-      if (flags & imgIContainer::FLAG_RECORD_BLOB) {
-        aManager->CommandBuilder().PushBlobImage(
-            aItem, container, aBuilder, aResources, destRect, clipRect);
-      } else {
-        aManager->CommandBuilder().PushImage(
-            aItem, container, aBuilder, aResources, aSc, destRect, clipRect);
-      }
+    if (provider) {
+      aManager->CommandBuilder().PushImageProvider(aItem, provider, drawResult,
+                                                   aBuilder, aResources,
+                                                   destRect, clipRect);
     }
-
-    nsDisplayItemGenericImageGeometry::UpdateDrawResult(aItem, drawResult);
   }
 
   return true;
@@ -783,7 +783,7 @@ void SVGImageFrame::ReflowCallbackCanceled() { mReflowCallbackPosted = false; }
 uint16_t SVGImageFrame::GetHitTestFlags() {
   uint16_t flags = 0;
 
-  switch (StyleUI()->mPointerEvents) {
+  switch (Style()->PointerEvents()) {
     case StylePointerEvents::None:
       break;
     case StylePointerEvents::Visiblepainted:

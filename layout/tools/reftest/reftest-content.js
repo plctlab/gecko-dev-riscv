@@ -16,15 +16,17 @@ const IO_SERVICE_CONTRACTID = "@mozilla.org/network/io-service;1"
 // "<!--CLEAR-->"
 const BLANK_URL_FOR_CLEARING = "data:text/html;charset=UTF-8,%3C%21%2D%2DCLEAR%2D%2D%3E";
 
-Cu.import("resource://gre/modules/Timer.jsm");
-Cu.import("resource://reftest/AsyncSpellCheckTestHelper.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
+const { setTimeout, clearTimeout } = ChromeUtils.import(
+    "resource://gre/modules/Timer.jsm"
+);
+const { onSpellCheck } = ChromeUtils.import(
+    "resource://reftest/AsyncSpellCheckTestHelper.jsm"
+);
 
 // This will load chrome Custom Elements inside chrome documents:
-ChromeUtils.import("resource://gre/modules/CustomElementsListener.jsm", null);
+ChromeUtils.import("resource://gre/modules/CustomElementsListener.jsm");
 
 var gBrowserIsRemote;
-var gIsWebRenderEnabled;
 var gHaveCanvasSnapshot = false;
 var gCurrentURL;
 var gCurrentURLRecordResults;
@@ -198,7 +200,7 @@ function doPrintMode(contentRootElement) {
 function setupPrintMode() {
     var PSSVC =
         Cc[PRINTSETTINGS_CONTRACTID].getService(Ci.nsIPrintSettingsService);
-    var ps = PSSVC.newPrintSettings;
+    var ps = PSSVC.createNewPrintSettings();
     ps.paperWidth = 5;
     ps.paperHeight = 3;
 
@@ -268,7 +270,7 @@ function setupViewport(contentRootElement) {
 
     // XXX support viewconfig when needed
 }
- 
+
 
 function setupDisplayport(contentRootElement) {
     let promise = content.windowGlobalChild.getActor("ReftestFission").SetupDisplayportRoot();
@@ -865,7 +867,6 @@ function WaitForTestEnd(contentRootElement, inPrintMode, spellCheckedElements, f
                     }
                 }
               }
-              CheckLayerAssertions(contentRootElement);
             }
 
             if (!IsSnapshottableTestType()) {
@@ -952,7 +953,7 @@ async function OnDocumentLoad(uri)
         // Ignore load events for previous documents.
         return;
     }
-    
+
     var currentDoc = content && content.document;
 
     // Collect all editable, spell-checked elements.  It may be the case that
@@ -1000,7 +1001,6 @@ async function OnDocumentLoad(uri)
             // Go into reftest-wait mode belatedly.
             WaitForTestEnd(contentRootElement, inPrintMode, [], uri);
         } else {
-            CheckLayerAssertions(contentRootElement);
             CheckForProcessCrashExpectation(contentRootElement);
             RecordResult(uri);
         }
@@ -1027,63 +1027,6 @@ async function OnDocumentLoad(uri)
         gFailureReason = "timed out waiting for test to complete (waiting for onload scripts to complete)";
         LogInfo("OnDocumentLoad triggering AfterOnLoadScripts");
         setTimeout(function () { setTimeout(AfterOnLoadScripts, 0); }, 0);
-    }
-}
-
-function CheckLayerAssertions(contentRootElement)
-{
-    if (!contentRootElement) {
-        return;
-    }
-    if (gIsWebRenderEnabled) {
-        // WebRender doesn't use layers, so let's not try checking layers
-        // assertions.
-        return;
-    }
-
-    var opaqueLayerElements = getOpaqueLayerElements(contentRootElement);
-    for (var i = 0; i < opaqueLayerElements.length; ++i) {
-        var elem = opaqueLayerElements[i];
-        try {
-            if (!windowUtils().isPartOfOpaqueLayer(elem)) {
-                SendFailedOpaqueLayer(elementDescription(elem) + ' is not part of an opaque layer');
-            }
-        } catch (e) {
-            SendFailedOpaqueLayer('got an exception while checking whether ' + elementDescription(elem) + ' is part of an opaque layer');
-        }
-    }
-    var layerNameToElementsMap = getAssignedLayerMap(contentRootElement);
-    var oneOfEach = [];
-    // Check that elements with the same reftest-assigned-layer share the same PaintedLayer.
-    for (var layerName in layerNameToElementsMap) {
-        try {
-            var elements = layerNameToElementsMap[layerName];
-            oneOfEach.push(elements[0]);
-            var numberOfLayers = windowUtils().numberOfAssignedPaintedLayers(elements);
-            if (numberOfLayers !== 1) {
-                SendFailedAssignedLayer('these elements are assigned to ' + numberOfLayers +
-                                        ' different layers, instead of sharing just one layer: ' +
-                                        elements.map(elementDescription).join(', '));
-            }
-        } catch (e) {
-            SendFailedAssignedLayer('got an exception while checking whether these elements share a layer: ' +
-                                    elements.map(elementDescription).join(', '));
-        }
-    }
-    // Check that elements with different reftest-assigned-layer are assigned to different PaintedLayers.
-    if (oneOfEach.length > 0) {
-        try {
-            var numberOfLayers = windowUtils().numberOfAssignedPaintedLayers(oneOfEach);
-            if (numberOfLayers !== oneOfEach.length) {
-                SendFailedAssignedLayer('these elements are assigned to ' + numberOfLayers +
-                                        ' different layers, instead of having none in common (expected ' +
-                                        oneOfEach.length + ' different layers): ' +
-                                        oneOfEach.map(elementDescription).join(', '));
-            }
-        } catch (e) {
-            SendFailedAssignedLayer('got an exception while checking whether these elements are assigned to different layers: ' +
-                                    oneOfEach.map(elementDescription).join(', '));
-        }
     }
 }
 
@@ -1381,14 +1324,6 @@ function SendContentReady()
 
     let info = {};
 
-    // The webrender check has to be separate from the d2d checks
-    // since the d2d checks will throw an exception on non-windows platforms.
-    try {
-        gIsWebRenderEnabled = gfxInfo.WebRenderEnabled;
-    } catch (e) {
-        gIsWebRenderEnabled = false;
-    }
-
     try {
         info.D2DEnabled = gfxInfo.D2DEnabled;
         info.DWriteEnabled = gfxInfo.DWriteEnabled;
@@ -1548,14 +1483,13 @@ async function SendUpdateCanvasForEvent(forURL, rectList, contentRootElement)
 
     var message;
 
-    if ((gIsWebRenderEnabled || shouldNotFlush(contentRootElement)) &&
-        !windowUtils().isMozAfterPaintPending) {
+    if (!windowUtils().isMozAfterPaintPending) {
         // Webrender doesn't have invalidation, and animations on the compositor
         // don't invoke any MozAfterEvent which means we have no invalidated
         // rect so we just invalidate the whole screen once we don't have
         // anymore paints pending. This will force the snapshot.
 
-        LogInfo("Webrender enabled, sending update whole canvas for invalidation");
+        LogInfo("Sending update whole canvas for invalidation");
         message = "reftest:UpdateWholeCanvasForInvalidation";
     } else {
         LogInfo("SendUpdateCanvasForEvent with " + rectList.length + " rects");

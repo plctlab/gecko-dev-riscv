@@ -7,7 +7,6 @@
 const kIMig = Ci.nsIBrowserProfileMigrator;
 const kIPStartup = Ci.nsIProfileStartup;
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -443,7 +442,8 @@ var MigrationWizard = {
     if (
       this._source == "safari" &&
       AppConstants.isPlatformAndVersionAtLeast("macosx", "18") &&
-      this._itemsFlags & MigrationUtils.resourceTypes.BOOKMARKS
+      (this._itemsFlags & Ci.nsIBrowserProfileMigrator.BOOKMARKS ||
+        this._itemsFlags == Ci.nsIBrowserProfileMigrator.ALL)
     ) {
       let migrator = this._migrator.wrappedJSObject;
       let havePermissions = this.spinResolve(migrator.hasPermissions());

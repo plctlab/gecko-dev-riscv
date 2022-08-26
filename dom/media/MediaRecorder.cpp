@@ -655,14 +655,10 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
       mMediaStream->RegisterTrackListener(this);
 
       uint8_t trackTypes = 0;
-      int32_t audioTracks = 0;
-      int32_t videoTracks = 0;
       for (const auto& track : mMediaStreamTracks) {
         if (track->AsAudioStreamTrack()) {
-          ++audioTracks;
           trackTypes |= ContainerWriter::CREATE_AUDIO_TRACK;
         } else if (track->AsVideoStreamTrack()) {
-          ++videoTracks;
           trackTypes |= ContainerWriter::CREATE_VIDEO_TRACK;
         } else {
           MOZ_CRASH("Unexpected track type");
@@ -816,7 +812,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     // Create a TaskQueue to read encode media data from MediaEncoder.
     MOZ_RELEASE_ASSERT(!mEncoderThread);
     RefPtr<SharedThreadPool> pool =
-        GetMediaThreadPool(MediaThreadType::WEBRTC_DECODER);
+        GetMediaThreadPool(MediaThreadType::WEBRTC_WORKER);
     if (!pool) {
       LOG(LogLevel::Debug, ("Session.InitEncoder %p Failed to create "
                             "MediaRecorderReadThread thread pool",
@@ -826,7 +822,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     }
 
     mEncoderThread =
-        MakeAndAddRef<TaskQueue>(pool.forget(), "MediaRecorderReadThread");
+        TaskQueue::Create(pool.forget(), "MediaRecorderReadThread");
 
     MOZ_DIAGNOSTIC_ASSERT(!mShutdownBlocker);
     // Add a shutdown blocker so mEncoderThread can be shutdown async.

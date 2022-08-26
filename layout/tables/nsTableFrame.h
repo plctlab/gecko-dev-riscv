@@ -38,11 +38,8 @@ class StackingContextHelper;
 
 class nsDisplayTableItem : public nsPaintedDisplayItem {
  public:
-  nsDisplayTableItem(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                     bool aDrawsBackground = true)
-      : nsPaintedDisplayItem(aBuilder, aFrame),
-        mPartHasFixedBackground(false),
-        mDrawsBackground(aDrawsBackground) {}
+  nsDisplayTableItem(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame)
+      : nsPaintedDisplayItem(aBuilder, aFrame) {}
 
   // With collapsed borders, parts of the collapsed border can extend outside
   // the table part frames, so allow this display element to blow out to our
@@ -50,18 +47,6 @@ class nsDisplayTableItem : public nsPaintedDisplayItem {
   // cells extending outside them.
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override;
-
-  virtual nsDisplayItemGeometry* AllocateGeometry(
-      nsDisplayListBuilder* aBuilder) override;
-  virtual void ComputeInvalidationRegion(
-      nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
-      nsRegion* aInvalidRegion) const override;
-
-  void UpdateForFrameBackground(nsIFrame* aFrame);
-
- private:
-  bool mPartHasFixedBackground;
-  bool mDrawsBackground;
 };
 
 class nsDisplayTableBackgroundSet {
@@ -95,6 +80,12 @@ class nsDisplayTableBackgroundSet {
 
   const nsRect& GetDirtyRect() { return mDirtyRect; }
 
+  const DisplayItemClipChain* GetTableClipChain() {
+    return mCombinedTableClipChain;
+  }
+
+  const ActiveScrolledRoot* GetTableASR() { return mTableASR; }
+
  private:
   // This class is only used on stack, so we don't have to worry about leaking
   // it.  Don't let us be heap-allocated!
@@ -110,6 +101,9 @@ class nsDisplayTableBackgroundSet {
   nsTArray<nsTableColFrame*> mColumns;
   nsPoint mToReferenceFrame;
   nsRect mDirtyRect;
+
+  const DisplayItemClipChain* mCombinedTableClipChain;
+  const ActiveScrolledRoot* mTableASR;
 };
 
 }  // namespace mozilla
@@ -573,7 +567,6 @@ class nsTableFrame : public nsContainerFrame {
   explicit nsTableFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                         ClassID aID = kClassID);
 
-  /** destructor, responsible for mColumnLayoutData */
   virtual ~nsTableFrame();
 
   void InitChildReflowInput(ReflowInput& aReflowInput);
@@ -632,7 +625,8 @@ class nsTableFrame : public nsContainerFrame {
   void ClearAllPositionedTableParts();
 
   nsITableLayoutStrategy* LayoutStrategy() const {
-    return static_cast<nsTableFrame*>(FirstInFlow())->mTableLayoutStrategy;
+    return static_cast<nsTableFrame*>(FirstInFlow())
+        ->mTableLayoutStrategy.get();
   }
 
   // Helper for InsertFrames.
@@ -863,11 +857,11 @@ class nsTableFrame : public nsContainerFrame {
 
   std::map<int32_t, int32_t> mDeletedRowIndexRanges;  // maintains ranges of row
                                                       // indices of deleted rows
-  nsTableCellMap* mCellMap;  // maintains the relationships between rows, cols,
-                             // and cells
-  nsITableLayoutStrategy* mTableLayoutStrategy;  // the layout strategy for this
-                                                 // frame
-  nsFrameList mColGroups;                        // the list of colgroup frames
+  mozilla::UniquePtr<nsTableCellMap> mCellMap;  // maintains the relationships
+                                                // between rows, cols, and cells
+  // the layout strategy for this frame
+  mozilla::UniquePtr<nsITableLayoutStrategy> mTableLayoutStrategy;
+  nsFrameList mColGroups;  // the list of colgroup frames
 };
 
 inline bool nsTableFrame::IsRowGroup(mozilla::StyleDisplay aDisplayType) const {

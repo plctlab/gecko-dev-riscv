@@ -49,8 +49,10 @@ def run(command_context, ide, args):
         return 1
 
     if ide == "vscode":
+        from mozbuild.backend.clangd import find_vscode_cmd
+
         # Check if platform has VSCode installed
-        vscode_cmd = find_vscode_cmd(command_context)
+        vscode_cmd = find_vscode_cmd()
         if vscode_cmd is None:
             choice = prompt_bool(
                 "VSCode cannot be found, and may not be installed. Proceed?"
@@ -126,74 +128,6 @@ def get_visualstudio_workspace_path(command_context):
     )
 
 
-def find_vscode_cmd(command_context):
-    import shutil
-
-    # Try to look up the `code` binary on $PATH, and use it if present. This
-    # should catch cases like being run from within a vscode-remote shell,
-    # even if vscode itself is also installed on the remote host.
-    path = shutil.which("code")
-    if path is not None:
-        return [path]
-
-    # If the binary wasn't on $PATH, try to find it in a variety of other
-    # well-known install locations based on the current platform.
-    if "linux" in command_context.platform[0]:
-        cmd_and_path = [
-            {"path": "/usr/local/bin/code", "cmd": ["/usr/local/bin/code"]},
-            {"path": "/snap/bin/code", "cmd": ["/snap/bin/code"]},
-            {"path": "/usr/bin/code", "cmd": ["/usr/bin/code"]},
-            {"path": "/usr/bin/code-insiders", "cmd": ["/usr/bin/code-insiders"]},
-        ]
-    elif "macos" in command_context.platform[0]:
-        cmd_and_path = [
-            {"path": "/usr/local/bin/code", "cmd": ["/usr/local/bin/code"]},
-            {
-                "path": "/Applications/Visual Studio Code.app",
-                "cmd": ["open", "/Applications/Visual Studio Code.app", "--args"],
-            },
-            {
-                "path": "/Applications/Visual Studio Code - Insiders.app",
-                "cmd": [
-                    "open",
-                    "/Applications/Visual Studio Code - Insiders.app",
-                    "--args",
-                ],
-            },
-        ]
-    elif "win64" in command_context.platform[0]:
-        from pathlib import Path
-
-        vscode_path = mozpath.join(
-            str(Path.home()),
-            "AppData",
-            "Local",
-            "Programs",
-            "Microsoft VS Code",
-            "Code.exe",
-        )
-        vscode_insiders_path = mozpath.join(
-            str(Path.home()),
-            "AppData",
-            "Local",
-            "Programs",
-            "Microsoft VS Code Insiders",
-            "Code - Insiders.exe",
-        )
-        cmd_and_path = [
-            {"path": vscode_path, "cmd": [vscode_path]},
-            {"path": vscode_insiders_path, "cmd": [vscode_insiders_path]},
-        ]
-
-    # Did we guess the path?
-    for element in cmd_and_path:
-        if os.path.exists(element["path"]):
-            return element["cmd"]
-
-    # Path cannot be found
-    return None
-
-
 def setup_vscode(command_context, vscode_cmd):
     vscode_settings = mozpath.join(
         command_context.topsrcdir, ".vscode", "settings.json"
@@ -219,7 +153,7 @@ def setup_vscode(command_context, vscode_cmd):
             {},
             "Unable to locate clangd in {}.".format(clang_tidy_bin),
         )
-        rc = _get_clang_tools(command_context, clang_tools_path)
+        rc = get_clang_tools(command_context, clang_tools_path)
 
         if rc != 0:
             return rc
@@ -230,6 +164,17 @@ def setup_vscode(command_context, vscode_cmd):
     from mozbuild.code_analysis.utils import ClangTidyConfig
 
     clang_tidy_cfg = ClangTidyConfig(command_context.topsrcdir)
+
+    cargo_check_command = [
+        mozpath.join(command_context.topsrcdir, "mach"),
+        "--log-no-times",
+        "cargo",
+        "check",
+        "-j",
+        str(multiprocessing.cpu_count() // 2),
+        "--all-crates",
+        "--message-format-json",
+    ]
 
     clangd_json = {
         "clangd.path": clangd_path,
@@ -249,10 +194,26 @@ def setup_vscode(command_context, vscode_cmd):
             "--pch-storage",
             "memory",
             "--clang-tidy",
-            "--clang-tidy-checks",
-            ",".join(clang_tidy_cfg.checks),
         ],
+        "rust-analyzer.server.extraEnv": {
+            # Point rust-analyzer at the real target directory used by our
+            # build, so it can discover the files created when we run `./mach
+            # cargo check`.
+            "CARGO_TARGET_DIR": command_context.topobjdir,
+        },
+        "rust-analyzer.cargo.buildScripts.overrideCommand": cargo_check_command,
+        "rust-analyzer.checkOnSave.overrideCommand": cargo_check_command,
     }
+
+    clang_tidy = {}
+    clang_tidy["Checks"] = ",".join(clang_tidy_cfg.checks)
+    clang_tidy.update(clang_tidy_cfg.checks_config)
+
+    # Write .clang-tidy yml
+    import yaml
+
+    with open(".clang-tidy", "w") as file:
+        yaml.dump(clang_tidy, file)
 
     # Load the existing .vscode/settings.json file, to check if if needs to
     # be created or updated.
@@ -336,7 +297,7 @@ def setup_vscode(command_context, vscode_cmd):
     return 0
 
 
-def _get_clang_tools(command_context, clang_tools_path):
+def get_clang_tools(command_context, clang_tools_path):
 
     import shutil
 
@@ -376,7 +337,7 @@ def _get_clang_tools(command_context, clang_tools_path):
 
 
 def prompt_bool(prompt, limit=5):
-    """ Prompts the user with prompt and requires a boolean value. """
+    """Prompts the user with prompt and requires a boolean value."""
     from distutils.util import strtobool
 
     for _ in range(limit):

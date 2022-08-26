@@ -4,8 +4,6 @@
 
 var EXPORTED_SYMBOLS = ["ThemeVariableMap", "ThemeContentPropertyList"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const ThemeVariableMap = [
   [
     "--lwt-accent-color-inactive",
@@ -41,10 +39,10 @@ const ThemeVariableMap = [
     },
   ],
   [
-    "--tab-line-color",
+    "--lwt-tab-line-color",
     {
       lwtProperty: "tab_line",
-      optionalElementID: "tabbrowser-tabs",
+      optionalElementID: "TabsToolbar",
     },
   ],
   [
@@ -57,18 +55,6 @@ const ThemeVariableMap = [
     "--toolbar-bgcolor",
     {
       lwtProperty: "toolbarColor",
-      processColor(rgbaChannels, element) {
-        if (!rgbaChannels) {
-          Services.prefs.setIntPref("browser.theme.toolbar-theme", 2);
-          return null;
-        }
-        const { r, g, b, a } = rgbaChannels;
-        Services.prefs.setIntPref(
-          "browser.theme.toolbar-theme",
-          _isColorDark(r, g, b) ? 0 : 1
-        );
-        return `rgba(${r}, ${g}, ${b}, ${a})`;
-      },
     },
   ],
   [
@@ -78,7 +64,7 @@ const ThemeVariableMap = [
     },
   ],
   [
-    "--tabs-border-color",
+    "--lwt-tabs-border-color",
     {
       lwtProperty: "toolbar_top_separator",
       optionalElementID: "navigator-toolbox",
@@ -127,18 +113,6 @@ const ThemeVariableMap = [
     },
   ],
   [
-    "--autocomplete-popup-background",
-    {
-      lwtProperty: "popup",
-    },
-  ],
-  [
-    "--autocomplete-popup-color",
-    {
-      lwtProperty: "popup_text",
-    },
-  ],
-  [
     "--autocomplete-popup-highlight-background",
     {
       lwtProperty: "popup_highlight",
@@ -181,6 +155,29 @@ const ThemeVariableMap = [
       optionalElementID: "browser",
     },
   ],
+  [
+    "--tabpanel-background-color",
+    {
+      lwtProperty: "ntp_background",
+      processColor(rgbaChannels) {
+        if (
+          !rgbaChannels ||
+          !Services.prefs.getBoolPref("browser.newtabpage.enabled")
+        ) {
+          // We only set the tabpanel background to the new tab background color
+          // if the user uses about:home for new tabs. Otherwise, we flash a
+          // colorful background when a new tab is opened. We will flash the
+          // newtab color in new windows if the user uses about:home for new
+          // tabs but not new windows. However, the flash is concealed by the OS
+          // window-open animation.
+          return null;
+        }
+        // Drop alpha channel
+        let { r, g, b } = rgbaChannels;
+        return `rgb(${r}, ${g}, ${b})`;
+      },
+    },
+  ],
 ];
 
 const ThemeContentPropertyList = [
@@ -192,8 +189,3 @@ const ThemeContentPropertyList = [
   "sidebar_highlight_text",
   "sidebar_text",
 ];
-
-// This is copied from LightweightThemeConsumer.jsm.
-function _isColorDark(r, g, b) {
-  return 0.2125 * r + 0.7154 * g + 0.0721 * b <= 127;
-}

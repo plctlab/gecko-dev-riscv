@@ -52,7 +52,8 @@ async function testDoorHanger(
         "privacy.restrict3rdpartystorage.userInteractionRequiredForHosts",
         "tracking.example.com,tracking.example.org",
       ],
-      ["browser.contentblocking.state-partitioning.mvp.ui.enabled", true],
+      // Bug 1617611: Fix all the tests broken by "cookies SameSite=lax by default"
+      ["network.cookie.sameSite.laxByDefault", false],
     ],
   });
 
@@ -225,38 +226,37 @@ async function testDoorHanger(
   } else {
     await Promise.all([ct, permChanged]);
   }
-  if (choice != BLOCK) {
-    let permissionPopupPromise = BrowserTestUtils.waitForEvent(
-      window,
-      "popupshown",
-      true,
-      event => event.target == gPermissionPanel._permissionPopup
-    );
-    gPermissionPanel._identityPermissionBox.click();
-    await permissionPopupPromise;
-    let permissionItem = document.querySelector(
-      ".permission-popup-permission-item-3rdPartyStorage"
-    );
-    ok(permissionItem, "Permission item exists");
-    ok(
-      BrowserTestUtils.is_visible(permissionItem),
-      "Permission item visible in the identity panel"
-    );
-    let permissionLearnMoreLink = document.getElementById(
-      "permission-popup-storage-access-permission-learn-more"
-    );
-    ok(permissionLearnMoreLink, "Permission learn more link exists");
-    ok(
-      BrowserTestUtils.is_visible(permissionLearnMoreLink),
-      "Permission learn more link is visible in the identity panel"
-    );
-    permissionPopupPromise = BrowserTestUtils.waitForEvent(
-      gPermissionPanel._permissionPopup,
-      "popuphidden"
-    );
-    gPermissionPanel._permissionPopup.hidePopup();
-    await permissionPopupPromise;
-  }
+
+  let permissionPopupPromise = BrowserTestUtils.waitForEvent(
+    window,
+    "popupshown",
+    true,
+    event => event.target == gPermissionPanel._permissionPopup
+  );
+  gPermissionPanel._identityPermissionBox.click();
+  await permissionPopupPromise;
+  let permissionItem = document.querySelector(
+    ".permission-popup-permission-item-3rdPartyStorage"
+  );
+  ok(permissionItem, "Permission item exists");
+  ok(
+    BrowserTestUtils.is_visible(permissionItem),
+    "Permission item visible in the identity panel"
+  );
+  let permissionLearnMoreLink = document.getElementById(
+    "permission-popup-storage-access-permission-learn-more"
+  );
+  ok(permissionLearnMoreLink, "Permission learn more link exists");
+  ok(
+    BrowserTestUtils.is_visible(permissionLearnMoreLink),
+    "Permission learn more link is visible in the identity panel"
+  );
+  permissionPopupPromise = BrowserTestUtils.waitForEvent(
+    gPermissionPanel._permissionPopup,
+    "popuphidden"
+  );
+  gPermissionPanel._permissionPopup.hidePopup();
+  await permissionPopupPromise;
 
   BrowserTestUtils.removeTab(tab);
 
@@ -302,6 +302,7 @@ async function preparePermissionsFromOtherSites(topPage) {
 
 async function cleanUp() {
   info("Cleaning up.");
+  SpecialPowers.clearUserPref("network.cookie.sameSite.laxByDefault");
   await new Promise(resolve => {
     Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
       resolve()

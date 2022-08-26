@@ -16,7 +16,7 @@
 #include "jstypes.h"
 #include "NamespaceImports.h"
 
-#include "gc/Rooting.h"
+#include "gc/AllocKind.h"
 #include "js/ScalarType.h"
 #include "js/TypeDecls.h"
 
@@ -26,12 +26,14 @@ class JSLinearString;
 namespace js {
 
 class AbstractGeneratorObject;
+class ArrayObject;
 class GlobalObject;
 class InterpreterFrame;
 class LexicalScope;
 class ClassBodyScope;
 class MapObject;
 class NativeObject;
+class PlainObject;
 class PropertyName;
 class SetObject;
 class Shape;
@@ -55,7 +57,7 @@ enum DataType : uint8_t {
   Type_Int32,
   Type_Double,
   Type_Pointer,
-  Type_Object,
+  Type_Cell,
   Type_Value,
   Type_Handle
 };
@@ -136,7 +138,7 @@ enum MaybeTailCall : bool { TailCall, NonTailCall };
 
 // Data for a VM function. All VMFunctionDatas are stored in a constexpr array.
 struct VMFunctionData {
-#if defined(DEBUG) || defined(JS_JITSPEW) || defined(JS_TRACE_LOGGING)
+#if defined(DEBUG) || defined(JS_JITSPEW)
   // Informative name of the wrapped function. The name should not be present
   // in release builds in order to save memory.
   const char* name_;
@@ -148,7 +150,6 @@ struct VMFunctionData {
     RootObject,
     RootString,
     RootId,
-    RootFunction,
     RootValue,
     RootCell,
     RootBigInt
@@ -217,7 +218,7 @@ struct VMFunctionData {
   // Whether this function returns anything more than a boolean flag for
   // failures.
   bool returnsData() const {
-    return returnType == Type_Object || outParam != Type_Void;
+    return returnType == Type_Cell || outParam != Type_Void;
   }
 
   ArgProperties argProperties(uint32_t explicitArg) const {
@@ -232,7 +233,7 @@ struct VMFunctionData {
     return ((argumentPassedInFloatRegs >> explicitArg) & 1) == 1;
   }
 
-#if defined(DEBUG) || defined(JS_JITSPEW) || defined(JS_TRACE_LOGGING)
+#if defined(DEBUG) || defined(JS_JITSPEW)
   const char* name() const { return name_; }
 #endif
 
@@ -307,7 +308,7 @@ struct VMFunctionData {
                            uint8_t extraValuesToPop = 0,
                            MaybeTailCall expectTailCall = NonTailCall)
       :
-#if defined(DEBUG) || defined(JS_JITSPEW) || defined(JS_TRACE_LOGGING)
+#if defined(DEBUG) || defined(JS_JITSPEW)
         name_(name),
 #endif
         argumentRootTypes(argRootTypes),
@@ -323,7 +324,7 @@ struct VMFunctionData {
     MOZ_ASSERT_IF(outParam != Type_Void,
                   returnType == Type_Void || returnType == Type_Bool);
     MOZ_ASSERT(returnType == Type_Void || returnType == Type_Bool ||
-               returnType == Type_Object);
+               returnType == Type_Cell);
   }
 
   constexpr VMFunctionData(const VMFunctionData& o) = default;
@@ -360,7 +361,7 @@ void* GetContextSensitiveInterpreterStub();
 bool CheckOverRecursed(JSContext* cx);
 bool CheckOverRecursedBaseline(JSContext* cx, BaselineFrame* frame);
 
-[[nodiscard]] bool MutatePrototype(JSContext* cx, HandlePlainObject obj,
+[[nodiscard]] bool MutatePrototype(JSContext* cx, Handle<PlainObject*> obj,
                                    HandleValue value);
 
 enum class EqualityKind : bool { NotEqual, Equal };
@@ -374,7 +375,7 @@ template <ComparisonKind Kind>
 bool StringsCompare(JSContext* cx, HandleString lhs, HandleString rhs,
                     bool* res);
 
-[[nodiscard]] bool ArrayPushDense(JSContext* cx, HandleArrayObject arr,
+[[nodiscard]] bool ArrayPushDense(JSContext* cx, Handle<ArrayObject*> arr,
                                   HandleValue v, uint32_t* length);
 JSString* ArrayJoin(JSContext* cx, HandleObject array, HandleString sep);
 [[nodiscard]] bool SetArrayLength(JSContext* cx, HandleObject obj,
@@ -387,17 +388,17 @@ JSLinearString* StringFromCharCodeNoGC(JSContext* cx, int32_t code);
 JSString* StringFromCodePoint(JSContext* cx, int32_t codePoint);
 
 [[nodiscard]] bool SetProperty(JSContext* cx, HandleObject obj,
-                               HandlePropertyName name, HandleValue value,
+                               Handle<PropertyName*> name, HandleValue value,
                                bool strict, jsbytecode* pc);
 
 [[nodiscard]] bool InterruptCheck(JSContext* cx);
 
-JSObject* NewCallObject(JSContext* cx, HandleShape shape);
+JSObject* NewCallObject(JSContext* cx, Handle<Shape*> shape);
 JSObject* NewStringObject(JSContext* cx, HandleString str);
 
 bool OperatorIn(JSContext* cx, HandleValue key, HandleObject obj, bool* out);
 
-[[nodiscard]] bool GetIntrinsicValue(JSContext* cx, HandlePropertyName name,
+[[nodiscard]] bool GetIntrinsicValue(JSContext* cx, Handle<PropertyName*> name,
                                      MutableHandleValue rval);
 
 [[nodiscard]] bool CreateThisFromIC(JSContext* cx, HandleObject callee,
@@ -427,10 +428,10 @@ JSObject* WrapObjectPure(JSContext* cx, JSObject* obj);
 
 [[nodiscard]] bool DebugPrologue(JSContext* cx, BaselineFrame* frame);
 [[nodiscard]] bool DebugEpilogue(JSContext* cx, BaselineFrame* frame,
-                                 jsbytecode* pc, bool ok);
+                                 const jsbytecode* pc, bool ok);
 [[nodiscard]] bool DebugEpilogueOnBaselineReturn(JSContext* cx,
                                                  BaselineFrame* frame,
-                                                 jsbytecode* pc);
+                                                 const jsbytecode* pc);
 void FrameIsDebuggeeCheck(BaselineFrame* frame);
 
 JSObject* CreateGeneratorFromFrame(JSContext* cx, BaselineFrame* frame);
@@ -439,9 +440,9 @@ JSObject* CreateGenerator(JSContext* cx, HandleFunction, HandleScript,
 
 [[nodiscard]] bool NormalSuspend(JSContext* cx, HandleObject obj,
                                  BaselineFrame* frame, uint32_t frameSize,
-                                 jsbytecode* pc);
+                                 const jsbytecode* pc);
 [[nodiscard]] bool FinalSuspend(JSContext* cx, HandleObject obj,
-                                jsbytecode* pc);
+                                const jsbytecode* pc);
 [[nodiscard]] bool InterpretResume(JSContext* cx, HandleObject obj,
                                    Value* stackValues, MutableHandleValue rval);
 [[nodiscard]] bool DebugAfterYield(JSContext* cx, BaselineFrame* frame);
@@ -452,12 +453,14 @@ JSObject* CreateGenerator(JSContext* cx, HandleFunction, HandleScript,
 
 [[nodiscard]] bool GlobalDeclInstantiationFromIon(JSContext* cx,
                                                   HandleScript script,
-                                                  jsbytecode* pc);
+                                                  const jsbytecode* pc);
 [[nodiscard]] bool InitFunctionEnvironmentObjects(JSContext* cx,
                                                   BaselineFrame* frame);
 
 [[nodiscard]] bool NewArgumentsObject(JSContext* cx, BaselineFrame* frame,
                                       MutableHandleValue res);
+
+ArrayObject* NewArrayObjectEnsureDenseInitLength(JSContext* cx, int32_t count);
 
 JSObject* CopyLexicalEnvironmentObject(JSContext* cx, HandleObject env,
                                        bool copySlots);
@@ -466,7 +469,7 @@ JSObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest,
                             HandleObject res);
 
 [[nodiscard]] bool HandleDebugTrap(JSContext* cx, BaselineFrame* frame,
-                                   uint8_t* retAddr);
+                                   const uint8_t* retAddr);
 [[nodiscard]] bool OnDebuggerStatement(JSContext* cx, BaselineFrame* frame);
 [[nodiscard]] bool GlobalHasLiveOnDebuggerStatement(JSContext* cx);
 
@@ -480,20 +483,20 @@ JSObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest,
                                     Handle<ClassBodyScope*> scope);
 [[nodiscard]] bool DebugLeaveThenPopLexicalEnv(JSContext* cx,
                                                BaselineFrame* frame,
-                                               jsbytecode* pc);
+                                               const jsbytecode* pc);
 [[nodiscard]] bool FreshenLexicalEnv(JSContext* cx, BaselineFrame* frame);
 [[nodiscard]] bool DebugLeaveThenFreshenLexicalEnv(JSContext* cx,
                                                    BaselineFrame* frame,
-                                                   jsbytecode* pc);
+                                                   const jsbytecode* pc);
 [[nodiscard]] bool RecreateLexicalEnv(JSContext* cx, BaselineFrame* frame);
 [[nodiscard]] bool DebugLeaveThenRecreateLexicalEnv(JSContext* cx,
                                                     BaselineFrame* frame,
-                                                    jsbytecode* pc);
+                                                    const jsbytecode* pc);
 [[nodiscard]] bool DebugLeaveLexicalEnv(JSContext* cx, BaselineFrame* frame,
-                                        jsbytecode* pc);
+                                        const jsbytecode* pc);
 
 [[nodiscard]] bool PushVarEnv(JSContext* cx, BaselineFrame* frame,
-                              HandleScope scope);
+                              Handle<Scope*> scope);
 
 [[nodiscard]] bool InitBaselineFrameForOsr(BaselineFrame* frame,
                                            InterpreterFrame* interpFrame,
@@ -502,7 +505,7 @@ JSObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest,
 JSString* StringReplace(JSContext* cx, HandleString string,
                         HandleString pattern, HandleString repl);
 
-[[nodiscard]] bool SetDenseElement(JSContext* cx, HandleNativeObject obj,
+[[nodiscard]] bool SetDenseElement(JSContext* cx, Handle<NativeObject*> obj,
                                    int32_t index, HandleValue value,
                                    bool strict);
 
@@ -564,7 +567,7 @@ bool SetNativeDataPropertyPure(JSContext* cx, JSObject* obj, PropertyName* name,
 bool ObjectHasGetterSetterPure(JSContext* cx, JSObject* objArg, jsid id,
                                GetterSetter* getterSetter);
 
-JSString* TypeOfObject(JSObject* obj, JSRuntime* rt);
+JSString* TypeOfNameObject(JSObject* obj, JSRuntime* rt);
 
 bool GetPrototypeOf(JSContext* cx, HandleObject target,
                     MutableHandleValue rval);
@@ -643,25 +646,26 @@ AtomicsReadWriteModifyFn AtomicsXor(Scalar::Type elementType);
 BigInt* AtomicsLoad64(JSContext* cx, TypedArrayObject* typedArray,
                       size_t index);
 
-void AtomicsStore64(TypedArrayObject* typedArray, size_t index, BigInt* value);
+void AtomicsStore64(TypedArrayObject* typedArray, size_t index,
+                    const BigInt* value);
 
 BigInt* AtomicsCompareExchange64(JSContext* cx, TypedArrayObject* typedArray,
-                                 size_t index, BigInt* expected,
-                                 BigInt* replacement);
+                                 size_t index, const BigInt* expected,
+                                 const BigInt* replacement);
 
 BigInt* AtomicsExchange64(JSContext* cx, TypedArrayObject* typedArray,
-                          size_t index, BigInt* value);
+                          size_t index, const BigInt* value);
 
 BigInt* AtomicsAdd64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
-                     BigInt* value);
+                     const BigInt* value);
 BigInt* AtomicsAnd64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
-                     BigInt* value);
+                     const BigInt* value);
 BigInt* AtomicsOr64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
-                    BigInt* value);
+                    const BigInt* value);
 BigInt* AtomicsSub64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
-                     BigInt* value);
+                     const BigInt* value);
 BigInt* AtomicsXor64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
-                     BigInt* value);
+                     const BigInt* value);
 
 JSAtom* AtomizeStringNoGC(JSContext* cx, JSString* str);
 

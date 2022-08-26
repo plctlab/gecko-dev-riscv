@@ -3,15 +3,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
+const { clearTimeout, setTimeout } = ChromeUtils.import(
+  "resource://gre/modules/Timer.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AndroidLog: "resource://gre/modules/AndroidLog.jsm",
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
-  Log: "resource://gre/modules/Log.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 var EXPORTED_SYMBOLS = ["GeckoViewUtils"];
@@ -56,7 +60,7 @@ class AndroidAppender extends Log.Appender {
     // leading "Gecko" here. Also strip dots to save space.
     const tag = aMessage.loggerName.replace(/^Gecko|\./g, "");
     const msg = this._formatter.format(aMessage);
-    AndroidLog[this._mapping[aMessage.level]](tag, msg);
+    lazy.AndroidLog[this._mapping[aMessage.level]](tag, msg);
   }
 }
 
@@ -88,7 +92,7 @@ var GeckoViewUtils = {
     XPCOMUtils.defineLazyGetter(scope, name, _ => {
       let ret = undefined;
       if (module) {
-        ret = ChromeUtils.import(module, {})[name];
+        ret = ChromeUtils.import(module)[name];
       } else if (service) {
         ret = Cc[service].getService(Ci.nsISupports).wrappedJSObject;
       } else if (typeof handler === "function") {
@@ -142,13 +146,13 @@ var GeckoViewUtils = {
 
     if (ged) {
       const listener = (event, data, callback) => {
-        EventDispatcher.instance.unregisterListener(listener, event);
+        lazy.EventDispatcher.instance.unregisterListener(listener, event);
         if (!once) {
-          EventDispatcher.instance.registerListener(scope[name], event);
+          lazy.EventDispatcher.instance.registerListener(scope[name], event);
         }
         scope[name].onEvent(event, data, callback);
       };
-      EventDispatcher.instance.registerListener(listener, ged);
+      lazy.EventDispatcher.instance.registerListener(listener, ged);
     }
   },
 
@@ -207,47 +211,6 @@ var GeckoViewUtils = {
           );
         }
         handlers.forEach(handler => handler.handleEvent(args[0]));
-      }
-    );
-  },
-
-  /**
-   * Add lazy event listeners on the per-window EventDispatcher, and only load
-   * the actual handler when an event is being handled.
-   *
-   * @param window  Window with the target EventDispatcher.
-   * @param events  Event name as a string or array.
-   * @param handler If specified, function that, for a given event, returns the
-   *                actual event handler as an object or an array of objects.
-   *                If handler is not specified, the actual event handler is
-   *                specified using the scope and name pair.
-   * @param scope   See handler.
-   * @param name    See handler.
-   * @param once    If true, only listen to the specified events once.
-   */
-  registerLazyWindowEventListener(
-    window,
-    events,
-    { handler, scope, name, once }
-  ) {
-    const dispatcher = this.getDispatcherForWindow(window);
-
-    this._addLazyListeners(
-      events,
-      handler,
-      scope,
-      name,
-      (events, listener) => {
-        dispatcher.registerListener(listener, events);
-      },
-      (handlers, listener, args) => {
-        if (!once) {
-          dispatcher.unregisterListener(listener, args[0]);
-          handlers.forEach(handler =>
-            dispatcher.registerListener(handler, args[0])
-          );
-        }
-        handlers.forEach(handler => handler.onEvent(...args));
       }
     );
   },
@@ -355,31 +318,62 @@ var GeckoViewUtils = {
     try {
       if (!this.IS_PARENT_PROCESS) {
         const mm = this.getContentFrameMessageManager(aWin.top || aWin);
-        return mm && EventDispatcher.forMessageManager(mm);
+        return mm && lazy.EventDispatcher.forMessageManager(mm);
       }
       const win = this.getChromeWindow(aWin.top || aWin);
       if (!win.closed) {
-        return win.WindowEventDispatcher || EventDispatcher.for(win);
+        return win.WindowEventDispatcher || lazy.EventDispatcher.for(win);
       }
     } catch (e) {}
     return null;
   },
 
-  getActiveDispatcherAndWindow() {
-    const bc = Services.focus.activeBrowsingContext;
-    const win = bc ? bc.window : null; // WON'T WORK FOR OOP IFRAMES!
-    let dispatcher = this.getDispatcherForWindow(win);
-    if (dispatcher) {
-      return [dispatcher, win];
-    }
-
-    for (const win of Services.wm.getEnumerator(/* windowType */ null)) {
-      dispatcher = this.getDispatcherForWindow(win);
-      if (dispatcher) {
-        return [dispatcher, win];
+  /**
+   * Return promise for waiting for finishing PanZoomState.
+   *
+   * @param aWindow a DOM window.
+   * @return promise
+   */
+  waitForPanZoomState(aWindow) {
+    return new Promise((resolve, reject) => {
+      if (
+        !aWindow?.windowUtils.asyncPanZoomEnabled ||
+        !Services.prefs.getBoolPref("apz.zoom-to-focused-input.enabled")
+      ) {
+        // No zoomToFocusedInput.
+        resolve();
+        return;
       }
-    }
-    return [null, null];
+
+      let timerId = 0;
+
+      const panZoomState = (aSubject, aTopic, aData) => {
+        if (timerId != 0) {
+          // aWindow may be dead object now.
+          try {
+            clearTimeout(timerId);
+          } catch (e) {}
+          timerId = 0;
+        }
+
+        if (aData === "NOTHING") {
+          Services.obs.removeObserver(panZoomState, "PanZoom:StateChange");
+          resolve();
+        }
+      };
+
+      Services.obs.addObserver(panZoomState, "PanZoom:StateChange");
+
+      // "GeckoView:ZoomToInput" has the timeout as 500ms when window isn't
+      // resized (it means on-screen-keyboard is already shown).
+      // So after up to 500ms, APZ event is sent. So we need to wait for more
+      // 500ms.
+      timerId = setTimeout(() => {
+        // PanZoom state isn't changed. zoomToFocusedInput will return error.
+        Services.obs.removeObserver(panZoomState, "PanZoom:StateChange");
+        reject();
+      }, 600);
+    });
   },
 
   /**
@@ -484,6 +478,35 @@ var GeckoViewUtils = {
     }
 
     aLogger[aLevel.toLowerCase()](strs, ...aExprs);
+  },
+
+  /**
+   * Checks whether the principal is supported for permissions.
+   *
+   * @param {nsIPrincipal} principal
+   *        The principal to check.
+   *
+   * @return {boolean} if the principal is supported.
+   */
+  isSupportedPermissionsPrincipal(principal) {
+    if (!principal) {
+      return false;
+    }
+    if (!(principal instanceof Ci.nsIPrincipal)) {
+      throw new Error(
+        "Argument passed as principal is not an instance of Ci.nsIPrincipal"
+      );
+    }
+    return this.isSupportedPermissionsScheme(principal.scheme);
+  },
+
+  /**
+   * Checks whether we support managing permissions for a specific scheme.
+   * @param {string} scheme - Scheme to test.
+   * @returns {boolean} Whether the scheme is supported.
+   */
+  isSupportedPermissionsScheme(scheme) {
+    return ["http", "https", "moz-extension", "file"].includes(scheme);
   },
 };
 

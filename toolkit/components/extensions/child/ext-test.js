@@ -63,26 +63,70 @@ const errorMatches = (error, expectedError, context) => {
   return false;
 };
 
+// Checks whether |v| should use string serialization instead of JSON.
+function useStringInsteadOfJSON(v) {
+  return (
+    // undefined to string, or else it is omitted from object after stringify.
+    v === undefined ||
+    // Values that would have become null.
+    (typeof v === "number" && (isNaN(v) || !isFinite(v)))
+  );
+}
+
+// A very strict deep equality comparator that throws for unsupported values.
+// For context, see https://bugzilla.mozilla.org/show_bug.cgi?id=1782816#c2
+function deepEquals(a, b) {
+  // Some values don't have a JSON representation. To disambiguate from null or
+  // regular strings, we prepend this prefix instead.
+  const NON_JSON_PREFIX = "#NOT_JSON_SERIALIZABLE#";
+
+  function replacer(key, value) {
+    if (typeof value == "object" && value !== null && !Array.isArray(value)) {
+      const cls = ChromeUtils.getClassName(value);
+      if (cls === "Object") {
+        // Return plain object with keys sorted in a predictable order.
+        return Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map(k => [k, value[k]])
+        );
+      }
+      // Just throw to avoid potentially inaccurate serializations (e.g. {}).
+      throw new ExtensionUtils.ExtensionError(`Unsupported obj type: ${cls}`);
+    }
+
+    if (useStringInsteadOfJSON(value)) {
+      return `${NON_JSON_PREFIX}${value}`;
+    }
+    return value;
+  }
+  return JSON.stringify(a, replacer) === JSON.stringify(b, replacer);
+}
+
 /**
- * Calls .toSource() on the given value, but handles null, undefined,
- * and errors.
+ * Serializes the given value for use in informative assertion messages.
  *
  * @param {*} value
  * @returns {string}
  */
 const toSource = value => {
-  if (value === null) {
-    return "null";
+  function cannotJSONserialize(v) {
+    return (
+      useStringInsteadOfJSON(v) ||
+      // Not a plain object. E.g. [object X], /regexp/, etc.
+      (typeof v == "object" &&
+        v !== null &&
+        !Array.isArray(v) &&
+        ChromeUtils.getClassName(v) !== "Object")
+    );
   }
-  if (value === undefined) {
-    return "undefined";
-  }
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-
   try {
-    return String(value);
+    if (cannotJSONserialize(value)) {
+      return String(value);
+    }
+
+    const replacer = (k, v) => (cannotJSONserialize(v) ? String(v) : v);
+    return JSON.stringify(value, replacer);
   } catch (e) {
     return "<unknown>";
   }
@@ -92,23 +136,58 @@ this.test = class extends ExtensionAPI {
   getAPI(context) {
     const { extension } = context;
 
-    function getStack() {
+    function getStack(savedFrame = null) {
+      if (savedFrame) {
+        return ChromeUtils.createError("", savedFrame).stack.replace(
+          /^/gm,
+          "    "
+        );
+      }
       return new context.Error().stack.replace(/^/gm, "    ");
     }
 
     function assertTrue(value, msg) {
-      extension.emit("test-result", Boolean(value), String(msg), getStack());
+      extension.emit(
+        "test-result",
+        Boolean(value),
+        String(msg),
+        getStack(context.getCaller())
+      );
     }
 
     class TestEventManager extends EventManager {
+      constructor(...args) {
+        super(...args);
+
+        // A map to keep track of the listeners wrappers being added in
+        // addListener (the wrapper will be needed to be able to remove
+        // the listener from this EventManager instance if the extension
+        // does call test.onMessage.removeListener).
+        this._listenerWrappers = new Map();
+        context.callOnClose({
+          close: () => this._listenerWrappers.clear(),
+        });
+      }
+
       addListener(callback, ...args) {
-        super.addListener(function(...args) {
+        const listenerWrapper = function(...args) {
           try {
             callback.call(this, ...args);
           } catch (e) {
             assertTrue(false, `${e}\n${e.stack}`);
           }
-        }, ...args);
+        };
+        super.addListener(listenerWrapper, ...args);
+        this._listenerWrappers.set(callback, listenerWrapper);
+      }
+
+      removeListener(callback) {
+        if (!this._listenerWrappers.has(callback)) {
+          return;
+        }
+
+        super.removeListener(this._listenerWrappers.get(callback));
+        this._listenerWrappers.delete(callback);
       }
     }
 
@@ -139,15 +218,20 @@ this.test = class extends ExtensionAPI {
         },
 
         notifyPass(msg) {
-          extension.emit("test-done", true, msg, getStack());
+          extension.emit("test-done", true, msg, getStack(context.getCaller()));
         },
 
         notifyFail(msg) {
-          extension.emit("test-done", false, msg, getStack());
+          extension.emit(
+            "test-done",
+            false,
+            msg,
+            getStack(context.getCaller())
+          );
         },
 
         log(msg) {
-          extension.emit("test-log", true, msg, getStack());
+          extension.emit("test-log", true, msg, getStack(context.getCaller()));
         },
 
         fail(msg) {
@@ -166,6 +250,37 @@ this.test = class extends ExtensionAPI {
           assertTrue(!value, msg);
         },
 
+        assertDeepEq(expected, actual, msg) {
+          // The bindings generated by Schemas.jsm accepts any input, but the
+          // WebIDL-generated binding expects a structurally cloneable input.
+          // To ensure consistent behavior regardless of which mechanism was
+          // used, verify that the inputs are structurally cloneable.
+          // These will throw if the values cannot be cloned.
+          function ensureStructurallyCloneable(v) {
+            if (typeof v == "object" && v !== null) {
+              // Waive xrays to unhide callable members, so that cloneInto will
+              // throw if needed.
+              v = ChromeUtils.waiveXrays(v);
+            }
+            new StructuredCloneHolder(v, globalThis);
+          }
+          // When WebIDL bindings are used, the objects are already cloned
+          // structurally, so we don't need to check again.
+          if (!context.useWebIDLBindings) {
+            ensureStructurallyCloneable(expected);
+            ensureStructurallyCloneable(actual);
+          }
+
+          extension.emit(
+            "test-eq",
+            deepEquals(actual, expected),
+            String(msg),
+            toSource(expected),
+            toSource(actual),
+            getStack(context.getCaller())
+          );
+        },
+
         assertEq(expected, actual, msg) {
           let equal = expected === actual;
 
@@ -181,7 +296,7 @@ this.test = class extends ExtensionAPI {
             String(msg),
             expected,
             actual,
-            getStack()
+            getStack(context.getCaller())
           );
         },
 
@@ -191,16 +306,24 @@ this.test = class extends ExtensionAPI {
 
           return promise.then(
             result => {
-              assertTrue(false, `Promise resolved, expected rejection: ${msg}`);
+              let message = `Promise resolved, expected rejection '${toSource(
+                expectedError
+              )}'`;
+              if (msg) {
+                message += `: ${msg}`;
+              }
+              assertTrue(false, message);
             },
             error => {
-              let errorMessage = toSource(error && error.message);
+              let expected = toSource(expectedError);
+              let message = `got '${toSource(error)}'`;
+              if (msg) {
+                message += `: ${msg}`;
+              }
 
               assertTrue(
                 errorMatches(error, expectedError, context),
-                `Promise rejected, expecting rejection to match ${toSource(
-                  expectedError
-                )}, got ${errorMessage}: ${msg}`
+                `Promise rejected, expecting rejection to match '${expected}', ${message}`
               );
             }
           );
@@ -210,15 +333,23 @@ this.test = class extends ExtensionAPI {
           try {
             func();
 
-            assertTrue(false, `Function did not throw, expected error: ${msg}`);
+            let message = `Function did not throw, expected error '${toSource(
+              expectedError
+            )}'`;
+            if (msg) {
+              message += `: ${msg}`;
+            }
+            assertTrue(false, message);
           } catch (error) {
-            let errorMessage = toSource(error && error.message);
+            let expected = toSource(expectedError);
+            let message = `got '${toSource(error)}'`;
+            if (msg) {
+              message += `: ${msg}`;
+            }
 
             assertTrue(
               errorMatches(error, expectedError, context),
-              `Function threw, expecting error to match ${toSource(
-                expectedError
-              )}, got ${errorMessage}: ${msg}`
+              `Function threw, expecting error to match '${expected}', ${message}`
             );
           }
         },

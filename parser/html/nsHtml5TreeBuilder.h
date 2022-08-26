@@ -62,7 +62,6 @@ class nsHtml5StreamParser;
 class nsHtml5AttributeName;
 class nsHtml5ElementName;
 class nsHtml5Tokenizer;
-class nsHtml5MetaScanner;
 class nsHtml5UTF16Buffer;
 class nsHtml5StateSnapshot;
 class nsHtml5Portability;
@@ -204,11 +203,9 @@ class nsHtml5TreeBuilder : public nsAHtml5TreeBuilderState {
 
   static const int32_t KEYGEN = 65;
 
-  static const int32_t MENUITEM = 66;
+  static const int32_t TEMPLATE = 66;
 
-  static const int32_t TEMPLATE = 67;
-
-  static const int32_t IMG = 68;
+  static const int32_t IMG = 67;
 
  private:
   static const int32_t IN_ROW = 0;

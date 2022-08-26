@@ -8,9 +8,8 @@ const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { MigrationUtils, MigratorPrototype } = ChromeUtils.import(
   "resource:///modules/MigrationUtils.jsm"
@@ -18,23 +17,16 @@ const { MigrationUtils, MigratorPrototype } = ChromeUtils.import(
 const { MSMigrationUtils } = ChromeUtils.import(
   "resource:///modules/MSMigrationUtils.jsm"
 );
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ESEDBReader",
   "resource:///modules/ESEDBReader.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
 const kEdgeRegistryRoot =
   "SOFTWARE\\Classes\\Local Settings\\Software\\" +
@@ -42,7 +34,7 @@ const kEdgeRegistryRoot =
   "microsoft.microsoftedge_8wekyb3d8bbwe\\MicrosoftEdge";
 const kEdgeDatabasePath = "AC\\MicrosoftEdge\\User\\Default\\DataStore\\Data\\";
 
-XPCOMUtils.defineLazyGetter(this, "gEdgeDatabase", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gEdgeDatabase", function() {
   let edgeDir = MSMigrationUtils.getEdgeLocalDataFolder();
   if (!edgeDir) {
     return null;
@@ -88,7 +80,7 @@ XPCOMUtils.defineLazyGetter(this, "gEdgeDatabase", function() {
 function readTableFromEdgeDB(
   tableName,
   columns,
-  dbFile = gEdgeDatabase,
+  dbFile = lazy.gEdgeDatabase,
   filterFn = null
 ) {
   let database;
@@ -96,7 +88,7 @@ function readTableFromEdgeDB(
   try {
     let logFile = dbFile.parent;
     logFile.append("LogFiles");
-    database = ESEDBReader.openDB(dbFile.parent, dbFile, logFile);
+    database = lazy.ESEDBReader.openDB(dbFile.parent, dbFile, logFile);
 
     if (typeof columns == "function") {
       columns = columns(database);
@@ -121,7 +113,7 @@ function readTableFromEdgeDB(
     throw ex;
   } finally {
     if (database) {
-      ESEDBReader.closeDB(database);
+      lazy.ESEDBReader.closeDB(database);
     }
   }
   return rows;
@@ -162,8 +154,8 @@ EdgeTypedURLMigrator.prototype = {
         url,
         visits: [
           {
-            transition: PlacesUtils.history.TRANSITIONS.TYPED,
-            date: time ? PlacesUtils.toDate(time) : new Date(),
+            transition: lazy.PlacesUtils.history.TRANSITIONS.TYPED,
+            date: time ? lazy.PlacesUtils.toDate(time) : new Date(),
           },
         ],
       });
@@ -187,7 +179,7 @@ EdgeTypedURLDBMigrator.prototype = {
   type: MigrationUtils.resourceTypes.HISTORY,
 
   get db() {
-    return gEdgeDatabase;
+    return lazy.gEdgeDatabase;
   },
 
   get exists() {
@@ -205,7 +197,7 @@ EdgeTypedURLDBMigrator.prototype = {
   },
 
   async _migrateTypedURLsFromDB() {
-    if (await ESEDBReader.dbLocked(this.db)) {
+    if (await lazy.ESEDBReader.dbLocked(this.db)) {
       throw new Error("Edge seems to be running - its database is locked.");
     }
     let columns = [
@@ -251,7 +243,7 @@ EdgeTypedURLDBMigrator.prototype = {
           url,
           visits: [
             {
-              transition: PlacesUtils.history.TRANSITIONS.TYPED,
+              transition: lazy.PlacesUtils.history.TRANSITIONS.TYPED,
               date,
             },
           ],
@@ -272,7 +264,7 @@ EdgeReadingListMigrator.prototype = {
   type: MigrationUtils.resourceTypes.BOOKMARKS,
 
   get db() {
-    return this.dbOverride || gEdgeDatabase;
+    return this.dbOverride || lazy.gEdgeDatabase;
   },
 
   get exists() {
@@ -280,7 +272,7 @@ EdgeReadingListMigrator.prototype = {
   },
 
   migrate(callback) {
-    this._migrateReadingList(PlacesUtils.bookmarks.menuGuid).then(
+    this._migrateReadingList(lazy.PlacesUtils.bookmarks.menuGuid).then(
       () => callback(true),
       ex => {
         Cu.reportError(ex);
@@ -290,7 +282,7 @@ EdgeReadingListMigrator.prototype = {
   },
 
   async _migrateReadingList(parentGuid) {
-    if (await ESEDBReader.dbLocked(this.db)) {
+    if (await lazy.ESEDBReader.dbLocked(this.db)) {
       throw new Error("Edge seems to be running - its database is locked.");
     }
     let columnFn = db => {
@@ -304,7 +296,7 @@ EdgeReadingListMigrator.prototype = {
       let isDeletedColumn = db.checkForColumn("ReadingList", "IsDeleted");
       if (
         isDeletedColumn &&
-        isDeletedColumn.dbType == ESEDBReader.COLUMN_TYPES.JET_coltypBit
+        isDeletedColumn.dbType == lazy.ESEDBReader.COLUMN_TYPES.JET_coltypBit
       ) {
         columns.push({ name: "IsDeleted", type: "boolean" });
       }
@@ -346,7 +338,7 @@ EdgeReadingListMigrator.prototype = {
         "imported-edge-reading-list"
       );
       let folderSpec = {
-        type: PlacesUtils.bookmarks.TYPE_FOLDER,
+        type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
         parentGuid,
         title: folderTitle,
       };
@@ -366,7 +358,7 @@ EdgeBookmarksMigrator.prototype = {
   type: MigrationUtils.resourceTypes.BOOKMARKS,
 
   get db() {
-    return this.dbOverride || gEdgeDatabase;
+    return this.dbOverride || lazy.gEdgeDatabase;
   },
 
   get TABLE_NAME() {
@@ -391,40 +383,18 @@ EdgeBookmarksMigrator.prototype = {
   },
 
   async _migrateBookmarks() {
-    if (await ESEDBReader.dbLocked(this.db)) {
+    if (await lazy.ESEDBReader.dbLocked(this.db)) {
       throw new Error("Edge seems to be running - its database is locked.");
     }
     let { toplevelBMs, toolbarBMs } = this._fetchBookmarksFromDB();
     if (toplevelBMs.length) {
-      let parentGuid = PlacesUtils.bookmarks.menuGuid;
-      if (
-        !Services.prefs.getBoolPref("browser.toolbars.bookmarks.2h2020") &&
-        !MigrationUtils.isStartupMigration &&
-        PlacesUtils.getChildCountForFolder(parentGuid) >
-          PlacesUIUtils.NUM_TOOLBAR_BOOKMARKS_TO_UNHIDE
-      ) {
-        parentGuid = await MigrationUtils.createImportedBookmarksFolder(
-          "Edge",
-          parentGuid
-        );
-      }
+      let parentGuid = lazy.PlacesUtils.bookmarks.menuGuid;
       await MigrationUtils.insertManyBookmarksWrapper(toplevelBMs, parentGuid);
     }
     if (toolbarBMs.length) {
-      let parentGuid = PlacesUtils.bookmarks.toolbarGuid;
-      if (
-        !Services.prefs.getBoolPref("browser.toolbars.bookmarks.2h2020") &&
-        !MigrationUtils.isStartupMigration &&
-        PlacesUtils.getChildCountForFolder(parentGuid) >
-          PlacesUIUtils.NUM_TOOLBAR_BOOKMARKS_TO_UNHIDE
-      ) {
-        parentGuid = await MigrationUtils.createImportedBookmarksFolder(
-          "Edge",
-          parentGuid
-        );
-      }
+      let parentGuid = lazy.PlacesUtils.bookmarks.toolbarGuid;
       await MigrationUtils.insertManyBookmarksWrapper(toolbarBMs, parentGuid);
-      PlacesUIUtils.maybeToggleBookmarkToolbarVisibilityAfterMigration();
+      lazy.PlacesUIUtils.maybeToggleBookmarkToolbarVisibilityAfterMigration();
     }
   },
 
@@ -483,7 +453,7 @@ EdgeBookmarksMigrator.prototype = {
         }
         bmToInsert = {
           title: bookmark.Title,
-          type: PlacesUtils.bookmarks.TYPE_FOLDER,
+          type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
           dateAdded: bookmark.DateUpdated || new Date(),
           children: bookmark._childrenRef,
         };
@@ -543,15 +513,15 @@ EdgeProfileMigrator.prototype.getLastUsedDate = async function() {
   // Don't do this if we don't have a single profile (see the comment for
   // sourceProfiles) or if we can't find the database file:
   let sourceProfiles = await this.getSourceProfiles();
-  if (sourceProfiles !== null || !gEdgeDatabase) {
+  if (sourceProfiles !== null || !lazy.gEdgeDatabase) {
     return Promise.resolve(new Date(0));
   }
   let logFilePath = OS.Path.join(
-    gEdgeDatabase.parent.path,
+    lazy.gEdgeDatabase.parent.path,
     "LogFiles",
     "edb.log"
   );
-  let dbPath = gEdgeDatabase.path;
+  let dbPath = lazy.gEdgeDatabase.path;
   let cookieMigrator = MSMigrationUtils.getCookiesMigrator(
     MSMigrationUtils.MIGRATION_TYPE_EDGE
   );

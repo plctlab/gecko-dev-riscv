@@ -17,8 +17,8 @@ USE_LIBS += [
     "updatecommon",
 ]
 
-# For debugging purposes only
-# DEFINES['DISABLE_UPDATER_AUTHENTICODE_CHECK'] = True
+if CONFIG["DISABLE_UPDATER_AUTHENTICODE_CHECK"]:
+    DEFINES["DISABLE_UPDATER_AUTHENTICODE_CHECK"] = True
 
 DEFINES["UNICODE"] = True
 DEFINES["_UNICODE"] = True
@@ -50,7 +50,13 @@ OS_LIBS += [
     "ws2_32",
     "shell32",
     "shlwapi",
+    "user32",
+    "userenv",
+    "uuid",
 ]
+
+if CONFIG["ENABLE_TESTS"]:
+    DIRS += ["tests/gtest"]
 
 with Files("**"):
     BUG_COMPONENT = ("Toolkit", "Application Update")

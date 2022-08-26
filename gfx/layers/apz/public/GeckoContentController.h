@@ -147,6 +147,9 @@ class GeckoContentController {
 
   virtual void CancelAutoscroll(const ScrollableLayerGuid& aGuid) = 0;
 
+  virtual void NotifyScaleGestureComplete(const ScrollableLayerGuid& aGuid,
+                                          float aScale) = 0;
+
   virtual void UpdateOverscrollVelocity(const ScrollableLayerGuid& aGuid,
                                         float aX, float aY,
                                         bool aIsRootContent) {}
@@ -165,6 +168,8 @@ class GeckoContentController {
    * Whether this is RemoteContentController.
    */
   virtual bool IsRemote() { return false; }
+
+  virtual PresShell* GetTopLevelPresShell() const { return nullptr; };
 
  protected:
   // Protected destructor, to discourage deletion outside of Release():

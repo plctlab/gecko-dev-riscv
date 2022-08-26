@@ -41,6 +41,15 @@ pub enum Error {
     UnsupportedControlFlow(spirv::Word),
     #[error("unsupported binary operator %{0}")]
     UnsupportedBinaryOperator(spirv::Word),
+    #[error("Naga supports OpTypeRuntimeArray in the StorageBuffer storage class only")]
+    UnsupportedRuntimeArrayStorageClass,
+    #[error("unsupported matrix stride {stride} for a {columns}x{rows} matrix with scalar width={width}")]
+    UnsupportedMatrixStride {
+        stride: u32,
+        columns: u8,
+        rows: u8,
+        width: u8,
+    },
     #[error("unknown binary operator {0:?}")]
     UnknownBinaryOperator(spirv::Op),
     #[error("unknown relational function {0:?}")]

@@ -5,22 +5,21 @@
 
 var EXPORTED_SYMBOLS = ["UpdateUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ctypes: "resource://gre/modules/ctypes.jsm",
-  FileUtils: "resource://gre/modules/FileUtils.jsm",
-  OS: "resource://gre/modules/osfile.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   WindowsRegistry: "resource://gre/modules/WindowsRegistry.jsm",
   WindowsVersionInfo:
     "resource://gre/modules/components-utils/WindowsVersionInfo.jsm",
 });
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
 
 const PER_INSTALLATION_PREFS_PLATFORMS = ["win"];
 
@@ -34,6 +33,7 @@ const PREF_APP_DISTRIBUTION_VERSION = "distribution.version";
 
 var UpdateUtils = {
   _locale: undefined,
+  _configFilePath: undefined,
 
   /**
    * Read the update channel from defaults only.  We do this to ensure that
@@ -145,6 +145,22 @@ var UpdateUtils = {
     );
 
     return (this._locale = null);
+  },
+
+  /* Get the path to the config file. */
+  getConfigFilePath() {
+    let path = PathUtils.join(
+      Services.dirsvc.get("UpdRootD", Ci.nsIFile).path,
+      FILE_UPDATE_CONFIG_JSON
+    );
+    return (this._configFilePath = path);
+  },
+
+  get configFilePath() {
+    if (this._configFilePath !== undefined) {
+      return this._configFilePath;
+    }
+    return this.getConfigFilePath();
   },
 
   /**
@@ -367,8 +383,7 @@ var UpdateUtils = {
    * @return A Promise that, once the setting has been saved, resolves with the
    *         value that was saved.
    * @throw  If there is an I/O error when attempting to write to the config
-   *         file, the returned Promise will reject with an OS.File.Error
-   *         exception.
+   *         file, the returned Promise will reject with a DOMException.
    */
   writeUpdateConfigSetting(prefName, value, options) {
     if (!(prefName in this.PER_INSTALLATION_PREFS)) {
@@ -820,19 +835,15 @@ function readDefaultValue(config, prefName) {
  */
 async function readUpdateConfig() {
   try {
-    let configFile = FileUtils.getDir("UpdRootD", [], true);
-    configFile.append(FILE_UPDATE_CONFIG_JSON);
-    let binaryData = await OS.File.read(configFile.path);
+    let config = await IOUtils.readJSON(UpdateUtils.getConfigFilePath());
 
     // We only migrate once. If we read something, the migration has already
     // happened so we should make sure it doesn't happen again.
     setUpdateConfigMigrationDone();
 
-    let jsonData = new TextDecoder().decode(binaryData);
-    let config = JSON.parse(jsonData);
     return config;
   } catch (e) {
-    if (e instanceof OS.File.Error && e.becauseNoSuchFile) {
+    if (DOMException.isInstance(e) && e.name == "NotFoundError") {
       if (updateConfigNeedsMigration()) {
         const migrationConfig = makeMigrationUpdateConfig();
         setUpdateConfigMigrationDone();
@@ -866,12 +877,11 @@ async function readUpdateConfig() {
  * @param  config
  *           The configuration object to write.
  * @return The configuration object written.
- * @throw  An OS.File.Error exception will be thrown on I/O error.
+ * @throw  A DOMException will be thrown on I/O error.
  */
 async function writeUpdateConfig(config) {
-  let configFile = FileUtils.getDir("UpdRootD", [], true);
-  configFile.append(FILE_UPDATE_CONFIG_JSON);
-  await OS.File.writeAtomic(configFile.path, JSON.stringify(config));
+  let path = UpdateUtils.getConfigFilePath();
+  await IOUtils.writeJSON(path, config, { tmpPath: `${path}.tmp` });
   return config;
 }
 
@@ -926,7 +936,7 @@ function getDistributionPrefValue(aPrefName) {
 }
 
 function getSystemCapabilities() {
-  return "ISET:" + gInstructionSet + ",MEM:" + getMemoryMB();
+  return "ISET:" + lazy.gInstructionSet + ",MEM:" + getMemoryMB();
 }
 
 /**
@@ -951,7 +961,7 @@ function getMemoryMB() {
 /**
  * Gets the supported CPU instruction set.
  */
-XPCOMUtils.defineLazyGetter(this, "gInstructionSet", function aus_gIS() {
+XPCOMUtils.defineLazyGetter(lazy, "gInstructionSet", function aus_gIS() {
   const CPU_EXTENSIONS = [
     "hasSSE4_2",
     "hasSSE4_1",
@@ -975,21 +985,21 @@ XPCOMUtils.defineLazyGetter(this, "gInstructionSet", function aus_gIS() {
 });
 
 /* Windows only getter that returns the processor architecture. */
-XPCOMUtils.defineLazyGetter(this, "gWinCPUArch", function aus_gWinCPUArch() {
+XPCOMUtils.defineLazyGetter(lazy, "gWinCPUArch", function aus_gWinCPUArch() {
   // Get processor architecture
   let arch = "unknown";
 
-  const WORD = ctypes.uint16_t;
-  const DWORD = ctypes.uint32_t;
+  const WORD = lazy.ctypes.uint16_t;
+  const DWORD = lazy.ctypes.uint32_t;
 
   // This structure is described at:
   // http://msdn.microsoft.com/en-us/library/ms724958%28v=vs.85%29.aspx
-  const SYSTEM_INFO = new ctypes.StructType("SYSTEM_INFO", [
+  const SYSTEM_INFO = new lazy.ctypes.StructType("SYSTEM_INFO", [
     { wProcessorArchitecture: WORD },
     { wReserved: WORD },
     { dwPageSize: DWORD },
-    { lpMinimumApplicationAddress: ctypes.voidptr_t },
-    { lpMaximumApplicationAddress: ctypes.voidptr_t },
+    { lpMinimumApplicationAddress: lazy.ctypes.voidptr_t },
+    { lpMaximumApplicationAddress: lazy.ctypes.voidptr_t },
     { dwActiveProcessorMask: DWORD.ptr },
     { dwNumberOfProcessors: DWORD },
     { dwProcessorType: DWORD },
@@ -1000,7 +1010,7 @@ XPCOMUtils.defineLazyGetter(this, "gWinCPUArch", function aus_gWinCPUArch() {
 
   let kernel32 = false;
   try {
-    kernel32 = ctypes.open("Kernel32");
+    kernel32 = lazy.ctypes.open("Kernel32");
   } catch (e) {
     Cu.reportError("Unable to open kernel32! Exception: " + e);
   }
@@ -1009,8 +1019,8 @@ XPCOMUtils.defineLazyGetter(this, "gWinCPUArch", function aus_gWinCPUArch() {
     try {
       let GetNativeSystemInfo = kernel32.declare(
         "GetNativeSystemInfo",
-        ctypes.winapi_abi,
-        ctypes.void_t,
+        lazy.ctypes.winapi_abi,
+        lazy.ctypes.void_t,
         SYSTEM_INFO.ptr
       );
       let winSystemInfo = SYSTEM_INFO();
@@ -1052,7 +1062,7 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "ABI", function() {
 
   if (AppConstants.platform == "win") {
     // Windows build should report the CPU architecture that it's running on.
-    abi += "-" + gWinCPUArch;
+    abi += "-" + lazy.gWinCPUArch;
   }
 
   if (AppConstants.ASAN) {
@@ -1082,7 +1092,7 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "OSVersion", function() {
           servicePackMajor,
           servicePackMinor,
           buildNumber,
-        } = WindowsVersionInfo.get();
+        } = lazy.WindowsVersionInfo.get();
         osVersion += `.${servicePackMajor}.${servicePackMinor}.${buildNumber}`;
       } catch (err) {
         Cu.reportError(
@@ -1097,7 +1107,7 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "OSVersion", function() {
       ) {
         const WINDOWS_UBR_KEY_PATH =
           "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
-        let ubr = WindowsRegistry.readRegKey(
+        let ubr = lazy.WindowsRegistry.readRegKey(
           Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
           WINDOWS_UBR_KEY_PATH,
           "UBR",
@@ -1111,7 +1121,7 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "OSVersion", function() {
       }
 
       // Add processor architecture
-      osVersion += " (" + gWinCPUArch + ")";
+      osVersion += " (" + lazy.gWinCPUArch + ")";
     }
 
     try {

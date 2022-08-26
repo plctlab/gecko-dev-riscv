@@ -16,26 +16,6 @@ Services.prefs.setCharPref("permissions.manager.defaultsUrl", "");
 
 CookieXPCShellUtils.init(this);
 
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookiesvc",
-  "@mozilla.org/cookieService;1",
-  "nsICookieService"
-);
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookiemgr",
-  "@mozilla.org/cookiemanager;1",
-  "nsICookieManager"
-);
-
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "etld",
-  "@mozilla.org/network/effective-tld-service;1",
-  "nsIEffectiveTLDService"
-);
-
 function do_check_throws(f, result, stack) {
   if (!stack) {
     stack = Components.stack.caller;
@@ -162,8 +142,8 @@ function do_load_profile(generator) {
 // Set a single session cookie using http and test the cookie count
 // against 'expected'
 function do_set_single_http_cookie(uri, channel, expected) {
-  Services.cookiesvc.setCookieStringFromHttp(uri, "foo=bar", channel);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected);
+  Services.cookies.setCookieStringFromHttp(uri, "foo=bar", channel);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected);
 }
 
 // Set two cookies; via document.channel and via http request.
@@ -195,15 +175,15 @@ async function do_set_cookies(uri, channel, session, expected) {
   );
   await contentPage.close();
 
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected[0]);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected[0]);
 
   // via http request
-  Services.cookiesvc.setCookieStringFromHttp(uri, "hot=dog" + suffix, channel);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected[1]);
+  Services.cookies.setCookieStringFromHttp(uri, "hot=dog" + suffix, channel);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected[1]);
 }
 
 function do_count_cookies() {
-  return Services.cookiemgr.cookies.length;
+  return Services.cookies.cookies.length;
 }
 
 // Helper object to store cookie data.
@@ -243,7 +223,7 @@ function Cookie(
   let strippedHost = host.charAt(0) == "." ? host.slice(1) : host;
 
   try {
-    this.baseDomain = Services.etld.getBaseDomainFromHost(strippedHost);
+    this.baseDomain = Services.eTLD.getBaseDomainFromHost(strippedHost);
   } catch (e) {
     if (
       e.result == Cr.NS_ERROR_HOST_IS_IP_ADDRESS ||

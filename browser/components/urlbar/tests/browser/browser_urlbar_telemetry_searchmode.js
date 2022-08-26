@@ -19,11 +19,10 @@ let engineDomain;
 // The preference to enable suggestions.
 const SUGGEST_PREF = "browser.search.suggest.enabled";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+ChromeUtils.defineESModuleGetters(this, {
   UrlbarProviderTabToSearch:
-    "resource:///modules/UrlbarProviderTabToSearch.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
+    "resource:///modules/UrlbarProviderTabToSearch.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -82,7 +81,7 @@ function assertSearchModeScalars(entry, engineOrSource, resultIndex = -1) {
   Services.telemetry.clearEvents();
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   await SpecialPowers.pushPrefEnv({
     set: [
       // Disable tab-to-search onboarding results for general tests. They are

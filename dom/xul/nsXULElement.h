@@ -240,7 +240,8 @@ class nsXULPrototypeScript : public nsXULPrototypeNode {
 
   JS::Stencil* GetStencil() { return mStencil.get(); }
 
-  nsresult InstantiateScript(JSContext* aCx, JS::MutableHandleScript aScript);
+  nsresult InstantiateScript(JSContext* aCx,
+                             JS::MutableHandle<JSScript*> aScript);
 
   nsCOMPtr<nsIURI> mSrcURI;
   uint32_t mLineNo;
@@ -355,16 +356,14 @@ class nsXULElement : public nsStyledElement {
                            bool aDumpAll) const override {}
 #endif
 
-  MOZ_CAN_RUN_SCRIPT int32_t ScreenX();
-  MOZ_CAN_RUN_SCRIPT int32_t ScreenY();
-
   MOZ_CAN_RUN_SCRIPT bool HasMenu();
   MOZ_CAN_RUN_SCRIPT void OpenMenu(bool aOpenFlag);
 
   MOZ_CAN_RUN_SCRIPT
   virtual mozilla::Result<bool, nsresult> PerformAccesskey(
       bool aKeyCausesActivation, bool aIsTrustedEvent) override;
-  void ClickWithInputSource(uint16_t aInputSource, bool aIsTrustedEvent);
+  MOZ_CAN_RUN_SCRIPT void ClickWithInputSource(uint16_t aInputSource,
+                                               bool aIsTrustedEvent);
 
   virtual bool IsNodeOfType(uint32_t aFlags) const override;
   virtual bool IsFocusableInternal(int32_t* aTabIndex,
@@ -376,8 +375,6 @@ class nsXULElement : public nsStyledElement {
 
   virtual nsresult Clone(mozilla::dom::NodeInfo*,
                          nsINode** aResult) const override;
-
-  virtual void RecompileScriptEventListeners() override;
 
   virtual bool IsEventAttributeNameInternal(nsAtom* aName) override;
 
@@ -401,10 +398,6 @@ class nsXULElement : public nsStyledElement {
   }
 
   // WebIDL API
-  void GetFlex(DOMString& aValue) const { GetXULAttr(nsGkAtoms::flex, aValue); }
-  void SetFlex(const nsAString& aValue, mozilla::ErrorResult& rv) {
-    SetXULAttr(nsGkAtoms::flex, aValue, rv);
-  }
   bool Hidden() const { return BoolAttrIsTrue(nsGkAtoms::hidden); }
   void SetHidden(bool aHidden) { SetXULBoolAttr(nsGkAtoms::hidden, aHidden); }
   bool Collapsed() const { return BoolAttrIsTrue(nsGkAtoms::collapsed); }
@@ -478,7 +471,9 @@ class nsXULElement : public nsStyledElement {
     SetXULAttr(nsGkAtoms::src, aValue, rv);
   }
   nsIControllers* GetControllers(mozilla::ErrorResult& rv);
-  void Click(mozilla::dom::CallerType aCallerType);
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void Click(mozilla::dom::CallerType aCallerType);
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void DoCommand();
   // Style() inherited from nsStyledElement
 

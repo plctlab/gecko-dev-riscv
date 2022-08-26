@@ -19,29 +19,22 @@ namespace impl {
 
 void DenominatorMetric::Add(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
-  if (scalarId) {
+  if (scalarId && aAmount >= 0) {
     Telemetry::ScalarAdd(scalarId.extract(), aAmount);
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_denominator_add(mId, aAmount);
-#endif
 }
 
 Result<Maybe<int32_t>, nsCString> DenominatorMetric::TestGetValue(
     const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<int32_t>();
-#else
   nsCString err;
-  if (fog_denominator_test_get_error(mId, &aPingName, &err)) {
+  if (fog_denominator_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_denominator_test_has_value(mId, &aPingName)) {
     return Maybe<int32_t>();
   }
   return Some(fog_denominator_test_get_value(mId, &aPingName));
-#endif
 }
 
 }  // namespace impl
@@ -57,7 +50,7 @@ GleanDenominator::Add(int32_t aAmount) {
 
 NS_IMETHODIMP
 GleanDenominator::TestGetValue(const nsACString& aStorageName,
-                               JS::MutableHandleValue aResult) {
+                               JS::MutableHandle<JS::Value> aResult) {
   auto result = mDenominator.TestGetValue(aStorageName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());

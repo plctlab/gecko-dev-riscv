@@ -9,9 +9,6 @@
  */
 "use strict";
 
-// @ts-ignore
-const { OS } = require("resource://gre/modules/osfile.jsm");
-
 const UNITS = ["B", "kiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"];
 
 /**
@@ -70,24 +67,53 @@ function formatFileSize(num) {
 }
 
 /**
- * Creates numbers that scale exponentially.
+ * Creates numbers that increment linearly within a base 10 scale:
+ * 0.1, 0.2, 0.3, ..., 0.8, 0.9, 1, 2, 3, ..., 9, 10, 20, 30, etc.
  *
  * @param {number} rangeStart
  * @param {number} rangeEnd
  *
  * @returns {ScaleFunctions}
  */
-function makeExponentialScale(rangeStart, rangeEnd) {
-  const startExp = Math.log(rangeStart);
-  const endExp = Math.log(rangeEnd);
+function makeLinear10Scale(rangeStart, rangeEnd) {
+  const start10 = Math.log10(rangeStart);
+  const end10 = Math.log10(rangeEnd);
+
+  if (!Number.isInteger(start10)) {
+    throw new Error(`rangeStart is not a power of 10: ${rangeStart}`);
+  }
+
+  if (!Number.isInteger(end10)) {
+    throw new Error(`rangeEnd is not a power of 10: ${rangeEnd}`);
+  }
+
+  // Intervals are base 10 intervals:
+  // - [0.01 .. 0.09]
+  // - [0.1 .. 0.9]
+  // - [1 .. 9]
+  // - [10 .. 90]
+  const intervals = end10 - start10;
+
+  // Note that there are only 9 steps per interval, not 10:
+  // 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
+  const STEP_PER_INTERVAL = 9;
+
+  const steps = intervals * STEP_PER_INTERVAL;
 
   /** @type {NumberScaler} */
-  const fromFractionToValue = frac =>
-    Math.exp((1 - frac) * startExp + frac * endExp);
+  const fromFractionToValue = frac => {
+    const step = Math.round(frac * steps);
+    const base = Math.floor(step / STEP_PER_INTERVAL);
+    const factor = (step % STEP_PER_INTERVAL) + 1;
+    return Math.pow(10, base) * factor * rangeStart;
+  };
 
   /** @type {NumberScaler} */
-  const fromValueToFraction = value =>
-    (Math.log(value) - startExp) / (endExp - startExp);
+  const fromValueToFraction = value => {
+    const interval = Math.floor(Math.log10(value / rangeStart));
+    const base = rangeStart * Math.pow(10, interval);
+    return (interval * STEP_PER_INTERVAL + value / base - 1) / steps;
+  };
 
   /** @type {NumberScaler} */
   const fromFractionToSingleDigitValue = frac => {
@@ -102,6 +128,8 @@ function makeExponentialScale(rangeStart, rangeEnd) {
     // Takes a number ranged 0-1 and returns a value in the range, but with
     // a single digit value.
     fromFractionToSingleDigitValue,
+    // The number of steps available on this scale.
+    steps,
   };
 }
 
@@ -116,6 +144,16 @@ function makeExponentialScale(rangeStart, rangeEnd) {
 function makePowerOf2Scale(rangeStart, rangeEnd) {
   const startExp = Math.log2(rangeStart);
   const endExp = Math.log2(rangeEnd);
+
+  if (!Number.isInteger(startExp)) {
+    throw new Error(`rangeStart is not a power of 2: ${rangeStart}`);
+  }
+
+  if (!Number.isInteger(endExp)) {
+    throw new Error(`rangeEnd is not a power of 2: ${rangeEnd}`);
+  }
+
+  const steps = endExp - startExp;
 
   /** @type {NumberScaler} */
   const fromFractionToValue = frac =>
@@ -141,6 +179,8 @@ function makePowerOf2Scale(rangeStart, rangeEnd) {
     // Takes a number ranged 0-1 and returns a value in the range, but with
     // a single digit value.
     fromFractionToSingleDigitValue,
+    // The number of steps available on this scale.
+    steps,
   };
 }
 
@@ -245,48 +285,92 @@ function withCommonPathPrefixRemoved(pathArray) {
   if (pathArray.length === 0) {
     return [];
   }
-  const splitPaths = pathArray.map(path => OS.Path.split(path));
-  if (!splitPaths.every(sp => sp.absolute)) {
-    // We're expecting all paths to be absolute, so this is an unexpected case,
-    // return the original array.
-    return pathArray;
-  }
-  const [firstSplitPath, ...otherSplitPaths] = splitPaths;
-  if ("winDrive" in firstSplitPath) {
-    const winDrive = firstSplitPath.winDrive;
-    if (!otherSplitPaths.every(sp => sp.winDrive === winDrive)) {
+
+  const firstPath = pathArray[0];
+  const isWin = /^[A-Za-z]:/.test(firstPath);
+  const firstWinDrive = getWinDrive(firstPath);
+  for (const path of pathArray) {
+    const winDrive = getWinDrive(path);
+
+    if (!PathUtils.isAbsolute(path) || winDrive !== firstWinDrive) {
+      // We expect all paths to be absolute and on Windows we expect all
+      // paths to be on the same disk. If this is not the case return the
+      // original array.
       return pathArray;
     }
-  } else if (otherSplitPaths.some(sp => "winDrive" in sp)) {
-    // Inconsistent winDrive property presence, bail out.
-    return pathArray;
   }
+
   // At this point we're either not on Windows or all paths are on the same
-  // winDrive. And all paths are absolute.
+  // Windows disk and all paths are absolute.
   // Find the common prefix. Start by assuming the entire path except for the
   // last folder is shared.
-  const prefix = firstSplitPath.components.slice(0, -1);
+  const splitPaths = pathArray.map(path => PathUtils.split(path));
+  const [firstSplitPath, ...otherSplitPaths] = splitPaths;
+  const prefix = firstSplitPath.slice(0, -1);
   for (const sp of otherSplitPaths) {
-    prefix.length = Math.min(prefix.length, sp.components.length - 1);
+    prefix.length = Math.min(prefix.length, sp.length - 1);
     for (let i = 0; i < prefix.length; i++) {
-      if (prefix[i] !== sp.components[i]) {
+      if (prefix[i] !== sp[i]) {
         prefix.length = i;
         break;
       }
     }
   }
-  if (prefix.length === 0 || (prefix.length === 1 && prefix[0] === "")) {
+  if (
+    prefix.length === 0 ||
+    (prefix.length === 1 && (prefix[0] === firstWinDrive || prefix[0] === "/"))
+  ) {
     // There is no shared prefix.
-    // We treat a prefix of [""] as "no prefix", too: Absolute paths on
-    // non-Windows start with a slash, so OS.Path.split(path) always returns an
-    // array whose first element is the empty string on those platforms.
-    // Stripping off a prefix of [""] from the split paths would simply remove
+    // We treat a prefix of ["/"] as "no prefix", too: Absolute paths on
+    // non-Windows start with a slash, so PathUtils.split(path) always returns
+    // an array whose first element is "/" on those platforms.
+    // Stripping off a prefix of ["/"] from the split paths would simply remove
     // the leading slash from the un-split paths, which is not useful.
     return pathArray;
   }
-  return splitPaths.map(sp =>
-    OS.Path.join(...sp.components.slice(prefix.length))
-  );
+
+  // Strip the common prefix from all paths.
+  return splitPaths.map(sp => {
+    return sp.slice(prefix.length).join(isWin ? "\\" : "/");
+  });
+}
+
+/**
+ * This method has been copied from `ospath_win.jsm` as part of the migration
+ * from `OS.Path` to `PathUtils`.
+ *
+ * Return the windows drive name of a path, or |null| if the path does
+ * not contain a drive name.
+ *
+ * Drive name appear either as "DriveName:..." (the return drive
+ * name includes the ":") or "\\\\DriveName..." (the returned drive name
+ * includes "\\\\").
+ *
+ * @param {string} path The path from which we are to return the Windows drive name.
+ * @returns {?string} Windows drive name e.g. "C:" or null if path is not a Windows path.
+ */
+function getWinDrive(path) {
+  if (path == null) {
+    throw new TypeError("path is invalid");
+  }
+
+  if (path.startsWith("\\\\")) {
+    // UNC path
+    if (path.length == 2) {
+      return null;
+    }
+    const index = path.indexOf("\\", 2);
+    if (index == -1) {
+      return path;
+    }
+    return path.slice(0, index);
+  }
+  // Non-UNC path
+  const index = path.indexOf(":");
+  if (index <= 0) {
+    return null;
+  }
+  return path.slice(0, index + 1);
 }
 
 class UnhandledCaseError extends Error {
@@ -331,13 +415,6 @@ const featureDescriptions = [
     value: "java",
     title: "Profile Java code",
     disabledReason: "This feature is only available on Android.",
-  },
-  {
-    name: "Native Leaf Stack",
-    value: "leaf",
-    title:
-      "Record the native memory address of the leaf-most stack. This could be " +
-      "useful on platforms that do not support stack walking.",
   },
   {
     name: "No Periodic Sampling",
@@ -417,11 +494,55 @@ const featureDescriptions = [
       "increase in some processes.",
     disabledReason: "Windows only.",
   },
+  {
+    name: "CPU Utilization - All Threads",
+    value: "cpuallthreads",
+    title:
+      "Record how much CPU has been used between samples by ALL registered thread.",
+    experimental: true,
+  },
+  {
+    name: "Periodic Sampling - All Threads",
+    value: "samplingallthreads",
+    title: "Capture stack samples in ALL registered thread.",
+    experimental: true,
+  },
+  {
+    name: "Markers - All Threads",
+    value: "markersallthreads",
+    title: "Record markers in ALL registered threads.",
+    experimental: true,
+  },
+  {
+    name: "Unregistered Threads",
+    value: "unregisteredthreads",
+    title:
+      "Periodically discover unregistered threads and record them and their " +
+      "CPU utilization as markers in the main thread -- Beware: expensive!",
+    experimental: true,
+  },
+  {
+    name: "Process CPU Utilization",
+    value: "processcpu",
+    title:
+      "Record how much CPU has been used between samples by each process. " +
+      "To see graphs: When viewing the profile, open the JS console and run: " +
+      "experimental.enableProcessCPUTracks()",
+    experimental: true,
+  },
+  {
+    name: "Power Use",
+    value: "power",
+    title:
+      "Record the value of every energy meter available on the system with " +
+      "each sample. Only available on Windows 11 and Apple Silicon.",
+    experimental: true,
+  },
 ];
 
 module.exports = {
   formatFileSize,
-  makeExponentialScale,
+  makeLinear10Scale,
   makePowerOf2Scale,
   scaleRangeWithClamping,
   calculateOverhead,

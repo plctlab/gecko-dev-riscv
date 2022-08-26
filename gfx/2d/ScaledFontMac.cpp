@@ -94,7 +94,6 @@ static CTFontRef CreateCTFontFromCGFontWithVariations(CGFontRef aCGFont,
   //    CreateCTFontFromCGFontWithVariations in ScaledFontMac.cpp
   //    CreateCTFontFromCGFontWithVariations in cairo-quartz-font.c
   //    ctfont_create_exact_copy in SkFontHost_mac.cpp
-
   CTFontRef ctFont;
   if (nsCocoaFeatures::OnSierraExactly() ||
       (aInstalledFont && nsCocoaFeatures::OnHighSierraOrLater())) {
@@ -125,12 +124,14 @@ ScaledFontMac::ScaledFontMac(CGFontRef aFont,
                              const RefPtr<UnscaledFont>& aUnscaledFont,
                              Float aSize, bool aOwnsFont,
                              const DeviceColor& aFontSmoothingBackgroundColor,
-                             bool aUseFontSmoothing, bool aApplySyntheticBold)
+                             bool aUseFontSmoothing, bool aApplySyntheticBold,
+                             bool aHasColorGlyphs)
     : ScaledFontBase(aUnscaledFont, aSize),
       mFont(aFont),
       mFontSmoothingBackgroundColor(aFontSmoothingBackgroundColor),
       mUseFontSmoothing(aUseFontSmoothing),
-      mApplySyntheticBold(aApplySyntheticBold) {
+      mApplySyntheticBold(aApplySyntheticBold),
+      mHasColorGlyphs(aHasColorGlyphs) {
   if (!aOwnsFont) {
     // XXX: should we be taking a reference
     CGFontRetain(aFont);
@@ -144,12 +145,14 @@ ScaledFontMac::ScaledFontMac(CGFontRef aFont,
 ScaledFontMac::ScaledFontMac(CTFontRef aFont,
                              const RefPtr<UnscaledFont>& aUnscaledFont,
                              const DeviceColor& aFontSmoothingBackgroundColor,
-                             bool aUseFontSmoothing, bool aApplySyntheticBold)
+                             bool aUseFontSmoothing, bool aApplySyntheticBold,
+                             bool aHasColorGlyphs)
     : ScaledFontBase(aUnscaledFont, CTFontGetSize(aFont)),
       mCTFont(aFont),
       mFontSmoothingBackgroundColor(aFontSmoothingBackgroundColor),
       mUseFontSmoothing(aUseFontSmoothing),
-      mApplySyntheticBold(aApplySyntheticBold) {
+      mApplySyntheticBold(aApplySyntheticBold),
+      mHasColorGlyphs(aHasColorGlyphs) {
   mFont = CTFontCopyGraphicsFont(aFont, nullptr);
 
   CFRetain(mCTFont);
@@ -449,6 +452,9 @@ bool ScaledFontMac::GetWRFontInstanceOptions(
   if (mApplySyntheticBold) {
     options.flags |= wr::FontInstanceFlags::SYNTHETIC_BOLD;
   }
+  if (mHasColorGlyphs) {
+    options.flags |= wr::FontInstanceFlags::EMBEDDED_BITMAPS;
+  }
   options.bg_color = wr::ToColorU(mFontSmoothingBackgroundColor);
   options.synthetic_italics =
       wr::DegreesToSyntheticItalics(GetSyntheticObliqueAngle());
@@ -459,13 +465,18 @@ bool ScaledFontMac::GetWRFontInstanceOptions(
 ScaledFontMac::InstanceData::InstanceData(
     const wr::FontInstanceOptions* aOptions,
     const wr::FontInstancePlatformOptions* aPlatformOptions)
-    : mUseFontSmoothing(true), mApplySyntheticBold(false) {
+    : mUseFontSmoothing(true),
+      mApplySyntheticBold(false),
+      mHasColorGlyphs(false) {
   if (aOptions) {
     if (!(aOptions->flags & wr::FontInstanceFlags::FONT_SMOOTHING)) {
       mUseFontSmoothing = false;
     }
     if (aOptions->flags & wr::FontInstanceFlags::SYNTHETIC_BOLD) {
       mApplySyntheticBold = true;
+    }
+    if (aOptions->flags & wr::FontInstanceFlags::EMBEDDED_BITMAPS) {
+      mHasColorGlyphs = true;
     }
     if (aOptions->bg_color.a != 0) {
       mFontSmoothingBackgroundColor =
@@ -476,18 +487,28 @@ ScaledFontMac::InstanceData::InstanceData(
 }
 
 static CFDictionaryRef CreateVariationDictionaryOrNull(
-    CGFontRef aCGFont, CFArrayRef& aAxesCache, uint32_t aVariationCount,
-    const FontVariation* aVariations) {
-  if (!aAxesCache) {
+    CGFontRef aCGFont, CFArrayRef& aCGAxesCache, CFArrayRef& aCTAxesCache,
+    uint32_t aVariationCount, const FontVariation* aVariations) {
+  if (!aCGAxesCache) {
+    aCGAxesCache = CGFontCopyVariationAxes(aCGFont);
+    if (!aCGAxesCache) {
+      return nullptr;
+    }
+  }
+  if (!aCTAxesCache) {
     AutoRelease<CTFontRef> ctFont(
         CTFontCreateWithGraphicsFont(aCGFont, 0, nullptr, nullptr));
-    aAxesCache = CTFontCopyVariationAxes(ctFont);
-    if (!aAxesCache) {
+    aCTAxesCache = CTFontCopyVariationAxes(ctFont);
+    if (!aCTAxesCache) {
       return nullptr;
     }
   }
 
-  CFIndex axisCount = CFArrayGetCount(aAxesCache);
+  CFIndex axisCount = CFArrayGetCount(aCTAxesCache);
+  if (CFArrayGetCount(aCGAxesCache) != axisCount) {
+    return nullptr;
+  }
+
   AutoRelease<CFMutableDictionaryRef> dict(CFDictionaryCreateMutable(
       kCFAllocatorDefault, axisCount, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks));
@@ -499,7 +520,7 @@ static CFDictionaryRef CreateVariationDictionaryOrNull(
   for (CFIndex i = 0; i < axisCount; ++i) {
     // We sanity-check the axis info found in the CTFont, and bail out
     // (returning null) if it doesn't have the expected types.
-    CFTypeRef axisInfo = CFArrayGetValueAtIndex(aAxesCache, i);
+    CFTypeRef axisInfo = CFArrayGetValueAtIndex(aCTAxesCache, i);
     if (CFDictionaryGetTypeID() != CFGetTypeID(axisInfo)) {
       return nullptr;
     }
@@ -516,8 +537,12 @@ static CFDictionaryRef CreateVariationDictionaryOrNull(
       return nullptr;
     }
 
-    CFTypeRef axisName =
-        CFDictionaryGetValue(axis, kCTFontVariationAxisNameKey);
+    axisInfo = CFArrayGetValueAtIndex(aCGAxesCache, i);
+    if (CFDictionaryGetTypeID() != CFGetTypeID(axisInfo)) {
+      return nullptr;
+    }
+    CFTypeRef axisName = CFDictionaryGetValue(
+        static_cast<CFDictionaryRef>(axisInfo), kCGFontVariationAxisName);
     if (!axisName || CFGetTypeID(axisName) != CFStringGetTypeID()) {
       return nullptr;
     }
@@ -656,13 +681,15 @@ static CFDictionaryRef CreateVariationTagDictionaryOrNull(
 
 /* static */
 CGFontRef UnscaledFontMac::CreateCGFontWithVariations(
-    CGFontRef aFont, CFArrayRef& aAxesCache, uint32_t aVariationCount,
-    const FontVariation* aVariations) {
-  MOZ_ASSERT(aVariationCount > 0);
+    CGFontRef aFont, CFArrayRef& aCGAxesCache, CFArrayRef& aCTAxesCache,
+    uint32_t aVariationCount, const FontVariation* aVariations) {
+  if (!aVariationCount) {
+    return nullptr;
+  }
   MOZ_ASSERT(aVariations);
 
   AutoRelease<CFDictionaryRef> varDict(CreateVariationDictionaryOrNull(
-      aFont, aAxesCache, aVariationCount, aVariations));
+      aFont, aCGAxesCache, aCTAxesCache, aVariationCount, aVariations));
   if (!varDict) {
     return nullptr;
   }
@@ -682,7 +709,6 @@ already_AddRefed<ScaledFont> UnscaledFontMac::CreateScaledFont(
   }
   const ScaledFontMac::InstanceData& instanceData =
       *reinterpret_cast<const ScaledFontMac::InstanceData*>(aInstanceData);
-
   RefPtr<ScaledFontMac> scaledFont;
   if (mFontDesc) {
     AutoRelease<CTFontRef> font(
@@ -703,12 +729,13 @@ already_AddRefed<ScaledFont> UnscaledFontMac::CreateScaledFont(
     }
     scaledFont = new ScaledFontMac(
         font, this, instanceData.mFontSmoothingBackgroundColor,
-        instanceData.mUseFontSmoothing, instanceData.mApplySyntheticBold);
+        instanceData.mUseFontSmoothing, instanceData.mApplySyntheticBold,
+        instanceData.mHasColorGlyphs);
   } else {
     CGFontRef fontRef = mFont;
     if (aNumVariations > 0) {
       CGFontRef varFont = CreateCGFontWithVariations(
-          mFont, mAxesCache, aNumVariations, aVariations);
+          mFont, mCGAxesCache, mCTAxesCache, aNumVariations, aVariations);
       if (varFont) {
         fontRef = varFont;
       }
@@ -717,7 +744,8 @@ already_AddRefed<ScaledFont> UnscaledFontMac::CreateScaledFont(
     scaledFont = new ScaledFontMac(fontRef, this, aGlyphSize, fontRef != mFont,
                                    instanceData.mFontSmoothingBackgroundColor,
                                    instanceData.mUseFontSmoothing,
-                                   instanceData.mApplySyntheticBold);
+                                   instanceData.mApplySyntheticBold,
+                                   instanceData.mHasColorGlyphs);
   }
   return scaledFont.forget();
 }

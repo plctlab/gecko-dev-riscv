@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 
 from tests.support.asserts import assert_error
@@ -6,7 +8,10 @@ from tests.support.asserts import assert_error
 @pytest.mark.parametrize(
     "headers",
     [
-        {"origin": "http://example.org"},
+        {"origin": "http://localhost"},
+        {"origin": "http://localhost:8000"},
+        {"origin": "http://127.0.0.1"},
+        {"origin": "http://127.0.0.1:8000"},
         {"origin": "null"},
         {"ORIGIN": "https://example.org"},
         {"host": "example.org:4444"},
@@ -30,3 +35,20 @@ def test_invalid(new_session, configuration, headers):
         headers=headers,
     )
     assert_error(response, "unknown error")
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "--marionette",
+        "--remote-debugging-port",
+        "--remote-allow-hosts",
+        "--remote-allow-origins",
+    ],
+)
+def test_forbidden_arguments(configuration, new_session, argument):
+    capabilities = deepcopy(configuration["capabilities"])
+    capabilities["moz:firefoxOptions"]["args"] = [argument]
+
+    response, _ = new_session({"capabilities": {"alwaysMatch": capabilities}})
+    assert_error(response, "invalid argument")

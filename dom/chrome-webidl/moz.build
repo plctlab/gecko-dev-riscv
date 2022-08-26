@@ -31,11 +31,19 @@ with Files("WebExtension*.webidl"):
 with Files("Glean*.webidl"):
     BUG_COMPONENT = ("Toolkit", "Telemetry")
 
+with Files("IOUtils.webidl"):
+    BUG_COMPONENT = ("Toolkit", "OS.File")
+
+with Files("PathUtils.webidl"):
+    BUG_COMPONENT = ("Toolkit", "OS.File")
+
 PREPROCESSED_WEBIDL_FILES = [
     "ChromeUtils.webidl",
+    "IOUtils.webidl",
 ]
 
 WEBIDL_FILES = [
+    "BrowserSessionStore.webidl",
     "BrowsingContext.webidl",
     "ChannelWrapper.webidl",
     "ClonedErrorHolder.webidl",
@@ -49,8 +57,8 @@ WEBIDL_FILES = [
     "Fluent.webidl",
     "FrameLoader.webidl",
     "HeapSnapshot.webidl",
+    "ImageText.webidl",
     "InspectorUtils.webidl",
-    "IOUtils.webidl",
     "IteratorResult.webidl",
     "JSActor.webidl",
     "JSProcessActor.webidl",
@@ -73,6 +81,7 @@ WEBIDL_FILES = [
     "SessionStoreUtils.webidl",
     "StructuredCloneHolder.webidl",
     "TelemetryStopwatch.webidl",
+    "UniFFI.webidl",
     "UserInteraction.webidl",
     "WebExtensionContentScript.webidl",
     "WebExtensionPolicy.webidl",

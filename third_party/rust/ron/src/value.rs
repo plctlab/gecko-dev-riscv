@@ -23,6 +23,7 @@ use crate::de::{Error as RonError, Result};
 /// The latter can be used by enabling the `indexmap` feature. This can be used
 /// to preserve the order of the parsed map.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct Map(MapInner);
 
 impl Map {
@@ -37,8 +38,8 @@ impl Map {
     }
 
     /// Returns `true` if `self.len() == 0`, `false` otherwise.
-    pub fn is_empty(&self) -> usize {
-        self.0.len()
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
     }
 
     /// Inserts a new element, returning the previous element with this `key` if
@@ -244,7 +245,7 @@ impl From<i64> for Number {
 
 impl From<i32> for Number {
     fn from(i: i32) -> Number {
-        Number::Integer(i as i64)
+        Number::Integer(i64::from(i))
     }
 }
 
@@ -253,7 +254,7 @@ impl From<i32> for Number {
 
 impl From<u64> for Number {
     fn from(i: u64) -> Number {
-        if i as i64 as u64 == i {
+        if i <= std::i64::MAX as u64 {
             Number::Integer(i as i64)
         } else {
             Number::new(i as f64)
@@ -279,7 +280,7 @@ impl Eq for Float {}
 
 impl Hash for Float {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0 as u64);
+        state.write_u64(self.0.to_bits());
     }
 }
 

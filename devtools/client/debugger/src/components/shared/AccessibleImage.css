@@ -139,15 +139,19 @@ html[dir="rtl"] .img.more-tabs {
 }
 
 .img.plus {
-  mask-image: url(chrome://devtools/content/debugger/images/plus.svg);
+  mask-image: url(chrome://devtools/skin/images/add.svg);
 }
 
 .img.prettyPrint {
   mask-image: url(chrome://devtools/content/debugger/images/prettyPrint.svg);
 }
 
+.img.removeAll {
+  mask-image: url(chrome://devtools/skin/images/clear.svg)
+}
+
 .img.refresh {
-  mask-image: url(chrome://devtools/content/debugger/images/reload.svg);
+  mask-image: url(chrome://devtools/skin/images/reload.svg);
 }
 
 .img.regex-match {
@@ -155,7 +159,7 @@ html[dir="rtl"] .img.more-tabs {
 }
 
 .img.resume {
-  mask-image: url(chrome://devtools/content/debugger/images/resume.svg);
+  mask-image: url(chrome://devtools/content/shared/images/resume.svg);
 }
 
 .img.search {
@@ -179,7 +183,7 @@ html[dir="rtl"] .img.more-tabs {
 }
 
 .img.stepOver {
-  mask-image: url(chrome://devtools/content/debugger/images/stepOver.svg);
+  mask-image: url(chrome://devtools/content/shared/images/stepOver.svg);
 }
 
 .img.tab {

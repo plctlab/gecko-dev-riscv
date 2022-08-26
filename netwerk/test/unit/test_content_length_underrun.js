@@ -29,7 +29,7 @@ registerCleanupFunction(() => {
 });
 
 function run_test() {
-  prefs = Cc["@mozilla.org/preferences-service;1"].getService(Ci.nsIPrefBranch);
+  prefs = Services.prefs;
   enforcePrefStrict = prefs.getBoolPref("network.http.enforce-framing.http1");
   enforcePrefSoft = prefs.getBoolPref("network.http.enforce-framing.soft");
   enforcePrefStrictChunked = prefs.getBoolPref(
@@ -46,17 +46,20 @@ function run_test() {
 
 function run_test_number(num) {
   let testPath = testPathBase + num;
+  // eslint-disable-next-line no-eval
   httpserver.registerPathHandler(testPath, eval("handler" + num));
 
   var channel = setupChannel(testPath);
   let flags = test_flags[num]; // OK if flags undefined for test
   channel.asyncOpen(
+    // eslint-disable-next-line no-eval
     new ChannelListener(eval("completeTest" + num), channel, flags)
   );
 }
 
 function run_gzip_test(num) {
   let testPath = testPathBase + num;
+  // eslint-disable-next-line no-eval
   httpserver.registerPathHandler(testPath, eval("handler" + num));
 
   var channel = setupChannel(testPath);

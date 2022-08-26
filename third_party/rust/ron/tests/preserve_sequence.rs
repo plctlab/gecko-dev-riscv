@@ -25,18 +25,12 @@ fn read_original(source: &str) -> String {
 }
 
 fn make_roundtrip(source: &str) -> String {
-    let config: Config = match from_str(source) {
-        Ok(x) => x,
-        Err(e) => {
-            println!("Failed to load config: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let config: Config = from_str(source).unwrap();
     let pretty = PrettyConfig::new()
-        .with_depth_limit(3)
-        .with_separate_tuple_members(true)
-        .with_enumerate_arrays(true)
-        .with_new_line("\n".into());
+        .depth_limit(3)
+        .separate_tuple_members(true)
+        .enumerate_arrays(true)
+        .new_line("\n".into());
     to_string_pretty(&config, pretty).expect("Serialization failed")
 }
 

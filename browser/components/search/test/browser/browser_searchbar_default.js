@@ -7,8 +7,8 @@
 
 "use strict";
 
-const { SearchSuggestionController } = ChromeUtils.import(
-  "resource://gre/modules/SearchSuggestionController.jsm"
+const { SearchSuggestionController } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchSuggestionController.sys.mjs"
 );
 
 const templateNormal = "https://example.com/?q=";
@@ -16,7 +16,7 @@ const templatePrivate = "https://example.com/?query=";
 
 const searchPopup = document.getElementById("PopupSearchAutoComplete");
 
-add_task(async function setup() {
+add_setup(async function() {
   await gCUITestUtils.addSearchBar();
 
   await SpecialPowers.pushPrefEnv({

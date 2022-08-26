@@ -6,7 +6,6 @@
 
 #include "mozilla/dom/SVGFEImageElement.h"
 
-#include "mozilla/EventStates.h"
 #include "mozilla/SVGObserverUtils.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/BindContext.h"
@@ -25,8 +24,7 @@ NS_IMPL_NS_NEW_SVG_ELEMENT(FEImage)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEImageElement::WrapNode(JSContext* aCx,
                                       JS::Handle<JSObject*> aGivenProto) {
@@ -51,7 +49,7 @@ SVGFEImageElement::SVGFEImageElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGFEImageElementBase(std::move(aNodeInfo)), mImageAnimationMode(0) {
   // We start out broken
-  AddStatesSilently(NS_EVENT_STATE_BROKEN);
+  AddStatesSilently(ElementState::BROKEN);
 }
 
 SVGFEImageElement::~SVGFEImageElement() { nsImageLoadingContent::Destroy(); }
@@ -166,7 +164,7 @@ void SVGFEImageElement::UnbindFromTree(bool aNullParent) {
   SVGFEImageElementBase::UnbindFromTree(aNullParent);
 }
 
-EventStates SVGFEImageElement::IntrinsicState() const {
+ElementState SVGFEImageElement::IntrinsicState() const {
   return SVGFEImageElementBase::IntrinsicState() |
          nsImageLoadingContent::ImageState();
 }
@@ -359,5 +357,4 @@ void SVGFEImageElement::Notify(imgIRequest* aRequest, int32_t aType,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

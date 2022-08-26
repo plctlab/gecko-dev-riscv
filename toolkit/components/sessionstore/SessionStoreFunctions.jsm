@@ -2,13 +2,9 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { SessionStore } = ChromeUtils.import(
+  "resource:///modules/sessionstore/SessionStore.jsm"
 );
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  SessionStore: "resource:///modules/sessionstore/SessionStore.jsm",
-});
 
 function UpdateSessionStore(
   aBrowser,
@@ -24,22 +20,6 @@ function UpdateSessionStore(
     aPermanentKey,
     aEpoch,
     aCollectSHistory,
-    aData
-  );
-}
-
-function UpdateSessionStoreForWindow(
-  aBrowser,
-  aBrowsingContext,
-  aPermanentKey,
-  aEpoch,
-  aData
-) {
-  return SessionStoreFuncInternal.updateSessionStoreForWindow(
-    aBrowser,
-    aBrowsingContext,
-    aPermanentKey,
-    aEpoch,
     aData
   );
 }
@@ -60,11 +40,7 @@ function UpdateSessionStoreForStorage(
   );
 }
 
-var EXPORTED_SYMBOLS = [
-  "UpdateSessionStore",
-  "UpdateSessionStoreForWindow",
-  "UpdateSessionStoreForStorage",
-];
+var EXPORTED_SYMBOLS = ["UpdateSessionStore", "UpdateSessionStoreForStorage"];
 
 var SessionStoreFuncInternal = {
   updateSessionStore: function SSF_updateSessionStore(
@@ -75,12 +51,14 @@ var SessionStoreFuncInternal = {
     aCollectSHistory,
     aData
   ) {
-    let currentData = {};
-    if (aData.docShellCaps != undefined) {
-      currentData.disallow = aData.docShellCaps ? aData.docShellCaps : null;
+    let { formdata, scroll } = aData;
+
+    if (formdata) {
+      aData.formdata = formdata.toJSON();
     }
-    if (aData.isPrivate != undefined) {
-      currentData.isPrivate = aData.isPrivate;
+
+    if (scroll) {
+      aData.scroll = scroll.toJSON();
     }
 
     SessionStore.updateSessionStoreFromTablistener(
@@ -88,25 +66,10 @@ var SessionStoreFuncInternal = {
       aBrowsingContext,
       aPermanentKey,
       {
-        data: currentData,
+        data: aData,
         epoch: aEpoch,
         sHistoryNeeded: aCollectSHistory,
       }
-    );
-  },
-
-  updateSessionStoreForWindow: function SSF_updateSessionStoreForWindow(
-    aBrowser,
-    aBrowsingContext,
-    aPermanentKey,
-    aEpoch,
-    aData
-  ) {
-    SessionStore.updateSessionStoreFromTablistener(
-      aBrowser,
-      aBrowsingContext,
-      aPermanentKey,
-      { data: { windowstatechange: aData }, epoch: aEpoch }
     );
   },
 

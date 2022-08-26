@@ -43,6 +43,8 @@ class SharedSurface_DMABUF final : public SharedSurface {
   virtual void ProducerReadReleaseImpl() override {}
 
   Maybe<layers::SurfaceDescriptor> ToSurfaceDescriptor() override;
+
+  void WaitForBufferOwnership() override;
 };
 
 class SurfaceFactory_DMABUF : public SurfaceFactory {
@@ -57,10 +59,7 @@ class SurfaceFactory_DMABUF : public SurfaceFactory {
     return SharedSurface_DMABUF::Create(desc);
   }
 
-  bool CanCreateSurface() {
-    UniquePtr<SharedSurface> test = CreateShared(gfx::IntSize(1, 1));
-    return test != nullptr;
-  }
+  bool CanCreateSurface(GLContext& gl);
 };
 
 }  // namespace gl

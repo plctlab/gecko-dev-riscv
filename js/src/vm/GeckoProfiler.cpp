@@ -17,12 +17,12 @@
 #include "jit/JitRuntime.h"
 #include "jit/JSJitFrameIter.h"
 #include "js/ProfilingStack.h"
-#include "js/TraceLoggerAPI.h"
 #include "util/StringBuffer.h"
 #include "vm/FrameIter.h"  // js::OnlyJSJitFrameIter
 #include "vm/JSScript.h"
 
 #include "gc/Marking-inl.h"
+#include "jit/JSJitFrameIter-inl.h"
 #include "vm/JSScript-inl.h"
 
 using namespace js;
@@ -51,20 +51,14 @@ void GeckoProfilerRuntime::setEventMarker(void (*fn)(const char*,
 }
 
 // Get a pointer to the top-most profiling frame, given the exit frame pointer.
-static void* GetTopProfilingJitFrame(Activation* act) {
-  if (!act || !act->isJit()) {
-    return nullptr;
-  }
-
-  jit::JitActivation* jitActivation = act->asJit();
-
+static jit::JitFrameLayout* GetTopProfilingJitFrame(jit::JitActivation* act) {
   // If there is no exit frame set, just return.
-  if (!jitActivation->hasExitFP()) {
+  if (!act->hasExitFP()) {
     return nullptr;
   }
 
   // Skip wasm frames that might be in the way.
-  OnlyJSJitFrameIter iter(jitActivation);
+  OnlyJSJitFrameIter iter(act);
   if (iter.done()) {
     return nullptr;
   }
@@ -72,7 +66,7 @@ static void* GetTopProfilingJitFrame(Activation* act) {
   jit::JSJitProfilingFrameIterator jitIter(
       (jit::CommonFrameLayout*)iter.frame().fp());
   MOZ_ASSERT(!jitIter.done());
-  return jitIter.fp();
+  return jitIter.framePtr();
 }
 
 void GeckoProfilerRuntime::enable(bool enabled) {
@@ -87,7 +81,7 @@ void GeckoProfilerRuntime::enable(bool enabled) {
    * Ensure all future generated code will be instrumented, or that all
    * currently instrumented code is discarded
    */
-  ReleaseAllJITCode(rt->defaultFreeOp());
+  ReleaseAllJITCode(rt->gcContext());
 
   // This function is called when the Gecko profiler makes a new Sampler
   // (and thus, a new circular buffer). Set all current entries in the
@@ -102,9 +96,6 @@ void GeckoProfilerRuntime::enable(bool enabled) {
     cx->jitActivation->setLastProfilingFrame(nullptr);
     cx->jitActivation->setLastProfilingCallSite(nullptr);
   }
-
-  // Reset the tracelogger, if toggled on
-  JS::ResetTraceLogger();
 
   enabled_ = enabled;
 
@@ -121,16 +112,12 @@ void GeckoProfilerRuntime::enable(bool enabled) {
     // Walk through all activations, and set their lastProfilingFrame
     // appropriately.
     if (enabled) {
-      Activation* act = cx->activation();
-      void* lastProfilingFrame = GetTopProfilingJitFrame(act);
-
       jit::JitActivation* jitActivation = cx->jitActivation;
       while (jitActivation) {
+        auto* lastProfilingFrame = GetTopProfilingJitFrame(jitActivation);
         jitActivation->setLastProfilingFrame(lastProfilingFrame);
         jitActivation->setLastProfilingCallSite(nullptr);
-
         jitActivation = jitActivation->prevJitActivation();
-        lastProfilingFrame = GetTopProfilingJitFrame(jitActivation);
       }
     } else {
       jit::JitActivation* jitActivation = cx->jitActivation;

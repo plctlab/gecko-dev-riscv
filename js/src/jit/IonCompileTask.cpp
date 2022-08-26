@@ -46,12 +46,8 @@ void IonCompileTask::runHelperThreadTask(AutoLockHelperThreadState& locked) {
 
 void IonCompileTask::runTask() {
   // This is the entry point when ion compiles are run offthread.
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
-  TraceLoggerEvent event(TraceLogger_AnnotateScripts, script());
-  AutoTraceLog logScript(logger, event);
-  AutoTraceLog logCompile(logger, TraceLogger_IonCompilation);
 
-  jit::JitContext jctx(mirGen_.realm->runtime(), mirGen_.realm, &alloc());
+  jit::JitContext jctx(mirGen_.realm->runtime());
   setBackgroundCodegen(jit::CompileBackEnd(&mirGen_, snapshot_));
 }
 
@@ -63,8 +59,11 @@ void IonCompileTask::trace(JSTracer* trc) {
   snapshot_->trace(trc);
 }
 
-IonCompileTask::IonCompileTask(MIRGenerator& mirGen, WarpSnapshot* snapshot)
-    : mirGen_(mirGen), snapshot_(snapshot) {}
+IonCompileTask::IonCompileTask(JSContext* cx, MIRGenerator& mirGen,
+                               WarpSnapshot* snapshot)
+    : mirGen_(mirGen),
+      snapshot_(snapshot),
+      isExecuting_(cx->isExecutingRef()) {}
 
 size_t IonCompileTask::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
   // See js::jit::FreeIonCompileTask.

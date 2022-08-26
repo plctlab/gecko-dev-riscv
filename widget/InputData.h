@@ -279,7 +279,8 @@ class MouseInput : public InputData {
       MOUSE_DRAG_END,
       MOUSE_WIDGET_ENTER,
       MOUSE_WIDGET_EXIT,
-      MOUSE_HITTEST
+      MOUSE_HITTEST,
+      MOUSE_EXPLORE_BY_TOUCH
   ));
 
   MOZ_DEFINE_ENUM_AT_CLASS_SCOPE(
@@ -436,10 +437,6 @@ class PanGestureInput : public InputData {
 
   bool mHandledByAPZ : 1;
 
-  // true if this is a PANGESTURE_END event that will be followed by a
-  // PANGESTURE_MOMENTUMSTART event.
-  bool mFollowedByMomentum : 1;
-
   // If this is true, and this event started a new input block that couldn't
   // find a scrollable target which is scrollable in the horizontal component
   // of the scroll start direction, then this input block needs to be put on
@@ -467,9 +464,6 @@ class PanGestureInput : public InputData {
   bool mIsNoLineOrPageDelta : 1;
 
   void SetHandledByAPZ(bool aHandled) { mHandledByAPZ = aHandled; }
-  void SetFollowedByMomentum(bool aFollowed) {
-    mFollowedByMomentum = aFollowed;
-  }
   void SetRequiresContentResponseIfCannotScrollHorizontallyInStartDirection(
       bool aRequires) {
     mRequiresContentResponseIfCannotScrollHorizontallyInStartDirection =
@@ -697,7 +691,11 @@ class ScrollWheelInput : public InputData {
 
   // The following two functions are for auto-dir scrolling. For detailed
   // information on auto-dir, @see mozilla::WheelDeltaAdjustmentStrategy
-  bool IsAutoDir() const {
+  bool IsAutoDir(bool aForce = false) const {
+    if (aForce) {
+      return true;
+    }
+
     switch (mWheelDeltaAdjustmentStrategy) {
       case WheelDeltaAdjustmentStrategy::eAutoDir:
       case WheelDeltaAdjustmentStrategy::eAutoDirWithRootHonour:
@@ -716,9 +714,10 @@ class ScrollWheelInput : public InputData {
   // not an auto-dir scroll.
   // For detailed information on auto-dir,
   // @see mozilla::WheelDeltaAdjustmentStrategy
-  bool HonoursRoot() const {
+  bool HonoursRoot(bool aForce = false) const {
     return WheelDeltaAdjustmentStrategy::eAutoDirWithRootHonour ==
-           mWheelDeltaAdjustmentStrategy;
+               mWheelDeltaAdjustmentStrategy ||
+           aForce;
   }
 
   // Warning, this class is serialized and sent over IPC. Any change to its
@@ -783,7 +782,7 @@ class KeyboardInput : public InputData {
     KEY_DOWN,
     KEY_PRESS,
     KEY_UP,
-    // Any other key event such as eKeyDownOnPlugin
+    // Any other key event such as eAccessKeyNotFound
     KEY_OTHER,
 
     // Used as an upper bound for ContiguousEnumSerializer

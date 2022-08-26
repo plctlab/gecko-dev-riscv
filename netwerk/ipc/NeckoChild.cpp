@@ -71,7 +71,8 @@ void NeckoChild::InitNeckoChild() {
     if (NS_WARN_IF(cpc->IsShuttingDown())) {
       return;
     }
-    gNeckoChild = cpc->SendPNeckoConstructor();
+    RefPtr<NeckoChild> child = new NeckoChild();
+    gNeckoChild = cpc->SendPNeckoConstructor(child);
     NS_ASSERTION(gNeckoChild, "PNecko Protocol init failed!");
   }
 }
@@ -112,7 +113,7 @@ bool NeckoChild::DeallocPWebrtcTCPSocketChild(PWebrtcTCPSocketChild* aActor) {
 }
 
 PAltDataOutputStreamChild* NeckoChild::AllocPAltDataOutputStreamChild(
-    const nsCString& type, const int64_t& predictedSize,
+    const nsACString& type, const int64_t& predictedSize,
     PHttpChannelChild* channel) {
   // We don't allocate here: see HttpChannelChild::OpenAlternativeOutputStream()
   MOZ_ASSERT_UNREACHABLE("AllocPAltDataOutputStreamChild should not be called");
@@ -184,10 +185,6 @@ PWebSocketEventListenerChild* NeckoChild::AllocPWebSocketEventListenerChild(
   RefPtr<WebSocketEventListenerChild> c =
       new WebSocketEventListenerChild(aInnerWindowID, target);
 
-  if (target) {
-    gNeckoChild->SetEventTargetForActor(c, target);
-  }
-
   return c.forget().take();
 }
 
@@ -210,7 +207,7 @@ bool NeckoChild::DeallocPSimpleChannelChild(PSimpleChannelChild* child) {
   return true;
 }
 
-PTCPSocketChild* NeckoChild::AllocPTCPSocketChild(const nsString& host,
+PTCPSocketChild* NeckoChild::AllocPTCPSocketChild(const nsAString& host,
                                                   const uint16_t& port) {
   TCPSocketChild* p = new TCPSocketChild(host, port, nullptr);
   p->AddIPDLReference();
@@ -237,7 +234,7 @@ bool NeckoChild::DeallocPTCPServerSocketChild(PTCPServerSocketChild* child) {
 }
 
 PUDPSocketChild* NeckoChild::AllocPUDPSocketChild(nsIPrincipal* aPrincipal,
-                                                  const nsCString& aFilter) {
+                                                  const nsACString& aFilter) {
   MOZ_ASSERT_UNREACHABLE("AllocPUDPSocket should not be called");
   return nullptr;
 }

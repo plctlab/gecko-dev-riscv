@@ -12,6 +12,7 @@ const CHROME_WORKER_URL = CHROME_URL_ROOT + "test_worker.js";
 add_task(async function() {
   // Enabled fission prefs
   await pushPref("devtools.browsertoolbox.fission", true);
+  await pushPref("devtools.browsertoolbox.scope", "everything");
   // Disable the preloaded process as it gets created lazily and may interfere
   // with process count assertions
   await pushPref("dom.ipc.processPrelaunch.enabled", false);
@@ -105,12 +106,12 @@ async function testLocalTab() {
 
 async function testRemoteTab() {
   info(
-    "Test TargetCommand against remote tab descriptor (via getTab({ outerWindowID }))"
+    "Test TargetCommand against remote tab descriptor (via getTab({ browserId }))"
   );
 
   const tab = await addTab(TEST_URL);
   const commands = await CommandsFactory.forRemoteTabInTest({
-    outerWindowID: tab.linkedBrowser.outerWindowID,
+    browserId: tab.linkedBrowser.browserId,
   });
   const { descriptorFront } = commands;
   is(
@@ -142,17 +143,18 @@ async function testRemoteTab() {
   await BrowserTestUtils.loadURI(browser, SECOND_TEST_URL);
   await onLoaded;
 
-  if (isFissionEnabled()) {
-    info("With fission, cross process switching destroy everything");
-    ok(targetFront.isDestroyed(), "Top level target is destroyed");
-    ok(commands.descriptorFront.isDestroyed(), "Descriptor is also destroyed");
-  } else {
-    is(
-      targetCommand.targetFront,
-      targetFront,
-      "Without fission, the top target stays the same"
-    );
-  }
+  info("Wait for the new target");
+  await waitFor(() => targetCommand.targetFront != targetFront);
+  isnot(
+    targetCommand.targetFront,
+    targetFront,
+    "The top level target changes on navigation"
+  );
+  ok(
+    !targetCommand.targetFront.isDestroyed(),
+    "The new target isn't destroyed"
+  );
+  ok(targetFront.isDestroyed(), "While the previous target is destroyed");
 
   targetCommand.destroy();
 
@@ -248,29 +250,29 @@ async function testContentProcess() {
 }
 
 // CommandsFactory expect the worker id, which is computed from the nsIWorkerDebugger.id attribute
-function getWorkerDebuggerId(url) {
-  const wdm = Cc[
-    "@mozilla.org/dom/workers/workerdebuggermanager;1"
-  ].createInstance(Ci.nsIWorkerDebuggerManager);
-  const workers = wdm.getWorkerDebuggerEnumerator();
-  while (workers.hasMoreElements()) {
-    const worker = workers.getNext();
-    worker.QueryInterface(Ci.nsIWorkerDebugger);
-    if (worker.url == url) {
-      return worker.id;
-    }
-  }
-  return null;
+function getNextWorkerDebuggerId() {
+  return new Promise(resolve => {
+    const wdm = Cc[
+      "@mozilla.org/dom/workers/workerdebuggermanager;1"
+    ].createInstance(Ci.nsIWorkerDebuggerManager);
+    const listener = {
+      onRegister(dbg) {
+        wdm.removeListener(listener);
+        resolve(dbg.id);
+      },
+    };
+    wdm.addListener(listener);
+  });
 }
-
 async function testWorker() {
   info("Test TargetCommand against worker descriptor");
 
   const workerUrl = CHROME_WORKER_URL + "#descriptor";
-  new Worker(workerUrl);
-
-  const workerId = getWorkerDebuggerId(workerUrl);
+  const onNextWorker = getNextWorkerDebuggerId();
+  const worker = new Worker(workerUrl);
+  const workerId = await onNextWorker;
   ok(workerId, "Found the worker Debugger ID");
+
   const commands = await CommandsFactory.forWorker(workerId);
   const { descriptorFront } = commands;
   is(
@@ -301,4 +303,5 @@ async function testWorker() {
   await commands.waitForRequestsToSettle();
 
   await commands.destroy();
+  worker.terminate();
 }

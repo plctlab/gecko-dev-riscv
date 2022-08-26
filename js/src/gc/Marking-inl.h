@@ -31,7 +31,17 @@ struct TaggedPtr {};
 
 template <>
 struct TaggedPtr<JS::Value> {
-  static JS::Value wrap(JSObject* obj) { return JS::ObjectOrNullValue(obj); }
+  static JS::Value wrap(JSObject* obj) {
+    if (!obj) {
+      return JS::NullValue();
+    }
+#ifdef ENABLE_RECORD_TUPLE
+    if (MaybeForwardedIsExtendedPrimitive(*obj)) {
+      return JS::ExtendedPrimitiveValue(*obj);
+    }
+#endif
+    return JS::ObjectValue(*obj);
+  }
   static JS::Value wrap(JSString* str) { return JS::StringValue(str); }
   static JS::Value wrap(JS::Symbol* sym) { return JS::SymbolValue(sym); }
   static JS::Value wrap(JS::BigInt* bi) { return JS::BigIntValue(bi); }
@@ -46,11 +56,9 @@ struct TaggedPtr<JS::Value> {
 
 template <>
 struct TaggedPtr<jsid> {
-  static jsid wrap(JSString* str) {
-    return JS::PropertyKey::fromNonIntAtom(str);
-  }
-  static jsid wrap(JS::Symbol* sym) { return SYMBOL_TO_JSID(sym); }
-  static jsid empty() { return JSID_VOID; }
+  static jsid wrap(JSString* str) { return JS::PropertyKey::NonIntAtom(str); }
+  static jsid wrap(JS::Symbol* sym) { return PropertyKey::Symbol(sym); }
+  static jsid empty() { return JS::PropertyKey::Void(); }
 };
 
 template <>
@@ -105,7 +113,7 @@ inline const JSClass* MaybeForwardedObjectClass(const JSObject* obj) {
 }
 
 template <typename T>
-inline bool MaybeForwardedObjectIs(JSObject* obj) {
+inline bool MaybeForwardedObjectIs(const JSObject* obj) {
   MOZ_ASSERT(!obj->isForwarded());
   return MaybeForwardedObjectClass(obj) == &T::class_;
 }

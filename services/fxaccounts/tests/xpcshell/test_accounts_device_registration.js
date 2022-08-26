@@ -18,10 +18,10 @@ const {
   ERRNO_UNKNOWN_DEVICE,
   ON_DEVICE_CONNECTED_NOTIFICATION,
   ON_DEVICE_DISCONNECTED_NOTIFICATION,
+  ON_DEVICELIST_UPDATED,
 } = ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
 var { AccountState } = ChromeUtils.import(
-  "resource://gre/modules/FxAccounts.jsm",
-  null
+  "resource://gre/modules/FxAccounts.jsm"
 );
 
 initTestLogging("Trace");
@@ -163,6 +163,7 @@ async function MockFxAccounts(credentials, device = {}) {
     },
     device: {
       DEVICE_REGISTRATION_VERSION,
+      _checkRemoteCommandsUpdateNeeded: async () => false,
     },
     VERIFICATION_POLL_TIMEOUT_INITIAL: 1,
   });
@@ -661,8 +662,12 @@ add_task(async function test_verification_updates_registration() {
 
   await updatePromise;
 
-  const { device: newDevice } = await state.getUserAccountData();
+  const {
+    device: newDevice,
+    encryptedSendTabKeys,
+  } = await state.getUserAccountData();
   Assert.equal(newDevice.registeredCommandsKeys.length, 1);
+  Assert.notEqual(encryptedSendTabKeys, null);
   await fxa.signOut(true);
 });
 
@@ -785,6 +790,14 @@ add_task(async function test_refreshDeviceList() {
   let spy = {
     getDeviceList: { count: 0 },
   };
+  const deviceListUpdateObserver = {
+    count: 0,
+    observe(subject, topic, data) {
+      this.count++;
+    },
+  };
+  Services.obs.addObserver(deviceListUpdateObserver, ON_DEVICELIST_UPDATED);
+
   fxAccountsClient.getDeviceList = (function(old) {
     return function getDeviceList() {
       spy.getDeviceList.count += 1;
@@ -814,6 +827,7 @@ add_task(async function test_refreshDeviceList() {
     fxaPushService: null,
   };
   let device = new FxAccountsDevice(fxai);
+  device._checkRemoteCommandsUpdateNeeded = async () => false;
 
   Assert.equal(
     device.recentDeviceList,
@@ -821,6 +835,11 @@ add_task(async function test_refreshDeviceList() {
     "Should not have device list initially"
   );
   Assert.ok(await device.refreshDeviceList(), "Should refresh list");
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    1,
+    `${ON_DEVICELIST_UPDATED} was notified`
+  );
   Assert.deepEqual(
     device.recentDeviceList,
     [
@@ -842,6 +861,11 @@ add_task(async function test_refreshDeviceList() {
     !(await device.refreshDeviceList()),
     "Should not refresh device list if fresh"
   );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    1,
+    `${ON_DEVICELIST_UPDATED} was not notified`
+  );
 
   fxai._now += device.TIME_BETWEEN_FXA_DEVICES_FETCH_MS;
 
@@ -856,6 +880,11 @@ add_task(async function test_refreshDeviceList() {
     2,
     "Should only make one request if called with pending request"
   );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    2,
+    `${ON_DEVICELIST_UPDATED} only notified once`
+  );
 
   device.observe(null, ON_DEVICE_CONNECTED_NOTIFICATION);
   await device.refreshDeviceList();
@@ -863,6 +892,11 @@ add_task(async function test_refreshDeviceList() {
     spy.getDeviceList.count,
     3,
     "Should refresh device list after connecting new device"
+  );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    3,
+    `${ON_DEVICELIST_UPDATED} notified when new device connects`
   );
   device.observe(
     null,
@@ -875,6 +909,11 @@ add_task(async function test_refreshDeviceList() {
     4,
     "Should refresh device list after disconnecting device"
   );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    4,
+    `${ON_DEVICELIST_UPDATED} notified when device disconnects`
+  );
   device.observe(
     null,
     ON_DEVICE_DISCONNECTED_NOTIFICATION,
@@ -886,11 +925,21 @@ add_task(async function test_refreshDeviceList() {
     4,
     "Should not refresh device list after disconnecting this device"
   );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    4,
+    `${ON_DEVICELIST_UPDATED} not notified again`
+  );
 
   let refreshBeforeResetPromise = device.refreshDeviceList({
     ignoreCached: true,
   });
   fxai._generation++;
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    4,
+    `${ON_DEVICELIST_UPDATED} not notified`
+  );
   await Assert.rejects(refreshBeforeResetPromise, /Another user has signed in/);
 
   device.reset();
@@ -903,18 +952,63 @@ add_task(async function test_refreshDeviceList() {
     await device.refreshDeviceList(),
     "Should fetch new list after resetting"
   );
+  Assert.equal(
+    deviceListUpdateObserver.count,
+    5,
+    `${ON_DEVICELIST_UPDATED} notified after reset`
+  );
+  Services.obs.removeObserver(deviceListUpdateObserver, ON_DEVICELIST_UPDATED);
 });
 
-function expandHex(two_hex) {
-  // Return a 64-character hex string, encoding 32 identical bytes.
-  let eight_hex = two_hex + two_hex + two_hex + two_hex;
-  let thirtytwo_hex = eight_hex + eight_hex + eight_hex + eight_hex;
-  return thirtytwo_hex + thirtytwo_hex;
-}
+add_task(async function test_checking_remote_availableCommands_mismatch() {
+  const credentials = getTestUser("baz");
+  credentials.verified = true;
+  const fxa = await MockFxAccounts(credentials);
+  fxa.device._checkRemoteCommandsUpdateNeeded =
+    FxAccountsDevice.prototype._checkRemoteCommandsUpdateNeeded;
+  fxa.commands.availableCommands = async () => {
+    return {
+      "https://identity.mozilla.com/cmd/open-uri": "local-keys",
+    };
+  };
 
-function expandBytes(two_hex) {
-  return CommonUtils.hexToBytes(expandHex(two_hex));
-}
+  const ourDevice = {
+    isCurrentDevice: true,
+    availableCommands: {
+      "https://identity.mozilla.com/cmd/open-uri": "remote-keys",
+    },
+  };
+  Assert.ok(
+    await fxa.device._checkRemoteCommandsUpdateNeeded(
+      ourDevice.availableCommands
+    )
+  );
+});
+
+add_task(async function test_checking_remote_availableCommands_match() {
+  const credentials = getTestUser("baz");
+  credentials.verified = true;
+  const fxa = await MockFxAccounts(credentials);
+  fxa.device._checkRemoteCommandsUpdateNeeded =
+    FxAccountsDevice.prototype._checkRemoteCommandsUpdateNeeded;
+  fxa.commands.availableCommands = async () => {
+    return {
+      "https://identity.mozilla.com/cmd/open-uri": "local-keys",
+    };
+  };
+
+  const ourDevice = {
+    isCurrentDevice: true,
+    availableCommands: {
+      "https://identity.mozilla.com/cmd/open-uri": "local-keys",
+    },
+  };
+  Assert.ok(
+    !(await fxa.device._checkRemoteCommandsUpdateNeeded(
+      ourDevice.availableCommands
+    ))
+  );
+});
 
 function getTestUser(name) {
   return {

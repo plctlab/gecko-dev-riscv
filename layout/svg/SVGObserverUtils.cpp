@@ -864,7 +864,10 @@ class SVGFilterObserverListForCanvasContext final
 
 void SVGFilterObserverListForCanvasContext::OnRenderingChange() {
   if (!mContext) {
-    MOZ_CRASH("GFX: This should never be called without a context");
+    NS_WARNING(
+        "GFX: This should never be called without a context, except during "
+        "cycle collection (when DetachFromContext has been called)");
+    return;
   }
   // Refresh the cached FilterDescription in mContext->CurrentState().filter.
   // If this filter is not at the top of the state stack, we'll refresh the
@@ -1399,6 +1402,10 @@ SVGObserverUtils::ReferenceState SVGObserverUtils::GetAndObserveMasks(
 
 SVGGeometryElement* SVGObserverUtils::GetAndObserveTextPathsPath(
     nsIFrame* aTextPathFrame) {
+  // Continuations can come and go during reflow, and we don't need to observe
+  // the referenced element more than once for a given node.
+  aTextPathFrame = aTextPathFrame->FirstContinuation();
+
   SVGTextPathObserver* property =
       aTextPathFrame->GetProperty(HrefAsTextPathProperty());
 
@@ -1456,10 +1463,14 @@ nsIFrame* SVGObserverUtils::GetAndObserveTemplate(
 
     // Convert href to an nsIURI
     nsIContent* content = aFrame->GetContent();
+
+    nsCOMPtr<nsIURI> baseURI = content->GetBaseURI();
+    if (nsContentUtils::IsLocalRefURL(href)) {
+      baseURI = GetBaseURLForLocalRef(content, baseURI);
+    }
     nsCOMPtr<nsIURI> targetURI;
-    nsContentUtils::NewURIWithDocumentCharset(getter_AddRefs(targetURI), href,
-                                              content->GetUncomposedDoc(),
-                                              content->GetBaseURI());
+    nsContentUtils::NewURIWithDocumentCharset(
+        getter_AddRefs(targetURI), href, content->GetUncomposedDoc(), baseURI);
 
     // There's no clear refererer policy spec about non-CSS SVG resource
     // references.  Bug 1415044 to investigate which referrer we should use.
@@ -1725,7 +1736,8 @@ already_AddRefed<nsIURI> SVGObserverUtils::GetBaseURLForLocalRef(
 already_AddRefed<URLAndReferrerInfo> SVGObserverUtils::GetFilterURI(
     nsIFrame* aFrame, const StyleFilter& aFilter) {
   MOZ_ASSERT(!aFrame->StyleEffects()->mFilters.IsEmpty() ||
-             !aFrame->StyleEffects()->mBackdropFilters.IsEmpty());
+             !aFrame->StyleEffects()->mBackdropFilters.IsEmpty() ||
+             !aFrame->GetContent()->GetParent());
   MOZ_ASSERT(aFilter.IsUrl());
   return ResolveURLUsingLocalRef(aFrame, aFilter.AsUrl());
 }

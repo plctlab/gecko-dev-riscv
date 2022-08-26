@@ -13,7 +13,8 @@ namespace mozilla::intl {
 TEST(IntlListFormat, FormatDefault)
 {
   ListFormat::Options options;
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
@@ -22,7 +23,8 @@ TEST(IntlListFormat, FormatDefault)
   ASSERT_TRUE(lf->Format(list, buf16).isOk());
   ASSERT_EQ(buf16.get_string_view(), u"Alice, Bob, and Charlie");
 
-  UniquePtr<ListFormat> lfDe = ListFormat::TryCreate("de", options).unwrap();
+  UniquePtr<ListFormat> lfDe =
+      ListFormat::TryCreate(MakeStringSpan("de"), options).unwrap();
   ASSERT_TRUE(lfDe->Format(list, buf16).isOk());
   ASSERT_EQ(buf16.get_string_view(), u"Alice, Bob und Charlie");
 }
@@ -32,7 +34,8 @@ TEST(IntlListFormat, FormatConjunction)
 {
   ListFormat::Options options{ListFormat::Type::Conjunction,
                               ListFormat::Style::Narrow};
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
@@ -44,7 +47,7 @@ TEST(IntlListFormat, FormatConjunction)
   ListFormat::Options optionsSh{ListFormat::Type::Conjunction,
                                 ListFormat::Style::Short};
   UniquePtr<ListFormat> lfSh =
-      ListFormat::TryCreate("en-US", optionsSh).unwrap();
+      ListFormat::TryCreate(MakeStringSpan("en-US"), optionsSh).unwrap();
   ASSERT_TRUE(lfSh->Format(list, buf16).isOk());
   ASSERT_EQ(buf16.get_string_view(), u"Alice, Bob, & Charlie");
 }
@@ -56,7 +59,8 @@ TEST(IntlListFormat, FormatDisjunction)
   // style for most locales, so simply test with Style::Long.
   ListFormat::Options options{ListFormat::Type::Disjunction,
                               ListFormat::Style::Long};
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
@@ -72,7 +76,8 @@ TEST(IntlListFormat, FormatUnit)
   ListFormat::Options options{ListFormat::Type::Unit, ListFormat::Style::Long};
   // For locale "en", Style::Long and Style::Short have the same result, so just
   // test Style::Long here.
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
@@ -84,7 +89,7 @@ TEST(IntlListFormat, FormatUnit)
   ListFormat::Options optionsNa{ListFormat::Type::Unit,
                                 ListFormat::Style::Narrow};
   UniquePtr<ListFormat> lfNa =
-      ListFormat::TryCreate("en-US", optionsNa).unwrap();
+      ListFormat::TryCreate(MakeStringSpan("en-US"), optionsNa).unwrap();
   ASSERT_TRUE(lfNa->Format(list, buf16).isOk());
   ASSERT_EQ(buf16.get_string_view(), u"Alice Bob Charlie");
 }
@@ -94,7 +99,8 @@ TEST(IntlListFormat, FormatUnit)
 TEST(IntlListFormat, FormatBufferLength)
 {
   ListFormat::Options options;
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
@@ -114,29 +120,43 @@ TEST(IntlListFormat, FormatBufferLength)
 TEST(IntlListFormat, FormatToParts)
 {
   ListFormat::Options options;
-  UniquePtr<ListFormat> lf = ListFormat::TryCreate("en-US", options).unwrap();
+  UniquePtr<ListFormat> lf =
+      ListFormat::TryCreate(MakeStringSpan("en-US"), options).unwrap();
   ListFormat::StringList list;
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Alice")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Bob")));
   MOZ_RELEASE_ASSERT(list.append(MakeStringSpan(u"Charlie")));
 
-  ASSERT_TRUE(
-      lf->FormatToParts(list, [](const ListFormat::PartVector& parts) {
-          // 3 elements, and 2 literals.
-          EXPECT_EQ((parts.length()), (5u));
+  TestBuffer<char16_t> buf16;
+  mozilla::intl::ListFormat::PartVector parts;
+  ASSERT_TRUE(lf->FormatToParts(list, buf16, parts).isOk());
 
-          EXPECT_EQ(parts[0], (ListFormat::Part{ListFormat::PartType::Element,
-                                                MakeStringSpan(u"Alice")}));
-          EXPECT_EQ(parts[1], (ListFormat::Part{ListFormat::PartType::Literal,
-                                                MakeStringSpan(u", ")}));
-          EXPECT_EQ(parts[2], (ListFormat::Part{ListFormat::PartType::Element,
-                                                MakeStringSpan(u"Bob")}));
-          EXPECT_EQ(parts[3], (ListFormat::Part{ListFormat::PartType::Literal,
-                                                MakeStringSpan(u", and ")}));
-          EXPECT_EQ(parts[4], (ListFormat::Part{ListFormat::PartType::Element,
-                                                MakeStringSpan(u"Charlie")}));
-          return true;
-        }).isOk());
+  std::u16string_view strView = buf16.get_string_view();
+  ASSERT_EQ(strView, u"Alice, Bob, and Charlie");
+
+  // 3 elements, and 2 literals.
+  ASSERT_EQ((parts.length()), (5u));
+
+  auto getSubStringView = [strView, &parts](size_t index) {
+    size_t pos = index == 0 ? 0 : parts[index - 1].second;
+    size_t count = parts[index].second - pos;
+    return strView.substr(pos, count);
+  };
+
+  ASSERT_EQ(parts[0].first, ListFormat::PartType::Element);
+  ASSERT_EQ(getSubStringView(0), u"Alice");
+
+  ASSERT_EQ(parts[1].first, ListFormat::PartType::Literal);
+  ASSERT_EQ(getSubStringView(1), u", ");
+
+  ASSERT_EQ(parts[2].first, ListFormat::PartType::Element);
+  ASSERT_EQ(getSubStringView(2), u"Bob");
+
+  ASSERT_EQ(parts[3].first, ListFormat::PartType::Literal);
+  ASSERT_EQ(getSubStringView(3), u", and ");
+
+  ASSERT_EQ(parts[4].first, ListFormat::PartType::Element);
+  ASSERT_EQ(getSubStringView(4), u"Charlie");
 }
 
 }  // namespace mozilla::intl

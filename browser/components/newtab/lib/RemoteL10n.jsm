@@ -7,18 +7,8 @@
  * The downloaded Fluent file is located in this sub-directory of the local
  * profile directory.
  */
-const RS_DOWNLOADED_FILE_SUBDIR = "settings/main/ms-language-packs";
 const USE_REMOTE_L10N_PREF =
   "browser.newtabpage.activity-stream.asrouter.useRemoteL10n";
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  OS: "resource://gre/modules/osfile.jsm",
-  Services: "resource://gre/modules/Services.jsm",
-});
 
 /**
  * All supported locales for remote l10n
@@ -187,9 +177,11 @@ class _RemoteL10n {
     let useRemoteL10n = Services.prefs.getBoolPref(USE_REMOTE_L10N_PREF, true);
     if (useRemoteL10n && !L10nRegistry.getInstance().hasSource("cfr")) {
       const appLocale = Services.locale.appLocaleAsBCP47;
-      const l10nFluentDir = OS.Path.join(
-        OS.Constants.Path.localProfileDir,
-        RS_DOWNLOADED_FILE_SUBDIR
+      const l10nFluentDir = PathUtils.join(
+        Services.dirsvc.get("ProfLD", Ci.nsIFile).path,
+        "settings",
+        "main",
+        "ms-language-packs"
       );
       let cfrIndexedFileSource = new L10nFileSource(
         "cfr",
@@ -234,8 +226,27 @@ class _RemoteL10n {
   isLocaleSupported(locale) {
     return locale === "en-US" || ALL_LOCALES.has(locale);
   }
+
+  /**
+   * Format given `localizableText`.
+   *
+   * Format `localizableText` if it is an object using any `string_id` field,
+   * otherwise return `localizableText` unmodified.
+   *
+   * @param {object|string} `localizableText` to format.
+   * @return {string} formatted text.
+   */
+  async formatLocalizableText(localizableText) {
+    if (typeof localizableText !== "string") {
+      // It's more useful to get an error than passing through an object without
+      // a `string_id` field.
+      let value = await this.l10n.formatValue(localizableText.string_id);
+      return value;
+    }
+    return localizableText;
+  }
 }
 
-this.RemoteL10n = new _RemoteL10n();
+const RemoteL10n = new _RemoteL10n();
 
 const EXPORTED_SYMBOLS = ["RemoteL10n", "_RemoteL10n"];

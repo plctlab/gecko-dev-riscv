@@ -7,70 +7,141 @@ use std::ffi::CString;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 
-use nserror::{nsresult, NS_ERROR_FAILURE, NS_OK};
+#[cfg(target_os = "android")]
+use nserror::NS_ERROR_NOT_IMPLEMENTED;
+use nserror::{nsresult, NS_ERROR_FAILURE};
 use nsstring::{nsACString, nsCString, nsString};
-use xpcom::interfaces::{mozIViaduct, nsIFile, nsIXULAppInfo};
+#[cfg(not(target_os = "android"))]
+use xpcom::interfaces::mozIViaduct;
+use xpcom::interfaces::{nsIFile, nsIXULAppInfo};
 use xpcom::XpCom;
 
 use glean::{ClientInfoMetrics, Configuration};
 
+#[cfg(not(target_os = "android"))]
 mod upload_pref;
+#[cfg(not(target_os = "android"))]
 mod user_activity;
+#[cfg(not(target_os = "android"))]
 mod viaduct_uploader;
 
+#[cfg(not(target_os = "android"))]
 use upload_pref::UploadPrefObserver;
+#[cfg(not(target_os = "android"))]
 use user_activity::UserActivityObserver;
+#[cfg(not(target_os = "android"))]
 use viaduct_uploader::ViaductUploader;
 
 /// Project FOG's entry point.
 ///
 /// This assembles client information and the Glean configuration and then initializes the global
 /// Glean instance.
+#[cfg(not(target_os = "android"))]
 #[no_mangle]
-pub unsafe extern "C" fn fog_init(
+pub extern "C" fn fog_init(
     data_path_override: &nsACString,
     app_id_override: &nsACString,
 ) -> nsresult {
+    let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
+    let recording_enabled = static_prefs::pref!("telemetry.fog.test.localhost_port") < 0;
+    let uploader = Some(Box::new(ViaductUploader) as Box<dyn glean::net::PingUploader>);
+
+    fog_init_internal(
+        data_path_override,
+        app_id_override,
+        upload_enabled || recording_enabled,
+        uploader,
+    )
+    .into()
+}
+
+/// Project FOG's entry point on Android.
+///
+/// This assembles client information and the Glean configuration and then initializes the global
+/// Glean instance.
+/// It always enables upload and set no uploader.
+/// This should only be called in test scenarios.
+/// In normal use Glean should be initialized and controlled by the Glean Kotlin SDK.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn fog_init(
+    data_path_override: &nsACString,
+    app_id_override: &nsACString,
+) -> nsresult {
+    // On Android always enable Glean upload.
+    let upload_enabled = true;
+    // Don't set up an uploader.
+    let uploader = None;
+
+    fog_init_internal(
+        data_path_override,
+        app_id_override,
+        upload_enabled,
+        uploader,
+    )
+    .into()
+}
+
+fn fog_init_internal(
+    data_path_override: &nsACString,
+    app_id_override: &nsACString,
+    upload_enabled: bool,
+    uploader: Option<Box<dyn glean::net::PingUploader>>,
+) -> Result<(), nsresult> {
     fog::metrics::fog::initialization.start();
 
     log::debug!("Initializing FOG.");
 
+    setup_observers()?;
+
+    let (mut conf, client_info) = build_configuration(data_path_override, app_id_override)?;
+
+    conf.upload_enabled = upload_enabled;
+    conf.uploader = uploader;
+
+    setup_viaduct();
+
+    // If we're operating in automation without any specific source tags to set,
+    // set the tag "automation" so any pings that escape don't clutter the tables.
+    // See https://mozilla.github.io/glean/book/user/debugging/index.html#enabling-debugging-features-through-environment-variables
+    if env::var("MOZ_AUTOMATION").is_ok() && env::var("GLEAN_SOURCE_TAGS").is_err() {
+        log::info!("In automation, setting 'automation' source tag.");
+        glean::set_source_tags(vec!["automation".to_string()]);
+        log::info!("In automation, disabling MPS to avoid 4am issues.");
+        conf.use_core_mps = false;
+    }
+
+    log::debug!("Configuration: {:#?}", conf);
+
+    // Register all custom pings before we initialize.
+    fog::pings::register_pings();
+
+    glean::initialize(conf, client_info);
+
+    fog::metrics::fog::initialization.stop();
+
+    Ok(())
+}
+
+fn build_configuration(
+    data_path_override: &nsACString,
+    app_id_override: &nsACString,
+) -> Result<(Configuration, ClientInfoMetrics), nsresult> {
     let data_path_str = if data_path_override.is_empty() {
-        match get_data_path() {
-            Ok(dp) => dp,
-            Err(e) => return e,
-        }
+        get_data_path()?
     } else {
         data_path_override.to_utf8().to_string()
     };
     let data_path = PathBuf::from(&data_path_str);
 
-    let (app_build, app_display_version, channel) = match get_app_info() {
-        Ok(ai) => ai,
-        Err(e) => return e,
-    };
+    let (app_build, app_display_version, channel) = get_app_info()?;
 
     let client_info = ClientInfoMetrics {
         app_build,
         app_display_version,
+        channel: Some(channel),
     };
     log::debug!("Client Info: {:#?}", client_info);
-
-    if let Err(e) = UploadPrefObserver::begin_observing() {
-        log::error!(
-            "Could not observe data upload pref. Abandoning FOG init due to {:?}",
-            e
-        );
-        return e;
-    }
-
-    if let Err(e) = UserActivityObserver::begin_observing() {
-        log::error!(
-            "Could not observe user activity. Abandoning FOG init due to {:?}",
-            e
-        );
-        return e;
-    }
 
     const SERVER: &str = "https://incoming.telemetry.mozilla.org";
     let localhost_port = static_prefs::pref!("telemetry.fog.test.localhost_port");
@@ -80,6 +151,7 @@ pub unsafe extern "C" fn fog_init(
         String::from(SERVER)
     };
 
+    // In the event that this isn't "firefox.desktop", we don't use core's MPS.
     let mut use_core_mps = false;
     let application_id = if app_id_override.is_empty() {
         use_core_mps = true;
@@ -88,50 +160,75 @@ pub unsafe extern "C" fn fog_init(
         app_id_override.to_utf8().to_string()
     };
 
-    let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
     let configuration = Configuration {
-        upload_enabled,
+        upload_enabled: false,
         data_path,
         application_id,
         max_events: None,
         delay_ping_lifetime_io: true,
-        channel: Some(channel),
         server_endpoint: Some(server),
-        uploader: Some(Box::new(ViaductUploader) as Box<dyn glean::net::PingUploader>),
+        uploader: None,
         use_core_mps,
     };
 
-    log::debug!("Configuration: {:#?}", configuration);
+    Ok((configuration, client_info))
+}
 
-    // Ensure Viaduct is initialized for networking unconditionally so we don't
-    // need to check again if upload is later enabled.
-    if let Some(viaduct) =
-        xpcom::create_instance::<mozIViaduct>(cstr!("@mozilla.org/toolkit/viaduct;1"))
-    {
-        let result = viaduct.EnsureInitialized();
-        if result.failed() {
-            log::error!("Failed to ensure viaduct was initialized due to {}. Ping upload may not be available.", result.error_name());
+#[cfg(not(target_os = "android"))]
+fn setup_observers() -> Result<(), nsresult> {
+    if let Err(e) = UploadPrefObserver::begin_observing() {
+        log::error!(
+            "Could not observe data upload pref. Abandoning FOG init due to {:?}",
+            e
+        );
+        return Err(e);
+    }
+
+    if let Err(e) = UserActivityObserver::begin_observing() {
+        log::error!(
+            "Could not observe user activity. Abandoning FOG init due to {:?}",
+            e
+        );
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn setup_observers() -> Result<(), nsresult> {
+    // No observers are set up on Android.
+    Ok(())
+}
+
+/// Ensure Viaduct is initialized for networking unconditionally so we don't
+/// need to check again if upload is later enabled.
+///
+/// Failing to initialize viaduct will log an error.
+#[cfg(not(target_os = "android"))]
+fn setup_viaduct() {
+    // SAFETY: Everything here is self-contained.
+    //
+    // * We try to create an instance of an xpcom interface
+    // * We bail out if that fails.
+    // * We call a method on it without additional inputs.
+    unsafe {
+        if let Some(viaduct) =
+            xpcom::create_instance::<mozIViaduct>(cstr!("@mozilla.org/toolkit/viaduct;1"))
+        {
+            let result = viaduct.EnsureInitialized();
+            if result.failed() {
+                log::error!("Failed to ensure viaduct was initialized due to {}. Ping upload may not be available.", result.error_name());
+            }
+        } else {
+            log::error!("Failed to create Viaduct via XPCOM. Ping upload may not be available.");
         }
-    } else {
-        log::error!("Failed to create Viaduct via XPCOM. Ping upload may not be available.");
     }
+}
 
-    // If we're operating in automation without any specific source tags to set,
-    // set the tag "automation" so any pings that escape don't clutter the tables.
-    // See https://mozilla.github.io/glean/book/user/debugging/index.html#enabling-debugging-features-through-environment-variables
-    // IMPORTANT: Call this before glean::initialize until bug 1706729 is sorted.
-    if env::var("MOZ_AUTOMATION").is_ok() && env::var("GLEAN_SOURCE_TAGS").is_err() {
-        glean::set_source_tags(vec!["automation".to_string()]);
-    }
-
-    glean::initialize(configuration, client_info);
-
-    // Register all custom pings before we initialize.
-    fog::pings::register_pings();
-
-    fog::metrics::fog::initialization.stop();
-
-    NS_OK
+#[cfg(target_os = "android")]
+fn setup_viaduct() {
+    // No viaduct is setup on Android.
 }
 
 /// Construct and return the data_path from the profile dir, or return an error.
@@ -218,4 +315,48 @@ fn get_app_info() -> Result<(String, String, String), nsresult> {
         version.to_string(),
         channel.to_string(),
     ))
+}
+
+/// **TEST-ONLY METHOD**
+/// Resets FOG and the underlying Glean SDK, clearing stores.
+#[cfg(not(target_os = "android"))]
+#[no_mangle]
+pub extern "C" fn fog_test_reset(
+    data_path_override: &nsACString,
+    app_id_override: &nsACString,
+) -> nsresult {
+    fog_test_reset_internal(data_path_override, app_id_override).into()
+}
+
+// Split out into its own function so I could use `?`
+#[cfg(not(target_os = "android"))]
+fn fog_test_reset_internal(
+    data_path_override: &nsACString,
+    app_id_override: &nsACString,
+) -> Result<(), nsresult> {
+    let (mut conf, client_info) = build_configuration(data_path_override, app_id_override)?;
+
+    let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
+    let recording_enabled = static_prefs::pref!("telemetry.fog.test.localhost_port") < 0;
+    conf.upload_enabled = upload_enabled || recording_enabled;
+
+    // Don't accidentally send "main" pings during tests.
+    conf.use_core_mps = false;
+
+    // I'd prefer to reuse the uploader, but it gets moved into Glean so we build anew.
+    conf.uploader = Some(Box::new(ViaductUploader) as Box<dyn glean::net::PingUploader>);
+
+    glean::test_reset_glean(conf, client_info, true);
+    Ok(())
+}
+
+/// **TEST-ONLY METHOD**
+/// Does nothing on Android. Returns NS_ERROR_NOT_IMPLEMENTED.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn fog_test_reset(
+    _data_path_override: &nsACString,
+    _app_id_override: &nsACString,
+) -> nsresult {
+    NS_ERROR_NOT_IMPLEMENTED
 }

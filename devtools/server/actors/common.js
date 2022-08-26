@@ -14,12 +14,11 @@
  * @param Number column
  *        A column within the given line.
  */
-function SourceLocation(actor, line, column, lastColumn) {
+function SourceLocation(actor, line, column) {
   this._connection = actor ? actor.conn : null;
   this._actorID = actor ? actor.actorID : undefined;
   this._line = line;
   this._column = column;
-  this._lastColumn = lastColumn !== undefined ? lastColumn : column + 1;
 }
 
 SourceLocation.prototype = {
@@ -39,15 +38,11 @@ SourceLocation.prototype = {
     return this._column;
   },
 
-  get lastColumn() {
-    return this._lastColumn;
-  },
-
   get sourceUrl() {
     return this.sourceActor.url;
   },
 
-  equals: function(other) {
+  equals(other) {
     return (
       this.sourceActor.url == other.sourceActor.url &&
       this.line === other.line &&
@@ -57,12 +52,11 @@ SourceLocation.prototype = {
     );
   },
 
-  toJSON: function() {
+  toJSON() {
     return {
       source: this.sourceActor.form(),
       line: this.line,
       column: this.column,
-      lastColumn: this.lastColumn,
     };
   },
 };

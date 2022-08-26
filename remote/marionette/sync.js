@@ -12,28 +12,26 @@ const EXPORTED_SYMBOLS = [
   "PollPromise",
   "Sleep",
   "TimedPromise",
-  "waitForEvent",
-  "waitForLoadEvent",
   "waitForMessage",
   "waitForObserverTopic",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
 
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   error: "chrome://remote/content/shared/webdriver/Errors.jsm",
-  EventDispatcher:
-    "chrome://remote/content/marionette/actors/MarionetteEventsParent.jsm",
   Log: "chrome://remote/content/shared/Log.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "logger", () =>
-  Log.get(Log.TYPES.MARIONETTE)
+XPCOMUtils.defineLazyGetter(lazy, "logger", () =>
+  lazy.Log.get(lazy.Log.TYPES.MARIONETTE)
 );
 
 const { TYPE_ONE_SHOT, TYPE_REPEATING_SLACK } = Ci.nsITimer;
@@ -136,7 +134,7 @@ function PollPromise(func, { timeout = null, interval = 10 } = {}) {
     let evalFn = () => {
       new Promise(func)
         .then(resolve, rejected => {
-          if (error.isError(rejected)) {
+          if (lazy.error.isError(rejected)) {
             throw rejected;
           }
 
@@ -205,7 +203,7 @@ function TimedPromise(fn, options = {}) {
   const {
     errorMessage = "TimedPromise timed out",
     timeout = PROMISE_TIMEOUT,
-    throws = error.TimeoutError,
+    throws = lazy.error.TimeoutError,
   } = options;
 
   const timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
@@ -230,12 +228,12 @@ function TimedPromise(fn, options = {}) {
         let err = new throws(`${errorMessage} after ${timeout} ms`);
         reject(err);
       } else {
-        logger.warn(`${errorMessage} after ${timeout} ms`, trace);
+        lazy.logger.warn(`${errorMessage} after ${timeout} ms`, trace);
         resolve();
       }
     };
 
-    trace = error.stack();
+    trace = lazy.error.stack();
     timer.initWithCallback({ notify: bail }, timeout, TYPE_ONE_SHOT);
 
     try {
@@ -319,7 +317,7 @@ function Sleep(timeout) {
 function MessageManagerDestroyedPromise(messageManager) {
   return new Promise(resolve => {
     function observe(subject, topic) {
-      logger.trace(`Received observer notification ${topic}`);
+      lazy.logger.trace(`Received observer notification ${topic}`);
 
       if (subject == messageManager) {
         Services.obs.removeObserver(this, "message-manager-disconnect");
@@ -418,147 +416,6 @@ class DebounceCallback {
     );
   }
 }
-this.DebounceCallback = DebounceCallback;
-
-/**
- * Wait for an event to be fired on a specified element.
- *
- * This method has been duplicated from BrowserTestUtils.jsm.
- *
- * Because this function is intended for testing, any error in checkFn
- * will cause the returned promise to be rejected instead of waiting for
- * the next event, since this is probably a bug in the test.
- *
- * Usage::
- *
- *    let promiseEvent = waitForEvent(element, "eventName");
- *    // Do some processing here that will cause the event to be fired
- *    // ...
- *    // Now wait until the Promise is fulfilled
- *    let receivedEvent = await promiseEvent;
- *
- * The promise resolution/rejection handler for the returned promise is
- * guaranteed not to be called until the next event tick after the event
- * listener gets called, so that all other event listeners for the element
- * are executed before the handler is executed::
- *
- *    let promiseEvent = waitForEvent(element, "eventName");
- *    // Same event tick here.
- *    await promiseEvent;
- *    // Next event tick here.
- *
- * If some code, such like adding yet another event listener, needs to be
- * executed in the same event tick, use raw addEventListener instead and
- * place the code inside the event listener::
- *
- *    element.addEventListener("load", () => {
- *      // Add yet another event listener in the same event tick as the load
- *      // event listener.
- *      p = waitForEvent(element, "ready");
- *    }, { once: true });
- *
- * @param {Element} subject
- *     The element that should receive the event.
- * @param {string} eventName
- *     Name of the event to listen to.
- * @param {Object=} options
- *     Extra options.
- * @param {boolean=} options.capture
- *     True to use a capturing listener.
- * @param {function(Event)=} options.checkFn
- *     Called with the ``Event`` object as argument, should return ``true``
- *     if the event is the expected one, or ``false`` if it should be
- *     ignored and listening should continue. If not specified, the first
- *     event with the specified name resolves the returned promise.
- * @param {boolean=} options.wantsUntrusted
- *     True to receive synthetic events dispatched by web content.
- *
- * @return {Promise.<Event>}
- *     Promise which resolves to the received ``Event`` object, or rejects
- *     in case of a failure.
- */
-function waitForEvent(
-  subject,
-  eventName,
-  { capture = false, checkFn = null, wantsUntrusted = false } = {}
-) {
-  if (subject == null || !("addEventListener" in subject)) {
-    throw new TypeError();
-  }
-  if (typeof eventName != "string") {
-    throw new TypeError();
-  }
-  if (capture != null && typeof capture != "boolean") {
-    throw new TypeError();
-  }
-  if (checkFn != null && typeof checkFn != "function") {
-    throw new TypeError();
-  }
-  if (wantsUntrusted != null && typeof wantsUntrusted != "boolean") {
-    throw new TypeError();
-  }
-
-  return new Promise((resolve, reject) => {
-    subject.addEventListener(
-      eventName,
-      function listener(event) {
-        logger.trace(`Received DOM event ${event.type} for ${event.target}`);
-        try {
-          if (checkFn && !checkFn(event)) {
-            return;
-          }
-          subject.removeEventListener(eventName, listener, capture);
-          executeSoon(() => resolve(event));
-        } catch (ex) {
-          try {
-            subject.removeEventListener(eventName, listener, capture);
-          } catch (ex2) {
-            // Maybe the provided object does not support removeEventListener.
-          }
-          executeSoon(() => reject(ex));
-        }
-      },
-      capture,
-      wantsUntrusted
-    );
-  });
-}
-
-/**
- * Wait for a load event to be fired on a specific browsing context.
- * The supported events are:
- *   - beforeunload
- *   - DOMContentLoaded
- *   - hashchange
- *   - pagehide
- *   - pageshow
- *   - popstate
- *
- * @param {string} eventName
- *     The specific load event name to wait for.
- * @param {function(): BrowsingContext} browsingContextFn
- *     A function that returns the reference to the browsing context for which
- *     the load event should be fired.
- *
- * @return {Promise.<Object>}
- *     Promise which resolves when the load event has been fired
- */
-function waitForLoadEvent(eventName, browsingContextFn) {
-  let onPageLoad;
-  return new Promise(resolve => {
-    onPageLoad = (_, data) => {
-      logger.trace(`Received event ${data.type} for ${data.documentURI}`);
-      if (
-        data.browsingContext === browsingContextFn() &&
-        data.type === eventName
-      ) {
-        EventDispatcher.off("page-load", onPageLoad);
-        resolve(data);
-      }
-    };
-    EventDispatcher.on("page-load", onPageLoad);
-  });
-}
 
 /**
  * Wait for a message to be fired from a particular message manager.
@@ -598,7 +455,7 @@ function waitForMessage(
 
   return new Promise(resolve => {
     messageManager.addMessageListener(messageName, function onMessage(msg) {
-      logger.trace(`Received ${messageName} for ${msg.target}`);
+      lazy.logger.trace(`Received ${messageName} for ${msg.target}`);
       if (checkFn && !checkFn(msg)) {
         return;
       }
@@ -641,7 +498,7 @@ function waitForObserverTopic(topic, { checkFn = null } = {}) {
 
   return new Promise((resolve, reject) => {
     Services.obs.addObserver(function observer(subject, topic, data) {
-      logger.trace(`Received observer notification ${topic}`);
+      lazy.logger.trace(`Received observer notification ${topic}`);
       try {
         if (checkFn && !checkFn(subject, data)) {
           return;

@@ -6,6 +6,10 @@ extern crate geckoservo;
 
 extern crate app_services_logger;
 #[cfg(feature = "cubeb-remoting")]
+extern crate audioipc2_client;
+#[cfg(feature = "cubeb-remoting")]
+extern crate audioipc2_server;
+#[cfg(feature = "cubeb-remoting")]
 extern crate audioipc_client;
 #[cfg(feature = "cubeb-remoting")]
 extern crate audioipc_server;
@@ -27,6 +31,7 @@ extern crate fog_control;
 extern crate gecko_profiler;
 extern crate gkrust_utils;
 extern crate http_sfv;
+extern crate jog;
 extern crate jsrust_shared;
 extern crate kvstore;
 extern crate mapped_hyph;
@@ -68,6 +73,8 @@ extern crate fluent_langneg_ffi;
 extern crate fluent;
 extern crate fluent_ffi;
 
+extern crate regex_ffi;
+
 extern crate fluent_fallback;
 extern crate l10nregistry_ffi;
 extern crate localization_ffi;
@@ -79,6 +86,33 @@ extern crate gecko_logger;
 
 #[cfg(feature = "oxidized_breakpad")]
 extern crate rust_minidump_writer_linux;
+
+#[cfg(feature = "webmidi_midir_impl")]
+extern crate midir_impl;
+
+#[cfg(target_os = "windows")]
+extern crate detect_win32k_conflicts;
+
+extern crate origin_trials_ffi;
+
+extern crate dap_ffi;
+
+extern crate data_encoding_ffi;
+
+#[cfg(feature = "uniffi_fixtures")]
+mod uniffi_fixtures {
+    extern crate arithmetical;
+    extern crate uniffi_geometry;
+    extern crate uniffi_rondpoint;
+    extern crate uniffi_sprites;
+    extern crate uniffi_todolist;
+
+    arithmetical::uniffi_reexport_scaffolding!();
+    uniffi_geometry::uniffi_reexport_scaffolding!();
+    uniffi_rondpoint::uniffi_reexport_scaffolding!();
+    uniffi_sprites::uniffi_reexport_scaffolding!();
+    uniffi_todolist::uniffi_reexport_scaffolding!();
+}
 
 extern crate log;
 use log::info;

@@ -6,6 +6,7 @@ General Knowledge
 
 `VSCode <https://code.visualstudio.com/>`__ is a multi-platform open-source programming editor developed by Microsoft and volunteers.
 It has support for many programming languages using extensions.
+This is the recommended editor for Firefox development.
 
 For more general information on the VSCode project see `repo <https://github.com/Microsoft/vscode/>`__.
 
@@ -71,6 +72,9 @@ the terminal:
 .. code::
 
    ./mach ide vscode
+
+After that, subsequent `./mach build` invocations will automatically run
+the `Clangd` integration.
 
 If `VS Code` is already open with a previous configuration generated, please make sure to
 restart `VS Code` otherwise the new configuration will not be used, and the `compile_commands.json`

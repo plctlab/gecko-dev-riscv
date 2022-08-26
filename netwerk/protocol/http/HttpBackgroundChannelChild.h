@@ -54,13 +54,14 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   IPCResult RecvOnStartRequest(const nsHttpResponseHead& aResponseHead,
                                const bool& aUseResponseHead,
                                const nsHttpHeaderArray& aRequestHeaders,
-                               const HttpChannelOnStartRequestArgs& aArgs);
+                               const HttpChannelOnStartRequestArgs& aArgs,
+                               const HttpChannelAltDataStream& aAltData);
 
   IPCResult RecvOnTransportAndData(const nsresult& aChannelStatus,
                                    const nsresult& aTransportStatus,
                                    const uint64_t& aOffset,
                                    const uint32_t& aCount,
-                                   const nsDependentCSubstring& aData,
+                                   const nsACString& aData,
                                    const bool& aDataFromSocketProcess);
 
   IPCResult RecvOnStopRequest(
@@ -82,9 +83,6 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
 
   IPCResult RecvNotifyClassificationFlags(const uint32_t& aClassificationFlags,
                                           const bool& aIsThirdParty);
-
-  IPCResult RecvNotifyFlashPluginStateChanged(
-      const nsIHttpChannel::FlashPluginState& aState);
 
   IPCResult RecvSetClassifierMatchedInfo(const ClassifierInfo& info);
 

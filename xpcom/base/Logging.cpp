@@ -136,7 +136,7 @@ static const char* ExpandLogFileName(const char* aFilename,
 
   const char* pidTokenPtr = strstr(aFilename, kPIDToken);
   if (pidTokenPtr &&
-      SprintfLiteral(buffer, "%.*s%s%d%s%s",
+      SprintfLiteral(buffer, "%.*s%s%" PRIPID "%s%s",
                      static_cast<int>(pidTokenPtr - aFilename), aFilename,
                      XRE_IsParentProcess() ? "-main." : "-child.",
                      base::GetCurrentProcId(), pidTokenPtr + strlen(kPIDToken),
@@ -275,7 +275,7 @@ bool LimitFileToLessThanSize(const char* aFilename, uint32_t aSize,
 #if defined(OS_WIN)
   if (!::ReplaceFileA(aFilename, tempFilename, nullptr, 0, 0, 0)) {
     NS_WARNING(
-        nsPrintfCString("ReplaceFileA failed: %d\n", GetLastError()).get());
+        nsPrintfCString("ReplaceFileA failed: %lu\n", GetLastError()).get());
     return false;
   }
 #elif defined(OS_POSIX)
@@ -520,6 +520,10 @@ class LogModuleManager {
 
   void SetIsSync(bool aIsSync) { mIsSync = aIsSync; }
 
+  void SetRecordMarkers(bool aRecordMarkers) {
+    mAddProfilerMarker = aRecordMarkers;
+  }
+
   void SetAddTimestamp(bool aAddTimestamp) { mAddTimestamp = aAddTimestamp; }
 
   detail::LogFile* OpenFile(bool aShouldAppend, uint32_t aFileNum,
@@ -599,7 +603,7 @@ class LogModuleManager {
       charsWritten = strlen(buffToWrite);
     }
 
-    if (mAddProfilerMarker && profiler_can_accept_markers()) {
+    if (mAddProfilerMarker && profiler_thread_is_being_profiled_for_markers()) {
       struct LogMarker {
         static constexpr Span<const char> MarkerTypeName() {
           return MakeStringSpan("Log");
@@ -810,6 +814,10 @@ void LogModule::SetAddTimestamp(bool aAddTimestamp) {
 
 void LogModule::SetIsSync(bool aIsSync) {
   sLogModuleManager->SetIsSync(aIsSync);
+}
+
+void LogModule::SetRecordMarkers(bool aRecordMarkers) {
+  sLogModuleManager->SetRecordMarkers(aRecordMarkers);
 }
 
 // This function is defined in gecko_logger/src/lib.rs

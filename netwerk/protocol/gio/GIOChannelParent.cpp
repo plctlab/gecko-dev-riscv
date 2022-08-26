@@ -18,6 +18,8 @@
 #include "nsISecureBrowserUI.h"
 #include "nsQueryObject.h"
 #include "mozilla/Logging.h"
+#include "mozilla/net/ChannelEventQueue.h"
+#include "mozilla/ipc/URIUtils.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::ipc;
@@ -249,13 +251,6 @@ GIOChannelParent::SetParentListener(ParentChannelListener* aListener) {
 NS_IMETHODIMP
 GIOChannelParent::NotifyClassificationFlags(uint32_t aClassificationFlags,
                                             bool aIsThirdParty) {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-GIOChannelParent::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
   // Nothing to do.
   return NS_OK;
 }

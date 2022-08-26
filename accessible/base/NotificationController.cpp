@@ -70,6 +70,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(NotificationController)
       cb.NoteXPCOMChild(list->ElementAt(i));
     }
   }
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFocusEvent)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mEvents)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRelocations)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
@@ -102,6 +103,7 @@ void NotificationController::Shutdown() {
   mTextHash.Clear();
   mContentInsertions.Clear();
   mNotifications.Clear();
+  mFocusEvent = nullptr;
   mEvents.Clear();
   mRelocations.Clear();
   mEventTree.Clear();
@@ -113,6 +115,31 @@ EventTree* NotificationController::QueueMutation(LocalAccessible* aContainer) {
     ScheduleProcessing();
   }
   return tree;
+}
+
+void NotificationController::CoalesceHideEvent(AccHideEvent* aHideEvent) {
+  LocalAccessible* parent = aHideEvent->LocalParent();
+  while (parent) {
+    if (parent->IsDoc()) {
+      break;
+    }
+
+    if (parent->HideEventTarget()) {
+      DropMutationEvent(aHideEvent);
+      break;
+    }
+
+    if (parent->ShowEventTarget()) {
+      AccShowEvent* showEvent =
+          downcast_accEvent(mMutationMap.GetEvent(parent, EventMap::ShowEvent));
+      if (showEvent->EventGeneration() < aHideEvent->EventGeneration()) {
+        DropMutationEvent(aHideEvent);
+        break;
+      }
+    }
+
+    parent = parent->LocalParent();
+  }
 }
 
 bool NotificationController::QueueMutationEvent(AccTreeMutationEvent* aEvent) {
@@ -156,10 +183,9 @@ bool NotificationController::QueueMutationEvent(AccTreeMutationEvent* aEvent) {
   mMutationMap.PutEvent(aEvent);
 
   // Because we could be hiding the target of a show event we need to get rid
-  // of any such events.  It may be possible to do less than coallesce all
-  // events, however that is easiest.
+  // of any such events.
   if (aEvent->GetEventType() == nsIAccessibleEvent::EVENT_HIDE) {
-    CoalesceMutationEvents();
+    CoalesceHideEvent(downcast_accEvent(aEvent));
 
     // mLastMutationEvent will point to something other than aEvent if and only
     // if aEvent was just coalesced away.  In that case a parent accessible
@@ -279,12 +305,19 @@ bool NotificationController::QueueMutationEvent(AccTreeMutationEvent* aEvent) {
 }
 
 void NotificationController::DropMutationEvent(AccTreeMutationEvent* aEvent) {
-  // unset the event bits since the event isn't being fired any more.
   if (aEvent->GetEventType() == nsIAccessibleEvent::EVENT_REORDER) {
-    aEvent->GetAccessible()->SetReorderEventTarget(false);
+    // We don't fully drop reorder events, we just change them to inner reorder
+    // events.
+    AccReorderEvent* reorderEvent = downcast_accEvent(aEvent);
+
+    MOZ_ASSERT(reorderEvent);
+    reorderEvent->SetInner();
+    return;
   } else if (aEvent->GetEventType() == nsIAccessibleEvent::EVENT_SHOW) {
+    // unset the event bits since the event isn't being fired any more.
     aEvent->GetAccessible()->SetShowEventTarget(false);
   } else {
+    // unset the event bits since the event isn't being fired any more.
     aEvent->GetAccessible()->SetHideEventTarget(false);
 
     AccHideEvent* hideEvent = downcast_accEvent(aEvent);
@@ -389,33 +422,12 @@ void NotificationController::CoalesceMutationEvents() {
 
         parent = parent->LocalParent();
       }
-    } else {
+    } else if (eventType == nsIAccessibleEvent::EVENT_HIDE) {
       MOZ_ASSERT(eventType == nsIAccessibleEvent::EVENT_HIDE,
                  "mutation event list has an invalid event");
 
       AccHideEvent* hideEvent = downcast_accEvent(event);
-      LocalAccessible* parent = hideEvent->LocalParent();
-      while (parent) {
-        if (parent->IsDoc()) {
-          break;
-        }
-
-        if (parent->HideEventTarget()) {
-          DropMutationEvent(event);
-          break;
-        }
-
-        if (parent->ShowEventTarget()) {
-          AccShowEvent* showEvent = downcast_accEvent(
-              mMutationMap.GetEvent(parent, EventMap::ShowEvent));
-          if (showEvent->EventGeneration() < hideEvent->EventGeneration()) {
-            DropMutationEvent(hideEvent);
-            break;
-          }
-        }
-
-        parent = parent->LocalParent();
-      }
+      CoalesceHideEvent(hideEvent);
     }
 
     event = nextEvent;
@@ -577,21 +589,32 @@ void NotificationController::ProcessMutationEvents() {
   }
 
   // Now we can fire the reorder events after all the show and hide events.
-  for (AccTreeMutationEvent* event = mFirstMutationEvent; event;
-       event = event->NextEvent()) {
-    if (event->GetEventType() != nsIAccessibleEvent::EVENT_REORDER) {
-      continue;
-    }
+  for (const uint32_t reorderType : {nsIAccessibleEvent::EVENT_INNER_REORDER,
+                                     nsIAccessibleEvent::EVENT_REORDER}) {
+    for (AccTreeMutationEvent* event = mFirstMutationEvent; event;
+         event = event->NextEvent()) {
+      if (event->GetEventType() != reorderType) {
+        continue;
+      }
 
-    nsEventShell::FireEvent(event);
-    if (!mDocument) {
-      return;
-    }
+      if (event->GetAccessible()->IsDefunct()) {
+        // An inner reorder target may have been hidden itself and no
+        // longer bound to the document.
+        MOZ_ASSERT(reorderType == nsIAccessibleEvent::EVENT_INNER_REORDER,
+                   "An 'outer' reorder target should not be defunct");
+        continue;
+      }
 
-    LocalAccessible* target = event->GetAccessible();
-    target->Document()->MaybeNotifyOfValueChange(target);
-    if (!mDocument) {
-      return;
+      nsEventShell::FireEvent(event);
+      if (!mDocument) {
+        return;
+      }
+
+      LocalAccessible* target = event->GetAccessible();
+      target->Document()->MaybeNotifyOfValueChange(target);
+      if (!mDocument) {
+        return;
+      }
     }
   }
 }
@@ -634,9 +657,12 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
 
   // Initial accessible tree construction.
   if (!mDocument->HasLoadState(DocAccessible::eTreeConstructed)) {
-    // If document is not bound to parent at this point then the document is not
-    // ready yet (process notifications later).
-    if (!mDocument->IsBoundToParent()) {
+    // (1) If document is not bound to parent at this point, or
+    // (2) the PresShell is not initialized (and it isn't about:blank),
+    // then the document is not ready yet (process notifications later).
+    if (!mDocument->IsBoundToParent() ||
+        (!mPresShell->DidInitialize() &&
+         !mDocument->DocumentNode()->IsInitialDocument())) {
       mObservingState = eRefreshObserving;
       return;
     }
@@ -655,6 +681,8 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
                  "Pending content insertions while initial accessible tree "
                  "isn't created!");
   }
+
+  mDocument->ProcessPendingUpdates();
 
   // Process rendered text change notifications.
   for (nsIContent* textNode : mTextHash) {
@@ -852,6 +880,16 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
   // events causes script to run.
   mObservingState = eRefreshProcessing;
 
+  mDocument->SendAccessiblesWillMove();
+
+  // Send any queued cache updates before we fire any mutation events so the
+  // cache is up to date when mutation events are fired. We do this after
+  // insertions (but not their events) so that cache updates dependent on the
+  // tree work correctly; e.g. line start calculation.
+  if (IPCAccessibilityActive() && mDocument) {
+    mDocument->ProcessQueuedCacheUpdates();
+  }
+
   CoalesceMutationEvents();
   ProcessMutationEvents();
   mEventGeneration = 0;
@@ -884,6 +922,10 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
     mutEvent->SetNextEvent(nullptr);
     mMutationMap.RemoveEvent(mutEvent);
     mutEvent = nextEvent;
+  }
+
+  if (mDocument) {
+    mDocument->ClearMovedAccessibles();
   }
 
   ProcessEventQueue();
@@ -921,7 +963,9 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
           do_GetInterface(mDocument->DocumentNode()->GetDocShell());
       if (browserChild) {
         static_cast<BrowserChild*>(browserChild.get())
-            ->SendPDocAccessibleConstructor(ipcDoc, parentIPCDoc, id, 0, 0);
+            ->SendPDocAccessibleConstructor(
+                ipcDoc, parentIPCDoc, id,
+                childDoc->DocumentNode()->GetBrowsingContext(), 0, 0);
         ipcDoc->SendPDocAccessiblePlatformExtConstructor();
       }
 #endif
@@ -934,7 +978,7 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
   // Stop further processing if there are no new notifications of any kind or
   // events and document load is processed.
   if (mContentInsertions.Count() == 0 && mNotifications.IsEmpty() &&
-      mEvents.IsEmpty() && mTextHash.Count() == 0 &&
+      !mFocusEvent && mEvents.IsEmpty() && mTextHash.Count() == 0 &&
       mHangingChildDocuments.IsEmpty() &&
       mDocument->HasLoadState(DocAccessible::eCompletelyLoaded) &&
       mPresShell->RemoveRefreshObserver(this, FlushType::Display)) {
@@ -978,6 +1022,7 @@ NotificationController::EventMap::GetEventType(AccTreeMutationEvent* aEvent) {
     case nsIAccessibleEvent::EVENT_HIDE:
       return HideEvent;
     case nsIAccessibleEvent::EVENT_REORDER:
+    case nsIAccessibleEvent::EVENT_INNER_REORDER:
       return ReorderEvent;
     default:
       MOZ_ASSERT_UNREACHABLE("event has invalid type");

@@ -73,19 +73,25 @@ function configureStore(webConsoleUI, options = {}) {
     ui: UiState({
       networkMessageActiveTabId: "headers",
       persistLogs: getBoolPref(PREFS.UI.PERSIST),
+      // Only look into the pref for Browser Console/Toolbox without fission support.
+      // When there's fission support, the visibility of the messages is driven by
+      // the ChromeDebugToolbar instead
+      // This should be ultimately removed once we have fission support everywhere.
       showContentMessages:
-        webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole
+        (webConsoleUI.isBrowserConsole ||
+          webConsoleUI.isBrowserToolboxConsole) &&
+        !webConsoleUI.fissionSupport
           ? getBoolPref(PREFS.UI.CONTENT_MESSAGES)
           : true,
       editor: getBoolPref(PREFS.UI.EDITOR),
       editorWidth: getIntPref(PREFS.UI.EDITOR_WIDTH),
       showEditorOnboarding: getBoolPref(PREFS.UI.EDITOR_ONBOARDING),
       timestampsVisible: getBoolPref(PREFS.UI.MESSAGE_TIMESTAMP),
-      showEvaluationContextSelector: getBoolPref(
-        webConsoleUI.isBrowserToolboxConsole
-          ? PREFS.UI.CONTEXT_SELECTOR_BROWSER_TOOLBOX
-          : PREFS.UI.CONTEXT_SELECTOR_CONTENT_TOOLBOX
-      ),
+      showEvaluationContextSelector: getBoolPref(PREFS.UI.CONTEXT_SELECTOR),
+      enableNetworkMonitoring:
+        webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole
+          ? getBoolPref(PREFS.UI.ENABLE_NETWORK_MONITORING)
+          : true,
     }),
   };
 
@@ -98,7 +104,7 @@ function configureStore(webConsoleUI, options = {}) {
       prefsService,
       ...options.thunkArgs,
     }),
-    historyPersistence,
+    historyPersistence.bind(null, webConsoleUI),
     eventTelemetry.bind(null, options.telemetry, sessionId)
   );
 
@@ -108,9 +114,11 @@ function configureStore(webConsoleUI, options = {}) {
     compose(
       middleware,
       enableActorReleaser(webConsoleUI),
-      enableBatching(),
       enableMessagesCacheClearing(webConsoleUI),
-      ensureCSSErrorReportingEnabled(webConsoleUI)
+      ensureCSSErrorReportingEnabled(webConsoleUI),
+      // ⚠️ Keep this one last so it will be executed before all the other ones. This is
+      // needed so batched actions can be "unbatched" and handled in the other enhancers.
+      enableBatching()
     )
   );
 }

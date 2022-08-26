@@ -3,10 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const {
@@ -14,6 +12,7 @@ const {
   ERRNO_DEVICE_SESSION_CONFLICT,
   ERRNO_UNKNOWN_DEVICE,
   ON_NEW_DEVICE_ID,
+  ON_DEVICELIST_UPDATED,
   ON_DEVICE_CONNECTED_NOTIFICATION,
   ON_DEVICE_DISCONNECTED_NOTIFICATION,
   ONVERIFIED_NOTIFICATION,
@@ -24,15 +23,17 @@ const { DEVICE_TYPE_DESKTOP } = ChromeUtils.import(
   "resource://services-sync/constants.js"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CommonUtils",
   "resource://services-common/utils.js"
 );
 
 const PREF_LOCAL_DEVICE_NAME = PREF_ACCOUNT_ROOT + "device.name";
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "pref_localDeviceName",
   PREF_LOCAL_DEVICE_NAME,
   ""
@@ -160,7 +161,7 @@ class FxAccountsDevice {
       Services.prefs.setStringPref(PREF_LOCAL_DEVICE_NAME, deprecated_value);
       Services.prefs.clearUserPref(PREF_DEPRECATED_DEVICE_NAME);
     }
-    let name = pref_localDeviceName;
+    let name = lazy.pref_localDeviceName;
     if (!name) {
       name = this.getDefaultLocalName();
       Services.prefs.setStringPref(PREF_LOCAL_DEVICE_NAME, name);
@@ -243,24 +244,8 @@ class FxAccountsDevice {
             log.info(
               `Got new device list: ${devices.map(d => d.id).join(", ")}`
             );
-            // Check if our push registration previously succeeded and is still
-            // good (although background device registration means it's possible
-            // we'll be fetching the device list before we've actually
-            // registered ourself!)
-            // (For a missing subscription we check for an explicit 'null' -
-            // both to help tests and as a safety valve - missing might mean
-            // "no push available" for self-hosters or similar?)
-            const ourDevice = devices.find(device => device.isCurrentDevice);
-            if (
-              ourDevice &&
-              (ourDevice.pushCallback === null || ourDevice.pushEndpointExpired)
-            ) {
-              log.warn(`Our push endpoint needs resubscription`);
-              await this._fxai.fxaPushService.unsubscribe();
-              await this._registerOrUpdateDevice(currentState, accountData);
-              // and there's a reasonable chance there are commands waiting.
-              await this._fxai.commands.pollDeviceCommands();
-            }
+
+            await this._refreshRemoteDevice(currentState, accountData, devices);
             return devices;
           }
         );
@@ -271,12 +256,40 @@ class FxAccountsDevice {
           lastFetch: this._fxai.now(),
           devices,
         };
+        Services.obs.notifyObservers(null, ON_DEVICELIST_UPDATED);
         return true;
       } finally {
         this._fetchAndCacheDeviceListPromise = null;
       }
     })();
     return this._fetchAndCacheDeviceListPromise;
+  }
+
+  async _refreshRemoteDevice(currentState, accountData, remoteDevices) {
+    // Check if our push registration previously succeeded and is still
+    // good (although background device registration means it's possible
+    // we'll be fetching the device list before we've actually
+    // registered ourself!)
+    // (For a missing subscription we check for an explicit 'null' -
+    // both to help tests and as a safety valve - missing might mean
+    // "no push available" for self-hosters or similar?)
+    const ourDevice = remoteDevices.find(device => device.isCurrentDevice);
+    if (
+      ourDevice &&
+      (ourDevice.pushCallback === null || ourDevice.pushEndpointExpired)
+    ) {
+      log.warn(`Our push endpoint needs resubscription`);
+      await this._fxai.fxaPushService.unsubscribe();
+      await this._registerOrUpdateDevice(currentState, accountData);
+      // and there's a reasonable chance there are commands waiting.
+      await this._fxai.commands.pollDeviceCommands();
+    } else if (
+      ourDevice &&
+      (await this._checkRemoteCommandsUpdateNeeded(ourDevice.availableCommands))
+    ) {
+      log.warn(`Our commands need to be updated on the server`);
+      await this._registerOrUpdateDevice(currentState, accountData);
+    }
   }
 
   async updateDeviceRegistration() {
@@ -348,11 +361,40 @@ class FxAccountsDevice {
       !device.registrationVersion ||
       device.registrationVersion < this.DEVICE_REGISTRATION_VERSION ||
       !device.registeredCommandsKeys ||
-      !CommonUtils.arrayEqual(
+      !lazy.CommonUtils.arrayEqual(
         device.registeredCommandsKeys,
         availableCommandsKeys
       )
     );
+  }
+
+  async _checkRemoteCommandsUpdateNeeded(remoteAvailableCommands) {
+    if (!remoteAvailableCommands) {
+      return true;
+    }
+    const remoteAvailableCommandsKeys = Object.keys(
+      remoteAvailableCommands
+    ).sort();
+    const localAvailableCommands = await this._fxai.commands.availableCommands();
+    const localAvailableCommandsKeys = Object.keys(
+      localAvailableCommands
+    ).sort();
+
+    if (
+      !lazy.CommonUtils.arrayEqual(
+        localAvailableCommandsKeys,
+        remoteAvailableCommandsKeys
+      )
+    ) {
+      return true;
+    }
+
+    for (const key of localAvailableCommandsKeys) {
+      if (remoteAvailableCommands[key] !== localAvailableCommands[key]) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async _updateDeviceRegistrationIfNecessary(currentState) {
@@ -487,6 +529,7 @@ class FxAccountsDevice {
     try {
       await currentState.updateUserAccountData({
         device: null,
+        encryptedSendTabKeys: null,
       });
     } catch (error) {
       await this._logErrorAndResetDeviceRegistrationVersion(
@@ -522,6 +565,7 @@ class FxAccountsDevice {
             id: deviceId,
             registrationVersion: null,
           },
+          encryptedSendTabKeys: null,
         });
         return deviceId;
       }
@@ -553,6 +597,7 @@ class FxAccountsDevice {
     try {
       await currentState.updateUserAccountData({
         device: null,
+        encryptedSendTabKeys: null,
       });
     } catch (secondError) {
       log.error(

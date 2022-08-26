@@ -5,13 +5,13 @@
 //! An invalidation processor for style changes due to document state changes.
 
 use crate::dom::TElement;
-use crate::element_state::DocumentState;
 use crate::invalidation::element::invalidation_map::Dependency;
 use crate::invalidation::element::invalidator::{DescendantInvalidationLists, InvalidationVector};
 use crate::invalidation::element::invalidator::{Invalidation, InvalidationProcessor};
 use crate::invalidation::element::state_and_attributes;
 use crate::stylist::CascadeData;
-use selectors::matching::{MatchingContext, MatchingMode, QuirksMode, VisitedHandlingMode};
+use dom::DocumentState;
+use selectors::matching::{MatchingContext, MatchingMode, QuirksMode, VisitedHandlingMode, NeedsSelectorFlags};
 
 /// A struct holding the members necessary to invalidate document state
 /// selectors.
@@ -47,6 +47,7 @@ impl<'a, E: TElement, I> DocumentStateInvalidationProcessor<'a, E, I> {
             None,
             VisitedHandlingMode::AllLinksVisitedAndUnvisited,
             quirks_mode,
+            NeedsSelectorFlags::No,
         );
 
         matching_context.extra_data = InvalidationMatchingData {

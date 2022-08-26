@@ -5,8 +5,8 @@ const DID_SEE_ABOUT_WELCOME_PREF = "trailhead.firstrun.didSeeAboutWelcome";
 const TEST_PROTON_CONTENT = [
   {
     id: "AW_STEP1",
-    order: 0,
     content: {
+      position: "corner",
       title: "Step 1",
       primary_button: {
         label: "Next",
@@ -24,6 +24,7 @@ const TEST_PROTON_CONTENT = [
           data: { entrypoint: "test" },
         },
       },
+      has_noodles: true,
       help_text: {
         text: "Here's some sample help text",
       },
@@ -31,7 +32,6 @@ const TEST_PROTON_CONTENT = [
   },
   {
     id: "AW_STEP2",
-    order: 1,
     content: {
       title: "Step 2",
       primary_button: {
@@ -43,11 +43,11 @@ const TEST_PROTON_CONTENT = [
       secondary_button: {
         label: "link",
       },
+      has_noodles: true,
     },
   },
   {
     id: "AW_STEP3",
-    order: 2,
     content: {
       title: "Step 3",
       tiles: {
@@ -80,11 +80,12 @@ const TEST_PROTON_CONTENT = [
           data: { source: "chrome" },
         },
       },
+      has_noodles: true,
     },
   },
   {
     id: "AW_STEP4",
-    order: 3,
+    auto_advance: "primary_button",
     content: {
       title: "Step 4",
       primary_button: {
@@ -96,6 +97,7 @@ const TEST_PROTON_CONTENT = [
       secondary_button: {
         label: "link",
       },
+      has_noodles: true,
     },
   },
 ];
@@ -137,8 +139,8 @@ add_task(async function test_multistage_aboutwelcome_proton() {
     [
       "main.AW_STEP1",
       "div.onboardingContainer",
-      "div.proton[style*='.jpg']",
-      "div.section-left",
+      "div.proton[style*='chrome://activity-stream/content/data/content/assets']",
+      "div.section-secondary",
       "span.attrib-text",
       "div.secondary-cta.top",
     ],
@@ -146,11 +148,20 @@ add_task(async function test_multistage_aboutwelcome_proton() {
     [
       "main.AW_STEP2",
       "main.AW_STEP3",
-      "nav.steps",
       "main.dialog-initial",
       "main.dialog-last",
       "div.indicator.current",
     ]
+  );
+
+  // Ensure step indicator is not displayed
+  await test_element_styles(
+    browser,
+    "div.steps",
+    // Expected styles:
+    {
+      display: "none",
+    }
   );
 
   await onButtonClick(browser, "button.primary");
@@ -178,13 +189,18 @@ add_task(async function test_multistage_aboutwelcome_proton() {
     [
       "main.AW_STEP2.dialog-initial",
       "div.onboardingContainer",
-      "div.proton[style*='.jpg']",
+      "div.proton[style*='chrome://activity-stream/content/data/content/assets']",
       "div.section-main",
-      "nav.steps",
+      "div.steps",
       "div.indicator.current",
     ],
     // Unexpected selectors:
-    ["main.AW_STEP1", "main.AW_STEP3", "div.section-left", "main.dialog-last"]
+    [
+      "main.AW_STEP1",
+      "main.AW_STEP3",
+      "div.section-secondary",
+      "main.dialog-last",
+    ]
   );
 
   await onButtonClick(browser, "button.primary");
@@ -199,17 +215,17 @@ add_task(async function test_multistage_aboutwelcome_proton() {
     [
       "main.AW_STEP3",
       "div.onboardingContainer",
-      "div.proton[style*='.jpg']",
+      "div.proton[style*='chrome://activity-stream/content/data/content/assets']",
       "div.section-main",
       "div.tiles-theme-container",
-      "nav.steps",
+      "div.steps",
       "div.indicator.current",
     ],
     // Unexpected selectors:
     [
       "main.AW_STEP2",
       "main.AW_STEP1",
-      "div.section-left",
+      "div.section-secondary",
       "main.dialog-initial",
       "main.dialog-last",
     ]
@@ -231,6 +247,7 @@ add_task(async function test_multistage_aboutwelcome_proton() {
       "main.AW_STEP2",
       "main.AW_STEP1",
       "main.AW_STEP3",
+      "div.steps",
       "main.dialog-initial",
       "main.AW_STEP4.screen-0",
       "main.AW_STEP4.screen-2",
@@ -338,6 +355,11 @@ add_task(async function test_AWMultistage_Primary_Action() {
       impressionCall.args[1].message_id,
       "DEFAULT_ABOUTWELCOME_PROTON_SITES",
       "SITES MessageId sent in impression event telemetry"
+    );
+    Assert.equal(
+      impressionCall.args[1].event_context.page,
+      "about:welcome",
+      "event context page set to 'about:welcome'"
     );
   }
 
@@ -637,7 +659,7 @@ add_task(async function test_updatesPrefOnAWOpen() {
   Services.prefs.clearUserPref(DID_SEE_ABOUT_WELCOME_PREF);
 });
 
-add_task(async function setup() {
+add_setup(async function() {
   const sandbox = sinon.createSandbox();
   // This needs to happen before any about:welcome page opens
   sandbox.stub(FxAccounts.config, "promiseMetricsFlowURI").resolves("");
@@ -674,3 +696,28 @@ test_newtab(
   },
   "about:welcome"
 );
+
+add_task(async function test_send_aboutwelcome_as_page_in_event_telemetry() {
+  const sandbox = sinon.createSandbox();
+  let browser = await openAboutWelcome();
+  let aboutWelcomeActor = await getAboutWelcomeParent(browser);
+  // Stub AboutWelcomeParent Content Message Handler
+  let telemetryStub = sandbox.stub(aboutWelcomeActor, "onContentMessage");
+
+  await onButtonClick(browser, "button.primary");
+
+  Assert.equal(
+    telemetryStub.lastCall.args[1].event,
+    "CLICK_BUTTON",
+    "Event telemetry sent on primary button press"
+  );
+  Assert.equal(
+    telemetryStub.lastCall.args[1].event_context.page,
+    "about:welcome",
+    "Event context page set to 'about:welcome' in event telemetry"
+  );
+
+  registerCleanupFunction(() => {
+    sandbox.restore();
+  });
+});

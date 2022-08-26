@@ -9,20 +9,31 @@ var EXPORTED_SYMBOLS = [
   "SetClipboardSearchString",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Rect } = ChromeUtils.import("resource://gre/modules/Geometry.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FinderIterator",
   "resource://gre/modules/FinderIterator.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "PrivateBrowsingUtils",
+  "resource://gre/modules/PrivateBrowsingUtils.jsm"
+);
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "ClipboardHelper",
   "@mozilla.org/widget/clipboardhelper;1",
   "nsIClipboardHelper"
@@ -63,7 +74,7 @@ Finder.isFindbarVisible = function(docShell) {
 Finder.prototype = {
   get iterator() {
     if (!this._iterator) {
-      this._iterator = new FinderIterator();
+      this._iterator = new lazy.FinderIterator();
     }
     return this._iterator;
   },
@@ -143,7 +154,9 @@ Finder.prototype = {
   },
 
   set clipboardSearchString(aSearchString) {
-    SetClipboardSearchString(aSearchString);
+    if (!lazy.PrivateBrowsingUtils.isContentWindowPrivate(this._getWindow())) {
+      SetClipboardSearchString(aSearchString);
+    }
   },
 
   set caseSensitive(aSensitive) {
@@ -399,7 +412,7 @@ Finder.prototype = {
     if (
       focusedElement &&
       "frameLoader" in focusedElement &&
-      focusedElement.browsingContext instanceof BrowsingContext
+      BrowsingContext.isInstance(focusedElement.browsingContext)
     ) {
       return {
         focusedChildBrowserContextId: focusedElement.browsingContext.id,
@@ -517,6 +530,8 @@ Finder.prototype = {
 
   keyPress(aEvent) {
     let controller = this._getSelectionController(this._getWindow());
+    let accelKeyPressed =
+      AppConstants.platform == "macosx" ? aEvent.metaKey : aEvent.ctrlKey;
 
     switch (aEvent.keyCode) {
       case aEvent.DOM_VK_RETURN:
@@ -549,10 +564,18 @@ Finder.prototype = {
         controller.scrollPage(true);
         break;
       case aEvent.DOM_VK_UP:
-        controller.scrollLine(false);
+        if (accelKeyPressed) {
+          controller.completeScroll(false);
+        } else {
+          controller.scrollLine(false);
+        }
         break;
       case aEvent.DOM_VK_DOWN:
-        controller.scrollLine(true);
+        if (accelKeyPressed) {
+          controller.completeScroll(true);
+        } else {
+          controller.scrollLine(true);
+        }
         break;
     }
   },
@@ -830,7 +853,7 @@ function SetClipboardSearchString(aSearchString) {
     return;
   }
 
-  ClipboardHelper.copyStringToClipboard(
+  lazy.ClipboardHelper.copyStringToClipboard(
     aSearchString,
     Ci.nsIClipboard.kFindClipboard
   );

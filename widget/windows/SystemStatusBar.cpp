@@ -10,6 +10,7 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/EventDispatcher.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/widget/IconLoader.h"
@@ -38,7 +39,8 @@ class StatusBarEntry final : public LinkedListElement<RefPtr<StatusBarEntry>>,
   nsresult Init();
   void Destroy();
 
-  LRESULT OnMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
+  MOZ_CAN_RUN_SCRIPT LRESULT OnMessage(HWND hWnd, UINT msg, WPARAM wp,
+                                       LPARAM lp);
   const Element* GetMenu() { return mMenu; };
 
   nsresult OnComplete(imgIContainer* aImage) override;
@@ -46,7 +48,8 @@ class StatusBarEntry final : public LinkedListElement<RefPtr<StatusBarEntry>>,
  private:
   ~StatusBarEntry();
   RefPtr<mozilla::widget::IconLoader> mIconLoader;
-  RefPtr<Element> mMenu;
+  // Effectively const but is cycle collected
+  MOZ_KNOWN_LIVE RefPtr<Element> mMenu;
   NOTIFYICONDATAW mIconData;
   boolean mInitted;
 };
@@ -110,7 +113,6 @@ nsresult StatusBarEntry::Init() {
       mMenu->GetAttr(kNameSpaceID_None, nsGkAtoms::image, imageURIString);
 
   nsresult rv;
-  RefPtr<ComputedStyle> sc;
   nsCOMPtr<nsIURI> iconURI;
   if (!hasImageAttr) {
     // If the content node has no "image" attribute, get the
@@ -120,7 +122,8 @@ nsresult StatusBarEntry::Init() {
       return NS_ERROR_FAILURE;
     }
 
-    sc = nsComputedDOMStyle::GetComputedStyle(mMenu);
+    RefPtr<const ComputedStyle> sc =
+        nsComputedDOMStyle::GetComputedStyle(mMenu);
     if (!sc) {
       return NS_ERROR_FAILURE;
     }
@@ -206,37 +209,54 @@ nsresult StatusBarEntry::OnComplete(imgIContainer* aImage) {
 
 LRESULT StatusBarEntry::OnMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_USER &&
-      (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP)) {
+      (LOWORD(lp) == NIN_SELECT || LOWORD(lp) == NIN_KEYSELECT ||
+       LOWORD(lp) == WM_CONTEXTMENU)) {
     nsMenuFrame* menu = do_QueryFrame(mMenu->GetPrimaryFrame());
     if (!menu) {
       return TRUE;
     }
 
     nsMenuPopupFrame* popupFrame = menu->GetPopup();
+    MOZ_DIAGNOSTIC_ASSERT(popupFrame);
     if (!popupFrame) {
       return TRUE;
     }
 
     nsIWidget* widget = popupFrame->GetNearestWidget();
+    MOZ_DIAGNOSTIC_ASSERT(widget);
     if (!widget) {
       return TRUE;
     }
 
     HWND win = static_cast<HWND>(widget->GetNativeData(NS_NATIVE_WINDOW));
+    MOZ_DIAGNOSTIC_ASSERT(win);
     if (!win) {
       return TRUE;
     }
 
-    nsCOMPtr<nsIDocShell> docShell = popupFrame->PresContext()->GetDocShell();
-    nsCOMPtr<nsIBaseWindow> baseWin = do_QueryInterface(docShell);
-    if (!baseWin) {
+    if (LOWORD(lp) == NIN_KEYSELECT && ::GetForegroundWindow() == win) {
+      // When enter is pressed on the icon, the shell sends two NIN_KEYSELECT
+      // notifications. This might cause us to open two windows. To work around
+      // this, if we're already the foreground window (which happens below),
+      // ignore this notification.
       return TRUE;
     }
 
-    double scale = 1.0;
-    baseWin->GetUnscaledDevicePixelsPerCSSPixel(&scale);
-    int32_t x = NSToIntRound(GET_X_LPARAM(wp) / scale);
-    int32_t y = NSToIntRound(GET_Y_LPARAM(wp) / scale);
+    if (LOWORD(lp) != WM_CONTEXTMENU &&
+        mMenu->HasAttr(kNameSpaceID_None, nsGkAtoms::contextmenu)) {
+      ::SetForegroundWindow(win);
+      nsEventStatus status = nsEventStatus_eIgnore;
+      WidgetMouseEvent event(true, eXULSystemStatusBarClick, nullptr,
+                             WidgetMouseEvent::eReal);
+      RefPtr<nsPresContext> presContext = menu->PresContext();
+      EventDispatcher::Dispatch(mMenu, presContext, &event, nullptr, &status);
+      return DefWindowProc(hWnd, msg, wp, lp);
+    }
+
+    nsPresContext* pc = popupFrame->PresContext();
+    const CSSIntPoint point = gfx::RoundedToInt(
+        LayoutDeviceIntPoint(GET_X_LPARAM(wp), GET_Y_LPARAM(wp)) /
+        pc->CSSToDevPixelScale());
 
     // The menu that is being opened is a Gecko <xul:menu>, and the popup code
     // that manages it expects that the window that the <xul:menu> belongs to
@@ -247,7 +267,8 @@ LRESULT StatusBarEntry::OnMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
     // focuses any window in the parent process).
     ::SetForegroundWindow(win);
     nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
-    pm->ShowPopupAtScreen(popupFrame->GetContent(), x, y, false, nullptr);
+    pm->ShowPopupAtScreen(popupFrame->GetContent(), point.x, point.y, false,
+                          nullptr);
   }
 
   return DefWindowProc(hWnd, msg, wp, lp);
@@ -255,10 +276,10 @@ LRESULT StatusBarEntry::OnMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 NS_IMPL_ISUPPORTS(SystemStatusBar, nsISystemStatusBar)
 
-static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
-  StatusBarEntry* entry =
-      (StatusBarEntry*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
-  if (entry) {
+MOZ_CAN_RUN_SCRIPT static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg,
+                                                      WPARAM wp, LPARAM lp) {
+  if (RefPtr<StatusBarEntry> entry =
+          (StatusBarEntry*)GetWindowLongPtr(hWnd, GWLP_USERDATA)) {
     return entry->OnMessage(hWnd, msg, wp, lp);
   }
   return TRUE;

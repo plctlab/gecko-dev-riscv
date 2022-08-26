@@ -6,6 +6,11 @@ USE_LIBS += [
     "mozwer_s",
 ]
 
+OS_LIBS += [
+    "advapi32",
+    "bcrypt",
+]
+
 DEFFILE = "mozwer.def"
 USE_STATIC_LIBS = True
 

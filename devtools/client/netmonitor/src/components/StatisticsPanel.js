@@ -28,7 +28,7 @@ const {
 const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
 const {
   getPerformanceAnalysisURL,
-} = require("devtools/client/netmonitor/src/utils/mdn-utils");
+} = require("devtools/client/netmonitor/src/utils/doc-utils");
 const {
   fetchNetworkUpdatePacket,
 } = require("devtools/client/netmonitor/src/utils/request-utils");
@@ -77,7 +77,8 @@ class StatisticsPanel extends Component {
     this.onLayoutChange = this.onLayoutChange.bind(this);
   }
 
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     this.mdnLinkContainerNodes = new Map();
   }
 
@@ -91,7 +92,8 @@ class StatisticsPanel extends Component {
     });
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     const { requests, connector } = nextProps;
     requests.forEach(request => {
       fetchNetworkUpdatePacket(connector.requestData, request, [
@@ -151,7 +153,7 @@ class StatisticsPanel extends Component {
 
     ReactDOM.render(
       MDNLink({
-        url: url,
+        url,
         title: CHARTS_LEARN_MORE,
       }),
       containerNode

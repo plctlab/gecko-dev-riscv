@@ -8,12 +8,15 @@
 const ALLOWED_TEST_URL = "http://mochi.test:8888/";
 const BLOCKED_TEST_URL = "https://example.com/browser";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  FilterAdult: "resource://activity-stream/lib/FilterAdult.jsm",
-  InteractionsBlocklist: "resource:///modules/InteractionsBlocklist.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  InteractionsBlocklist: "resource:///modules/InteractionsBlocklist.sys.mjs",
 });
 
-add_task(async function setup() {
+XPCOMUtils.defineLazyModuleGetters(this, {
+  FilterAdult: "resource://activity-stream/lib/FilterAdult.jsm",
+});
+
+add_setup(async function() {
   let oldBlocklistValue = Services.prefs.getStringPref(
     "places.interactions.customBlocklist",
     "[]"

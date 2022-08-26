@@ -102,15 +102,23 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Touch)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Touch)
 
-EventTarget* Touch::GetTarget() const {
-  nsCOMPtr<nsIContent> content = do_QueryInterface(mTarget);
+static EventTarget* FindFirstNonChromeOnlyAccessContent(EventTarget* aTarget) {
+  nsIContent* content = nsIContent::FromEventTargetOrNull(aTarget);
   if (content && content->ChromeOnlyAccess() &&
       !nsContentUtils::LegacyIsCallerNativeCode() &&
       !nsContentUtils::CanAccessNativeAnon()) {
     return content->FindFirstNonChromeOnlyAccessContent();
   }
 
-  return mTarget;
+  return aTarget;
+}
+
+EventTarget* Touch::GetTarget() const {
+  return FindFirstNonChromeOnlyAccessContent(mTarget);
+}
+
+EventTarget* Touch::GetOriginalTarget() const {
+  return FindFirstNonChromeOnlyAccessContent(mOriginalTarget);
 }
 
 int32_t Touch::ScreenX(CallerType aCallerType) const {
@@ -169,7 +177,8 @@ void Touch::InitializePoints(nsPresContext* aPresContext, WidgetEvent* aEvent) {
       Event::GetClientCoords(aPresContext, aEvent, mRefPoint, mClientPoint);
   mPagePoint =
       Event::GetPageCoords(aPresContext, aEvent, mRefPoint, mClientPoint);
-  mScreenPoint = Event::GetScreenCoords(aPresContext, aEvent, mRefPoint);
+  mScreenPoint =
+      Event::GetScreenCoords(aPresContext, aEvent, mRefPoint).extract();
   mPointsInitialized = true;
 }
 

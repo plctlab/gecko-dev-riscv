@@ -7,9 +7,10 @@
 #define TelemetryOrigin_h__
 
 #include "TelemetryOriginEnums.h"
-#include "jsapi.h"
+#include "mozilla/MemoryReporting.h"
+#include "js/TypeDecls.h"
 #include "nsError.h"
-#include "nsString.h"
+#include "nsStringFwd.h"
 
 // This module is internal to Telemetry. It encapsulates Telemetry's
 // origin recording and storage logic. It should only be used by
@@ -27,10 +28,10 @@ nsresult RecordOrigin(mozilla::Telemetry::OriginMetricID aId,
 
 // JS API Endpoints.
 nsresult GetOriginSnapshot(bool aClear, JSContext* aCx,
-                           JS::MutableHandleValue aResult);
+                           JS::MutableHandle<JS::Value> aResult);
 
 nsresult GetEncodedOriginSnapshot(bool aClear, JSContext* aCx,
-                                  JS::MutableHandleValue aSnapshot);
+                                  JS::MutableHandle<JS::Value> aSnapshot);
 
 // Only to be used for testing.
 void ClearOrigins();

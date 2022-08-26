@@ -6,18 +6,11 @@
  * discovered.
  */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PageDataCollector: "resource:///modules/pagedata/PageDataCollector.jsm",
-  PageDataService: "resource:///modules/pagedata/PageDataService.jsm",
-  Services: "resource://gre/modules/Services.jsm",
-  Snapshots: "resource:///modules/Snapshots.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  PageDataService: "resource:///modules/pagedata/PageDataService.sys.mjs",
 });
 
-add_task(async function test_pageDataDiscoverd_notifies() {
+add_task(async function test_pageDataDiscovered_notifies() {
   let url = "https://www.mozilla.org/";
 
   Assert.equal(
@@ -27,67 +20,81 @@ add_task(async function test_pageDataDiscoverd_notifies() {
   );
 
   let promise = PageDataService.once("page-data");
-  let fakeBrowser = {};
 
-  PageDataService.pageDataDiscovered(
+  PageDataService.pageDataDiscovered({
     url,
-    [
-      {
-        type: PageDataCollector.DATA_TYPE.PRODUCT,
-        data: {
-          price: 276,
-        },
+    date: 32453456,
+    data: {
+      [PageDataSchema.DATA_TYPE.PRODUCT]: {
+        name: "Bolts",
+        price: { value: 276 },
       },
-    ],
-    fakeBrowser
-  );
+    },
+  });
 
   let pageData = await promise;
   Assert.equal(
     pageData.url,
-    "https://www.mozilla.org/",
+    url,
     "Should have notified data for the expected url"
   );
+
   Assert.deepEqual(
-    pageData.data,
-    [
-      {
-        type: PageDataCollector.DATA_TYPE.PRODUCT,
-        data: {
-          price: 276,
+    pageData,
+    {
+      url,
+      date: 32453456,
+      data: {
+        [PageDataSchema.DATA_TYPE.PRODUCT]: {
+          name: "Bolts",
+          price: { value: 276 },
         },
       },
-    ],
+    },
     "Should have returned the correct product data"
   );
+
   Assert.equal(
-    pageData.weakBrowser.get(),
-    fakeBrowser,
-    "Should have returned the fakeBrowser object"
+    PageDataService.getCached(url),
+    null,
+    "Should not have cached the data as there was no actor locking."
   );
 
+  let actor = {};
+  PageDataService.lockEntry(actor, url);
+
+  PageDataService.pageDataDiscovered({
+    url,
+    date: 32453456,
+    data: {
+      [PageDataSchema.DATA_TYPE.PRODUCT]: {
+        name: "Bolts",
+        price: { value: 276 },
+      },
+    },
+  });
+
+  // Should now be in the cache.
   Assert.deepEqual(
     PageDataService.getCached(url),
-    pageData,
-    "Should return the same pageData from the cache as was notified."
+    {
+      url,
+      date: 32453456,
+      data: {
+        [PageDataSchema.DATA_TYPE.PRODUCT]: {
+          name: "Bolts",
+          price: { value: 276 },
+        },
+      },
+    },
+    "Should have cached the data"
   );
-});
 
-add_task(async function test_queueFetch_notifies() {
-  let promise = PageDataService.once("no-page-data");
+  PageDataService.unlockEntry(actor, url);
 
-  PageDataService.queueFetch("https://example.org");
-
-  let pageData = await promise;
   Assert.equal(
-    pageData.url,
-    "https://example.org",
-    "Should have notified data for the expected url"
-  );
-  Assert.equal(pageData.data.length, 0, "Should have returned no data");
-  Assert.equal(
-    pageData.weakBrowser,
+    PageDataService.getCached(url),
     null,
-    "Should have returned a null weakBrowser"
+    "Should have dropped the data from the cache."
   );
 });

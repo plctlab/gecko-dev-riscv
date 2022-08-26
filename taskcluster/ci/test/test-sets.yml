@@ -26,9 +26,6 @@ web-platform-tests-backlog:
     - web-platform-tests-backlog
     - web-platform-tests-reftest-backlog
 
-web-platform-tests-wdspec-headless:
-    - web-platform-tests-wdspec-headless
-
 mochitest-devtools-chrome:
     - mochitest-devtools-chrome
 
@@ -38,7 +35,9 @@ mochitest-webgpu:
 talos:
     - talos-bcv
     - talos-chrome
-    - talos-damp
+    - talos-damp-inspector
+    - talos-damp-webconsole
+    - talos-damp-other
     - talos-dromaeojs
     - talos-g1
     - talos-g3
@@ -83,6 +82,7 @@ talos-ref-hw:
 browsertime:
     - browsertime-tp6
     - browsertime-tp6-essential
+    - browsertime-tp6-bytecode
     - browsertime-tp6-live
     - browsertime-tp6-live-sheriffed
     - browsertime-benchmark
@@ -116,14 +116,8 @@ ccov-code-coverage-tests:
     - test-coverage
     - test-coverage-wpt
 
-mochitest-headless:
-    - mochitest-plain-headless
-
 mochitest-valgrind:
     - mochitest-valgrind
-
-marionette-headless:
-    - marionette-headless
 
 desktop-screenshot-capture:
     - browser-screenshots
@@ -140,13 +134,13 @@ linux32-tests:
 linux1804-tests:
     - cppunit
     - crashtest
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - gtest
     # - jittest  # See comment in linux1804-ccov-tests set.
     - jsreftest
     - marionette
     - mochitest-a11y
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-chrome
     - mochitest-chrome-gpu
@@ -180,6 +174,7 @@ linux-talos-flex:
 # Windows
 
 windows-7-tests:
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-webgpu
     - reftest
@@ -189,8 +184,7 @@ windows32-2004-tests:
     - cppunit
     - crashtest
     - gtest
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - jsreftest
     - marionette
     - mochitest-a11y
@@ -205,21 +199,15 @@ windows32-2004-tests:
     - test-verify-gpu
     - test-verify-wpt
 
-windows-ccov-tests:
-    # jittest run on regular windows builds is redundant with SM(p), so we omit
-    # it from the windows-tests set. But, we still want to run it on ccov builds,
-    # so we have this set that has it and which runs on ccov builds.
-    - jittest
-
 windows10-2004-tests:
     - cppunit
     - crashtest
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - gtest
     - jsreftest
     - marionette
     - mochitest-a11y
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-chrome
     - mochitest-chrome-gpu
@@ -241,36 +229,17 @@ windows10-2004-tests:
     - xpcshell
 
 windows10-64-2004-ccov-tests:
-    - crashtest
-    - reftest
-    - mochitest-browser-chrome
-    - mochitest-devtools-chrome
-    - mochitest-plain
-    - gtest
-    - marionette
+    - jittest
     - test-coverage
-    - test-verify
-    - test-verify-gpu
-    - cppunit
-    - jsreftest
     - web-platform-tests
     - web-platform-tests-crashtest
-    - web-platform-tests-reftest
     - web-platform-tests-print-reftest
+    - web-platform-tests-reftest
     - web-platform-tests-wdspec
-    # - jittest  # Bug 1733505
-    # - xpcshell  # Bug 1733505
-
-windows10-64-2004-failure-tests:
-    - mochitest-browser-chrome-failures
-
-windows10-32-2004-failure-tests:
-    - xpcshell-failures
 
 mingwclang-tests-debug:
     - cppunit
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - mochitest-a11y
     - mochitest-chrome-gpu
     - mochitest-plain-gpu
@@ -287,8 +256,7 @@ mingwclang-tests-debug:
 # for re-enabling.
 mingwclang-win32-tests-debug:
     - cppunit
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - mochitest-a11y
     - mochitest-chrome-gpu
     - mochitest-plain-gpu
@@ -311,7 +279,9 @@ windows-aarch64-tests:
 windows-talos:
     - talos-bcv
     - talos-chrome
-    - talos-damp
+    - talos-damp-inspector
+    - talos-damp-webconsole
+    - talos-damp-other
     - talos-dromaeojs
     - talos-g1
     - talos-g4
@@ -337,6 +307,7 @@ macosx1100-64-jittests:
 macosx1100-64-qr-tests:
     - crashtest
     - jsreftest
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-chrome-gpu
     - mochitest-media
@@ -351,13 +322,13 @@ macosx1100-64-qr-tests:
 macosx1015-64-qr-tests:
     - cppunit
     - crashtest
-    - firefox-ui-functional-local
-    - firefox-ui-functional-remote
+    - firefox-ui-functional
     - gtest
     - jittest
     - jsreftest
     - marionette
     - mochitest-a11y
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-chrome
     - mochitest-chrome-gpu
@@ -381,7 +352,9 @@ macosx1015-64-qr-tests:
 macosx64-talos:
     - talos-bcv
     - talos-chrome
-    - talos-damp
+    - talos-damp-inspector
+    - talos-damp-webconsole
+    - talos-damp-other
     - talos-dromaeojs
     - talos-g1
     - talos-g4
@@ -416,6 +389,7 @@ android-x86_64-tests:
     - web-platform-tests
     - web-platform-tests-crashtest
     - web-platform-tests-reftest
+    - web-platform-tests-wdspec
     - xpcshell
 
 android-hw-aarch64-opt-unittests:
@@ -486,9 +460,11 @@ android-hw-browsertime-profiling:
 linux-tsan-tests:
     - crashtest
     - mochitest-a11y
+    - mochitest-browser-a11y
     - mochitest-browser-chrome
     - mochitest-media
     - mochitest-plain
+    - mochitest-webgpu
     - reftest
     - web-platform-tests
     - web-platform-tests-reftest

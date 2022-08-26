@@ -7,13 +7,13 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(this, "Services", "resource://gre/modules/Services.jsm");
-ChromeUtils.defineModuleGetter(this, "AddonManager", "resource://gre/modules/AddonManager.jsm");
+const lazy = {};
+ChromeUtils.defineModuleGetter(lazy, "AddonManager", "resource://gre/modules/AddonManager.jsm");
 
-this.EXPORTED_SYMBOLS = ["AppConstants"];
+var EXPORTED_SYMBOLS = ["AppConstants"];
 
 // Immutable for export.
-this.AppConstants = Object.freeze({
+var AppConstants = Object.freeze({
   // See this wiki page for more details about channel specific build
   // defines: https://wiki.mozilla.org/Platform/Channel-specific_build_defines
   NIGHTLY_BUILD:
@@ -292,10 +292,10 @@ this.AppConstants = Object.freeze({
   get MOZ_UNSIGNED_SCOPES() {
     let result = 0;
 #ifdef MOZ_UNSIGNED_APP_SCOPE
-    result |= AddonManager.SCOPE_APPLICATION;
+    result |= lazy.AddonManager.SCOPE_APPLICATION;
 #endif
 #ifdef MOZ_UNSIGNED_SYSTEM_SCOPE
-    result |= AddonManager.SCOPE_SYSTEM;
+    result |= lazy.AddonManager.SCOPE_SYSTEM;
 #endif
     return result;
   },
@@ -418,11 +418,25 @@ this.AppConstants = Object.freeze({
     false,
 #endif
 
+  REMOTE_SETTINGS_SERVER_URL:
+#ifdef MOZ_THUNDERBIRD
+    "https://thunderbird-settings.thunderbird.net/v1",
+#else
+    "https://firefox.settings.services.mozilla.com/v1",
+#endif
+
   REMOTE_SETTINGS_VERIFY_SIGNATURE:
 #ifdef MOZ_THUNDERBIRD
     false,
 #else
     true,
+#endif
+
+  REMOTE_SETTINGS_DEFAULT_BUCKET:
+#ifdef MOZ_THUNDERBIRD
+    "thunderbird",
+#else
+    "main",
 #endif
 
   MOZ_GLEAN_ANDROID:
@@ -431,4 +445,42 @@ this.AppConstants = Object.freeze({
 #else
     false,
 #endif
+
+  MOZ_JXL:
+#ifdef MOZ_JXL
+    true,
+#else
+    false,
+#endif
+
+  MOZ_CAN_FOLLOW_SYSTEM_TIME:
+#ifdef XP_WIN
+    true,
+#elif XP_MACOSX
+    true,
+#elif MOZ_WIDGET_GTK
+  #ifdef MOZ_ENABLE_DBUS
+    true,
+  #else
+    false,
+  #endif
+#else
+    false,
+#endif
+
+  MOZ_SYSTEM_POLICIES:
+#ifdef MOZ_SYSTEM_POLICIES
+    true,
+#else
+    false,
+#endif
+
+  // Returns true for CN region build when distibution id set as 'MozillaOnline'
+  isChinaRepack() {
+    return (
+      Services.prefs
+      .getDefaultBranch("")
+      .getCharPref("distribution.id", "default") === "MozillaOnline"
+    );
+  },
 });

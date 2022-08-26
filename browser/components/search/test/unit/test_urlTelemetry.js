@@ -1,16 +1,18 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+ChromeUtils.defineESModuleGetters(this, {
+  BrowserSearchTelemetry: "resource:///modules/BrowserSearchTelemetry.sys.mjs",
+  SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.sys.mjs",
+  SearchUtils: "resource://gre/modules/SearchUtils.sys.mjs",
+});
+
 XPCOMUtils.defineLazyModuleGetters(this, {
-  BrowserSearchTelemetry: "resource:///modules/BrowserSearchTelemetry.jsm",
   NetUtil: "resource://gre/modules/NetUtil.jsm",
-  SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.jsm",
-  SearchUtils: "resource://gre/modules/SearchUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   sinon: "resource://testing-common/Sinon.jsm",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.jsm",
 });
@@ -42,6 +44,15 @@ const TESTS = [
   },
   {
     title: "Google organic",
+    trackingUrl:
+      "https://www.google.com/search?client=firefox-b-d-invalid&source=hp&ei=EI_VALUE&q=test&oq=test&gs_l=GS_L_VALUE",
+    expectedSearchCountEntry: "google.in-content:organic:other",
+    expectedAdKey: "google:organic",
+    adUrls: ["https://www.googleadservices.com/aclk=foobar"],
+    nonAdUrls: ["https://www.googleadservices.com/?aclk=foobar"],
+  },
+  {
+    title: "Google organic no code",
     trackingUrl:
       "https://www.google.com/search?source=hp&ei=EI_VALUE&q=test&oq=test&gs_l=GS_L_VALUE",
     expectedSearchCountEntry: "google.in-content:organic:none",
@@ -92,7 +103,7 @@ const TESTS = [
         "www.bing.com",
         "/",
         "SRCHS",
-        "PC=MOZ",
+        "PC=MOZI",
         false,
         false,
         false,
@@ -108,10 +119,18 @@ const TESTS = [
     title: "Bing search access point follow-on",
     trackingUrl:
       "https://www.bing.com/search?q=test&qs=n&form=QBRE&sp=-1&pq=&sc=0-0&sk=&cvid=CVID_VALUE",
-    expectedSearchCountEntry: "bing.in-content:sap-follow-on:MOZ",
+    expectedSearchCountEntry: "bing.in-content:sap-follow-on:MOZI",
   },
   {
     title: "Bing organic",
+    trackingUrl: "https://www.bing.com/search?q=test&pc=MOZIfoo&form=MOZLBR",
+    expectedSearchCountEntry: "bing.in-content:organic:other",
+    expectedAdKey: "bing:organic",
+    adUrls: ["https://www.bing.com/aclick?ld=foo"],
+    nonAdUrls: ["https://www.bing.com/fd/ls/ls.gif?IG=foo"],
+  },
+  {
+    title: "Bing organic no code",
     trackingUrl:
       "https://www.bing.com/search?q=test&qs=n&form=QBLH&sp=-1&pq=&sc=0-0&sk=&cvid=CVID_VALUE",
     expectedSearchCountEntry: "bing.in-content:organic:none",
@@ -138,7 +157,31 @@ const TESTS = [
   {
     title: "DuckDuckGo organic",
     trackingUrl: "https://duckduckgo.com/?q=test&t=hi&ia=news",
-    expectedSearchCountEntry: "duckduckgo.in-content:organic:hi",
+    expectedSearchCountEntry: "duckduckgo.in-content:organic:other",
+    expectedAdKey: "duckduckgo:organic",
+    adUrls: ["https://duckduckgo.com/y.js?ad_provider=foo"],
+    nonAdUrls: ["https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images"],
+  },
+  {
+    title: "DuckDuckGo expected organic code",
+    trackingUrl: "https://duckduckgo.com/?q=test&t=h_&ia=news",
+    expectedSearchCountEntry: "duckduckgo.in-content:organic:none",
+    expectedAdKey: "duckduckgo:organic",
+    adUrls: ["https://duckduckgo.com/y.js?ad_provider=foo"],
+    nonAdUrls: ["https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images"],
+  },
+  {
+    title: "DuckDuckGo expected organic code 2",
+    trackingUrl: "https://duckduckgo.com/?q=test&t=hz&ia=news",
+    expectedSearchCountEntry: "duckduckgo.in-content:organic:none",
+    expectedAdKey: "duckduckgo:organic",
+    adUrls: ["https://duckduckgo.com/y.js?ad_provider=foo"],
+    nonAdUrls: ["https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images"],
+  },
+  {
+    title: "DuckDuckGo organic no code",
+    trackingUrl: "https://duckduckgo.com/?q=test&ia=news",
+    expectedSearchCountEntry: "duckduckgo.in-content:organic:none",
     expectedAdKey: "duckduckgo:organic",
     adUrls: ["https://duckduckgo.com/y.js?ad_provider=foo"],
     nonAdUrls: ["https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images"],
@@ -160,8 +203,14 @@ const TESTS = [
   {
     title: "Baidu organic",
     trackingUrl:
-      "https://www.baidu.com/s?ie=utf-8&f=8&rsv_bp=1&rsv_idx=1&ch=&tn=baidu&bar=&wd=test&rn=&oq=&rsv_pq=RSV_PQ_VALUE&rsv_t=RSV_T_VALUE&rqlang=cn",
-    expectedSearchCountEntry: "baidu.in-content:organic:baidu",
+      "https://www.baidu.com/s?ie=utf-8&f=8&rsv_bp=1&rsv_idx=1&ch=&tn=baidu&bar=&wd=test&rn=&oq&rsv_pq=RSV_PQ_VALUE&rsv_t=RSV_T_VALUE&rqlang=cn",
+    expectedSearchCountEntry: "baidu.in-content:organic:other",
+  },
+  {
+    title: "Baidu organic no code",
+    trackingUrl:
+      "https://www.baidu.com/s?ie=utf-8&f=8&rsv_bp=1&rsv_idx=1&ch=&bar=&wd=test&rn=&oq&rsv_pq=RSV_PQ_VALUE&rsv_t=RSV_T_VALUE&rqlang=cn",
+    expectedSearchCountEntry: "baidu.in-content:organic:none",
   },
 ];
 
@@ -233,12 +282,11 @@ add_task(async function test_parsing_search_urls() {
       },
       test.trackingUrl
     );
-    const hs = Services.telemetry
-      .getKeyedHistogramById("SEARCH_COUNTS")
-      .snapshot();
-    Assert.ok(hs);
+    let histogram = Services.telemetry.getKeyedHistogramById("SEARCH_COUNTS");
+    let snapshot = histogram.snapshot();
+    Assert.ok(snapshot);
     Assert.ok(
-      test.expectedSearchCountEntry in hs,
+      test.expectedSearchCountEntry in snapshot,
       "The histogram must contain the correct key"
     );
 
@@ -254,5 +302,6 @@ add_task(async function test_parsing_search_urls() {
     if (test.tearDown) {
       test.tearDown();
     }
+    histogram.clear();
   }
 });

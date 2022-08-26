@@ -68,8 +68,7 @@ DocumentChannel::DocumentChannel(nsDocShellLoadState* aLoadState,
                                  net::LoadInfo* aLoadInfo,
                                  nsLoadFlags aLoadFlags, uint32_t aCacheKey,
                                  bool aUriModified, bool aIsXFOError)
-    : mAsyncOpenTime(TimeStamp::Now()),
-      mLoadState(aLoadState),
+    : mLoadState(aLoadState),
       mCacheKey(aCacheKey),
       mLoadFlags(aLoadFlags),
       mURI(aLoadState->URI()),
@@ -154,16 +153,13 @@ nsDocShell* DocumentChannel::GetDocShell() {
   return nsDocShell::Cast(docshell);
 }
 
-// Changes here should also be made in
-// E10SUtils.documentChannelPermittedForURI().
 static bool URIUsesDocChannel(nsIURI* aURI) {
   if (SchemeIsJavascript(aURI)) {
     return false;
   }
 
   nsCString spec = aURI->GetSpecOrDefault();
-  return !spec.EqualsLiteral("about:printpreview") &&
-         !spec.EqualsLiteral("about:crashcontent");
+  return !spec.EqualsLiteral("about:crashcontent");
 }
 
 bool DocumentChannel::CanUseDocumentChannel(nsIURI* aURI) {

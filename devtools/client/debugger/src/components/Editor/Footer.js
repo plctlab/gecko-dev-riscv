@@ -3,26 +3,22 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import React, { PureComponent } from "react";
+import PropTypes from "prop-types";
 import { connect } from "../../utils/connect";
 import classnames from "classnames";
 import actions from "../../actions";
 import {
-  getSelectedSourceWithContent,
+  getSelectedSource,
+  getSelectedSourceTextContent,
   getPrettySource,
   getPaneCollapse,
   getContext,
+  getGeneratedSource,
+  isSourceBlackBoxed,
+  canPrettyPrintSource,
 } from "../../selectors";
 
-import {
-  isPretty,
-  getFilename,
-  isOriginal,
-  shouldBlackbox,
-} from "../../utils/source";
-import {
-  getGeneratedSource,
-  canPrettyPrintSource,
-} from "../../reducers/sources";
+import { isPretty, getFilename, shouldBlackbox } from "../../utils/source";
 
 import { PaneToggleButton } from "../shared/Button";
 import AccessibleImage from "../shared/AccessibleImage";
@@ -34,6 +30,23 @@ class SourceFooter extends PureComponent {
     super();
 
     this.state = { cursorPosition: { line: 0, column: 0 } };
+  }
+
+  static get propTypes() {
+    return {
+      canPrettyPrint: PropTypes.bool.isRequired,
+      cx: PropTypes.object.isRequired,
+      endPanelCollapsed: PropTypes.bool.isRequired,
+      horizontal: PropTypes.bool.isRequired,
+      jumpToMappedLocation: PropTypes.func.isRequired,
+      mappedSource: PropTypes.object,
+      selectedSource: PropTypes.object,
+      isSelectedSourceBlackBoxed: PropTypes.bool.isRequired,
+      sourceLoaded: PropTypes.bool.isRequired,
+      toggleBlackBox: PropTypes.func.isRequired,
+      togglePaneCollapse: PropTypes.func.isRequired,
+      togglePrettyPrint: PropTypes.func.isRequired,
+    };
   }
 
   componentDidUpdate() {
@@ -66,13 +79,14 @@ class SourceFooter extends PureComponent {
       selectedSource,
       canPrettyPrint,
       togglePrettyPrint,
+      sourceLoaded,
     } = this.props;
 
     if (!selectedSource) {
       return;
     }
 
-    if (!selectedSource.content && selectedSource.isPrettyPrinted) {
+    if (!sourceLoaded && selectedSource.isPrettyPrinted) {
       return (
         <div className="action" key="pretty-loader">
           <AccessibleImage className="loader spin" />
@@ -85,7 +99,6 @@ class SourceFooter extends PureComponent {
     }
 
     const tooltip = L10N.getStr("sourceTabs.prettyPrint");
-    const sourceLoaded = !!selectedSource.content;
 
     const type = "prettyPrint";
     return (
@@ -105,8 +118,13 @@ class SourceFooter extends PureComponent {
   }
 
   blackBoxButton() {
-    const { cx, selectedSource, toggleBlackBox } = this.props;
-    const sourceLoaded = selectedSource?.content;
+    const {
+      cx,
+      selectedSource,
+      isSelectedSourceBlackBoxed,
+      toggleBlackBox,
+      sourceLoaded,
+    } = this.props;
 
     if (!selectedSource) {
       return;
@@ -116,7 +134,7 @@ class SourceFooter extends PureComponent {
       return;
     }
 
-    const blackboxed = selectedSource.isBlackBoxed;
+    const blackboxed = isSelectedSourceBlackBoxed;
 
     const tooltip = blackboxed
       ? L10N.getStr("sourceFooter.unignore")
@@ -172,7 +190,7 @@ class SourceFooter extends PureComponent {
       selectedSource,
     } = this.props;
 
-    if (!mappedSource || !selectedSource || !isOriginal(selectedSource)) {
+    if (!mappedSource || !selectedSource || !selectedSource.isOriginal) {
       return null;
     }
 
@@ -242,11 +260,16 @@ class SourceFooter extends PureComponent {
 }
 
 const mapStateToProps = state => {
-  const selectedSource = getSelectedSourceWithContent(state);
+  const selectedSource = getSelectedSource(state);
+  const sourceTextContent = getSelectedSourceTextContent(state);
 
   return {
     cx: getContext(state),
     selectedSource,
+    isSelectedSourceBlackBoxed: selectedSource
+      ? isSourceBlackBoxed(state, selectedSource)
+      : null,
+    sourceLoaded: !!sourceTextContent,
     mappedSource: getGeneratedSource(state, selectedSource),
     prettySource: getPrettySource(
       state,

@@ -4,18 +4,30 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "serviceWorkerManager",
   "@mozilla.org/serviceworkers/manager;1",
   "nsIServiceWorkerManager"
 );
+
+let logConsole;
+function log(msg) {
+  if (!logConsole) {
+    logConsole = console.createInstance({
+      prefix: "** PrincipalsCollector.jsm",
+      maxLogLevelPref: "browser.sanitizer.loglevel",
+    });
+  }
+
+  logConsole.log(msg);
+}
 
 /**
  * A helper module to collect all principals that have any of the following:
@@ -90,18 +102,18 @@ class PrincipalsCollector {
           return;
         }
 
-        let list = [];
+        let principalsMap = new Map();
         for (const origin of request.result) {
           let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
             origin
           );
           if (PrincipalsCollector.isSupportedPrincipal(principal)) {
-            list.push(principal);
+            principalsMap.set(principal.origin, principal);
           }
         }
 
         progress.step = "principals-quota-manager-completed";
-        resolve(list);
+        resolve(principalsMap);
       };
     }).catch(ex => {
       Cu.reportError("QuotaManagerService promise failed: " + ex);
@@ -109,14 +121,14 @@ class PrincipalsCollector {
     });
 
     progress.step = "principals-service-workers";
-    let serviceWorkers = serviceWorkerManager.getAllRegistrations();
+    let serviceWorkers = lazy.serviceWorkerManager.getAllRegistrations();
     for (let i = 0; i < serviceWorkers.length; i++) {
       let sw = serviceWorkers.queryElementAt(
         i,
         Ci.nsIServiceWorkerRegistrationInfo
       );
       // We don't need to check the scheme. SW are just exposed to http/https URLs.
-      principals.push(sw.principal);
+      principals.set(sw.principal.origin, sw.principal);
     }
 
     // Let's take the list of unique hosts+OA from cookies.
@@ -134,16 +146,25 @@ class PrincipalsCollector {
     hosts.forEach(host => {
       // Cookies and permissions are handled by origin/host. Doesn't matter if we
       // use http: or https: schema here.
-      principals.push(
-        Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+      let principal;
+      try {
+        principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
           "https://" + host
-        )
-      );
+        );
+      } catch (e) {
+        log(
+          `ERROR: Could not create content principal for host '${host}' ${e.message}`
+        );
+      }
+      if (principal) {
+        principals.set(principal.origin, principal);
+      }
     });
 
     progress.step = "total-principals:" + principals.length;
+    principals = Array.from(principals.values());
     return principals;
   }
 }
 
-this.EXPORTED_SYMBOLS = ["PrincipalsCollector"];
+const EXPORTED_SYMBOLS = ["PrincipalsCollector"];

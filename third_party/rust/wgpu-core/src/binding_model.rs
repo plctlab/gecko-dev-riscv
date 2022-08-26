@@ -1,10 +1,10 @@
 use crate::{
     device::{DeviceError, MissingDownlevelFlags, MissingFeatures, SHADER_STAGE_COUNT},
     error::{ErrorFormatter, PrettyError},
-    hub::Resource,
-    id::{BindGroupLayoutId, BufferId, DeviceId, SamplerId, TextureViewId, Valid},
-    init_tracker::BufferInitTrackerAction,
-    track::{TrackerSet, UsageConflict, DUMMY_SELECTOR},
+    hub::{HalApi, Resource},
+    id::{BindGroupLayoutId, BufferId, DeviceId, SamplerId, TextureId, TextureViewId, Valid},
+    init_tracker::{BufferInitTrackerAction, TextureInitTrackerAction},
+    track::{BindGroupStates, UsageConflict},
     validation::{MissingBufferUsageError, MissingTextureUsageError},
     FastHashMap, Label, LifeGuard, MultiRefCount, Stored,
 };
@@ -16,10 +16,7 @@ use serde::Deserialize;
 #[cfg(feature = "trace")]
 use serde::Serialize;
 
-use std::{
-    borrow::{Borrow, Cow},
-    ops::Range,
-};
+use std::{borrow::Cow, ops::Range};
 
 use thiserror::Error;
 
@@ -27,6 +24,8 @@ use thiserror::Error;
 pub enum BindGroupLayoutEntryError {
     #[error("cube dimension is not expected for texture storage")]
     StorageTextureCube,
+    #[error("Read-write and read-only storage textures are not allowed by webgpu, they require the native only feature TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES")]
+    StorageTextureReadWrite,
     #[error("arrays of bindings unsupported for this type of binding")]
     ArrayUnsupported,
     #[error(transparent)]
@@ -63,10 +62,20 @@ pub enum CreateBindGroupError {
     InvalidBuffer(BufferId),
     #[error("texture view {0:?} is invalid")]
     InvalidTextureView(TextureViewId),
+    #[error("texture {0:?} is invalid")]
+    InvalidTexture(TextureId),
     #[error("sampler {0:?} is invalid")]
     InvalidSampler(SamplerId),
-    #[error("binding count declared with {expected} items, but {actual} items were provided")]
+    #[error(
+        "binding count declared with at most {expected} items, but {actual} items were provided"
+    )]
+    BindingArrayPartialLengthMismatch { actual: usize, expected: usize },
+    #[error(
+        "binding count declared with exactly {expected} items, but {actual} items were provided"
+    )]
     BindingArrayLengthMismatch { actual: usize, expected: usize },
+    #[error("array binding provided zero elements")]
+    BindingArrayZeroLength,
     #[error("bound buffer range {range:?} does not fit in buffer of size {size}")]
     BindingRangeTooLarge {
         buffer: BufferId,
@@ -413,12 +422,21 @@ pub struct BindGroupLayoutDescriptor<'a> {
 
 pub(crate) type BindEntryMap = FastHashMap<u32, wgt::BindGroupLayoutEntry>;
 
+/// Bind group layout.
+///
+/// The lifetime of BGLs is a bit special. They are only referenced on CPU
+/// without considering GPU operations. And on CPU they get manual
+/// inc-refs and dec-refs. In particular, the following objects depend on them:
+///  - produced bind groups
+///  - produced pipeline layouts
+///  - pipelines with implicit layouts
 #[derive(Debug)]
 pub struct BindGroupLayout<A: hal::Api> {
     pub(crate) raw: A::BindGroupLayout,
     pub(crate) device_id: Stored<DeviceId>,
     pub(crate) multi_ref_count: MultiRefCount,
     pub(crate) entries: BindEntryMap,
+    #[allow(unused)]
     pub(crate) dynamic_count: usize,
     pub(crate) count_validator: BindingTypeMaxCountValidator,
     #[cfg(debug_assertions)]
@@ -646,6 +664,7 @@ pub enum BindingResource<'a> {
     Buffer(BufferBinding),
     BufferArray(Cow<'a, [BufferBinding]>),
     Sampler(SamplerId),
+    SamplerArray(Cow<'a, [SamplerId]>),
     TextureView(TextureViewId),
     TextureViewArray(Cow<'a, [TextureViewId]>),
 }
@@ -691,18 +710,21 @@ pub(crate) fn buffer_binding_type_alignment(
     }
 }
 
-#[derive(Debug)]
-pub struct BindGroup<A: hal::Api> {
+pub struct BindGroup<A: HalApi> {
     pub(crate) raw: A::BindGroup,
     pub(crate) device_id: Stored<DeviceId>,
     pub(crate) layout_id: Valid<BindGroupLayoutId>,
     pub(crate) life_guard: LifeGuard,
-    pub(crate) used: TrackerSet,
+    pub(crate) used: BindGroupStates<A>,
     pub(crate) used_buffer_ranges: Vec<BufferInitTrackerAction>,
+    pub(crate) used_texture_ranges: Vec<TextureInitTrackerAction>,
     pub(crate) dynamic_binding_info: Vec<BindGroupDynamicBindingData>,
+    /// Actual binding sizes for buffers that don't have `min_binding_size`
+    /// specified in BGL. Listed in the order of iteration of `BGL.entries`.
+    pub(crate) late_buffer_binding_sizes: Vec<wgt::BufferSize>,
 }
 
-impl<A: hal::Api> BindGroup<A> {
+impl<A: HalApi> BindGroup<A> {
     pub(crate) fn validate_dynamic_bindings(
         &self,
         offsets: &[wgt::DynamicOffset],
@@ -744,13 +766,7 @@ impl<A: hal::Api> BindGroup<A> {
     }
 }
 
-impl<A: hal::Api> Borrow<()> for BindGroup<A> {
-    fn borrow(&self) -> &() {
-        &DUMMY_SELECTOR
-    }
-}
-
-impl<A: hal::Api> Resource for BindGroup<A> {
+impl<A: HalApi> Resource for BindGroup<A> {
     const TYPE: &'static str = "BindGroup";
 
     fn life_guard(&self) -> &LifeGuard {
@@ -764,4 +780,13 @@ pub enum GetBindGroupLayoutError {
     InvalidPipeline,
     #[error("invalid group index {0}")]
     InvalidGroupIndex(u32),
+}
+
+#[derive(Clone, Debug, Error, PartialEq)]
+#[error("Buffer is bound with size {bound_size} where the shader expects {shader_size} in group[{group_index}] compact index {compact_index}")]
+pub struct LateMinBufferBindingSizeMismatch {
+    pub group_index: u32,
+    pub compact_index: usize,
+    pub shader_size: wgt::BufferAddress,
+    pub bound_size: wgt::BufferAddress,
 }

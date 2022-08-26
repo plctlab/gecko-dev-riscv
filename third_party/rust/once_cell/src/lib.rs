@@ -311,6 +311,10 @@
 //! At the moment, `unsync` has an additional benefit that reentrant initialization causes a panic, which
 //! might be easier to debug than a deadlock.
 //!
+//! **Does this crate support async?**
+//!
+//! No, but you can use [`async_once_cell`](https://crates.io/crates/async_once_cell) instead.
+//!
 //! # Related crates
 //!
 //! * [double-checked-cell](https://github.com/niklasf/double-checked-cell)
@@ -318,6 +322,7 @@
 //! * [lazycell](https://crates.io/crates/lazycell)
 //! * [mitochondria](https://crates.io/crates/mitochondria)
 //! * [lazy_static](https://crates.io/crates/lazy_static)
+//! * [async_once_cell](https://crates.io/crates/async_once_cell)
 //!
 //! Most of this crate's functionality is available in `std` in nightly Rust.
 //! See the [tracking issue](https://github.com/rust-lang/rust/issues/74465).
@@ -399,14 +404,17 @@ pub mod unsync {
 
     impl<T: Clone> Clone for OnceCell<T> {
         fn clone(&self) -> OnceCell<T> {
-            let res = OnceCell::new();
-            if let Some(value) = self.get() {
-                match res.set(value.clone()) {
-                    Ok(()) => (),
-                    Err(_) => unreachable!(),
-                }
+            match self.get() {
+                Some(value) => OnceCell::with_value(value.clone()),
+                None => OnceCell::new(),
             }
-            res
+        }
+
+        fn clone_from(&mut self, source: &Self) {
+            match (self.get_mut(), source.get()) {
+                (Some(this), Some(source)) => this.clone_from(source),
+                _ => *self = source.clone(),
+            }
         }
     }
 
@@ -420,7 +428,7 @@ pub mod unsync {
 
     impl<T> From<T> for OnceCell<T> {
         fn from(value: T) -> Self {
-            OnceCell { inner: UnsafeCell::new(Some(value)) }
+            OnceCell::with_value(value)
         }
     }
 
@@ -428,6 +436,11 @@ pub mod unsync {
         /// Creates a new empty cell.
         pub const fn new() -> OnceCell<T> {
             OnceCell { inner: UnsafeCell::new(None) }
+        }
+
+        /// Creates a new initialized cell.
+        pub const fn with_value(value: T) -> OnceCell<T> {
+            OnceCell { inner: UnsafeCell::new(Some(value)) }
         }
 
         /// Gets a reference to the underlying value.
@@ -441,6 +454,19 @@ pub mod unsync {
         /// Gets a mutable reference to the underlying value.
         ///
         /// Returns `None` if the cell is empty.
+        ///
+        /// This method is allowed to violate the invariant of writing to a `OnceCell`
+        /// at most once because it requires `&mut` access to `self`. As with all
+        /// interior mutability, `&mut` access permits arbitrary modification:
+        ///
+        /// ```
+        /// use once_cell::unsync::OnceCell;
+        ///
+        /// let mut cell: OnceCell<u32> = OnceCell::new();
+        /// cell.set(92).unwrap();
+        /// *cell.get_mut().unwrap() = 93;
+        /// assert_eq!(cell.get(), Some(&93));
+        /// ```
         pub fn get_mut(&mut self) -> Option<&mut T> {
             // Safe because we have unique access
             unsafe { &mut *self.inner.get() }.as_mut()
@@ -470,7 +496,7 @@ pub mod unsync {
             }
         }
 
-        /// Like [`set`](Self::set), but also returns a referce to the final cell value.
+        /// Like [`set`](Self::set), but also returns a reference to the final cell value.
         ///
         /// # Example
         /// ```
@@ -590,6 +616,18 @@ pub mod unsync {
         /// assert_eq!(cell.take(), Some("hello".to_string()));
         /// assert_eq!(cell.get(), None);
         /// ```
+        ///
+        /// This method is allowed to violate the invariant of writing to a `OnceCell`
+        /// at most once because it requires `&mut` access to `self`. As with all
+        /// interior mutability, `&mut` access permits arbitrary modification:
+        ///
+        /// ```
+        /// use once_cell::unsync::OnceCell;
+        ///
+        /// let mut cell: OnceCell<u32> = OnceCell::new();
+        /// cell.set(92).unwrap();
+        /// cell = OnceCell::new();
+        /// ```
         pub fn take(&mut self) -> Option<T> {
             mem::replace(self, Self::default()).into_inner()
         }
@@ -703,6 +741,23 @@ pub mod unsync {
                 None => panic!("Lazy instance has previously been poisoned"),
             })
         }
+
+        /// Gets the reference to the result of this lazy value if
+        /// it was initialized, otherwise returns `None`.
+        ///
+        /// # Example
+        /// ```
+        /// use once_cell::unsync::Lazy;
+        ///
+        /// let lazy = Lazy::new(|| 92);
+        ///
+        /// assert_eq!(Lazy::get(&lazy), None);
+        /// assert_eq!(&*lazy, &92);
+        /// assert_eq!(Lazy::get(&lazy), Some(&92));
+        /// ```
+        pub fn get(this: &Lazy<T, F>) -> Option<&T> {
+            this.cell.get()
+        }
     }
 
     impl<T, F: FnOnce() -> T> Deref for Lazy<T, F> {
@@ -737,7 +792,7 @@ pub mod sync {
         panic::RefUnwindSafe,
     };
 
-    use crate::imp::OnceCell as Imp;
+    use crate::{imp::OnceCell as Imp, take_unchecked};
 
     /// A thread-safe cell which can be written to only once.
     ///
@@ -786,22 +841,23 @@ pub mod sync {
 
     impl<T: Clone> Clone for OnceCell<T> {
         fn clone(&self) -> OnceCell<T> {
-            let res = OnceCell::new();
-            if let Some(value) = self.get() {
-                match res.set(value.clone()) {
-                    Ok(()) => (),
-                    Err(_) => unreachable!(),
-                }
+            match self.get() {
+                Some(value) => Self::with_value(value.clone()),
+                None => Self::new(),
             }
-            res
+        }
+
+        fn clone_from(&mut self, source: &Self) {
+            match (self.get_mut(), source.get()) {
+                (Some(this), Some(source)) => this.clone_from(source),
+                _ => *self = source.clone(),
+            }
         }
     }
 
     impl<T> From<T> for OnceCell<T> {
         fn from(value: T) -> Self {
-            let cell = Self::new();
-            cell.get_or_init(|| value);
-            cell
+            Self::with_value(value)
         }
     }
 
@@ -819,6 +875,11 @@ pub mod sync {
             OnceCell(Imp::new())
         }
 
+        /// Creates a new initialized cell.
+        pub const fn with_value(value: T) -> OnceCell<T> {
+            OnceCell(Imp::with_value(value))
+        }
+
         /// Gets the reference to the underlying value.
         ///
         /// Returns `None` if the cell is empty, or being initialized. This
@@ -832,9 +893,51 @@ pub mod sync {
             }
         }
 
+        /// Gets the reference to the underlying value, blocking the current
+        /// thread until it is set.
+        ///
+        /// ```
+        /// use once_cell::sync::OnceCell;
+        ///
+        /// let mut cell = std::sync::Arc::new(OnceCell::new());
+        /// let t = std::thread::spawn({
+        ///     let cell = std::sync::Arc::clone(&cell);
+        ///     move || cell.set(92).unwrap()
+        /// });
+        ///
+        /// // Returns immediately, but might return None.
+        /// let _value_or_none = cell.get();
+        ///
+        /// // Will return 92, but might block until the other thread does `.set`.
+        /// let value: &u32 = cell.wait();
+        /// assert_eq!(*value, 92);
+        /// t.join().unwrap();;
+        /// ```
+        pub fn wait(&self) -> &T {
+            if !self.0.is_initialized() {
+                self.0.wait()
+            }
+            debug_assert!(self.0.is_initialized());
+            // Safe b/c of the wait call above and the fact that we didn't
+            // relinquish our borrow.
+            unsafe { self.get_unchecked() }
+        }
+
         /// Gets the mutable reference to the underlying value.
         ///
         /// Returns `None` if the cell is empty.
+        ///
+        /// This method is allowed to violate the invariant of writing to a `OnceCell`
+        /// at most once because it requires `&mut` access to `self`. As with all
+        /// interior mutability, `&mut` access permits arbitrary modification:
+        ///
+        /// ```
+        /// use once_cell::sync::OnceCell;
+        ///
+        /// let mut cell: OnceCell<u32> = OnceCell::new();
+        /// cell.set(92).unwrap();
+        /// cell = OnceCell::new();
+        /// ```
         pub fn get_mut(&mut self) -> Option<&mut T> {
             self.0.get_mut()
         }
@@ -897,7 +1000,7 @@ pub mod sync {
         /// ```
         pub fn try_insert(&self, value: T) -> Result<&T, (&T, T)> {
             let mut value = Some(value);
-            let res = self.get_or_init(|| value.take().unwrap());
+            let res = self.get_or_init(|| unsafe { take_unchecked(&mut value) });
             match value {
                 None => Ok(res),
                 Some(value) => Err((res, value)),
@@ -999,6 +1102,18 @@ pub mod sync {
         /// assert_eq!(cell.take(), Some("hello".to_string()));
         /// assert_eq!(cell.get(), None);
         /// ```
+        ///
+        /// This method is allowed to violate the invariant of writing to a `OnceCell`
+        /// at most once because it requires `&mut` access to `self`. As with all
+        /// interior mutability, `&mut` access permits arbitrary modification:
+        ///
+        /// ```
+        /// use once_cell::sync::OnceCell;
+        ///
+        /// let mut cell: OnceCell<u32> = OnceCell::new();
+        /// cell.set(92).unwrap();
+        /// cell = OnceCell::new();
+        /// ```
         pub fn take(&mut self) -> Option<T> {
             mem::replace(self, Self::default()).into_inner()
         }
@@ -1068,7 +1183,7 @@ pub mod sync {
     }
 
     // We never create a `&F` from a `&Lazy<T, F>` so it is fine to not impl
-    // `Sync` for `F`. we do create a `&mut Option<F>` in `force`, but this is
+    // `Sync` for `F`. We do create a `&mut Option<F>` in `force`, but this is
     // properly synchronized, so it only happens once so it also does not
     // contribute to this impl.
     unsafe impl<T, F: Send> Sync for Lazy<T, F> where OnceCell<T>: Sync {}
@@ -1115,6 +1230,23 @@ pub mod sync {
                 Some(f) => f(),
                 None => panic!("Lazy instance has previously been poisoned"),
             })
+        }
+
+        /// Gets the reference to the result of this lazy value if
+        /// it was initialized, otherwise returns `None`.
+        ///
+        /// # Example
+        /// ```
+        /// use once_cell::sync::Lazy;
+        ///
+        /// let lazy = Lazy::new(|| 92);
+        ///
+        /// assert_eq!(Lazy::get(&lazy), None);
+        /// assert_eq!(&*lazy, &92);
+        /// assert_eq!(Lazy::get(&lazy), Some(&92));
+        /// ```
+        pub fn get(this: &Lazy<T, F>) -> Option<&T> {
+            this.cell.get()
         }
     }
 

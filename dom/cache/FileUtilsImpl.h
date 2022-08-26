@@ -9,15 +9,19 @@
 
 #include "mozilla/dom/FlippedOnce.h"
 #include "mozilla/dom/cache/FileUtils.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 template <typename Func>
-nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
-                           const Func& aHandleFileFunc,
-                           const bool aCanRemoveFiles, const bool aTrackQuota) {
+nsresult BodyTraverseFiles(
+    const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata, nsIFile& aBodyDir,
+    const Func& aHandleFileFunc, const bool aCanRemoveFiles,
+    const bool aTrackQuota) {
+  // XXX This assertion proves that we can remove aTrackQuota and just check
+  // aClientMetadata.isSome()
+  MOZ_DIAGNOSTIC_ASSERT_IF(aTrackQuota, aDirectoryMetadata);
+
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
   {
     nsCOMPtr<nsIFile> parentFile;
@@ -36,7 +40,7 @@ nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
   FlippedOnce<true> isEmpty;
   QM_TRY(quota::CollectEachFile(
       aBodyDir,
-      [&isEmpty, &aQuotaInfo, aTrackQuota, &aHandleFileFunc,
+      [&isEmpty, &aDirectoryMetadata, aTrackQuota, &aHandleFileFunc,
        aCanRemoveFiles](const nsCOMPtr<nsIFile>& file) -> Result<Ok, nsresult> {
         QM_TRY_INSPECT(const auto& dirEntryKind, quota::GetDirEntryKind(*file));
 
@@ -44,7 +48,7 @@ nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
           case quota::nsIFileKind::ExistsAsDirectory: {
             // If it's a directory somehow, try to remove it and move on
             DebugOnly<nsresult> result = RemoveNsIFileRecursively(
-                aQuotaInfo, *file, /* aTrackQuota */ false);
+                aDirectoryMetadata, *file, /* aTrackQuota */ false);
             MOZ_ASSERT(NS_SUCCEEDED(result));
             break;
           }
@@ -58,7 +62,7 @@ nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
             if (StringEndsWith(leafName, ".tmp"_ns)) {
               if (aCanRemoveFiles) {
                 DebugOnly<nsresult> result =
-                    RemoveNsIFile(aQuotaInfo, *file, aTrackQuota);
+                    RemoveNsIFile(aDirectoryMetadata, *file, aTrackQuota);
                 MOZ_ASSERT(NS_SUCCEEDED(result));
                 return Ok{};
               }
@@ -70,8 +74,8 @@ nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
 
               // If its not, try to remove it and move on.
               if (!maybeEndingOk) {
-                DebugOnly<nsresult> result =
-                    RemoveNsIFile(aQuotaInfo, *file, /* aTrackQuota */ false);
+                DebugOnly<nsresult> result = RemoveNsIFile(
+                    aDirectoryMetadata, *file, /* aTrackQuota */ false);
                 MOZ_ASSERT(NS_SUCCEEDED(result));
                 return Ok{};
               }
@@ -96,16 +100,14 @@ nsresult BodyTraverseFiles(const QuotaInfo& aQuotaInfo, nsIFile& aBodyDir,
       }));
 
   if (isEmpty && aCanRemoveFiles) {
-    DebugOnly<nsresult> result =
-        RemoveNsIFileRecursively(aQuotaInfo, aBodyDir, /* aTrackQuota */ false);
+    DebugOnly<nsresult> result = RemoveNsIFileRecursively(
+        aDirectoryMetadata, aBodyDir, /* aTrackQuota */ false);
     MOZ_ASSERT(NS_SUCCEEDED(result));
   }
 
   return NS_OK;
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_FileUtilsImpl_h

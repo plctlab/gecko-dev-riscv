@@ -67,7 +67,7 @@ class InitExpr {
   // Evaluate the constant expresssion with the given context. This may only
   // fail due to an OOM, as all InitExpr's are required to have been validated.
   bool evaluate(JSContext* cx, const ValVector& globalImportValues,
-                HandleWasmInstanceObject instanceObj,
+                Handle<WasmInstanceObject*> instanceObj,
                 MutableHandleVal result) const;
 
   bool isLiteral() const { return kind_ == InitExprKind::Literal; }
@@ -90,7 +90,8 @@ class InitExpr {
   // Allow explicit cloning
   [[nodiscard]] bool clone(const InitExpr& src);
 
-  WASM_DECLARE_SERIALIZABLE(InitExpr)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+  WASM_DECLARE_FRIEND_SERIALIZE(InitExpr);
 };
 
 }  // namespace wasm

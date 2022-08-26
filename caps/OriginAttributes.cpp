@@ -228,7 +228,7 @@ void OriginAttributes::CreateSuffix(nsACString& aStr) const {
   if (!mGeckoViewSessionContextId.IsEmpty()) {
     nsAutoString sanitizedGeckoViewUserContextId(mGeckoViewSessionContextId);
     sanitizedGeckoViewUserContextId.ReplaceChar(
-        dom::quota::QuotaManager::kReplaceChars, kSanitizedChar);
+        dom::quota::QuotaManager::kReplaceChars16, kSanitizedChar);
 
     params.Set(u"geckoViewUserContextId"_ns, sanitizedGeckoViewUserContextId);
   }
@@ -242,7 +242,7 @@ void OriginAttributes::CreateSuffix(nsACString& aStr) const {
 
   aStr.Truncate();
 
-  params.Serialize(value);
+  params.Serialize(value, true);
   if (!value.IsEmpty()) {
     aStr.AppendLiteral("^");
     aStr.Append(NS_ConvertUTF16toUTF8(value));

@@ -58,12 +58,12 @@ class LoadInfo final : public nsILoadInfo {
   friend already_AddRefed<T> mozilla::MakeAndAddRef(Args&&... aArgs);
 
  public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSILOADINFO
 
   // Used for TYPE_DOCUMENT load.
   static already_AddRefed<LoadInfo> CreateForDocument(
-      dom::CanonicalBrowsingContext* aBrowsingContext,
+      dom::CanonicalBrowsingContext* aBrowsingContext, nsIURI* aURI,
       nsIPrincipal* aTriggeringPrincipal,
       const OriginAttributes& aOriginAttributes, nsSecurityFlags aSecurityFlags,
       uint32_t aSandboxFlags);
@@ -88,19 +88,21 @@ class LoadInfo final : public nsILoadInfo {
                Maybe<mozilla::dom::ClientInfo>(),
            const Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController =
                Maybe<mozilla::dom::ServiceWorkerDescriptor>(),
-           uint32_t aSandboxFlags = 0);
+           uint32_t aSandboxFlags = 0,
+           bool aSkipCheckForBrokenURLOrZeroSized = 0);
 
   // Constructor used for TYPE_DOCUMENT loads which have a different
   // loadingContext than other loads. This ContextForTopLevelLoad is
   // only used for content policy checks.
-  LoadInfo(nsPIDOMWindowOuter* aOuterWindow, nsIPrincipal* aTriggeringPrincipal,
+  LoadInfo(nsPIDOMWindowOuter* aOuterWindow, nsIURI* aURI,
+           nsIPrincipal* aTriggeringPrincipal,
            nsISupports* aContextForTopLevelLoad, nsSecurityFlags aSecurityFlags,
            uint32_t aSandboxFlags);
 
  private:
   // Use factory function CreateForDocument
   // Used for TYPE_DOCUMENT load.
-  LoadInfo(dom::CanonicalBrowsingContext* aBrowsingContext,
+  LoadInfo(dom::CanonicalBrowsingContext* aBrowsingContext, nsIURI* aURI,
            nsIPrincipal* aTriggeringPrincipal,
            const OriginAttributes& aOriginAttributes,
            nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags);
@@ -178,6 +180,13 @@ class LoadInfo final : public nsILoadInfo {
     mCspToInherit = aCspToInherit;
   }
 
+  bool HasIsThirdPartyContextToTopWindowSet() {
+    return mIsThirdPartyContextToTopWindow.isSome();
+  }
+  void ClearIsThirdPartyContextToTopWindow() {
+    mIsThirdPartyContextToTopWindow.reset();
+  }
+
  private:
   // private constructor that is only allowed to be called from within
   // HttpChannelParent and FTPChannelParent declared as friends undeneath.
@@ -204,8 +213,9 @@ class LoadInfo final : public nsILoadInfo {
       bool aForceInheritPrincipalDropped, uint64_t aInnerWindowID,
       uint64_t aBrowsingContextID, uint64_t aFrameBrowsingContextID,
       bool aInitialSecurityCheckDone, bool aIsThirdPartyContext,
-      bool aIsThirdPartyContextToTopWindow, bool aIsFormSubmission,
-      bool aSendCSPViolationEvents, const OriginAttributes& aOriginAttributes,
+      const Maybe<bool>& aIsThirdPartyContextToTopWindow,
+      bool aIsFormSubmission, bool aSendCSPViolationEvents,
+      const OriginAttributes& aOriginAttributes,
       RedirectHistoryArray&& aRedirectChainIncludingInternalRedirects,
       RedirectHistoryArray&& aRedirectChain,
       nsTArray<nsCOMPtr<nsIPrincipal>>&& aAncestorPrincipals,
@@ -222,6 +232,7 @@ class LoadInfo final : public nsILoadInfo {
       bool aIsMetaRefresh, uint32_t aRequestBlockingReason,
       nsINode* aLoadingContext,
       nsILoadInfo::CrossOriginEmbedderPolicy aLoadingEmbedderPolicy,
+      bool aIsOriginTrialCoepCredentiallessEnabledForTopLevel,
       nsIURI* aUnstrippedURI);
   LoadInfo(const LoadInfo& rhs);
 
@@ -233,7 +244,7 @@ class LoadInfo final : public nsILoadInfo {
       const Maybe<mozilla::net::LoadInfoArgs>& aLoadInfoArgs,
       nsINode* aCspToInheritLoadingContext, net::LoadInfo** outLoadInfo);
 
-  ~LoadInfo() = default;
+  ~LoadInfo();
 
   void ComputeIsThirdPartyContext(nsPIDOMWindowOuter* aOuterWindow);
   void ComputeIsThirdPartyContext(dom::WindowGlobalParent* aGlobal);
@@ -253,6 +264,7 @@ class LoadInfo final : public nsILoadInfo {
   void UpdateFrameBrowsingContextID(uint64_t aFrameBrowsingContextID) {
     mFrameBrowsingContextID = aFrameBrowsingContextID;
   }
+  MOZ_NEVER_INLINE void ReleaseMembers();
 
   // if you add a member, please also update the copy constructor and consider
   // if it should be merged from parent channel through
@@ -262,6 +274,7 @@ class LoadInfo final : public nsILoadInfo {
   nsCOMPtr<nsIPrincipal> mPrincipalToInherit;
   nsCOMPtr<nsIPrincipal> mTopLevelPrincipal;
   nsCOMPtr<nsIURI> mResultPrincipalURI;
+  nsCOMPtr<nsIURI> mChannelCreationOriginalURI;
   nsCOMPtr<nsICSPEventListener> mCSPEventListener;
   nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
   nsCOMPtr<nsIContentSecurityPolicy> mCspToInherit;
@@ -297,7 +310,7 @@ class LoadInfo final : public nsILoadInfo {
   bool mInitialSecurityCheckDone = false;
   // NB: TYPE_DOCUMENT implies !third-party.
   bool mIsThirdPartyContext = false;
-  bool mIsThirdPartyContextToTopWindow = true;
+  Maybe<bool> mIsThirdPartyContextToTopWindow;
   bool mIsFormSubmission = false;
   bool mSendCSPViolationEvents = true;
   OriginAttributes mOriginAttributes;
@@ -319,6 +332,7 @@ class LoadInfo final : public nsILoadInfo {
   uint32_t mHttpsOnlyStatus = nsILoadInfo::HTTPS_ONLY_UNINITIALIZED;
   bool mHasValidUserGestureActivation = false;
   bool mAllowDeprecatedSystemRequests = false;
+  bool mIsUserTriggeredSave = false;
   bool mIsInDevToolsContext = false;
   bool mParserCreatedScript = false;
   nsILoadInfo::StoragePermissionState mStoragePermission =
@@ -337,6 +351,8 @@ class LoadInfo final : public nsILoadInfo {
   // See nsILoadInfo.isFromObjectOrEmbed
   bool mIsFromObjectOrEmbed = false;
 
+  bool mSkipCheckForBrokenURLOrZeroSized = false;
+
   // The cross origin embedder policy that the loading need to respect.
   // If the value is nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP, CORP checking
   // must be performed for the loading.
@@ -344,8 +360,14 @@ class LoadInfo final : public nsILoadInfo {
   nsILoadInfo::CrossOriginEmbedderPolicy mLoadingEmbedderPolicy =
       nsILoadInfo::EMBEDDER_POLICY_NULL;
 
+  bool mIsOriginTrialCoepCredentiallessEnabledForTopLevel = false;
+
   nsCOMPtr<nsIURI> mUnstrippedURI;
 };
+
+// This is exposed solely for testing purposes and should not be used outside of
+// LoadInfo
+already_AddRefed<nsIPrincipal> CreateTruncatedPrincipal(nsIPrincipal*);
 
 }  // namespace net
 }  // namespace mozilla

@@ -9,6 +9,7 @@
 #include "mozilla/Encoding.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "nsContentUtils.h"
+
 #include <stdint.h>
 
 namespace mozilla::dom {
@@ -43,13 +44,15 @@ void TextDecoder::InitWithEncoding(NotNull<const Encoding*> aEncoding,
   }
 }
 
-void TextDecoder::Decode(Span<const uint8_t> aInput, const bool aStream,
-                         nsAString& aOutDecodedString, ErrorResult& aRv) {
+void TextDecoderCommon::DecodeNative(Span<const uint8_t> aInput,
+                                     const bool aStream,
+                                     nsAString& aOutDecodedString,
+                                     ErrorResult& aRv) {
   aOutDecodedString.Truncate();
 
-  CheckedInt<size_t> needed = mDecoder->MaxUTF16BufferLength(aInput.Length());
-  if (!needed.isValid() ||
-      needed.value() > std::numeric_limits<nsAString::size_type>::max()) {
+  CheckedInt<nsAString::size_type> needed =
+      mDecoder->MaxUTF16BufferLength(aInput.Length());
+  if (!needed.isValid()) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return;
   }
@@ -63,22 +66,20 @@ void TextDecoder::Decode(Span<const uint8_t> aInput, const bool aStream,
   uint32_t result;
   size_t read;
   size_t written;
-  bool hadErrors;
   if (mFatal) {
-    Tie(result, read, written) =
+    std::tie(result, read, written) =
         mDecoder->DecodeToUTF16WithoutReplacement(aInput, *output, !aStream);
     if (result != kInputEmpty) {
       aRv.ThrowTypeError<MSG_DOM_DECODING_FAILED>();
       return;
     }
   } else {
-    Tie(result, read, written, hadErrors) =
+    std::tie(result, read, written, std::ignore) =
         mDecoder->DecodeToUTF16(aInput, *output, !aStream);
   }
   MOZ_ASSERT(result == kInputEmpty);
   MOZ_ASSERT(read == aInput.Length());
   MOZ_ASSERT(written <= aOutDecodedString.Length());
-  Unused << hadErrors;
 
   if (!aOutDecodedString.SetLength(written, fallible)) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
@@ -100,7 +101,7 @@ void TextDecoder::Decode(const Optional<ArrayBufferViewOrArrayBuffer>& aBuffer,
                          const TextDecodeOptions& aOptions,
                          nsAString& aOutDecodedString, ErrorResult& aRv) {
   if (!aBuffer.WasPassed()) {
-    Decode(nullptr, aOptions.mStream, aOutDecodedString, aRv);
+    DecodeNative(nullptr, aOptions.mStream, aOutDecodedString, aRv);
     return;
   }
   const ArrayBufferViewOrArrayBuffer& buf = aBuffer.Value();
@@ -116,10 +117,10 @@ void TextDecoder::Decode(const Optional<ArrayBufferViewOrArrayBuffer>& aBuffer,
     data = buf.GetAsArrayBuffer().Data();
     length = buf.GetAsArrayBuffer().Length();
   }
-  Decode(Span(data, length), aOptions.mStream, aOutDecodedString, aRv);
+  DecodeNative(Span(data, length), aOptions.mStream, aOutDecodedString, aRv);
 }
 
-void TextDecoder::GetEncoding(nsAString& aEncoding) {
+void TextDecoderCommon::GetEncoding(nsAString& aEncoding) {
   CopyASCIItoUTF16(mEncoding, aEncoding);
   nsContentUtils::ASCIIToLower(aEncoding);
 }

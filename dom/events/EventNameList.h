@@ -238,7 +238,6 @@ EVENT(securitypolicyviolation, eSecurityPolicyViolation, EventNameType_All,
 EVENT(seeked, eSeeked, EventNameType_HTML, eBasicEventClass)
 EVENT(seeking, eSeeking, EventNameType_HTML, eBasicEventClass)
 EVENT(select, eFormSelect, EventNameType_HTMLXUL, eBasicEventClass)
-EVENT(show, eShow, EventNameType_HTML, eBasicEventClass)
 EVENT(slotchange, eSlotChange, EventNameType_All, eBasicEventClass)
 EVENT(stalled, eStalled, EventNameType_HTML, eBasicEventClass)
 EVENT(start, eMarqueeStart, EventNameType_HTMLMarqueeOnly, eBasicEventClass)
@@ -359,6 +358,9 @@ DOCUMENT_ONLY_EVENT(visibilitychange, eVisibilityChange, EventNameType_HTMLXUL,
 NON_IDL_EVENT(MozMouseHittest, eMouseHitTest, EventNameType_None,
               eMouseEventClass)
 
+NON_IDL_EVENT(MozMouseExploreByTouch, eMouseExploreByTouch, EventNameType_None,
+              eMouseEventClass)
+
 NON_IDL_EVENT(DOMAttrModified, eLegacyAttrModified, EventNameType_HTMLXUL,
               eMutationEventClass)
 NON_IDL_EVENT(DOMCharacterDataModified, eLegacyCharacterDataModified,
@@ -421,6 +423,8 @@ NON_IDL_EVENT(commandupdate, eXULCommandUpdate, EventNameType_XUL,
 NON_IDL_EVENT(overflow, eScrollPortOverflow, EventNameType_XUL,
               eBasicEventClass)
 NON_IDL_EVENT(underflow, eScrollPortUnderflow, EventNameType_XUL,
+              eBasicEventClass)
+NON_IDL_EVENT(systemstatusbarclick, eXULSystemStatusBarClick, EventNameType_XUL,
               eBasicEventClass)
 
 // Various SVG events

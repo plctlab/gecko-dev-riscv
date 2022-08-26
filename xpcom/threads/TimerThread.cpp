@@ -24,6 +24,108 @@
 
 using namespace mozilla;
 
+// Uncomment the following line to enable runtime stats during development.
+//#define TIMERS_RUNTIME_STATS
+
+#ifdef TIMERS_RUNTIME_STATS
+// This class gathers durations and displays some basic stats when destroyed.
+// It is intended to be used as a static variable (see `AUTO_TIMERS_STATS`
+// below), to display stats at the end of the program.
+class StaticTimersStats {
+ public:
+  explicit StaticTimersStats(const char* aName) : mName(aName) {}
+
+  ~StaticTimersStats() {
+    // Using unsigned long long for computations and printfs.
+    using ULL = unsigned long long;
+    ULL n = static_cast<ULL>(mCount);
+    if (n == 0) {
+      printf("[%d] Timers stats `%s`: (nothing)\n",
+             int(profiler_current_process_id().ToNumber()), mName);
+    } else if (ULL sumNs = static_cast<ULL>(mSumDurationsNs); sumNs == 0) {
+      printf("[%d] Timers stats `%s`: %llu\n",
+             int(profiler_current_process_id().ToNumber()), mName, n);
+    } else {
+      printf("[%d] Timers stats `%s`: %llu ns / %llu = %llu ns, max %llu ns\n",
+             int(profiler_current_process_id().ToNumber()), mName, sumNs, n,
+             sumNs / n, static_cast<ULL>(mLongestDurationNs));
+    }
+  }
+
+  void AddDurationFrom(TimeStamp aStart) {
+    // Duration between aStart and now, rounded to the nearest nanosecond.
+    DurationNs duration = static_cast<DurationNs>(
+        (TimeStamp::Now() - aStart).ToMicroseconds() * 1000 + 0.5);
+    mSumDurationsNs += duration;
+    ++mCount;
+    // Update mLongestDurationNs if this one is longer.
+    for (;;) {
+      DurationNs longest = mLongestDurationNs;
+      if (MOZ_LIKELY(longest >= duration)) {
+        // This duration is not the longest, nothing to do.
+        break;
+      }
+      if (MOZ_LIKELY(mLongestDurationNs.compareExchange(longest, duration))) {
+        // Successfully updated `mLongestDurationNs` with the new value.
+        break;
+      }
+      // Otherwise someone else just updated `mLongestDurationNs`, we need to
+      // try again by looping.
+    }
+  }
+
+  void AddCount() {
+    MOZ_ASSERT(mSumDurationsNs == 0, "Don't mix counts and durations");
+    ++mCount;
+  }
+
+ private:
+  using DurationNs = uint64_t;
+  using Count = uint32_t;
+
+  Atomic<DurationNs> mSumDurationsNs{0};
+  Atomic<DurationNs> mLongestDurationNs{0};
+  Atomic<Count> mCount{0};
+  const char* mName;
+};
+
+// RAII object that measures its scoped lifetime duration and reports it to a
+// `StaticTimersStats`.
+class MOZ_RAII AutoTimersStats {
+ public:
+  explicit AutoTimersStats(StaticTimersStats& aStats)
+      : mStats(aStats), mStart(TimeStamp::Now()) {}
+
+  ~AutoTimersStats() { mStats.AddDurationFrom(mStart); }
+
+ private:
+  StaticTimersStats& mStats;
+  TimeStamp mStart;
+};
+
+// Macro that should be used to collect basic statistics from measurements of
+// block durations, from where this macro is, until the end of its enclosing
+// scope. The name is used in the static variable name and when displaying stats
+// at the end of the program; Another location could use the same name but their
+// stats will not be combined, so use different name if these locations should
+// be distinguished.
+#  define AUTO_TIMERS_STATS(name)                  \
+    static ::StaticTimersStats sStat##name(#name); \
+    ::AutoTimersStats autoStat##name(sStat##name);
+
+// This macro only counts the number of times it's used, not durations.
+// Don't mix with AUTO_TIMERS_STATS!
+#  define COUNT_TIMERS_STATS(name)                 \
+    static ::StaticTimersStats sStat##name(#name); \
+    sStat##name.AddCount();
+
+#else  // TIMERS_RUNTIME_STATS
+
+#  define AUTO_TIMERS_STATS(name)
+#  define COUNT_TIMERS_STATS(name)
+
+#endif  // TIMERS_RUNTIME_STATS else
+
 NS_IMPL_ISUPPORTS_INHERITED(TimerThread, Runnable, nsIObserver)
 
 TimerThread::TimerThread()
@@ -41,8 +143,6 @@ TimerThread::~TimerThread() {
 
   NS_ASSERTION(mTimers.IsEmpty(), "Timers remain in TimerThread::~TimerThread");
 }
-
-nsresult TimerThread::InitLocks() { return NS_OK; }
 
 namespace {
 
@@ -96,8 +196,8 @@ class TimerEventAllocator {
     FreeEntry* mNext;
   };
 
-  ArenaAllocator<4096> mPool;
-  FreeEntry* mFirstFree;
+  ArenaAllocator<4096> mPool MOZ_GUARDED_BY(mMonitor);
+  FreeEntry* mFirstFree MOZ_GUARDED_BY(mMonitor);
   mozilla::Monitor mMonitor;
 
  public:
@@ -139,7 +239,7 @@ class nsTimerEvent final : public CancelableRunnable {
     sAllocatorUsers++;
 
     if (MOZ_LOG_TEST(GetTimerLog(), LogLevel::Debug) ||
-        profiler_can_accept_markers()) {
+        profiler_thread_is_being_profiled_for_markers(mTimerThreadId)) {
       mInitTime = TimeStamp::Now();
     }
   }
@@ -250,7 +350,7 @@ nsTimerEvent::Run() {
              (now - mInitTime).ToMilliseconds()));
   }
 
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers(mTimerThreadId)) {
     nsAutoCString name;
     mTimer->GetName(name);
     PROFILER_MARKER_TEXT(
@@ -427,28 +527,7 @@ TimerThread::Run() {
           // on the TimerThread instead of on the thread it targets.
           {
             LogTimerEvent::Run run(timerRef.get());
-            timerRef = PostTimerEvent(timerRef.forget());
-          }
-
-          if (timerRef) {
-            // We got our reference back due to an error.
-            // Unhook the nsRefPtr, and release manually so we can get the
-            // refcount.
-            nsrefcnt rc = timerRef.forget().take()->Release();
-            (void)rc;
-
-            // The nsITimer interface requires that its users keep a reference
-            // to the timers they use while those timers are initialized but
-            // have not yet fired.  If this ever happens, it is a bug in the
-            // code that created and used the timer.
-            //
-            // Further, note that this should never happen even with a
-            // misbehaving user, because nsTimerImpl::Release checks for a
-            // refcount of 1 with an armed timer (a timer whose only reference
-            // is from the timer thread) and when it hits this will remove the
-            // timer from the timer thread and thus destroy the last reference,
-            // preventing this situation from occurring.
-            MOZ_ASSERT(rc != 0, "destroyed timer off its target thread!");
+            PostTimerEvent(timerRef.forget());
           }
 
           if (mShutdown) {
@@ -473,7 +552,7 @@ TimerThread::Run() {
         // resolution. We use mAllowedEarlyFiringMicroseconds, calculated
         // before, to do the optimal rounding (i.e., of how to decide what
         // interval is so small we should not wait at all).
-        double microseconds = (timeout - now).ToMilliseconds() * 1000;
+        double microseconds = (timeout - now).ToMicroseconds();
 
         if (ChaosMode::isActive(ChaosFeature::TimerScheduling)) {
           // The mean value of sFractions must be 1 to ensure that
@@ -524,6 +603,7 @@ TimerThread::Run() {
 nsresult TimerThread::AddTimer(nsTimerImpl* aTimer,
                                const MutexAutoLock& aProofOfLock) {
   MonitorAutoLock lock(mMonitor);
+  AUTO_TIMERS_STATS(TimerThread_AddTimer);
 
   if (!aTimer->mEventTarget) {
     return NS_ERROR_NOT_INITIALIZED;
@@ -539,13 +619,20 @@ nsresult TimerThread::AddTimer(nsTimerImpl* aTimer,
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  // Awaken the timer thread.
-  if (mWaiting && mTimers[0]->Value() == aTimer) {
+  // Awaken the timer thread if:
+  // - This is the new front timer, which may require the TimerThread to wake up
+  //   earlier than previously planned. AND/OR
+  // - The delay is 0, which is usually meant to be run as soon as possible.
+  //   Note: Even if the thread is scheduled to wake up now/soon, on some
+  //   systems there could be a significant delay compared to notifying, which
+  //   is almost immediate; and some users of 0-delay depend on it being this
+  //   fast!
+  if (mWaiting && (mTimers[0]->Value() == aTimer || aTimer->mDelay.IsZero())) {
     mNotified = true;
     mMonitor.Notify();
   }
 
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers(mProfilerThreadId)) {
     struct TimerMarker {
       static constexpr Span<const char> MarkerTypeName() {
         return MakeStringSpan("Timer");
@@ -597,6 +684,7 @@ nsresult TimerThread::AddTimer(nsTimerImpl* aTimer,
 nsresult TimerThread::RemoveTimer(nsTimerImpl* aTimer,
                                   const MutexAutoLock& aProofOfLock) {
   MonitorAutoLock lock(mMonitor);
+  AUTO_TIMERS_STATS(TimerThread_RemoveTimer);
 
   // Remove the timer from our array.  Tell callers that aTimer was not found
   // by returning NS_ERROR_NOT_AVAILABLE.
@@ -605,13 +693,16 @@ nsresult TimerThread::RemoveTimer(nsTimerImpl* aTimer,
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  // Awaken the timer thread.
-  if (mWaiting) {
-    mNotified = true;
-    mMonitor.Notify();
-  }
+  // Note: The timer thread is *not* awoken.
+  // The removed-timer entry is just left null, and will be reused (by a new or
+  // re-set timer) or discarded (when the timer thread logic handles non-null
+  // timers around it).
+  // If this was the front timer, and in the unlikely case that its entry is not
+  // soon reused by a re-set timer, the timer thread will wake up at the
+  // previously-scheduled time, but will quickly notice that there is no actual
+  // pending timer, and will restart its wait until the following real timeout.
 
-  if (profiler_can_accept_markers()) {
+  if (profiler_thread_is_being_profiled_for_markers(mProfilerThreadId)) {
     nsAutoCString name;
     aTimer->GetName(name, aProofOfLock);
 
@@ -630,6 +721,7 @@ nsresult TimerThread::RemoveTimer(nsTimerImpl* aTimer,
 TimeStamp TimerThread::FindNextFireTimeForCurrentThread(TimeStamp aDefault,
                                                         uint32_t aSearchBound) {
   MonitorAutoLock lock(mMonitor);
+  AUTO_TIMERS_STATS(TimerThread_FindNextFireTimeForCurrentThread);
   TimeStamp timeStamp = aDefault;
   uint32_t index = 0;
 
@@ -701,8 +793,11 @@ TimeStamp TimerThread::FindNextFireTimeForCurrentThread(TimeStamp aDefault,
 }
 
 // This function must be called from within a lock
+// Also: we hold the mutex for the nsTimerImpl.
 bool TimerThread::AddTimerInternal(nsTimerImpl* aTimer) {
   mMonitor.AssertCurrentThreadOwns();
+  aTimer->mMutex.AssertCurrentThreadOwns();
+  AUTO_TIMERS_STATS(TimerThread_AddTimerInternal);
   if (mShutdown) {
     return false;
   }
@@ -722,17 +817,28 @@ bool TimerThread::AddTimerInternal(nsTimerImpl* aTimer) {
   return true;
 }
 
+// This function must be called from within a lock
+// Also: we hold the mutex for the nsTimerImpl.
 bool TimerThread::RemoveTimerInternal(nsTimerImpl* aTimer) {
   mMonitor.AssertCurrentThreadOwns();
-  if (!aTimer || !aTimer->mHolder) {
+  aTimer->mMutex.AssertCurrentThreadOwns();
+  AUTO_TIMERS_STATS(TimerThread_RemoveTimerInternal);
+  if (!aTimer) {
+    COUNT_TIMERS_STATS(TimerThread_RemoveTimerInternal_nullptr);
     return false;
   }
+  if (!aTimer->mHolder) {
+    COUNT_TIMERS_STATS(TimerThread_RemoveTimerInternal_not_in_list);
+    return false;
+  }
+  AUTO_TIMERS_STATS(TimerThread_RemoveTimerInternal_in_list);
   aTimer->mHolder->Forget(aTimer);
   return true;
 }
 
 void TimerThread::RemoveLeadingCanceledTimersInternal() {
   mMonitor.AssertCurrentThreadOwns();
+  AUTO_TIMERS_STATS(TimerThread_RemoveLeadingCanceledTimersInternal);
 
   // Move all canceled timers from the front of the list to
   // the back of the list using std::pop_heap().  We do this
@@ -756,19 +862,20 @@ void TimerThread::RemoveLeadingCanceledTimersInternal() {
 
 void TimerThread::RemoveFirstTimerInternal() {
   mMonitor.AssertCurrentThreadOwns();
+  AUTO_TIMERS_STATS(TimerThread_RemoveFirstTimerInternal);
   MOZ_ASSERT(!mTimers.IsEmpty());
   std::pop_heap(mTimers.begin(), mTimers.end(), Entry::UniquePtrLessThan);
   mTimers.RemoveLastElement();
 }
 
-already_AddRefed<nsTimerImpl> TimerThread::PostTimerEvent(
-    already_AddRefed<nsTimerImpl> aTimerRef) {
+void TimerThread::PostTimerEvent(already_AddRefed<nsTimerImpl> aTimerRef) {
   mMonitor.AssertCurrentThreadOwns();
+  AUTO_TIMERS_STATS(TimerThread_PostTimerEvent);
 
   RefPtr<nsTimerImpl> timer(aTimerRef);
   if (!timer->mEventTarget) {
     NS_ERROR("Attempt to post timer event to NULL event target");
-    return timer.forget();
+    return;
   }
 
   // XXX we may want to reuse this nsTimerEvent in the case of repeating timers.
@@ -783,26 +890,28 @@ already_AddRefed<nsTimerImpl> TimerThread::PostTimerEvent(
 
   void* p = nsTimerEvent::operator new(sizeof(nsTimerEvent));
   if (!p) {
-    return timer.forget();
+    return;
   }
   RefPtr<nsTimerEvent> event =
       ::new (KnownNotNull, p) nsTimerEvent(timer.forget(), mProfilerThreadId);
 
   nsresult rv;
   {
-    // We release mMonitor around the Dispatch because if this timer is targeted
-    // at the TimerThread we'll deadlock.
+    // We release mMonitor around the Dispatch because if the Dispatch interacts
+    // with the timer API we'll deadlock.
     MonitorAutoUnlock unlock(mMonitor);
     rv = target->Dispatch(event, NS_DISPATCH_NORMAL);
+    if (NS_FAILED(rv)) {
+      timer = event->ForgetTimer();
+      // We do this to avoid possible deadlock by taking the two locks in a
+      // different order than is used in RemoveTimer().  RemoveTimer() has
+      // aTimer->mMutex first.   We use timer.get() to keep static analysis
+      // happy
+      MutexAutoLock lock1(timer.get()->mMutex);
+      MonitorAutoLock lock2(mMonitor);
+      RemoveTimerInternal(timer.get());
+    }
   }
-
-  if (NS_FAILED(rv)) {
-    timer = event->ForgetTimer();
-    RemoveTimerInternal(timer);
-    return timer.forget();
-  }
-
-  return nullptr;
 }
 
 void TimerThread::DoBeforeSleep() {
@@ -843,6 +952,7 @@ TimerThread::Observe(nsISupports* /* aSubject */, const char* aTopic,
   return NS_OK;
 }
 
-uint32_t TimerThread::AllowedEarlyFiringMicroseconds() const {
+uint32_t TimerThread::AllowedEarlyFiringMicroseconds() {
+  MonitorAutoLock lock(mMonitor);
   return mAllowedEarlyFiringMicroseconds;
 }

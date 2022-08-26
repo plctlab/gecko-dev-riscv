@@ -5,18 +5,18 @@
 
 var EXPORTED_SYMBOLS = ["BackgroundTasksManager"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  let ConsoleAPI = ChromeUtils.import("resource://gre/modules/Console.jsm", {})
-    .ConsoleAPI;
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   let consoleOptions = {
     // tip: set maxLogLevel to "debug" and use log.debug() to create detailed
     // messages during development. See LOG_LEVELS in Console.jsm for details.
@@ -49,11 +49,30 @@ function registerModulesProtocolHandler() {
   );
   // Log loudly so that when testing, we always actually use the
   // console logging mechanism and therefore deterministically load that code.
-  log.error(
+  lazy.log.error(
     `Substitution set: resource://testing-common aliases ${_TESTING_MODULES_URI}`
   );
 
   return true;
+}
+
+function locationsForBackgroundTaskNamed(name) {
+  const subModules = [
+    "resource:///modules", // App-specific first.
+    "resource://gre/modules", // Toolkit/general second.
+  ];
+
+  if (registerModulesProtocolHandler()) {
+    subModules.push("resource://testing-common"); // Test-only third.
+  }
+
+  let locations = [];
+  for (const subModule of subModules) {
+    let URI = `${subModule}/backgroundtasks/BackgroundTask_${name}.jsm`;
+    locations.push(URI);
+  }
+
+  return locations;
 }
 
 /**
@@ -69,22 +88,12 @@ function registerModulesProtocolHandler() {
  * not found.
  */
 function findBackgroundTaskModule(name) {
-  const subModules = [
-    "resource:///modules", // App-specific first.
-    "resource://gre/modules", // Toolkit/general second.
-  ];
-
-  if (registerModulesProtocolHandler()) {
-    subModules.push("resource://testing-common"); // Test-only third.
-  }
-
-  for (const subModule of subModules) {
-    let URI = `${subModule}/backgroundtasks/BackgroundTask_${name}.jsm`;
-    log.debug(`Looking for background task at URI: ${URI}`);
+  for (const URI of locationsForBackgroundTaskNamed(name)) {
+    lazy.log.debug(`Looking for background task at URI: ${URI}`);
 
     try {
       const taskModule = ChromeUtils.import(URI);
-      log.info(`Found background task at URI: ${URI}`);
+      lazy.log.info(`Found background task at URI: ${URI}`);
       return taskModule;
     } catch (ex) {
       if (ex.result != Cr.NS_ERROR_FILE_NOT_FOUND) {
@@ -93,22 +102,98 @@ function findBackgroundTaskModule(name) {
     }
   }
 
-  log.warn(`No backgroundtask named '${name}' registered`);
+  lazy.log.warn(`No backgroundtask named '${name}' registered`);
   throw new Components.Exception(
     `No backgroundtask named '${name}' registered`,
     Cr.NS_ERROR_NOT_AVAILABLE
   );
 }
 
-var BackgroundTasksManager = {
+class BackgroundTasksManager {
+  // Keep `BackgroundTasksManager.helpInfo` synchronized with `DevToolsStartup.helpInfo`.
+  /* eslint-disable max-len */
+  helpInfo =
+    "  --jsdebugger [<path>] Open the Browser Toolbox. Defaults to the local build\n" +
+    "                     but can be overridden by a firefox path.\n" +
+    "  --wait-for-jsdebugger Spin event loop until JS debugger connects.\n" +
+    "                     Enables debugging (some) application startup code paths.\n" +
+    "                     Only has an effect when `--jsdebugger` is also supplied.\n" +
+    "  --start-debugger-server [ws:][ <port> | <path> ] Start the devtools server on\n" +
+    "                     a TCP port or Unix domain socket path. Defaults to TCP port\n" +
+    "                     6000. Use WebSocket protocol if ws: prefix is specified.\n";
+  /* eslint-disable max-len */
+
+  handle(commandLine) {
+    const bts = Cc["@mozilla.org/backgroundtasks;1"].getService(
+      Ci.nsIBackgroundTasks
+    );
+
+    if (!bts.isBackgroundTaskMode) {
+      lazy.log.info(
+        `${Services.appinfo.processID}: !isBackgroundTaskMode, exiting`
+      );
+      return;
+    }
+
+    const name = bts.backgroundTaskName();
+    lazy.log.info(
+      `${Services.appinfo.processID}: Preparing to run background task named '${name}'` +
+        ` (with ${commandLine.length} arguments)`
+    );
+
+    if (!("@mozilla.org/devtools/startup-clh;1" in Cc)) {
+      return;
+    }
+
+    // Check this before the devtools startup flow handles and removes it.
+    const CASE_INSENSITIVE = false;
+    if (
+      commandLine.findFlag("jsdebugger", CASE_INSENSITIVE) < 0 &&
+      commandLine.findFlag("start-debugger-server", CASE_INSENSITIVE) < 0
+    ) {
+      lazy.log.info(
+        `${Services.appinfo.processID}: No devtools flag found; not preparing devtools thread`
+      );
+      return;
+    }
+
+    const waitFlag =
+      commandLine.findFlag("wait-for-jsdebugger", CASE_INSENSITIVE) != -1;
+    if (waitFlag) {
+      function onDevtoolsThreadReady(subject, topic, data) {
+        lazy.log.info(
+          `${Services.appinfo.processID}: Setting breakpoints for background task named '${name}'` +
+            ` (with ${commandLine.length} arguments)`
+        );
+
+        const threadActor = subject.wrappedJSObject;
+        threadActor.setBreakpointOnLoad(locationsForBackgroundTaskNamed(name));
+
+        Services.obs.removeObserver(onDevtoolsThreadReady, topic);
+      }
+
+      Services.obs.addObserver(onDevtoolsThreadReady, "devtools-thread-ready");
+    }
+
+    const DevToolsStartup = Cc[
+      "@mozilla.org/devtools/startup-clh;1"
+    ].getService(Ci.nsICommandLineHandler);
+    DevToolsStartup.handle(commandLine);
+  }
+
   async runBackgroundTaskNamed(name, commandLine) {
     function addMarker(markerName) {
       return ChromeUtils.addProfilerMarker(markerName, undefined, name);
     }
     addMarker("BackgroundTasksManager:AfterRunBackgroundTaskNamed");
 
-    log.info(
-      `Running background task named '${name}' (with ${commandLine.length} arguments)`
+    lazy.log.info(
+      `${Services.appinfo.processID}: Running background task named '${name}'` +
+        ` (with ${commandLine.length} arguments)`
+    );
+    lazy.log.debug(
+      `${Services.appinfo.processID}: Background task using profile` +
+        ` '${Services.dirsvc.get("ProfD", Ci.nsIFile).path}'`
     );
 
     let exitCode = BackgroundTasksManager.EXIT_CODE.NOT_FOUND;
@@ -127,30 +212,36 @@ var BackgroundTasksManager = {
       try {
         exitCode = await Promise.race([
           new Promise(resolve =>
-            setTimeout(() => {
-              log.error(`Background task named '${name}' timed out`);
+            lazy.setTimeout(() => {
+              lazy.log.error(`Background task named '${name}' timed out`);
               resolve(BackgroundTasksManager.EXIT_CODE.TIMEOUT);
             }, timeoutSec * 1000)
           ),
           taskModule.runBackgroundTask(commandLine),
         ]);
-        log.info(
+        lazy.log.info(
           `Backgroundtask named '${name}' completed with exit code ${exitCode}`
         );
       } catch (e) {
-        log.error(`Backgroundtask named '${name}' threw exception`, e);
+        lazy.log.error(`Backgroundtask named '${name}' threw exception`, e);
         exitCode = BackgroundTasksManager.EXIT_CODE.EXCEPTION;
       }
     } finally {
       addMarker("BackgroundTasksManager:AfterAwaitRunBackgroundTask");
 
-      log.info(`Invoking Services.startup.quit(..., ${exitCode})`);
+      lazy.log.info(`Invoking Services.startup.quit(..., ${exitCode})`);
       Services.startup.quit(Ci.nsIAppStartup.eForceQuit, exitCode);
     }
 
     return exitCode;
-  },
-};
+  }
+
+  classID = Components.ID("{4d48c536-e16f-4699-8f9c-add4f28f92f0}");
+  QueryInterface = ChromeUtils.generateQI([
+    "nsIBackgroundTasksManager",
+    "nsICommandLineHandler",
+  ]);
+}
 
 /**
  * Background tasks should standard exit code conventions where 0 denotes

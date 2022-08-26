@@ -58,7 +58,7 @@ const PropertyInfo gShorthandProperties[] = {
 #define CSS_PROP_PUBLIC_OR_PRIVATE(publicname_, privatename_) publicname_
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, pref_) \
   {#name_, STRINGIFY_METHOD(method_), pref_},
-#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, pref_) \
+#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, flags_, pref_) \
   {#name_, #method_, pref_},
 
 #include "mozilla/ServoCSSPropList.h"
@@ -74,7 +74,7 @@ const char* gShorthandPropertiesWithDOMProp[] = {
 
 #define CSS_PROP_LIST_EXCLUDE_INTERNAL
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, pref_) #name_,
-#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, pref_) #name_,
+#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, flags_, pref_) #name_,
 
 #include "mozilla/ServoCSSPropList.h"
 
@@ -95,15 +95,16 @@ const char* gInaccessibleProperties[] = {
     "-x-text-zoom",
     "-moz-default-appearance",
     "-moz-inert",
-    "-moz-list-reversed",  // parsed by UA sheets only
-    "-moz-script-level",   // parsed by UA sheets only
+    "-moz-script-level",  // parsed by UA sheets only
     "-moz-script-size-multiplier",
     "-moz-script-min-size",
     "-moz-math-variant",
     "-moz-math-display",                     // parsed by UA sheets only
     "-moz-top-layer",                        // parsed by UA sheets only
     "-moz-min-font-size-ratio",              // parsed by UA sheets only
+    "-moz-box-layout",                       // chrome-only internal properties
     "-moz-font-smoothing-background-color",  // chrome-only internal properties
+    "-moz-window-input-region-margin",       // chrome-only internal properties
     "-moz-window-opacity",                   // chrome-only internal properties
     "-moz-window-transform",                 // chrome-only internal properties
     "-moz-window-transform-origin",          // chrome-only internal properties

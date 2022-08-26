@@ -43,6 +43,8 @@ class PickleIterator;
 
 namespace IPC {
 class Message;
+class MessageReader;
+class MessageWriter;
 }  // namespace IPC
 
 namespace mozilla {
@@ -121,8 +123,14 @@ enum class ExplicitActiveStatus : uint8_t {
   /* Hold the audio muted state and should be used on top level browsing      \
    * contexts only */                                                         \
   FIELD(Muted, bool)                                                          \
+  /* Indicate that whether we should delay media playback, which would only   \
+     be done on an unvisited tab. And this should only be used on the top     \
+     level browsing contexts */                                               \
+  FIELD(ShouldDelayMediaFromStart, bool)                                      \
   /* See nsSandboxFlags.h for the possible flags. */                          \
   FIELD(SandboxFlags, uint32_t)                                               \
+  /* The value of SandboxFlags when the BrowsingContext is first created.     \
+   * Used for sandboxing the initial about:blank document. */                 \
   FIELD(InitialSandboxFlags, uint32_t)                                        \
   /* A non-zero unique identifier for the browser element that is hosting     \
    * this                                                                     \
@@ -151,7 +159,16 @@ enum class ExplicitActiveStatus : uint8_t {
   FIELD(AllowContentRetargetingOnChildren, bool)                              \
   FIELD(ForceEnableTrackingProtection, bool)                                  \
   FIELD(UseGlobalHistory, bool)                                               \
+  FIELD(TargetTopLevelLinkClicksToBlankInternal, bool)                        \
   FIELD(FullscreenAllowedByOwner, bool)                                       \
+  /*                                                                          \
+   * "is popup" in the spec.                                                  \
+   * Set only on top browsing contexts.                                       \
+   * This doesn't indicate whether this is actually a popup or not,           \
+   * but whether this browsing context is created by requesting popup or not. \
+   * See also: nsWindowWatcher::ShouldOpenPopup.                              \
+   */                                                                         \
+  FIELD(IsPopupRequested, bool)                                               \
   /* These field are used to store the states of autoplay media request on    \
    * GeckoView only, and it would only be modified on the top level browsing  \
    * context. */                                                              \
@@ -194,8 +211,12 @@ enum class ExplicitActiveStatus : uint8_t {
   FIELD(AuthorStyleDisabledDefault, bool)                                     \
   FIELD(ServiceWorkersTestingEnabled, bool)                                   \
   FIELD(MediumOverride, nsString)                                             \
-  FIELD(PrefersColorSchemeOverride, mozilla::dom::PrefersColorSchemeOverride) \
-  FIELD(DisplayMode, mozilla::dom::DisplayMode)                               \
+  /* DevTools override for prefers-color-scheme */                            \
+  FIELD(PrefersColorSchemeOverride, dom::PrefersColorSchemeOverride)          \
+  /* prefers-color-scheme override based on the color-scheme style of our     \
+   * <browser> embedder element. */                                           \
+  FIELD(EmbedderColorScheme, dom::PrefersColorSchemeOverride)                 \
+  FIELD(DisplayMode, dom::DisplayMode)                                        \
   /* The number of entries added to the session history because of this       \
    * browsing context. */                                                     \
   FIELD(HistoryEntryCount, uint32_t)                                          \
@@ -209,7 +230,14 @@ enum class ExplicitActiveStatus : uint8_t {
   /* The count of request that are used to prevent the browsing context tree  \
    * from being suspended, which would ONLY be modified on the top level      \
    * context in the chrome process because that's a non-atomic counter */     \
-  FIELD(PageAwakeRequestCount, uint32_t)
+  FIELD(PageAwakeRequestCount, uint32_t)                                      \
+  /* This field only gets incrememented when we start navigations in the      \
+   * parent process. This is used for keeping track of the racing navigations \
+   * between the parent and content processes. */                             \
+  FIELD(ParentInitiatedNavigationEpoch, uint64_t)                             \
+  /* This browsing context is for a synthetic image document wrapping an      \
+   * image embedded in <object> or <embed>. */                                \
+  FIELD(SyntheticDocumentContainer, bool)
 
 // BrowsingContext, in this context, is the cross process replicated
 // environment in which information about documents is stored. In
@@ -250,6 +278,8 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     return GetCurrentTopByBrowserId(aId);
   }
 
+  static void UpdateCurrentTopByBrowserId(BrowsingContext* aNewBrowsingContext);
+
   static already_AddRefed<BrowsingContext> GetFromWindow(
       WindowProxyHolder& aProxy);
   static already_AddRefed<BrowsingContext> GetFromWindow(
@@ -279,7 +309,7 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   static already_AddRefed<BrowsingContext> CreateDetached(
       nsGlobalWindowInner* aParent, BrowsingContext* aOpener,
       BrowsingContextGroup* aSpecificGroup, const nsAString& aName, Type aType,
-      bool aCreatedDynamically = false);
+      bool aIsPopupRequested, bool aCreatedDynamically = false);
 
   void EnsureAttached();
 
@@ -338,6 +368,10 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   // in-process, or null if it's not.
   Element* GetEmbedderElement() const { return mEmbedderElement; }
   void SetEmbedderElement(Element* aEmbedder);
+
+  // Return true if the type of the embedder element is either object
+  // or embed, false otherwise.
+  bool IsEmbedderTypeObjectOrEmbed();
 
   // Called after the BrowingContext has been embedded in a FrameLoader. This
   // happens after `SetEmbedderElement` is called on the BrowsingContext and
@@ -461,6 +495,8 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   Span<RefPtr<BrowsingContext>> Children() const;
   void GetChildren(nsTArray<RefPtr<BrowsingContext>>& aChildren);
 
+  Span<RefPtr<BrowsingContext>> NonSyntheticChildren() const;
+
   const nsTArray<RefPtr<WindowContext>>& GetWindowContexts() {
     return mWindowContexts;
   }
@@ -531,6 +567,7 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   void SetWatchedByDevTools(bool aWatchedByDevTools, ErrorResult& aRv);
 
   dom::TouchEventsOverride TouchEventsOverride() const;
+  bool TargetTopLevelLinkClicksToBlank() const;
 
   bool FullscreenAllowed() const;
 
@@ -756,6 +793,10 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
 
   bool CreatedDynamically() const { return mCreatedDynamically; }
 
+  // Returns true if this browsing context, or any ancestor to this browsing
+  // context was created dynamically. See also `CreatedDynamically`.
+  bool IsDynamic() const;
+
   int32_t ChildOffset() const { return mChildOffset; }
 
   bool GetOffsetPath(nsTArray<uint32_t>& aPath) const;
@@ -779,9 +820,14 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   // context or any of its ancestors.
   bool IsPopupAllowed();
 
+  // aCurrentURI is only required to be non-null if the load type contains the
+  // nsIWebNavigation::LOAD_FLAGS_IS_REFRESH flag and aInfo is for a refresh to
+  // the current URI.
   void SessionHistoryCommit(const LoadingSessionHistoryInfo& aInfo,
-                            uint32_t aLoadType, bool aHadActiveEntry,
-                            bool aPersist, bool aCloneEntryChildren);
+                            uint32_t aLoadType, nsIURI* aCurrentURI,
+                            bool aHadActiveEntry, bool aPersist,
+                            bool aCloneEntryChildren, bool aChannelExpired,
+                            uint32_t aCacheKey);
 
   // Set a new active entry on this browsing context. This is used for
   // implementing history.pushState/replaceState and same document navigations.
@@ -794,7 +840,8 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   void SetActiveSessionHistoryEntry(const Maybe<nsPoint>& aPreviousScrollPos,
                                     SessionHistoryInfo* aInfo,
                                     uint32_t aLoadType,
-                                    uint32_t aUpdatedCacheKey);
+                                    uint32_t aUpdatedCacheKey,
+                                    bool aUpdateLength = true);
 
   // Replace the active entry for this browsing context. This is used for
   // implementing history.replaceState and same document navigations.
@@ -855,8 +902,6 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     return GetPrefersColorSchemeOverride();
   }
 
-  void FlushSessionStore();
-
   bool IsInBFCache() const;
 
   bool AllowJavascript() const { return GetAllowJavascript(); }
@@ -884,6 +929,11 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     // FIXME Do we need to unset mHasSessionHistory?
     return mChildSessionHistory.forget();
   }
+
+  static bool ShouldAddEntryForRefresh(nsIURI* aCurrentURI,
+                                       const SessionHistoryInfo& aInfo);
+  static bool ShouldAddEntryForRefresh(nsIURI* aCurrentURI, nsIURI* aNewURI,
+                                       bool aHasPostData);
 
  private:
   void Attach(bool aFromIPC, ContentParent* aOriginProcess);
@@ -963,6 +1013,8 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     return IsTop() && !aSource;
   }
 
+  void DidSet(FieldIndex<IDX_SessionStoreEpoch>, uint32_t aOldValue);
+
   using CanSetResult = syncedcontext::CanSetResult;
 
   // Ensure that opener is in the same BrowsingContextGroup.
@@ -975,6 +1027,9 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     return true;
   }
 
+  bool CanSet(FieldIndex<IDX_OpenerPolicy>,
+              nsILoadInfo::CrossOriginOpenerPolicy, ContentParent*);
+
   bool CanSet(FieldIndex<IDX_ServiceWorkersTestingEnabled>, bool,
               ContentParent*) {
     return IsTop();
@@ -984,13 +1039,25 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
     return IsTop();
   }
 
+  bool CanSet(FieldIndex<IDX_EmbedderColorScheme>,
+              dom::PrefersColorSchemeOverride, ContentParent* aSource) {
+    return CheckOnlyEmbedderCanSet(aSource);
+  }
+
   bool CanSet(FieldIndex<IDX_PrefersColorSchemeOverride>,
               dom::PrefersColorSchemeOverride, ContentParent*) {
     return IsTop();
   }
 
+  void DidSet(FieldIndex<IDX_InRDMPane>, bool aOldValue);
+
+  void DidSet(FieldIndex<IDX_EmbedderColorScheme>,
+              dom::PrefersColorSchemeOverride aOldValue);
+
   void DidSet(FieldIndex<IDX_PrefersColorSchemeOverride>,
               dom::PrefersColorSchemeOverride aOldValue);
+
+  void PresContextAffectingFieldChanged();
 
   void DidSet(FieldIndex<IDX_MediumOverride>, nsString&& aOldValue);
 
@@ -1020,6 +1087,10 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   // volume of all media elements.
   void DidSet(FieldIndex<IDX_Muted>);
 
+  bool CanSet(FieldIndex<IDX_ShouldDelayMediaFromStart>, const bool& aValue,
+              ContentParent* aSource);
+  void DidSet(FieldIndex<IDX_ShouldDelayMediaFromStart>, bool aOldValue);
+
   bool CanSet(FieldIndex<IDX_OverrideDPPX>, const float& aValue,
               ContentParent* aSource);
   void DidSet(FieldIndex<IDX_OverrideDPPX>, float aOldValue);
@@ -1031,6 +1102,9 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
                       const uint64_t& aValue, ContentParent* aSource);
 
   void DidSet(FieldIndex<IDX_CurrentInnerWindowId>);
+
+  bool CanSet(FieldIndex<IDX_ParentInitiatedNavigationEpoch>,
+              const uint64_t& aValue, ContentParent* aSource);
 
   bool CanSet(FieldIndex<IDX_IsPopupSpam>, const bool& aValue,
               ContentParent* aSource);
@@ -1083,6 +1157,10 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
   bool CanSet(FieldIndex<IDX_UseGlobalHistory>, const bool& aUseGlobalHistory,
               ContentParent* aSource);
 
+  bool CanSet(FieldIndex<IDX_TargetTopLevelLinkClicksToBlankInternal>,
+              const bool& aTargetTopLevelLinkClicksToBlankInternal,
+              ContentParent* aSource);
+
   void DidSet(FieldIndex<IDX_HasSessionHistory>, bool aOldValue);
 
   bool CanSet(FieldIndex<IDX_BrowserId>, const uint32_t& aValue,
@@ -1124,6 +1202,8 @@ class BrowsingContext : public nsILoadContext, public nsWrapperCache {
 
   bool CanSet(FieldIndex<IDX_IsInBFCache>, bool, ContentParent* aSource);
   void DidSet(FieldIndex<IDX_IsInBFCache>);
+
+  void DidSet(FieldIndex<IDX_SyntheticDocumentContainer>);
 
   // Allow if the process attemping to set field is the same as the owning
   // process. Deprecated. New code that might use this should generally be moved
@@ -1303,20 +1383,18 @@ extern template class syncedcontext::Transaction<BrowsingContext>;
 namespace ipc {
 template <>
 struct IPDLParamTraits<dom::MaybeDiscarded<dom::BrowsingContext>> {
-  static void Write(IPC::Message* aMsg, IProtocol* aActor,
+  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
                     const dom::MaybeDiscarded<dom::BrowsingContext>& aParam);
-  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
-                   IProtocol* aActor,
+  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
                    dom::MaybeDiscarded<dom::BrowsingContext>* aResult);
 };
 
 template <>
 struct IPDLParamTraits<dom::BrowsingContext::IPCInitializer> {
-  static void Write(IPC::Message* aMessage, IProtocol* aActor,
+  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
                     const dom::BrowsingContext::IPCInitializer& aInitializer);
 
-  static bool Read(const IPC::Message* aMessage, PickleIterator* aIterator,
-                   IProtocol* aActor,
+  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
                    dom::BrowsingContext::IPCInitializer* aInitializer);
 };
 }  // namespace ipc

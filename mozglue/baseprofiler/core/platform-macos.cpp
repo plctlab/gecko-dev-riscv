@@ -131,14 +131,15 @@ void Sampler::SuspendAndSampleAndResumeThread(
     regs.mPC = reinterpret_cast<Address>(state.REGISTER_FIELD(ip));
     regs.mSP = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
     regs.mFP = reinterpret_cast<Address>(state.REGISTER_FIELD(bp));
+    regs.mLR = 0;
 #elif defined(__aarch64__)
     regs.mPC = reinterpret_cast<Address>(state.REGISTER_FIELD(pc));
     regs.mSP = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
     regs.mFP = reinterpret_cast<Address>(state.REGISTER_FIELD(fp));
+    regs.mLR = reinterpret_cast<Address>(state.REGISTER_FIELD(lr));
 #else
 #  error "unknown architecture"
 #endif
-    regs.mLR = 0;
 
     aProcessRegs(regs, aNow);
   }
@@ -168,9 +169,7 @@ static void* ThreadEntry(void* aArg) {
 }
 
 SamplerThread::SamplerThread(PSLockRef aLock, uint32_t aActivityGeneration,
-                             double aIntervalMilliseconds,
-                             bool aStackWalkEnabled,
-                             bool aNoTimerResolutionChange)
+                             double aIntervalMilliseconds, uint32_t aFeatures)
     : mSampler(aLock),
       mActivityGeneration(aActivityGeneration),
       mIntervalMicroseconds(

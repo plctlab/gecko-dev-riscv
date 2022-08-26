@@ -36,6 +36,11 @@ using NSAppearanceName = NSString*;
 - (BOOL)launchAndReturnError:(NSError**)error NS_AVAILABLE_MAC(10_13);
 @end
 
+enum : OSType {
+  kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange = 'x420',
+  kCVPixelFormatType_420YpCbCr10BiPlanarFullRange = 'xf20',
+};
+
 #endif
 
 #if !defined(MAC_OS_X_VERSION_10_14) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_14
@@ -97,6 +102,30 @@ typedef NS_ENUM(NSInteger, NSTitlebarSeparatorStyle) {
 // property from that protocol. But we can't tack on protocol implementations, so we just declare
 // the property setter here.
 - (void)setAppearance:(NSAppearance*)appearance;
+@end
+
+#endif
+
+#if !defined(MAC_OS_VERSION_12_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_12_0
+
+typedef CFTypeRef AXTextMarkerRef;
+typedef CFTypeRef AXTextMarkerRangeRef;
+
+extern "C" {
+CFTypeID AXTextMarkerGetTypeID();
+AXTextMarkerRef AXTextMarkerCreate(CFAllocatorRef allocator, const UInt8* bytes, CFIndex length);
+const UInt8* AXTextMarkerGetBytePtr(AXTextMarkerRef text_marker);
+CFIndex AXTextMarkerGetLength(AXTextMarkerRef text_marker);
+CFTypeID AXTextMarkerRangeGetTypeID();
+AXTextMarkerRangeRef AXTextMarkerRangeCreate(CFAllocatorRef allocator, AXTextMarkerRef start_marker,
+                                             AXTextMarkerRef end_marker);
+AXTextMarkerRef AXTextMarkerRangeCopyStartMarker(AXTextMarkerRangeRef text_marker_range);
+AXTextMarkerRef AXTextMarkerRangeCopyEndMarker(AXTextMarkerRangeRef text_marker_range);
+}
+
+@interface NSScreen (NSScreen12_0)
+// https://developer.apple.com/documentation/appkit/nsscreen/3882821-safeareainsets?language=objc&changes=latest_major
+@property(readonly) NSEdgeInsets safeAreaInsets;
 @end
 
 #endif

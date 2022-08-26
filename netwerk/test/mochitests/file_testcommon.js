@@ -1,5 +1,3 @@
-/* eslint-env mozilla/frame-script */
-
 "use strict";
 
 const SCRIPT_URL = SimpleTest.getTestFileURL("file_chromecommon.js");
@@ -24,6 +22,8 @@ function setupTest(uri, cookies, loads) {
           // cookieBehavior 1 allows cookies from chrome script if we enable
           // exceptions.
           ["network.cookie.rejectForeignWithExceptions.enabled", false],
+          // Bug 1617611: Fix all the tests broken by "cookies SameSite=lax by default"
+          ["network.cookie.sameSite.laxByDefault", false],
         ],
       },
       resolve
@@ -46,6 +46,7 @@ function setupTest(uri, cookies, loads) {
 
 function finishTest() {
   gScript.destroy();
+  SpecialPowers.clearUserPref("network.cookie.sameSite.laxByDefault");
   SimpleTest.finish();
 }
 

@@ -5,7 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/EventStates.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/dom/HTMLOptGroupElement.h"
 #include "mozilla/dom/HTMLOptGroupElementBinding.h"
 #include "mozilla/dom/HTMLSelectElement.h"  // SafeOptionListMutation
@@ -26,7 +26,7 @@ HTMLOptGroupElement::HTMLOptGroupElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsGenericHTMLElement(std::move(aNodeInfo)) {
   // We start off enabled
-  AddStatesSilently(NS_EVENT_STATE_ENABLED);
+  AddStatesSilently(ElementState::ENABLED);
 }
 
 HTMLOptGroupElement::~HTMLOptGroupElement() = default;
@@ -39,7 +39,7 @@ void HTMLOptGroupElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
   if (nsIFrame* frame = GetPrimaryFrame()) {
     // FIXME(emilio): This poking at the style of the frame is broken unless we
     // flush before every event handling, which we don't really want to.
-    if (frame->StyleUI()->mUserInput == StyleUserInput::None) {
+    if (frame->StyleUI()->UserInput() == StyleUserInput::None) {
       return;
     }
   }
@@ -58,7 +58,8 @@ Element* HTMLOptGroupElement::GetSelect() {
 void HTMLOptGroupElement::InsertChildBefore(nsIContent* aKid,
                                             nsIContent* aBeforeThis,
                                             bool aNotify, ErrorResult& aRv) {
-  int32_t index = aBeforeThis ? ComputeIndexOf(aBeforeThis) : GetChildCount();
+  const uint32_t index =
+      aBeforeThis ? *ComputeIndexOf(aBeforeThis) : GetChildCount();
   SafeOptionListMutation safeMutation(GetSelect(), this, aKid, index, aNotify);
   nsGenericHTMLElement::InsertChildBefore(aKid, aBeforeThis, aNotify, aRv);
   if (aRv.Failed()) {
@@ -68,7 +69,7 @@ void HTMLOptGroupElement::InsertChildBefore(nsIContent* aKid,
 
 void HTMLOptGroupElement::RemoveChildNode(nsIContent* aKid, bool aNotify) {
   SafeOptionListMutation safeMutation(GetSelect(), this, nullptr,
-                                      ComputeIndexOf(aKid), aNotify);
+                                      *ComputeIndexOf(aKid), aNotify);
   nsGenericHTMLElement::RemoveChildNode(aKid, aNotify);
 }
 
@@ -78,15 +79,15 @@ nsresult HTMLOptGroupElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
                                            nsIPrincipal* aSubjectPrincipal,
                                            bool aNotify) {
   if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::disabled) {
-    EventStates disabledStates;
+    ElementState disabledStates;
     if (aValue) {
-      disabledStates |= NS_EVENT_STATE_DISABLED;
+      disabledStates |= ElementState::DISABLED;
     } else {
-      disabledStates |= NS_EVENT_STATE_ENABLED;
+      disabledStates |= ElementState::ENABLED;
     }
 
-    EventStates oldDisabledStates = State() & DISABLED_STATES;
-    EventStates changedStates = disabledStates ^ oldDisabledStates;
+    ElementState oldDisabledStates = State() & ElementState::DISABLED_STATES;
+    ElementState changedStates = disabledStates ^ oldDisabledStates;
 
     if (!changedStates.IsEmpty()) {
       ToggleStates(changedStates, aNotify);

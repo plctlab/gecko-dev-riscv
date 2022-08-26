@@ -3,6 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import { Component } from "react";
+import PropTypes from "prop-types";
+
 import { connect } from "../../utils/connect";
 import { showMenu } from "../../context-menu/menu";
 
@@ -13,12 +15,21 @@ import {
   getIsCurrentThreadPaused,
   getThreadContext,
   isSourceWithMap,
+  getBlackBoxRanges,
 } from "../../selectors";
 
 import { editorMenuItems, editorItemActions } from "./menus/editor";
 
 class EditorMenu extends Component {
-  componentWillUpdate(nextProps) {
+  static get propTypes() {
+    return {
+      clearContextMenu: PropTypes.func.isRequired,
+      contextMenu: PropTypes.object,
+    };
+  }
+
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillUpdate(nextProps) {
     this.props.clearContextMenu();
     if (nextProps.contextMenu) {
       this.showMenu(nextProps);
@@ -30,6 +41,7 @@ class EditorMenu extends Component {
       cx,
       editor,
       selectedSource,
+      blackboxedRanges,
       editorActions,
       hasMappedLocation,
       isPaused,
@@ -50,12 +62,14 @@ class EditorMenu extends Component {
         cx,
         editorActions,
         selectedSource,
+        blackboxedRanges,
         hasMappedLocation,
         location,
         isPaused,
         editorWrappingEnabled,
         selectionText: editor.codeMirror.getSelection().trim(),
         isTextSelected: editor.codeMirror.somethingSelected(),
+        editor,
       })
     );
   }
@@ -65,15 +79,22 @@ class EditorMenu extends Component {
   }
 }
 
-const mapStateToProps = (state, props) => ({
-  cx: getThreadContext(state),
-  isPaused: getIsCurrentThreadPaused(state),
-  hasMappedLocation:
-    (props.selectedSource.isOriginal ||
-      isSourceWithMap(state, props.selectedSource.id) ||
-      isPretty(props.selectedSource)) &&
-    !getPrettySource(state, props.selectedSource.id),
-});
+const mapStateToProps = (state, props) => {
+  // This component is a no-op when contextmenu is false
+  if (!props.contextMenu) {
+    return {};
+  }
+  return {
+    cx: getThreadContext(state),
+    blackboxedRanges: getBlackBoxRanges(state),
+    isPaused: getIsCurrentThreadPaused(state),
+    hasMappedLocation:
+      (props.selectedSource.isOriginal ||
+        isSourceWithMap(state, props.selectedSource.id) ||
+        isPretty(props.selectedSource)) &&
+      !getPrettySource(state, props.selectedSource.id),
+  };
+};
 
 const mapDispatchToProps = dispatch => ({
   editorActions: editorItemActions(dispatch),

@@ -1,4 +1,4 @@
-const { element, WebElement } = ChromeUtils.import(
+const { element, WebReference } = ChromeUtils.import(
   "chrome://remote/content/marionette/element.js"
 );
 const { evaluate } = ChromeUtils.import(
@@ -57,9 +57,9 @@ const domEl = new DOMElement("p");
 const svgEl = new SVGElement("rect");
 const xulEl = new XULElement("browser");
 
-const domWebEl = WebElement.from(domEl);
-const svgWebEl = WebElement.from(svgEl);
-const xulWebEl = WebElement.from(xulEl);
+const domWebEl = WebReference.from(domEl);
+const svgWebEl = WebReference.from(svgEl);
+const xulWebEl = WebReference.from(xulEl);
 
 const domElId = { id: 1, browsingContextId: 4, webElRef: domWebEl.toJSON() };
 const svgElId = { id: 2, browsingContextId: 5, webElRef: svgWebEl.toJSON() };
@@ -222,7 +222,7 @@ add_test(function test_toJSON_objects() {
 
 add_test(function test_fromJSON_ReferenceStore() {
   // Add unknown element to reference store
-  let webEl = evaluate.fromJSON(domElId, elementIdCache);
+  let webEl = evaluate.fromJSON({ obj: domElId, seenEls: elementIdCache });
   deepEqual(webEl, domWebEl);
   deepEqual(elementIdCache.get(webEl), domElId);
 
@@ -230,9 +230,9 @@ add_test(function test_fromJSON_ReferenceStore() {
   const domElId2 = {
     id: 1,
     browsingContextId: 4,
-    webElRef: WebElement.from(domEl).toJSON(),
+    webElRef: WebReference.from(domEl).toJSON(),
   };
-  webEl = evaluate.fromJSON(domElId2, elementIdCache);
+  webEl = evaluate.fromJSON({ obj: domElId2, seenEls: elementIdCache });
   deepEqual(webEl, domWebEl);
   deepEqual(elementIdCache.get(webEl), domElId);
 

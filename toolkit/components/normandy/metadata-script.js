@@ -16,10 +16,35 @@ if (arguments.length !== 1) {
 
 main(...arguments);
 
+function resolvePath(path) {
+  let absPath = path;
+
+  if (!PathUtils.isAbsolute(path)) {
+    const components = path.split(new RegExp("[/\\\\]")).filter(c => c.length);
+    absPath = Services.dirsvc.get("CurWorkD", Ci.nsIFile).path;
+
+    for (const component of components) {
+      switch (component) {
+        case ".":
+          break;
+
+        case "..":
+          absPath = PathUtils.parent(absPath);
+          break;
+
+        default:
+          absPath = PathUtils.join(absPath, component);
+      }
+    }
+  }
+
+  return absPath;
+}
+
 async function main(outPath) {
   const capabililitySet = RecipeRunner.getCapabilities();
-  await OS.File.writeAtomic(
-    outPath,
+  await IOUtils.writeUTF8(
+    resolvePath(outPath),
     JSON.stringify(
       {
         capabilities: Array.from(capabililitySet),

@@ -154,11 +154,19 @@ async function test_ntp_theme(theme, isBrightText) {
 }
 
 add_task(async function test_support_ntp_colors() {
-  // BrowserTestUtils.withNewTab waits for about:newtab to load
-  // so we disable preloading before running the test.
-  await SpecialPowers.setBoolPref("browser.newtab.preload", false);
-  registerCleanupFunction(() => {
-    SpecialPowers.clearUserPref("browser.newtab.preload");
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      // BrowserTestUtils.withNewTab waits for about:newtab to load
+      // so we disable preloading before running the test.
+      ["browser.newtab.preload", false],
+      // Force prefers-color-scheme to "system", as otherwise it is derived
+      // from the newtab background colors, but we hard-code the light styles
+      // on this test.
+      ["layout.css.prefers-color-scheme.content-override", 2],
+      // Override the system color scheme to light so this test passes on
+      // machines with dark system color scheme.
+      ["ui.systemUsesDarkTheme", 0],
+    ],
   });
   NewTabPagePreloading.removePreloadedBrowser(window);
   for (let url of ["about:newtab", "about:home"]) {

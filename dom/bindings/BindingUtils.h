@@ -62,6 +62,7 @@ class CustomElementReactionsStack;
 class Document;
 class EventTarget;
 class MessageManagerGlobal;
+class ObservableArrayProxyHandler;
 class DedicatedWorkerGlobalScope;
 template <typename KeyType, typename ValueType>
 class Record;
@@ -370,10 +371,24 @@ MOZ_ALWAYS_INLINE nsresult UnwrapObject(JSObject* obj, OwningNonNull<U>& value,
       obj, value, PrototypeID, PrototypeTraits<PrototypeID>::Depth, cx);
 }
 
+template <prototypes::ID PrototypeID, class T, typename U, typename CxType>
+MOZ_ALWAYS_INLINE nsresult UnwrapObject(JSObject* obj, NonNull<U>& value,
+                                        const CxType& cx) {
+  return binding_detail::UnwrapObjectInternal<T, true>(
+      obj, value, PrototypeID, PrototypeTraits<PrototypeID>::Depth, cx);
+}
+
 // An UnwrapObject overload that just calls one of the JSObject* ones.
 template <prototypes::ID PrototypeID, class T, typename U, typename CxType>
 MOZ_ALWAYS_INLINE nsresult UnwrapObject(JS::Handle<JS::Value> obj, U& value,
                                         const CxType& cx) {
+  MOZ_ASSERT(obj.isObject());
+  return UnwrapObject<PrototypeID, T>(&obj.toObject(), value, cx);
+}
+
+template <prototypes::ID PrototypeID, class T, typename U, typename CxType>
+MOZ_ALWAYS_INLINE nsresult UnwrapObject(JS::Handle<JS::Value> obj,
+                                        NonNull<U>& value, const CxType& cx) {
   MOZ_ASSERT(obj.isObject());
   return UnwrapObject<PrototypeID, T>(&obj.toObject(), value, cx);
 }
@@ -621,7 +636,7 @@ struct VerifyTraceProtoAndIfaceCacheCalledTracer : public JS::CallbackTracer {
       : JS::CallbackTracer(cx, JS::TracerKind::VerifyTraceProtoAndIface),
         ok(false) {}
 
-  void onChild(const JS::GCCellPtr&) override {
+  void onChild(JS::GCCellPtr) override {
     // We don't do anything here, we only want to verify that
     // TraceProtoAndIfaceCache was called.
   }
@@ -699,6 +714,7 @@ struct LegacyFactoryFunction {
  *             ignored. If this is null and constructorClass is also null then
  *             we should not create an interface object at all.
  * ctorNargs is the length of the constructor function; 0 if no constructor
+ * isConstructorChromeOnly if true, the constructor is ChromeOnly.
  * constructorCache a pointer to a JSObject pointer where we should cache the
  *                  interface object. This must be null if both constructorClass
  *                  and constructor are null, and non-null otherwise.
@@ -741,6 +757,7 @@ void CreateInterfaceObjects(
     JS::Handle<JSObject*> protoProto, const JSClass* protoClass,
     JS::Heap<JSObject*>* protoCache, JS::Handle<JSObject*> constructorProto,
     const JSClass* constructorClass, unsigned ctorNargs,
+    bool isConstructorChromeOnly,
     const LegacyFactoryFunction* namedConstructors,
     JS::Heap<JSObject*>* constructorCache, const NativeProperties* properties,
     const NativeProperties* chromeOnlyProperties, const char* name,
@@ -976,7 +993,7 @@ MOZ_ALWAYS_INLINE bool MaybeWrapValue(JSContext* cx,
       return JS_WrapValue(cx, rval);
     }
     MOZ_ASSERT(rval.isSymbol());
-    JS_MarkCrossZoneId(cx, SYMBOL_TO_JSID(rval.toSymbol()));
+    JS_MarkCrossZoneId(cx, JS::PropertyKey::Symbol(rval.toSymbol()));
   }
   return true;
 }
@@ -1271,12 +1288,13 @@ inline bool WrapNewBindingNonWrapperCachedObject(
 }
 
 template <bool Fatal>
-inline bool EnumValueNotFound(BindingCallContext& cx, JS::HandleString str,
+inline bool EnumValueNotFound(BindingCallContext& cx, JS::Handle<JSString*> str,
                               const char* type, const char* sourceDescription);
 
 template <>
 inline bool EnumValueNotFound<false>(BindingCallContext& cx,
-                                     JS::HandleString str, const char* type,
+                                     JS::Handle<JSString*> str,
+                                     const char* type,
                                      const char* sourceDescription) {
   // TODO: Log a warning to the console.
   return true;
@@ -1284,7 +1302,7 @@ inline bool EnumValueNotFound<false>(BindingCallContext& cx,
 
 template <>
 inline bool EnumValueNotFound<true>(BindingCallContext& cx,
-                                    JS::HandleString str, const char* type,
+                                    JS::Handle<JSString*> str, const char* type,
                                     const char* sourceDescription) {
   JS::UniqueChars deflated = JS_EncodeStringToUTF8(cx, str);
   if (!deflated) {
@@ -1325,7 +1343,7 @@ inline bool FindEnumStringIndex(BindingCallContext& cx, JS::Handle<JS::Value> v,
                                 const EnumEntry* values, const char* type,
                                 const char* sourceDescription, int* index) {
   // JS_StringEqualsAscii is slow as molasses, so don't use it here.
-  JS::RootedString str(cx, JS::ToString(cx, v));
+  JS::Rooted<JSString*> str(cx, JS::ToString(cx, v));
   if (!str) {
     return false;
   }
@@ -1883,8 +1901,8 @@ static inline bool ConvertJSValueToUSVString(
 }
 
 template <typename T>
-inline bool ConvertIdToString(JSContext* cx, JS::HandleId id, T& result,
-                              bool& isSymbol) {
+inline bool ConvertIdToString(JSContext* cx, JS::Handle<JS::PropertyKey> id,
+                              T& result, bool& isSymbol) {
   if (MOZ_LIKELY(id.isString())) {
     if (!AssignJSString(cx, result, id.toString())) {
       return false;
@@ -1893,7 +1911,7 @@ inline bool ConvertIdToString(JSContext* cx, JS::HandleId id, T& result,
     isSymbol = true;
     return true;
   } else {
-    JS::RootedValue nameVal(cx, js::IdToValue(id));
+    JS::Rooted<JS::Value> nameVal(cx, js::IdToValue(id));
     if (!ConvertJSValueToString(cx, nameVal, eStringify, eStringify, result)) {
       return false;
     }
@@ -1936,7 +1954,7 @@ class SequenceTracer<JSObject*, false, false, false> {
  public:
   static void TraceSequence(JSTracer* trc, JSObject** objp, JSObject** end) {
     for (; objp != end; ++objp) {
-      JS::UnsafeTraceRoot(trc, objp, "sequence<object>");
+      JS::TraceRoot(trc, objp, "sequence<object>");
     }
   }
 };
@@ -1949,7 +1967,7 @@ class SequenceTracer<JS::Value, false, false, false> {
  public:
   static void TraceSequence(JSTracer* trc, JS::Value* valp, JS::Value* end) {
     for (; valp != end; ++valp) {
-      JS::UnsafeTraceRoot(trc, valp, "sequence<any>");
+      JS::TraceRoot(trc, valp, "sequence<any>");
     }
   }
 };
@@ -2815,14 +2833,14 @@ class GetCCParticipant<T, true> {
   static constexpr nsCycleCollectionParticipant* Get() { return nullptr; }
 };
 
-void FinalizeGlobal(JSFreeOp* aFop, JSObject* aObj);
+void FinalizeGlobal(JS::GCContext* aGcx, JSObject* aObj);
 
 bool ResolveGlobal(JSContext* aCx, JS::Handle<JSObject*> aObj,
                    JS::Handle<jsid> aId, bool* aResolvedp);
 
 bool MayResolveGlobal(const JSAtomState& aNames, jsid aId, JSObject* aMaybeObj);
 
-bool EnumerateGlobal(JSContext* aCx, JS::HandleObject aObj,
+bool EnumerateGlobal(JSContext* aCx, JS::Handle<JSObject*> aObj,
                      JS::MutableHandleVector<jsid> aProperties,
                      bool aEnumerableOnly);
 
@@ -2926,10 +2944,6 @@ bool CreateGlobal(JSContext* aCx, T* aNative, nsWrapperCache* aCache,
   MOZ_ASSERT(succeeded,
              "making a fresh global object's [[Prototype]] immutable can "
              "internally fail, but it should never be unsuccessful");
-
-  if (!JS_DefineProfilingFunctions(aCx, aGlobal)) {
-    return false;
-  }
 
   return true;
 }
@@ -3103,6 +3117,16 @@ bool GetSetlikeBackingObject(JSContext* aCx, JS::Handle<JSObject*> aObj,
                              size_t aSlotIndex,
                              JS::MutableHandle<JSObject*> aBackingObj,
                              bool* aBackingObjCreated);
+
+// Unpacks backing object (ES Proxy exotic object) from the reserved slot of a
+// reflector for a observableArray attribute. If backing object does not exist,
+// creates backing object in the compartment of the reflector involved, making
+// this safe to use across compartments/via xrays. Return values of these
+// methods will always be in the context compartment.
+bool GetObservableArrayBackingObject(
+    JSContext* aCx, JS::Handle<JSObject*> aObj, size_t aSlotIndex,
+    JS::MutableHandle<JSObject*> aBackingObj, bool* aBackingObjCreated,
+    const ObservableArrayProxyHandler* aHandler, void* aOwner);
 
 // Get the desired prototype object for an object construction from the given
 // CallArgs.  The CallArgs must be for a constructor call.  The

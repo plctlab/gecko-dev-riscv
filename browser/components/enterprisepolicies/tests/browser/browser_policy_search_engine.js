@@ -2,22 +2,16 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
+);
+const { SearchUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchUtils.sys.mjs"
+);
 const { CustomizableUITestUtils } = ChromeUtils.import(
   "resource://testing-common/CustomizableUITestUtils.jsm"
 );
 let gCUITestUtils = new CustomizableUITestUtils(window);
-
-registerCleanupFunction(() => {
-  Services.prefs.clearUserPref(
-    "browser.policies.runonce.setDefaultSearchEngine"
-  );
-  Services.prefs.clearUserPref(
-    "browser.policies.runonce.setDefaultPrivateSearchEngine"
-  );
-  Services.prefs.clearUserPref(
-    "browser.policies.runOncePerModification.addSearchEngines"
-  );
-});
 
 add_task(async function test_setup() {
   await gCUITestUtils.addSearchBar();
@@ -361,7 +355,7 @@ add_task(async function test_install_with_encoding() {
   is(
     Services.search.getEngineByName("Encoding"),
     null,
-    'Engine "Foo" should not be present when test starts'
+    'Engine "Encoding" should not be present when test starts'
   );
 
   await setupPolicyEngineWithJson({
@@ -389,5 +383,143 @@ add_task(async function test_install_with_encoding() {
 
   // Clean up
   await Services.search.removeEngine(engine);
+  EnterprisePolicyTesting.resetRunOnceState();
+});
+
+add_task(async function test_install_and_update() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      SearchEngines: {
+        Add: [
+          {
+            Name: "ToUpdate",
+            URLTemplate: "http://initial.example.com/?q={searchTerms}",
+          },
+        ],
+      },
+    },
+  });
+  // Get in line, because the Search policy callbacks are async.
+  await TestUtils.waitForTick();
+
+  let engine = Services.search.getEngineByName("ToUpdate");
+  isnot(engine, null, "Specified search engine should be installed");
+
+  is(
+    engine.getSubmission("test").uri.spec,
+    "http://initial.example.com/?q=test",
+    "Initial submission URL should be correct."
+  );
+
+  await setupPolicyEngineWithJson({
+    policies: {
+      SearchEngines: {
+        Add: [
+          {
+            Name: "ToUpdate",
+            URLTemplate: "http://update.example.com/?q={searchTerms}",
+          },
+        ],
+      },
+    },
+  });
+  // Get in line, because the Search policy callbacks are async.
+  await TestUtils.waitForTick();
+
+  is(
+    engine.getSubmission("test").uri.spec,
+    "http://update.example.com/?q=test",
+    "Updated Submission URL should be correct."
+  );
+
+  // Clean up
+  await Services.search.removeEngine(engine);
+  EnterprisePolicyTesting.resetRunOnceState();
+});
+
+add_task(async function test_install_with_suggest() {
+  // Make sure we are starting in an expected state to avoid false positive
+  // test results.
+  is(
+    Services.search.getEngineByName("Suggest"),
+    null,
+    'Engine "Suggest" should not be present when test starts'
+  );
+
+  await setupPolicyEngineWithJson({
+    policies: {
+      SearchEngines: {
+        Add: [
+          {
+            Name: "Suggest",
+            URLTemplate: "http://example.com/?q={searchTerms}",
+            SuggestURLTemplate: "http://suggest.example.com/?q={searchTerms}",
+          },
+        ],
+      },
+    },
+  });
+  // Get in line, because the Search policy callbacks are async.
+  await TestUtils.waitForTick();
+
+  let engine = Services.search.getEngineByName("Suggest");
+
+  is(
+    engine.getSubmission("test", "application/x-suggestions+json").uri.spec,
+    "http://suggest.example.com/?q=test",
+    "Updated Submission URL should be correct."
+  );
+
+  // Clean up
+  await Services.search.removeEngine(engine);
+  EnterprisePolicyTesting.resetRunOnceState();
+});
+
+add_task(async function test_reset_default() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      SearchEngines: {
+        Remove: ["DuckDuckGo"],
+      },
+    },
+  });
+  // Get in line, because the Search policy callbacks are async.
+  await TestUtils.waitForTick();
+
+  let engine = Services.search.getEngineByName("DuckDuckGo");
+
+  is(engine.hidden, true, "Application specified engine should be hidden.");
+
+  await BrowserTestUtils.withNewTab(
+    "about:preferences#search",
+    async browser => {
+      let tree = browser.contentDocument.querySelector("#engineList");
+      for (let i = 0; i < tree.view.rowCount; i++) {
+        let cellName = tree.view.getCellText(
+          i,
+          tree.columns.getNamedColumn("engineName")
+        );
+        isnot(cellName, "DuckDuckGo", "DuckDuckGo should be invisible");
+      }
+      let restoreDefaultsButton = browser.contentDocument.getElementById(
+        "restoreDefaultSearchEngines"
+      );
+      let updatedPromise = SearchTestUtils.promiseSearchNotification(
+        SearchUtils.MODIFIED_TYPE.CHANGED,
+        SearchUtils.TOPIC_ENGINE_MODIFIED
+      );
+      restoreDefaultsButton.click();
+      await updatedPromise;
+      for (let i = 0; i < tree.view.rowCount; i++) {
+        let cellName = tree.view.getCellText(
+          i,
+          tree.columns.getNamedColumn("engineName")
+        );
+        isnot(cellName, "DuckDuckGo", "DuckDuckGo should be invisible");
+      }
+    }
+  );
+
+  engine.hidden = false;
   EnterprisePolicyTesting.resetRunOnceState();
 });

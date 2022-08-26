@@ -54,9 +54,9 @@ class HTMLAnchorElement final : public nsGenericHTMLElement,
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
   MOZ_CAN_RUN_SCRIPT
   nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
-  virtual bool IsLink(nsIURI** aURI) const override;
-  virtual void GetLinkTarget(nsAString& aTarget) override;
-  virtual already_AddRefed<nsIURI> GetHrefURI() const override;
+
+  void GetLinkTarget(nsAString& aTarget) override;
+  already_AddRefed<nsIURI> GetHrefURI() const override;
 
   virtual nsresult BeforeSetAttr(int32_t aNamespaceID, nsAtom* aName,
                                  const nsAttrValueOrString* aValue,
@@ -69,7 +69,7 @@ class HTMLAnchorElement final : public nsGenericHTMLElement,
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual EventStates IntrinsicState() const override;
+  virtual ElementState IntrinsicState() const override;
 
   // WebIDL API
 

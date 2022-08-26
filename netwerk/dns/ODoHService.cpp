@@ -10,6 +10,8 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "nsICancelable.h"
+#include "nsIDNSAdditionalInfo.h"
 #include "nsIDNSService.h"
 #include "nsIDNSByTypeRecord.h"
 #include "nsIOService.h"
@@ -154,7 +156,8 @@ void ODoHService::OnODoHPrefsChange(bool aInit) {
   }
 }
 
-static nsresult ExtractHost(const nsACString& aURI, nsCString& aResult) {
+static nsresult ExtractHostAndPort(const nsACString& aURI, nsCString& aResult,
+                                   int32_t& aOutPort) {
   nsCOMPtr<nsIURI> uri;
   nsresult rv = NS_NewURI(getter_AddRefs(uri), aURI);
   if (NS_FAILED(rv)) {
@@ -164,6 +167,11 @@ static nsresult ExtractHost(const nsACString& aURI, nsCString& aResult) {
   if (!uri->SchemeIs("https")) {
     LOG(("ODoHService host uri is not https"));
     return NS_ERROR_FAILURE;
+  }
+
+  rv = uri->GetPort(&aOutPort);
+  if (NS_FAILED(rv)) {
+    return rv;
   }
 
   return uri->GetAsciiHost(aResult);
@@ -183,7 +191,8 @@ void ODoHService::BuildODoHRequestURI() {
     mODoHRequestURI.Append(mODoHTargetPath);
   } else {
     nsAutoCString hostStr;
-    if (NS_FAILED(ExtractHost(mODoHTargetHost, hostStr))) {
+    int32_t port = -1;
+    if (NS_FAILED(ExtractHostAndPort(mODoHTargetHost, hostStr, port))) {
       return;
     }
 
@@ -286,6 +295,7 @@ nsresult ODoHService::UpdateODoHConfigFromURI() {
   }
 
   // AsyncOpen succeeded, dismiss the guard.
+  MutexAutoLock lock(mLock);
   guard.release();
   mLoader.swap(loader);
   return rv;
@@ -311,7 +321,8 @@ nsresult ODoHService::UpdateODoHConfigFromHTTPSRR() {
   }
 
   nsAutoCString hostStr;
-  nsresult rv = ExtractHost(uri, hostStr);
+  int32_t port = -1;
+  nsresult rv = ExtractHostAndPort(uri, hostStr, port);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -322,8 +333,12 @@ nsresult ODoHService::UpdateODoHConfigFromHTTPSRR() {
   // manually by ODoHService.
   uint32_t flags =
       nsIDNSService::RESOLVE_DISABLE_ODOH | nsIDNSService::RESOLVE_BYPASS_CACHE;
+  nsCOMPtr<nsIDNSAdditionalInfo> info;
+  if (port != -1) {
+    Unused << dns->NewAdditionalInfo(""_ns, port, getter_AddRefs(info));
+  }
   rv = dns->AsyncResolveNative(hostStr, nsIDNSService::RESOLVE_TYPE_HTTPSSVC,
-                               flags, nullptr, this, target, OriginAttributes(),
+                               flags, info, this, target, OriginAttributes(),
                                getter_AddRefs(tmpOutstanding));
   LOG(("ODoHService::UpdateODoHConfig [host=%s rv=%" PRIx32 "]", hostStr.get(),
        static_cast<uint32_t>(rv)));
@@ -363,6 +378,7 @@ void ODoHService::ODoHConfigUpdateDone(uint32_t aTTL,
                 NS_IsMainThread() || TRRService::Get()->IsOnTRRThread());
   MOZ_ASSERT_IF(XRE_IsSocketProcess(), NS_IsMainThread());
 
+  MutexAutoLock lock(mLock);
   mQueryODoHConfigInProgress = false;
   mODoHConfigs.reset();
 
@@ -488,6 +504,7 @@ void ODoHService::AppendPendingODoHRequest(ODoH* aRequest) {
                 NS_IsMainThread() || TRRService::Get()->IsOnTRRThread());
   MOZ_ASSERT_IF(XRE_IsSocketProcess(), NS_IsMainThread());
 
+  MutexAutoLock lock(mLock);
   mPendingRequests.AppendElement(aRequest);
 }
 
@@ -496,6 +513,7 @@ bool ODoHService::RemovePendingODoHRequest(ODoH* aRequest) {
                 NS_IsMainThread() || TRRService::Get()->IsOnTRRThread());
   MOZ_ASSERT_IF(XRE_IsSocketProcess(), NS_IsMainThread());
 
+  MutexAutoLock lock(mLock);
   return mPendingRequests.RemoveElement(aRequest);
 }
 

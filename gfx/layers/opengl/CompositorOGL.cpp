@@ -34,10 +34,7 @@
 #include "mozilla/layers/TextureHost.h"  // for TextureSource, etc
 #include "mozilla/layers/TextureHostOGL.h"  // for TextureSourceOGL, etc
 #include "mozilla/layers/PTextureParent.h"  // for OtherPid() on PTextureParent
-#ifdef XP_DARWIN
-#  include "mozilla/layers/TextureSync.h"  // for TextureSync::etc.
-#endif
-#include "mozilla/mozalloc.h"  // for operator delete, etc
+#include "mozilla/mozalloc.h"               // for operator delete, etc
 #include "nsAppRunner.h"
 #include "nsAString.h"
 #include "nsClassHashtable.h"
@@ -51,7 +48,6 @@
 #include "OGLShaderProgram.h"       // for ShaderProgramOGL, etc
 #include "ScopedGLHelpers.h"
 #include "GLReadTexImageHelper.h"
-#include "GLBlitTextureImageHelper.h"
 #include "HeapCopyOfStackArray.h"
 #include "GLBlitHelper.h"
 #include "mozilla/gfx/Swizzle.h"
@@ -186,18 +182,10 @@ CompositorOGL::CompositorOGL(widget::CompositorWidget* aWidget,
     // default framebuffer.
     mCanRenderToDefaultFramebuffer = false;
   }
-#ifdef XP_DARWIN
-  TextureSync::RegisterTextureSourceProvider(this);
-#endif
   MOZ_COUNT_CTOR(CompositorOGL);
 }
 
-CompositorOGL::~CompositorOGL() {
-#ifdef XP_DARWIN
-  TextureSync::UnregisterTextureSourceProvider(this);
-#endif
-  MOZ_COUNT_DTOR(CompositorOGL);
-}
+CompositorOGL::~CompositorOGL() { MOZ_COUNT_DTOR(CompositorOGL); }
 
 already_AddRefed<mozilla::gl::GLContext> CompositorOGL::CreateContext() {
   RefPtr<GLContext> context;
@@ -212,7 +200,7 @@ already_AddRefed<mozilla::gl::GLContext> CompositorOGL::CreateContext() {
   }
 
 #ifdef XP_WIN
-  if (gfxEnv::LayersPreferEGL()) {
+  if (gfxEnv::MOZ_LAYERS_PREFER_EGL()) {
     printf_stderr("Trying GL layers...\n");
     context = gl::GLContextProviderEGL::CreateForCompositorWidget(
         mWidget, /* aHardwareWebRender */ false, /* aForceAccelerated */ false);
@@ -220,7 +208,7 @@ already_AddRefed<mozilla::gl::GLContext> CompositorOGL::CreateContext() {
 #endif
 
   // Allow to create offscreen GL context for main Layer Manager
-  if (!context && gfxEnv::LayersPreferOffscreen()) {
+  if (!context && gfxEnv::MOZ_LAYERS_PREFER_OFFSCREEN()) {
     nsCString discardFailureId;
     context = GLContextProvider::CreateHeadless(
         {CreateContextFlags::REQUIRE_COMPAT_PROFILE}, &discardFailureId);
@@ -250,10 +238,6 @@ void CompositorOGL::Destroy() {
     mTexturePool->Clear();
     mTexturePool = nullptr;
   }
-
-#ifdef XP_DARWIN
-  mMaybeUnlockBeforeNextComposition.Clear();
-#endif
 
   if (!mDestroyed) {
     mDestroyed = true;
@@ -324,8 +308,6 @@ void CompositorOGL::CleanupResources() {
     mGLContext->fDeleteSync(mThisFrameDoneSync);
     mThisFrameDoneSync = nullptr;
   }
-
-  mBlitTextureImageHelper = nullptr;
 
   if (mOwnsGLContext) {
     // On the main thread the Widget will be destroyed soon and calling
@@ -1456,7 +1438,7 @@ void CompositorOGL::EndFrame() {
   AUTO_PROFILER_LABEL("CompositorOGL::EndFrame", GRAPHICS);
 
 #ifdef MOZ_DUMP_PAINTING
-  if (gfxEnv::DumpCompositorTextures()) {
+  if (gfxEnv::MOZ_DISABLE_FORCE_PRESENT()) {
     LayoutDeviceIntSize size;
     if (mUseExternalSurfaceSize) {
       size = LayoutDeviceIntSize(mSurfaceSize.width, mSurfaceSize.height);
@@ -1634,97 +1616,6 @@ already_AddRefed<DataTextureSource> CompositorOGL::CreateDataTextureSource(
   return MakeAndAddRef<TextureImageTextureSourceOGL>(this, aFlags);
 }
 
-already_AddRefed<DataTextureSource>
-CompositorOGL::CreateDataTextureSourceAroundYCbCr(TextureHost* aTexture) {
-  if (!gl()) {
-    return nullptr;
-  }
-
-  BufferTextureHost* bufferTexture = aTexture->AsBufferTextureHost();
-  MOZ_ASSERT(bufferTexture);
-
-  if (!bufferTexture) {
-    return nullptr;
-  }
-
-  uint8_t* buf = bufferTexture->GetBuffer();
-  const BufferDescriptor& buffDesc = bufferTexture->GetBufferDescriptor();
-  const YCbCrDescriptor& desc = buffDesc.get_YCbCrDescriptor();
-
-  RefPtr<gfx::DataSourceSurface> tempY =
-      gfx::Factory::CreateWrappingDataSourceSurface(
-          ImageDataSerializer::GetYChannel(buf, desc), desc.yStride(),
-          desc.ySize(), SurfaceFormatForColorDepth(desc.colorDepth()));
-  if (!tempY) {
-    return nullptr;
-  }
-  RefPtr<gfx::DataSourceSurface> tempCb =
-      gfx::Factory::CreateWrappingDataSourceSurface(
-          ImageDataSerializer::GetCbChannel(buf, desc), desc.cbCrStride(),
-          desc.cbCrSize(), SurfaceFormatForColorDepth(desc.colorDepth()));
-  if (!tempCb) {
-    return nullptr;
-  }
-  RefPtr<gfx::DataSourceSurface> tempCr =
-      gfx::Factory::CreateWrappingDataSourceSurface(
-          ImageDataSerializer::GetCrChannel(buf, desc), desc.cbCrStride(),
-          desc.cbCrSize(), SurfaceFormatForColorDepth(desc.colorDepth()));
-  if (!tempCr) {
-    return nullptr;
-  }
-
-  RefPtr<DirectMapTextureSource> srcY = new DirectMapTextureSource(this, tempY);
-  RefPtr<DirectMapTextureSource> srcU =
-      new DirectMapTextureSource(this, tempCb);
-  RefPtr<DirectMapTextureSource> srcV =
-      new DirectMapTextureSource(this, tempCr);
-
-  srcY->SetNextSibling(srcU);
-  srcU->SetNextSibling(srcV);
-
-  return srcY.forget();
-}
-
-#ifdef XP_DARWIN
-void CompositorOGL::MaybeUnlockBeforeNextComposition(
-    TextureHost* aTextureHost) {
-  auto bufferTexture = aTextureHost->AsBufferTextureHost();
-  if (bufferTexture) {
-    mMaybeUnlockBeforeNextComposition.AppendElement(bufferTexture);
-  }
-}
-
-void CompositorOGL::TryUnlockTextures() {
-  nsClassHashtable<nsUint32HashKey, nsTArray<uint64_t>>
-      texturesIdsToUnlockByPid;
-  for (auto& texture : mMaybeUnlockBeforeNextComposition) {
-    if (texture->IsDirectMap() && texture->CanUnlock()) {
-      texture->ReadUnlock();
-      auto actor = texture->GetIPDLActor();
-      if (actor) {
-        base::ProcessId pid = actor->OtherPid();
-        nsTArray<uint64_t>* textureIds =
-            texturesIdsToUnlockByPid.GetOrInsertNew(pid);
-        textureIds->AppendElement(TextureHost::GetTextureSerial(actor));
-      }
-    }
-  }
-  mMaybeUnlockBeforeNextComposition.Clear();
-  for (const auto& entry : texturesIdsToUnlockByPid) {
-    TextureSync::SetTexturesUnlocked(entry.GetKey(), *entry.GetWeak());
-  }
-}
-#endif
-
-already_AddRefed<DataTextureSource>
-CompositorOGL::CreateDataTextureSourceAround(gfx::DataSourceSurface* aSurface) {
-  if (!gl()) {
-    return nullptr;
-  }
-
-  return MakeAndAddRef<DirectMapTextureSource>(this, aSurface);
-}
-
 int32_t CompositorOGL::GetMaxTextureSize() const {
   MOZ_ASSERT(mGLContext);
   GLint texSize = 0;
@@ -1741,34 +1632,11 @@ void CompositorOGL::MakeCurrent(MakeCurrentFlags aFlags) {
   mGLContext->MakeCurrent(aFlags & ForceMakeCurrent);
 }
 
-GLBlitTextureImageHelper* CompositorOGL::BlitTextureImageHelper() {
-  if (!mBlitTextureImageHelper) {
-    mBlitTextureImageHelper = MakeUnique<GLBlitTextureImageHelper>(this);
-  }
-
-  return mBlitTextureImageHelper.get();
-}
-
 GLuint CompositorOGL::GetTemporaryTexture(GLenum aTarget, GLenum aUnit) {
   if (!mTexturePool) {
     mTexturePool = new PerUnitTexturePoolOGL(gl());
   }
   return mTexturePool->GetTexture(aTarget, aUnit);
-}
-
-bool CompositorOGL::SupportsTextureDirectMapping() {
-  if (!StaticPrefs::gfx_allow_texture_direct_mapping_AtStartup()) {
-    return false;
-  }
-
-  if (mGLContext) {
-    mGLContext->MakeCurrent();
-    return mGLContext->IsExtensionSupported(
-               gl::GLContext::APPLE_client_storage) &&
-           mGLContext->IsExtensionSupported(gl::GLContext::APPLE_texture_range);
-  }
-
-  return false;
 }
 
 GLuint PerUnitTexturePoolOGL::GetTexture(GLenum aTarget, GLenum aTextureUnit) {

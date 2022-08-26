@@ -2,8 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+/* eslint-env mozilla/remote-page */
 
 var AboutRestartRequired = {
   /* Only do autofocus if we're the toplevel frame; otherwise we
@@ -37,3 +36,7 @@ let restartButton = document.getElementById("restart");
 restartButton.onclick = function() {
   AboutRestartRequired.restart();
 };
+
+// Dispatch this event so tests can detect that we finished loading the page.
+let event = new CustomEvent("AboutRestartRequiredLoad", { bubbles: true });
+document.dispatchEvent(event);

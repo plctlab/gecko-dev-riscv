@@ -6,13 +6,24 @@
 
 var EXPORTED_SYMBOLS = ["MessageHandlerFrameParent"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  error: "chrome://remote/content/shared/messagehandler/Errors.jsm",
   RootMessageHandlerRegistry:
     "chrome://remote/content/shared/messagehandler/RootMessageHandlerRegistry.jsm",
+  WindowGlobalMessageHandler:
+    "chrome://remote/content/shared/messagehandler/WindowGlobalMessageHandler.jsm",
+});
+
+XPCOMUtils.defineLazyGetter(lazy, "WebDriverError", () => {
+  return ChromeUtils.import(
+    "chrome://remote/content/shared/webdriver/Errors.jsm"
+  ).error.WebDriverError;
 });
 
 /**
@@ -21,17 +32,37 @@ XPCOMUtils.defineLazyModuleGetters(this, {
  * ROOT MessageHandlers and WINDOW_GLOBAL MessageHandlers.
  */
 class MessageHandlerFrameParent extends JSWindowActorParent {
-  receiveMessage(message) {
+  async receiveMessage(message) {
     switch (message.name) {
       case "MessageHandlerFrameChild:messageHandlerEvent":
-        const { method, params, sessionId } = message.data;
-
-        const messageHandler = RootMessageHandlerRegistry.getExistingMessageHandler(
-          sessionId
-        );
+        const { name, data, isProtocolEvent, sessionId } = message.data;
+        const [moduleName] = name.split(".");
 
         // Re-emit the event on the RootMessageHandler.
-        messageHandler.emitMessageHandlerEvent(method, params);
+        const messageHandler = lazy.RootMessageHandlerRegistry.getExistingMessageHandler(
+          sessionId
+        );
+        // TODO: getModuleInstance expects a CommandDestination in theory,
+        // but only uses the MessageHandler type in practice, see Bug 1776389.
+        const module = messageHandler.moduleCache.getModuleInstance(
+          moduleName,
+          { type: lazy.WindowGlobalMessageHandler.type }
+        );
+        let eventPayload = data;
+
+        // Modify an event payload if there is a special method in the targeted module.
+        // If present it can be found in windowglobal-in-root module.
+        if (module?.interceptEvent) {
+          eventPayload = await module.interceptEvent(name, data);
+
+          // Make sure that an event payload is returned.
+          if (!eventPayload) {
+            throw new Error(
+              `${moduleName}.interceptEvent doesn't return the event payload`
+            );
+          }
+        }
+        messageHandler.emitEvent(name, eventPayload, { isProtocolEvent });
 
         break;
       default:
@@ -51,10 +82,24 @@ class MessageHandlerFrameParent extends JSWindowActorParent {
    *     Promise that will resolve with the result of query sent to the
    *     MessageHandlerFrameChild actor.
    */
-  sendCommand(command, sessionId) {
-    return this.sendQuery("MessageHandlerFrameParent:sendCommand", {
-      command,
-      sessionId,
-    });
+  async sendCommand(command, sessionId) {
+    const result = await this.sendQuery(
+      "MessageHandlerFrameParent:sendCommand",
+      {
+        command,
+        sessionId,
+      }
+    );
+
+    if (result?.error) {
+      if (result.isMessageHandlerError) {
+        throw lazy.error.MessageHandlerError.fromJSON(result.error);
+      }
+
+      // TODO: Do not assume WebDriver is the session protocol, see Bug 1779026.
+      throw lazy.WebDriverError.fromJSON(result.error);
+    }
+
+    return result;
   }
 }

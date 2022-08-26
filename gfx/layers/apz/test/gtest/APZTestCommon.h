@@ -45,7 +45,7 @@ using ::testing::MockFunction;
 using ::testing::NiceMock;
 typedef mozilla::layers::GeckoContentController::TapType TapType;
 
-static TimeStamp GetStartupTime() {
+inline TimeStamp GetStartupTime() {
   static TimeStamp sStartupTime = TimeStamp::Now();
   return sStartupTime;
 }
@@ -99,6 +99,10 @@ class ScopedGfxSetting {
   Storage mOldVal;
 };
 
+static inline constexpr auto kDefaultTouchBehavior =
+    AllowedTouchBehavior::VERTICAL_PAN | AllowedTouchBehavior::HORIZONTAL_PAN |
+    AllowedTouchBehavior::PINCH_ZOOM | AllowedTouchBehavior::DOUBLE_TAP_ZOOM;
+
 #define FRESH_PREF_VAR_PASTE(id, line) id##line
 #define FRESH_PREF_VAR_EXPAND(id, line) FRESH_PREF_VAR_PASTE(id, line)
 #define FRESH_PREF_VAR FRESH_PREF_VAR_EXPAND(pref, __LINE__)
@@ -150,6 +154,8 @@ class MockContentController : public GeckoContentController {
   MOCK_METHOD1(NotifyAsyncAutoscrollRejected,
                void(const ScrollableLayerGuid::ViewID&));
   MOCK_METHOD1(CancelAutoscroll, void(const ScrollableLayerGuid&));
+  MOCK_METHOD2(NotifyScaleGestureComplete,
+               void(const ScrollableLayerGuid&, float aScale));
 };
 
 class MockContentControllerDelayed : public MockContentController {
@@ -259,13 +265,16 @@ class TestAsyncPanZoomController : public AsyncPanZoomController {
         mWaitForMainThread(false),
         mcc(aMcc) {}
 
-  APZEventResult ReceiveInputEvent(InputData& aEvent) {
+  APZEventResult ReceiveInputEvent(
+      InputData& aEvent,
+      const Maybe<nsTArray<uint32_t>>& aTouchBehaviors = Nothing()) {
     // This is a function whose signature matches exactly the ReceiveInputEvent
     // on APZCTreeManager. This allows us to templates for functions like
     // TouchDown, TouchUp, etc so that we can reuse the code for dispatching
     // events into both APZC and APZCTM.
     return GetInputQueue()->ReceiveInputEvent(
-        this, TargetConfirmationFlags{!mWaitForMainThread}, aEvent);
+        this, TargetConfirmationFlags{!mWaitForMainThread}, aEvent,
+        aTouchBehaviors);
   }
 
   void ContentReceivedInputBlock(uint64_t aInputBlockId, bool aPreventDefault) {
@@ -320,25 +329,62 @@ class TestAsyncPanZoomController : public AsyncPanZoomController {
     EXPECT_EQ(FLING, mState);
   }
 
+  void AssertStateIsSmoothScroll() const {
+    RecursiveMutexAutoLock lock(mRecursiveMutex);
+    EXPECT_EQ(SMOOTH_SCROLL, mState);
+  }
+
   void AssertStateIsSmoothMsdScroll() const {
     RecursiveMutexAutoLock lock(mRecursiveMutex);
     EXPECT_EQ(SMOOTHMSD_SCROLL, mState);
   }
 
-  void AssertNotAxisLocked() const {
+  void AssertStateIsPanningLockedY() {
+    RecursiveMutexAutoLock lock(mRecursiveMutex);
+    EXPECT_EQ(PANNING_LOCKED_Y, mState);
+  }
+
+  void AssertStateIsPanningLockedX() {
+    RecursiveMutexAutoLock lock(mRecursiveMutex);
+    EXPECT_EQ(PANNING_LOCKED_X, mState);
+  }
+
+  void AssertStateIsPanning() {
     RecursiveMutexAutoLock lock(mRecursiveMutex);
     EXPECT_EQ(PANNING, mState);
   }
 
-  void AssertAxisLocked(ScrollDirection aDirection) const {
+  void AssertStateIsPanMomentum() {
     RecursiveMutexAutoLock lock(mRecursiveMutex);
+    EXPECT_EQ(PAN_MOMENTUM, mState);
+  }
+
+  void SetAxisLocked(ScrollDirections aDirections, bool aLockValue) {
+    if (aDirections.contains(ScrollDirection::eVertical)) {
+      mY.SetAxisLocked(aLockValue);
+    }
+    if (aDirections.contains(ScrollDirection::eHorizontal)) {
+      mX.SetAxisLocked(aLockValue);
+    }
+  }
+
+  void AssertNotAxisLocked() const {
+    EXPECT_FALSE(mY.IsAxisLocked());
+    EXPECT_FALSE(mX.IsAxisLocked());
+  }
+
+  void AssertAxisLocked(ScrollDirection aDirection) const {
     switch (aDirection) {
       case ScrollDirection::eHorizontal:
-        EXPECT_EQ(PANNING_LOCKED_X, mState);
+        EXPECT_TRUE(mY.IsAxisLocked());
+        EXPECT_FALSE(mX.IsAxisLocked());
         break;
       case ScrollDirection::eVertical:
-        EXPECT_EQ(PANNING_LOCKED_Y, mState);
+        EXPECT_TRUE(mX.IsAxisLocked());
+        EXPECT_FALSE(mY.IsAxisLocked());
         break;
+      default:
+        FAIL() << "input direction must be either vertical or horizontal";
     }
   }
 
@@ -524,8 +570,7 @@ APZEventResult APZCTesterBase::Tap(const RefPtr<InputReceiver>& aTarget,
 
   // If touch-action is enabled then simulate the allowed touch behaviour
   // notification that the main thread is supposed to deliver.
-  if (StaticPrefs::layout_css_touch_action_enabled() &&
-      touchDownResult.GetStatus() != nsEventStatus_eConsumeNoDefault) {
+  if (touchDownResult.GetStatus() != nsEventStatus_eConsumeNoDefault) {
     SetDefaultAllowedTouchBehavior(aTarget, touchDownResult.mInputBlockId);
   }
 
@@ -604,7 +649,7 @@ void APZCTesterBase::Pan(const RefPtr<InputReceiver>& aTarget,
       EXPECT_EQ(1UL, aAllowedTouchBehaviors->Length());
       aTarget->SetAllowedTouchBehavior(*aOutInputBlockId,
                                        *aAllowedTouchBehaviors);
-    } else if (StaticPrefs::layout_css_touch_action_enabled()) {
+    } else {
       SetDefaultAllowedTouchBehavior(aTarget, *aOutInputBlockId);
     }
   }
@@ -697,8 +742,7 @@ void APZCTesterBase::DoubleTap(const RefPtr<InputReceiver>& aTarget,
 
   // If touch-action is enabled then simulate the allowed touch behaviour
   // notification that the main thread is supposed to deliver.
-  if (StaticPrefs::layout_css_touch_action_enabled() &&
-      result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
+  if (result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
     SetDefaultAllowedTouchBehavior(aTarget, result.mInputBlockId);
   }
 
@@ -716,8 +760,7 @@ void APZCTesterBase::DoubleTap(const RefPtr<InputReceiver>& aTarget,
   }
   mcc->AdvanceByMillis(10);
 
-  if (StaticPrefs::layout_css_touch_action_enabled() &&
-      result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
+  if (result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
     SetDefaultAllowedTouchBehavior(aTarget, result.mInputBlockId);
   }
 
@@ -793,7 +836,7 @@ void APZCTesterBase::PinchWithTouchInput(
     EXPECT_EQ(2UL, aAllowedTouchBehaviors->Length());
     aTarget->SetAllowedTouchBehavior(*aOutInputBlockId,
                                      *aAllowedTouchBehaviors);
-  } else if (StaticPrefs::layout_css_touch_action_enabled()) {
+  } else {
     SetDefaultAllowedTouchBehavior(aTarget, *aOutInputBlockId, 2);
   }
 
@@ -941,7 +984,6 @@ inline FrameMetrics TestFrameMetrics() {
 
   fm.SetDisplayPort(CSSRect(0, 0, 10, 10));
   fm.SetCompositionBounds(ParentLayerRect(0, 0, 10, 10));
-  fm.SetCriticalDisplayPort(CSSRect(0, 0, 10, 10));
   fm.SetScrollableRect(CSSRect(0, 0, 100, 100));
 
   return fm;

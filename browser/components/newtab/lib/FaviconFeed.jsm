@@ -13,18 +13,13 @@ const { RemoteSettings } = ChromeUtils.import(
   "resource://services-settings/remote-settings.js"
 );
 
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NewTabUtils",
   "resource://gre/modules/NewTabUtils.jsm"
 );
@@ -38,15 +33,13 @@ const MIN_FAVICON_SIZE = 96;
  * @returns A promise of an object (possibly null) containing the data
  */
 function getFaviconInfo(uri) {
-  // Use 0 to get the biggest width available
-  const preferredWidth = 0;
   return new Promise(resolve =>
-    PlacesUtils.favicons.getFaviconDataForPage(
+    lazy.PlacesUtils.favicons.getFaviconDataForPage(
       uri,
       // Package up the icon data in an object if we have it; otherwise null
       (iconUri, faviconLength, favicon, mimeType, faviconSize) =>
         resolve(iconUri ? { iconUri, faviconSize } : null),
-      preferredWidth
+      lazy.NewTabUtils.activityStreamProvider.THUMB_FAVICON_SIZE
     )
   );
 }
@@ -81,8 +74,8 @@ async function fetchVisitPaths(url) {
       JOIN path
         ON visit_id = from_visit
       WHERE visit_type IN
-        (${PlacesUtils.history.TRANSITIONS.REDIRECT_PERMANENT},
-         ${PlacesUtils.history.TRANSITIONS.REDIRECT_TEMPORARY})
+        (${lazy.PlacesUtils.history.TRANSITIONS.REDIRECT_PERMANENT},
+         ${lazy.PlacesUtils.history.TRANSITIONS.REDIRECT_TEMPORARY})
     )
     SELECT visit_id, (
       SELECT (
@@ -94,7 +87,7 @@ async function fetchVisitPaths(url) {
     FROM path
   `;
 
-  const visits = await NewTabUtils.activityStreamProvider.executePlacesQuery(
+  const visits = await lazy.NewTabUtils.activityStreamProvider.executePlacesQuery(
     query,
     {
       columns: ["visit_id", "url"],
@@ -119,11 +112,11 @@ async function fetchIconFromRedirects(url) {
     const redirectedUri = Services.io.newURI(lastVisit.url);
     const iconInfo = await getFaviconInfo(redirectedUri);
     if (iconInfo && iconInfo.faviconSize >= MIN_FAVICON_SIZE) {
-      PlacesUtils.favicons.setAndFetchFaviconForPage(
+      lazy.PlacesUtils.favicons.setAndFetchFaviconForPage(
         Services.io.newURI(url),
         iconInfo.iconUri,
         false,
-        PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
+        lazy.PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
         null,
         Services.scriptSecurityManager.getSystemPrincipal()
       );
@@ -131,7 +124,7 @@ async function fetchIconFromRedirects(url) {
   }
 }
 
-this.FaviconFeed = class FaviconFeed {
+class FaviconFeed {
   constructor() {
     this._queryForRedirects = new Set();
   }
@@ -163,11 +156,11 @@ this.FaviconFeed = class FaviconFeed {
       .mutate()
       .setRef("tippytop")
       .finalize();
-    PlacesUtils.favicons.setAndFetchFaviconForPage(
+    lazy.PlacesUtils.favicons.setAndFetchFaviconForPage(
       Services.io.newURI(url),
       iconUri,
       false,
-      PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
+      lazy.PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
       null,
       Services.scriptSecurityManager.getSystemPrincipal()
     );
@@ -208,6 +201,6 @@ this.FaviconFeed = class FaviconFeed {
         break;
     }
   }
-};
+}
 
 const EXPORTED_SYMBOLS = ["FaviconFeed", "fetchIconFromRedirects"];

@@ -5,15 +5,10 @@
 
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
 /* import-globals-from ../../../shared/test/shared-head.js */
-/* import-globals-from ../../../shared/test/shared-redux-head.js */
 /* import-globals-from ../../../inspector/test/shared-head.js */
 
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
-  this
-);
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
   this
 );
 
@@ -67,10 +62,6 @@ SimpleTest.waitForExplicitFinish();
 // should be enough.
 requestLongerTimeout(2);
 
-Services.prefs.setCharPref(
-  "devtools.devices.url",
-  TEST_URI_ROOT + "devices.json"
-);
 // The appearance of this notification causes intermittent behavior in some tests that
 // send mouse events, since it causes the content to shift when it appears.
 Services.prefs.setBoolPref(
@@ -79,10 +70,8 @@ Services.prefs.setBoolPref(
 );
 // Don't show the setting onboarding tooltip in the test suites.
 Services.prefs.setBoolPref("devtools.responsive.show-setting-tooltip", false);
-Services.prefs.setBoolPref("devtools.responsive.showUserAgentInput", true);
 
 registerCleanupFunction(async () => {
-  Services.prefs.clearUserPref("devtools.devices.url");
   Services.prefs.clearUserPref(
     "devtools.responsive.reloadNotification.enabled"
   );
@@ -100,33 +89,9 @@ registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("devtools.responsive.viewport.height");
   Services.prefs.clearUserPref("devtools.responsive.viewport.pixelRatio");
   Services.prefs.clearUserPref("devtools.responsive.viewport.width");
-  await asyncStorage.removeItem("devtools.devices.url_cache");
   await asyncStorage.removeItem("devtools.responsive.deviceState");
   await removeLocalDevices();
 });
-
-/**
- * Open responsive design mode for the given tab.
- */
-var openRDM = async function(tab) {
-  info("Opening responsive design mode");
-  const manager = ResponsiveUIManager;
-  const ui = await manager.openIfNeeded(tab.ownerGlobal, tab, {
-    trigger: "test",
-  });
-  info("Responsive design mode opened");
-  return { ui, manager };
-};
-
-/**
- * Close responsive design mode for the given tab.
- */
-var closeRDM = async function(tab, options) {
-  info("Closing responsive design mode");
-  const manager = ResponsiveUIManager;
-  await manager.closeIfNeeded(tab.ownerGlobal, tab, options);
-  info("Responsive design mode closed");
-};
 
 /**
  * Adds a new test task that adds a tab with the given URL, awaits the
@@ -181,11 +146,9 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
         preTaskValue = await preTask({ message, browser });
       }
 
-      const rdmValues = await openRDM(tab);
+      const rdmValues = await openRDM(tab, { waitForDeviceList });
       ui = rdmValues.ui;
       manager = rdmValues.manager;
-
-      await waitForRDMLoaded(ui, { waitForDeviceList });
     }
 
     try {
@@ -218,26 +181,6 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
     // any changes made by the tasks.
     await SpecialPowers.flushPrefEnv();
   });
-}
-
-/**
- * Wait for the RDM UI to be fully loaded
- */
-async function waitForRDMLoaded(ui, { waitForDeviceList }) {
-  // Always wait for the post-init message.
-  await message.wait(ui.toolWindow, "post-init");
-
-  // Always wait for the viewport to be added.
-  const { store } = ui.toolWindow;
-  await waitUntilState(store, state => state.viewports.length == 1);
-
-  if (waitForDeviceList) {
-    // Wait until the device list has been loaded.
-    await waitUntilState(
-      store,
-      state => state.devices.listState == localTypes.loadableState.LOADED
-    );
-  }
 }
 
 /**
@@ -346,7 +289,9 @@ var setViewportSizeAndAwaitReflow = async function(ui, manager, width, height) {
 
 function getViewportDevicePixelRatio(ui) {
   return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function() {
-    return content.devicePixelRatio;
+    // Note that devicePixelRatio doesn't return the override to privileged
+    // code, see bug 1759962.
+    return content.browsingContext.overrideDPPX || content.devicePixelRatio;
   });
 }
 
@@ -441,8 +386,8 @@ async function testViewportResize(
   );
 
   if (hasDevice) {
-    const { reloadNeeded } = await deviceRemoved;
-    if (reloadNeeded) {
+    const { reloadTriggered } = await deviceRemoved;
+    if (reloadTriggered) {
       await waitForDevToolsReload();
     }
   }
@@ -549,8 +494,8 @@ const selectDevice = async (ui, value) => {
 
   const onDeviceChanged = once(ui, "device-changed");
   await selectMenuItem(ui, "#device-selector", value);
-  const { reloadNeeded } = await onDeviceChanged;
-  if (reloadNeeded) {
+  const { reloadTriggered } = await onDeviceChanged;
+  if (reloadTriggered) {
     await waitForDevToolsReload();
   }
 };
@@ -1004,7 +949,10 @@ async function waitForDevicePixelRatio(
     ui.getViewportBrowser(),
     [{ expected }],
     function(args) {
-      const initial = content.devicePixelRatio;
+      const getDpr = function() {
+        return content.browsingContext.overrideDPPX || content.devicePixelRatio;
+      };
+      const initial = getDpr();
       info(
         `Listening for pixel ratio change ` +
           `(current: ${initial}, expected: ${args.expected})`
@@ -1013,13 +961,13 @@ async function waitForDevicePixelRatio(
         const mql = content.matchMedia(`(resolution: ${args.expected}dppx)`);
         if (mql.matches) {
           info(`Ratio already changed to ${args.expected}dppx`);
-          resolve(content.devicePixelRatio);
+          resolve(getDpr());
           return;
         }
         mql.addListener(function listener() {
           info(`Ratio changed to ${args.expected}dppx`);
           mql.removeListener(listener);
-          resolve(content.devicePixelRatio);
+          resolve(getDpr());
         });
       });
     }

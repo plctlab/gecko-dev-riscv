@@ -8,7 +8,13 @@ const { storageTypePool } = require("devtools/server/actors/storage");
 const EventEmitter = require("devtools/shared/event-emitter");
 const { Ci } = require("chrome");
 const Services = require("Services");
-const { isWindowIncluded } = require("devtools/shared/layout/utils");
+
+loader.lazyRequireGetter(
+  this,
+  "getAddonIdForWindowGlobal",
+  "devtools/server/actors/watcher/browsing-context-helpers.jsm",
+  true
+);
 
 // ms of delay to throttle updates
 const BATCH_DELAY = 200;
@@ -41,7 +47,7 @@ class ContentProcessStorage {
     this.onStoresCleared = this.onStoresCleared.bind(this);
   }
 
-  async watch(targetActor, { onAvailable, onUpdated, onDestroyed }) {
+  async watch(targetActor, { onAvailable }) {
     const ActorConstructor = storageTypePool.get(this.storageKey);
     const storageActor = new StorageActorMock(targetActor);
     this.storageActor = storageActor;
@@ -207,6 +213,9 @@ class StorageActorMock extends EventEmitter {
       // creating any global.
       return null;
     }
+    if (!this.isIncludedInTopLevelWindow(window)) {
+      return null;
+    }
     this.childWindowPool.add(window);
     for (let i = 0; i < docShell.childCount; i++) {
       const child = docShell.getChildAt(i);
@@ -216,15 +225,12 @@ class StorageActorMock extends EventEmitter {
   }
 
   isIncludedInTargetExtension(subject) {
-    const { document } = subject;
-    return (
-      document.nodePrincipal.addonId &&
-      document.nodePrincipal.addonId === this.targetActor.addonId
-    );
+    const addonId = getAddonIdForWindowGlobal(subject.windowGlobalChild);
+    return addonId && addonId === this.targetActor.addonId;
   }
 
   isIncludedInTopLevelWindow(window) {
-    return isWindowIncluded(this.window, window);
+    return this.targetActor.windows.includes(window);
   }
 
   getWindowFromInnerWindowID(innerID) {

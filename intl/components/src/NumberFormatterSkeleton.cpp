@@ -122,7 +122,7 @@ bool NumberFormatterSkeleton::currencyDisplay(
   return false;
 }
 
-static const ::MeasureUnit& FindSimpleMeasureUnit(std::string_view name) {
+static const SimpleMeasureUnit& FindSimpleMeasureUnit(std::string_view name) {
   const auto* measureUnit = std::lower_bound(
       std::begin(simpleMeasureUnits), std::end(simpleMeasureUnits), name,
       [](const auto& measureUnit, std::string_view name) {
@@ -146,7 +146,7 @@ static constexpr size_t MaxUnitLength() {
 bool NumberFormatterSkeleton::unit(std::string_view unit) {
   MOZ_RELEASE_ASSERT(unit.length() <= MaxUnitLength());
 
-  auto appendUnit = [this](const ::MeasureUnit& unit) {
+  auto appendUnit = [this](const SimpleMeasureUnit& unit) {
     return append(unit.type, strlen(unit.type)) && append('-') &&
            append(unit.name, strlen(unit.name));
   };
@@ -408,14 +408,14 @@ UNumberFormatter* NumberFormatterSkeleton::toFormatter(
 
   UErrorCode status = U_ZERO_ERROR;
   UNumberFormatter* nf = unumf_openForSkeletonAndLocale(
-      mVector.begin(), mVector.length(), locale.data(), &status);
+      mVector.begin(), mVector.length(), AssertNullTerminatedString(locale),
+      &status);
   if (U_FAILURE(status)) {
     return nullptr;
   }
   return nf;
 }
 
-#ifndef U_HIDE_DRAFT_API
 static UNumberRangeCollapse ToUNumberRangeCollapse(
     NumberRangeFormatOptions::RangeCollapse collapse) {
   using RangeCollapse = NumberRangeFormatOptions::RangeCollapse;
@@ -462,13 +462,12 @@ UNumberRangeFormatter* NumberFormatterSkeleton::toRangeFormatter(
   UNumberRangeFormatter* nrf =
       unumrf_openForSkeletonWithCollapseAndIdentityFallback(
           mVector.begin(), mVector.length(), ToUNumberRangeCollapse(collapse),
-          ToUNumberRangeIdentityFallback(identity), locale.data(), perror,
-          &status);
+          ToUNumberRangeIdentityFallback(identity),
+          AssertNullTerminatedString(locale), perror, &status);
   if (U_FAILURE(status)) {
     return nullptr;
   }
   return nrf;
 }
-#endif
 
 }  // namespace mozilla::intl

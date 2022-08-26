@@ -2,15 +2,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/process-script */
+
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
 
 ChromeUtils.defineModuleGetter(
   this,
   "E10SUtils",
   "resource://gre/modules/E10SUtils.jsm"
 );
+
+XPCOMUtils.defineLazyGetter(this, "ConsoleAPIStorage", () => {
+  return Cc["@mozilla.org/consoleAPI-storage;1"].getService(
+    Ci.nsIConsoleAPIStorage
+  );
+});
 
 /*
  * The message manager has an upper limit on message sizes that it can
@@ -34,7 +44,11 @@ const MSG_MGR_CONSOLE_VAR_SIZE = 8;
 const MSG_MGR_CONSOLE_INFO_MAX = 1024;
 
 function ContentProcessForward() {
-  Services.obs.addObserver(this, "console-api-log-event");
+  this.onConsoleAPILogEvent = this.onConsoleAPILogEvent.bind(this);
+  ConsoleAPIStorage.addLogEventListener(
+    this.onConsoleAPILogEvent,
+    Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+  );
   Services.obs.addObserver(this, "xpcom-shutdown");
   Services.cpmm.addMessageListener(
     "DevTools:StopForwardingContentProcessMessage",
@@ -53,81 +67,76 @@ ContentProcessForward.prototype = {
     }
   },
 
-  observe(subject, topic, data) {
-    switch (topic) {
-      case "console-api-log-event": {
-        const consoleMsg = subject.wrappedJSObject;
+  onConsoleAPILogEvent(subject, data) {
+    const consoleMsg = subject.wrappedJSObject;
 
-        const msgData = {
-          ...consoleMsg,
-          arguments: [],
-          filename: consoleMsg.filename.substring(0, MSG_MGR_CONSOLE_INFO_MAX),
-          functionName:
-            consoleMsg.functionName &&
-            consoleMsg.functionName.substring(0, MSG_MGR_CONSOLE_INFO_MAX),
-          // Prevents cyclic object error when using msgData in sendAsyncMessage
-          wrappedJSObject: null,
-        };
+    const msgData = {
+      ...consoleMsg,
+      arguments: [],
+      filename: consoleMsg.filename.substring(0, MSG_MGR_CONSOLE_INFO_MAX),
+      functionName:
+        consoleMsg.functionName &&
+        consoleMsg.functionName.substring(0, MSG_MGR_CONSOLE_INFO_MAX),
+      // Prevents cyclic object error when using msgData in sendAsyncMessage
+      wrappedJSObject: null,
+    };
 
-        // We can't send objects over the message manager, so we sanitize
-        // them out, replacing those arguments with "<unavailable>".
-        const unavailString = "<unavailable>";
-        const unavailStringLength = unavailString.length * 2; // 2-bytes per char
+    // We can't send objects over the message manager, so we sanitize
+    // them out, replacing those arguments with "<unavailable>".
+    const unavailString = "<unavailable>";
+    const unavailStringLength = unavailString.length * 2; // 2-bytes per char
 
-        // When the sum of argument sizes reaches MSG_MGR_CONSOLE_MAX_SIZE,
-        // replace all arguments with "<truncated>".
-        let totalArgLength = 0;
+    // When the sum of argument sizes reaches MSG_MGR_CONSOLE_MAX_SIZE,
+    // replace all arguments with "<truncated>".
+    let totalArgLength = 0;
 
-        // Walk through the arguments, checking the type and size.
-        for (let arg of consoleMsg.arguments) {
-          if (
-            (typeof arg == "object" || typeof arg == "function") &&
-            arg !== null
-          ) {
-            if (
-              Services.appinfo.remoteType === E10SUtils.EXTENSION_REMOTE_TYPE
-            ) {
-              // For OOP extensions: we want the developer to be able to see the
-              // logs in the Browser Console. When the Addon Toolbox will be more
-              // prominent we can revisit.
-              try {
-                // If the argument is clonable, then send it as-is. If
-                // cloning fails, fall back to the unavailable string.
-                arg = Cu.cloneInto(arg, {});
-              } catch (e) {
-                arg = unavailString;
-              }
-            } else {
-              arg = unavailString;
-            }
-            totalArgLength += unavailStringLength;
-          } else if (typeof arg == "string") {
-            totalArgLength += arg.length * 2; // 2-bytes per char
-          } else {
-            totalArgLength += MSG_MGR_CONSOLE_VAR_SIZE;
+    // Walk through the arguments, checking the type and size.
+    for (let arg of consoleMsg.arguments) {
+      if (
+        (typeof arg == "object" || typeof arg == "function") &&
+        arg !== null
+      ) {
+        if (Services.appinfo.remoteType === E10SUtils.EXTENSION_REMOTE_TYPE) {
+          // For OOP extensions: we want the developer to be able to see the
+          // logs in the Browser Console. When the Addon Toolbox will be more
+          // prominent we can revisit.
+          try {
+            // If the argument is clonable, then send it as-is. If
+            // cloning fails, fall back to the unavailable string.
+            arg = Cu.cloneInto(arg, {});
+          } catch (e) {
+            arg = unavailString;
           }
-
-          if (totalArgLength <= MSG_MGR_CONSOLE_MAX_SIZE) {
-            msgData.arguments.push(arg);
-          } else {
-            // arguments take up too much space
-            msgData.arguments = ["<truncated>"];
-            break;
-          }
+        } else {
+          arg = unavailString;
         }
-
-        Services.cpmm.sendAsyncMessage("Console:Log", msgData);
-        break;
+        totalArgLength += unavailStringLength;
+      } else if (typeof arg == "string") {
+        totalArgLength += arg.length * 2; // 2-bytes per char
+      } else {
+        totalArgLength += MSG_MGR_CONSOLE_VAR_SIZE;
       }
 
-      case "xpcom-shutdown":
-        this.uninit();
+      if (totalArgLength <= MSG_MGR_CONSOLE_MAX_SIZE) {
+        msgData.arguments.push(arg);
+      } else {
+        // arguments take up too much space
+        msgData.arguments = ["<truncated>"];
         break;
+      }
+    }
+
+    Services.cpmm.sendAsyncMessage("Console:Log", msgData);
+  },
+
+  observe(subject, topic, data) {
+    if (topic == "xpcom-shutdown") {
+      this.uninit();
     }
   },
 
   uninit() {
-    Services.obs.removeObserver(this, "console-api-log-event");
+    ConsoleAPIStorage.removeLogEventListener(this.onConsoleAPILogEvent);
     Services.obs.removeObserver(this, "xpcom-shutdown");
     Services.cpmm.removeMessageListener(
       "DevTools:StopForwardingContentProcessMessage",

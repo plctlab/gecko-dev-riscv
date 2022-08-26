@@ -7,6 +7,7 @@
 #ifndef mozilla_dom_StorageObserver_h
 #define mozilla_dom_StorageObserver_h
 
+#include "mozilla/dom/quota/CheckedUnsafePtr.h"
 #include "nsINamed.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
@@ -14,8 +15,7 @@
 #include "nsTObserverArray.h"
 #include "nsString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class StorageObserver;
 
@@ -23,7 +23,8 @@ class StorageObserver;
 // SessionStorageManager for direct consumption. Also implemented by legacy
 // StorageDBParent and current SessionStorageObserverParent for propagation to
 // content processes.
-class StorageObserverSink {
+class StorageObserverSink
+    : public SupportsCheckedUnsafePtr<CheckIf<DiagnosticAssertEnabled>> {
  public:
   virtual ~StorageObserverSink() = default;
 
@@ -69,11 +70,10 @@ class StorageObserver : public nsIObserver,
   nsCOMPtr<nsIEventTarget> mBackgroundThread[2];
 
   // Weak references
-  nsTObserverArray<StorageObserverSink*> mSinks;
+  nsTObserverArray<CheckedUnsafePtr<StorageObserverSink>> mSinks;
   nsCOMPtr<nsITimer> mDBThreadStartDelayTimer;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_StorageObserver_h

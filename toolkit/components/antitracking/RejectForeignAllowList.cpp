@@ -47,6 +47,11 @@ bool RejectForeignAllowList::Check(nsIHttpChannel* aChannel) {
 }
 
 // static
+bool RejectForeignAllowList::Check(nsIPrincipal* aPrincipal) {
+  return GetOrCreate()->CheckInternal(aPrincipal);
+}
+
+// static
 RejectForeignAllowList* RejectForeignAllowList::GetOrCreate() {
   if (!gRejectForeignAllowList) {
     gRejectForeignAllowList = new RejectForeignAllowList();
@@ -73,9 +78,28 @@ RejectForeignAllowList* RejectForeignAllowList::GetOrCreate() {
   return gRejectForeignAllowList;
 }
 
+// static
+bool RejectForeignAllowList::Check(nsIURI* aURI) {
+  return GetOrCreate()->CheckInternal(aURI);
+}
+
 bool RejectForeignAllowList::CheckInternal(nsIURI* aURI) {
   MOZ_ASSERT(aURI);
   return nsContentUtils::IsURIInList(aURI, mList);
+}
+
+bool RejectForeignAllowList::CheckInternal(nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(aPrincipal);
+
+  auto* basePrin = BasePrincipal::Cast(aPrincipal);
+  if (!basePrin) {
+    return false;
+  }
+
+  bool result = false;
+  basePrin->IsURIInList(mList, &result);
+
+  return result;
 }
 
 NS_IMETHODIMP

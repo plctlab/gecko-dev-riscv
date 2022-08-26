@@ -23,6 +23,10 @@
 <?xml-stylesheet href="chrome://browser/content/places/places.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/content/usercontext/usercontext.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/" type="text/css"?>
+#ifdef XP_WIN
+<?xml-stylesheet href="chrome://browser/skin/browser-aero.css" type="text/css"?>
+#endif
+
 <?xml-stylesheet href="chrome://browser/skin/controlcenter/panel.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/customizableui/panelUI.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/downloads/downloads.css" type="text/css"?>
@@ -35,9 +39,9 @@
         xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         xmlns="http://www.w3.org/1999/xhtml"
 #ifdef XP_MACOSX
-        data-l10n-id="browser-main-window-mac"
+        data-l10n-id="browser-main-window-mac-window-titles"
 #else
-        data-l10n-id="browser-main-window"
+        data-l10n-id="browser-main-window-window-titles"
 #endif
         data-l10n-args="{&quot;content-title&quot;:&quot;CONTENTTITLE&quot;}"
         data-l10n-attrs="data-content-title-default, data-content-title-private, data-title-default, data-title-private"
@@ -57,6 +61,7 @@
         persist="screenX screenY width height sizemode"
         data-l10n-sync="true">
 <head>
+  <link rel="localization" href="browser/search.ftl"/>
   <link rel="localization" href="branding/brand.ftl"/>
   <link rel="localization" href="browser/branding/sync-brand.ftl"/>
   <link rel="localization" href="browser/branding/brandings.ftl"/>
@@ -77,6 +82,7 @@
   <link rel="localization" href="preview/firefoxSuggest.ftl"/>
   <link rel="localization" href="browser/toolbarContextMenu.ftl"/>
   <link rel="localization" href="browser/screenshots.ftl"/>
+  <link rel="localization" href="browser/firefoxView.ftl"/>
 
   <title data-l10n-id="browser-main-window-title"></title>
 
@@ -129,14 +135,13 @@
 #include main-popupset.inc.xhtml
 
 #include appmenu-viewcache.inc.xhtml
+#include unified-extensions-viewcache.inc.xhtml
 
   <html:dialog id="window-modal-dialog" style="visibility: hidden; height: 0; width: 0"/>
   <html:template id="window-modal-dialog-template">
     <vbox class="dialogTemplate dialogOverlay" align="center" topmost="true">
       <hbox class="dialogBox">
-        <browser class="dialogFrame"
-                 autoscroll="false"
-                 disablehistory="true"/>
+        <browser class="dialogFrame" autoscroll="false" disablehistory="true"/>
       </hbox>
     </vbox>
   </html:template>

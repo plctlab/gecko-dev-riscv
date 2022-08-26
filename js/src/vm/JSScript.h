@@ -26,10 +26,9 @@
 #include "jstypes.h"
 
 #include "frontend/ScriptIndex.h"  // ScriptIndex
-#include "frontend/SourceNotes.h"  // SrcNote
 #include "gc/Barrier.h"
-#include "gc/Rooting.h"
 #include "js/CompileOptions.h"
+#include "js/Transcoding.h"
 #include "js/UbiNode.h"
 #include "js/UniquePtr.h"
 #include "js/Utility.h"
@@ -39,14 +38,15 @@
 #include "vm/BytecodeIterator.h"
 #include "vm/BytecodeLocation.h"
 #include "vm/BytecodeUtil.h"
+#include "vm/ErrorContext.h"
 #include "vm/JSAtom.h"
 #include "vm/NativeObject.h"
 #include "vm/ScopeKind.h"  // ScopeKind
 #include "vm/Shape.h"
 #include "vm/SharedImmutableStringsCache.h"
 #include "vm/SharedStencil.h"  // js::GCThingIndex, js::SourceExtent, js::SharedImmutableScriptData, MemberInitializers
+#include "vm/StencilEnums.h"   // SourceRetrievable
 #include "vm/Time.h"
-#include "vm/Xdr.h"  // XDRMode, XDRResult, XDRIncrementalStencilEncoder
 
 namespace JS {
 struct ScriptSourceInfo;
@@ -56,8 +56,13 @@ class SourceText;
 
 namespace js {
 
+class ScriptSource;
+
 class VarScope;
 class LexicalScope;
+
+class GenericPrinter;
+class Sprinter;
 
 namespace coverage {
 class LCovSource;
@@ -79,11 +84,15 @@ class ModuleObject;
 class RegExpObject;
 class SourceCompressionTask;
 class Shape;
+class SrcNote;
 class DebugScript;
 
 namespace frontend {
 struct CompilationStencil;
+struct ExtensibleCompilationStencil;
 struct CompilationGCOutput;
+struct CompilationStencilMerger;
+class StencilXDR;
 }  // namespace frontend
 
 class ScriptCounts {
@@ -124,6 +133,8 @@ class ScriptCounts {
 
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
 
+  bool traceWeak(JSTracer* trc) { return true; }
+
  private:
   friend class ::JSScript;
   friend struct ScriptAndCounts;
@@ -162,28 +173,52 @@ class ScriptCounts {
 // TODO: Clean this up by either aggregating coverage results in some other
 // way, or by tweaking sweep ordering.
 using UniqueScriptCounts = js::UniquePtr<ScriptCounts>;
-using ScriptCountsMap = HashMap<BaseScript*, UniqueScriptCounts,
-                                DefaultHasher<BaseScript*>, SystemAllocPolicy>;
+using ScriptCountsMap =
+    GCRekeyableHashMap<HeapPtr<BaseScript*>, UniqueScriptCounts,
+                       DefaultHasher<HeapPtr<BaseScript*>>, SystemAllocPolicy>;
 
 // The 'const char*' for the function name is a pointer within the LCovSource's
 // LifoAlloc and will be discarded at the same time.
 using ScriptLCovEntry = mozilla::Tuple<coverage::LCovSource*, const char*>;
-using ScriptLCovMap = HashMap<BaseScript*, ScriptLCovEntry,
-                              DefaultHasher<BaseScript*>, SystemAllocPolicy>;
+using ScriptLCovMap =
+    GCRekeyableHashMap<HeapPtr<BaseScript*>, ScriptLCovEntry,
+                       DefaultHasher<HeapPtr<BaseScript*>>, SystemAllocPolicy>;
 
 #ifdef MOZ_VTUNE
-using ScriptVTuneIdMap = HashMap<BaseScript*, uint32_t,
-                                 DefaultHasher<BaseScript*>, SystemAllocPolicy>;
+using ScriptVTuneIdMap =
+    GCRekeyableHashMap<HeapPtr<BaseScript*>, uint32_t,
+                       DefaultHasher<HeapPtr<BaseScript*>>, SystemAllocPolicy>;
 #endif
 #ifdef JS_CACHEIR_SPEW
 using ScriptFinalWarmUpCountEntry =
     mozilla::Tuple<uint32_t, SharedImmutableString>;
 using ScriptFinalWarmUpCountMap =
-    HashMap<BaseScript*, ScriptFinalWarmUpCountEntry,
-            DefaultHasher<BaseScript*>, SystemAllocPolicy>;
+    GCRekeyableHashMap<HeapPtr<BaseScript*>, ScriptFinalWarmUpCountEntry,
+                       DefaultHasher<HeapPtr<BaseScript*>>, SystemAllocPolicy>;
 #endif
 
-class ScriptSource;
+// As we execute JS sources that used lazy parsing, we may generate additional
+// bytecode that we would like to include in caches if they are being used.
+// There is a dependency cycle between JSScript / ScriptSource /
+// CompilationStencil for this scenario so introduce this smart-ptr wrapper to
+// avoid needing the full details of the stencil-merger in this file.
+class StencilIncrementalEncoderPtr {
+ public:
+  frontend::CompilationStencilMerger* merger_ = nullptr;
+
+  StencilIncrementalEncoderPtr() = default;
+  ~StencilIncrementalEncoderPtr() { reset(); }
+
+  bool hasEncoder() const { return bool(merger_); }
+
+  void reset();
+
+  bool setInitial(JSContext* cx,
+                  UniquePtr<frontend::ExtensibleCompilationStencil>&& initial);
+
+  bool addDelazification(JSContext* cx,
+                         const frontend::CompilationStencil& delazification);
+};
 
 struct ScriptSourceChunk {
   ScriptSource* ss = nullptr;
@@ -367,11 +402,6 @@ struct SourceTypeTraits<char16_t> {
 [[nodiscard]] extern bool SynchronouslyCompressSource(
     JSContext* cx, JS::Handle<BaseScript*> script);
 
-// Retrievable source can be retrieved using the source hook (and therefore
-// need not be XDR'd, can be discarded if desired because it can always be
-// reconstituted later, etc.).
-enum class SourceRetrievable { Yes, No };
-
 // [SMDOC] ScriptSource
 //
 // This class abstracts over the source we used to compile from. The current
@@ -389,13 +419,12 @@ class ScriptSource {
   friend bool SynchronouslyCompressSource(JSContext* cx,
                                           JS::Handle<BaseScript*> script);
 
+  friend class frontend::StencilXDR;
+
  private:
   // Common base class of the templated variants of PinnedUnits<T>.
   class PinnedUnitsBase {
    protected:
-    PinnedUnitsBase** stack_ = nullptr;
-    PinnedUnitsBase* prev_ = nullptr;
-
     ScriptSource* source_;
 
     explicit PinnedUnitsBase(ScriptSource* source) : source_(source) {}
@@ -519,15 +548,18 @@ class ScriptSource {
   SourceType data = SourceType(Missing());
 
   // If the GC calls triggerConvertToCompressedSource with PinnedUnits present,
-  // the first PinnedUnits (that is, bottom of the stack) will install the
-  // compressed chars upon destruction.
+  // the last PinnedUnits instance will install the compressed chars upon
+  // destruction.
   //
   // Retrievability isn't part of the type here because uncompressed->compressed
   // transitions must preserve existing retrievability.
-  PinnedUnitsBase* pinnedUnitsStack_ = nullptr;
-  mozilla::MaybeOneOf<CompressedData<mozilla::Utf8Unit>,
-                      CompressedData<char16_t>>
-      pendingCompressed_;
+  struct ReaderInstances {
+    size_t count = 0;
+    mozilla::MaybeOneOf<CompressedData<mozilla::Utf8Unit>,
+                        CompressedData<char16_t>>
+        pendingCompressed;
+  };
+  ExclusiveData<ReaderInstances> readers_;
 
   // True if an associated SourceCompressionTask was ever created.
   bool hadCompressionTask_ = false;
@@ -553,7 +585,7 @@ class ScriptSource {
   // The bytecode cache encoder is used to encode only the content of function
   // which are delazified.  If this value is not nullptr, then each delazified
   // function should be recorded before their first execution.
-  UniquePtr<XDRIncrementalStencilEncoder> xdrEncoder_ = nullptr;
+  StencilIncrementalEncoderPtr xdrEncoder_;
 
   // A string indicating how this source code was introduced into the system.
   // This is a constant, statically allocated C string, so does not need memory
@@ -576,8 +608,9 @@ class ScriptSource {
   // See: CompileOptions::mutedErrors.
   bool mutedErrors_ = false;
 
-  // Set to true if parser saw  asmjs directives.
-  bool containsAsmJS_ = false;
+  // Carry the delazification mode per source.
+  JS::DelazificationOption delazificationMode_ =
+      JS::DelazificationOption::OnDemandOnly;
 
   //
   // End of fields.
@@ -605,10 +638,9 @@ class ScriptSource {
   // to deflate to Latin1 for longer strings, because this can be slow.
   static const size_t SourceDeflateLimit = 100;
 
-  explicit ScriptSource() : id_(++idCount_) {}
-
-  void finalizeGCData();
-  ~ScriptSource();
+  explicit ScriptSource()
+      : id_(++idCount_), readers_(js::mutexid::SourceCompression) {}
+  ~ScriptSource() { MOZ_ASSERT(refs == 0); }
 
   void AddRef() { refs++; }
   void Release() {
@@ -617,7 +649,7 @@ class ScriptSource {
       js_delete(this);
     }
   }
-  [[nodiscard]] bool initFromOptions(JSContext* cx,
+  [[nodiscard]] bool initFromOptions(JSContext* cx, ErrorContext* ec,
                                      const JS::ReadOnlyCompileOptions& options);
 
   /**
@@ -626,8 +658,10 @@ class ScriptSource {
    */
   static constexpr size_t MinimumCompressibleLength = 256;
 
-  SharedImmutableString getOrCreateStringZ(JSContext* cx, UniqueChars&& str);
+  SharedImmutableString getOrCreateStringZ(JSContext* cx, ErrorContext* ec,
+                                           UniqueChars&& str);
   SharedImmutableTwoByteString getOrCreateStringZ(JSContext* cx,
+                                                  ErrorContext* ec,
                                                   UniqueTwoByteChars&& str);
 
  private:
@@ -642,7 +676,7 @@ class ScriptSource {
 
   // Assign source data from |srcBuf| to this recently-created |ScriptSource|.
   template <typename Unit>
-  [[nodiscard]] bool assignSource(JSContext* cx,
+  [[nodiscard]] bool assignSource(JSContext* cx, ErrorContext* ec,
                                   const JS::ReadOnlyCompileOptions& options,
                                   JS::SourceText<Unit>& srcBuf);
 
@@ -956,33 +990,29 @@ class ScriptSource {
                                  size_t uncompressedLength);
 
   template <typename Unit>
-  void performDelayedConvertToCompressedSource();
+  void performDelayedConvertToCompressedSource(
+      ExclusiveData<ReaderInstances>::Guard& g);
 
   void triggerConvertToCompressedSourceFromTask(
       SharedImmutableString compressed);
-
- private:
-  // It'd be better to make this function take <XDRMode, Unit>, as both
-  // specializations of this function contain nested Unit-parametrized
-  // helper classes that do everything the function needs to do.  But then
-  // we'd need template function partial specialization to hold XDRMode
-  // constant while varying Unit, so that idea's no dice.
-  template <XDRMode mode>
-  [[nodiscard]] XDRResult xdrUnretrievableUncompressedSource(
-      XDRState<mode>* xdr, uint8_t sourceCharSize, uint32_t uncompressedLength);
 
  public:
   const char* filename() const {
     return filename_ ? filename_.chars() : nullptr;
   }
-  [[nodiscard]] bool setFilename(JSContext* cx, const char* filename);
+  [[nodiscard]] bool setFilename(JSContext* cx, ErrorContext* ec,
+                                 const char* filename);
   [[nodiscard]] bool setFilename(JSContext* cx, UniqueChars&& filename);
+  [[nodiscard]] bool setFilename(JSContext* cx, ErrorContext* ec,
+                                 UniqueChars&& filename);
 
   const char* introducerFilename() const {
     return introducerFilename_ ? introducerFilename_.chars() : filename();
   }
   [[nodiscard]] bool setIntroducerFilename(JSContext* cx, const char* filename);
-  [[nodiscard]] bool setIntroducerFilename(JSContext* cx,
+  [[nodiscard]] bool setIntroducerFilename(JSContext* cx, ErrorContext* ec,
+                                           const char* filename);
+  [[nodiscard]] bool setIntroducerFilename(JSContext* cx, ErrorContext* ec,
                                            UniqueChars&& filename);
 
   bool hasIntroductionType() const { return introductionType_; }
@@ -994,20 +1024,30 @@ class ScriptSource {
   uint32_t id() const { return id_; }
 
   // Display URLs
-  [[nodiscard]] bool setDisplayURL(JSContext* cx, const char16_t* url);
+  [[nodiscard]] bool setDisplayURL(JSContext* cx, ErrorContext* ec,
+                                   const char16_t* url);
   [[nodiscard]] bool setDisplayURL(JSContext* cx, UniqueTwoByteChars&& url);
+  [[nodiscard]] bool setDisplayURL(JSContext* cx, ErrorContext* ec,
+                                   UniqueTwoByteChars&& url);
   bool hasDisplayURL() const { return bool(displayURL_); }
   const char16_t* displayURL() { return displayURL_.chars(); }
 
   // Source maps
-  [[nodiscard]] bool setSourceMapURL(JSContext* cx, const char16_t* url);
+  [[nodiscard]] bool setSourceMapURL(JSContext* cx, ErrorContext* ec,
+                                     const char16_t* url);
   [[nodiscard]] bool setSourceMapURL(JSContext* cx, UniqueTwoByteChars&& url);
+  [[nodiscard]] bool setSourceMapURL(JSContext* cx, ErrorContext* ec,
+                                     UniqueTwoByteChars&& url);
   bool hasSourceMapURL() const { return bool(sourceMapURL_); }
   const char16_t* sourceMapURL() { return sourceMapURL_.chars(); }
 
   bool mutedErrors() const { return mutedErrors_; }
 
   uint32_t startLine() const { return startLine_; }
+
+  JS::DelazificationOption delazificationMode() const {
+    return delazificationMode_;
+  }
 
   bool hasIntroductionOffset() const { return introductionOffset_.isSome(); }
   uint32_t introductionOffset() const { return introductionOffset_.value(); }
@@ -1017,14 +1057,11 @@ class ScriptSource {
     introductionOffset_.emplace(offset);
   }
 
-  bool containsAsmJS() const { return containsAsmJS_; }
-  void setContainsAsmJS() { containsAsmJS_ = true; }
-
   // Return wether an XDR encoder is present or not.
-  bool hasEncoder() const { return bool(xdrEncoder_); }
+  bool hasEncoder() const { return xdrEncoder_.hasEncoder(); }
 
   [[nodiscard]] bool startIncrementalEncoding(
-      JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+      JSContext* cx,
       UniquePtr<frontend::ExtensibleCompilationStencil>&& initial);
 
   [[nodiscard]] bool addDelazificationToIncrementalEncoding(
@@ -1034,33 +1071,6 @@ class ScriptSource {
   // |xdrEncodeTopLevel|, and free the XDR encoder.  In case of errors, the
   // |buffer| is considered undefined.
   bool xdrFinalizeEncoder(JSContext* cx, JS::TranscodeBuffer& buffer);
-
- private:
-  template <typename Unit,
-            template <typename U, SourceRetrievable CanRetrieve> class Data,
-            XDRMode mode>
-  static void codeRetrievable(ScriptSource* ss);
-
-  template <typename Unit, XDRMode mode>
-  [[nodiscard]] static XDRResult codeUncompressedData(XDRState<mode>* const xdr,
-                                                      ScriptSource* const ss);
-
-  template <typename Unit, XDRMode mode>
-  [[nodiscard]] static XDRResult codeCompressedData(XDRState<mode>* const xdr,
-                                                    ScriptSource* const ss);
-
-  template <typename Unit, XDRMode mode>
-  static void codeRetrievableData(ScriptSource* ss);
-
-  template <XDRMode mode>
-  [[nodiscard]] static XDRResult xdrData(XDRState<mode>* const xdr,
-                                         ScriptSource* const ss);
-
- public:
-  template <XDRMode mode>
-  [[nodiscard]] static XDRResult XDR(
-      XDRState<mode>* xdr, const JS::ReadOnlyCompileOptions* maybeOptions,
-      RefPtr<ScriptSource>& source);
 };
 
 // [SMDOC] ScriptSourceObject
@@ -1072,17 +1082,18 @@ class ScriptSourceObject : public NativeObject {
  public:
   static const JSClass class_;
 
-  static void finalize(JSFreeOp* fop, JSObject* obj);
+  static void finalize(JS::GCContext* gcx, JSObject* obj);
 
   static ScriptSourceObject* create(JSContext* cx, ScriptSource* source);
 
   // Initialize those properties of this ScriptSourceObject whose values
   // are provided by |options|, re-wrapping as necessary.
-  static bool initFromOptions(JSContext* cx, HandleScriptSourceObject source,
-                              const JS::ReadOnlyCompileOptions& options);
+  static bool initFromOptions(JSContext* cx,
+                              JS::Handle<ScriptSourceObject*> source,
+                              const JS::InstantiateOptions& options);
 
   static bool initElementProperties(JSContext* cx,
-                                    HandleScriptSourceObject source,
+                                    JS::Handle<ScriptSourceObject*> source,
                                     HandleString elementAttrName);
 
   bool hasSource() const { return !getReservedSlot(SOURCE_SLOT).isUndefined(); }
@@ -1416,13 +1427,11 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   // to interpreted-bytecode to JITs. See: ScriptWarmUpData type for more info.
   ScriptWarmUpData warmUpData_ = {};
 
-  // Object that determines what Realm this script is compiled for. For function
-  // scripts this is the canonical function, otherwise it is the GlobalObject of
-  // the realm.
-  const GCPtrObject functionOrGlobal_ = {};
+  // For function scripts this is the canonical function, otherwise nullptr.
+  const GCPtr<JSFunction*> function_ = {};
 
-  // The ScriptSourceObject for this script. This is always same-compartment
-  // with this script.
+  // The ScriptSourceObject for this script. This is always same-compartment and
+  // same-realm with this script.
   const GCPtr<ScriptSourceObject*> sourceObject_ = {};
 
   // Position of the function in the source buffer. Both in terms of line/column
@@ -1444,7 +1453,7 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   //    - Inner-functions and bindings generated by syntax parse.
   //    - Nullptr, if no bytecode or inner functions.
   // This is updated as script is delazified and relazified.
-  PrivateScriptData* data_ = nullptr;
+  GCStructPtr<PrivateScriptData*> data_;
 
   // Shareable script data. This includes runtime-wide atom pointers, bytecode,
   // and various script note structures. If the script is currently lazy, this
@@ -1453,32 +1462,22 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
 
   // End of fields.
 
-  BaseScript(uint8_t* stubEntry, JSObject* functionOrGlobal,
+  BaseScript(uint8_t* stubEntry, JSFunction* function,
              ScriptSourceObject* sourceObject, const SourceExtent& extent,
-             uint32_t immutableFlags)
-      : TenuredCellWithNonGCPointer(stubEntry),
-        functionOrGlobal_(functionOrGlobal),
-        sourceObject_(sourceObject),
-        extent_(extent),
-        immutableFlags_(immutableFlags) {
-    MOZ_ASSERT(functionOrGlobal->compartment() == sourceObject->compartment());
-    MOZ_ASSERT(extent_.toStringStart <= extent_.sourceStart);
-    MOZ_ASSERT(extent_.sourceStart <= extent_.sourceEnd);
-    MOZ_ASSERT(extent_.sourceEnd <= extent_.toStringEnd);
-  }
+             uint32_t immutableFlags);
 
   void setJitCodeRaw(uint8_t* code) { setHeaderPtr(code); }
 
  public:
-  static BaseScript* New(JSContext* cx, js::HandleObject functionOrGlobal,
-                         js::HandleScriptSourceObject sourceObject,
+  static BaseScript* New(JSContext* cx, JS::Handle<JSFunction*> function,
+                         JS::Handle<js::ScriptSourceObject*> sourceObject,
                          const js::SourceExtent& extent,
                          uint32_t immutableFlags);
 
   // Create a lazy BaseScript without initializing any gc-things.
   static BaseScript* CreateRawLazy(JSContext* cx, uint32_t ngcthings,
                                    HandleFunction fun,
-                                   HandleScriptSourceObject sourceObject,
+                                   JS::Handle<ScriptSourceObject*> sourceObject,
                                    const SourceExtent& extent,
                                    uint32_t immutableFlags);
 
@@ -1486,19 +1485,10 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
 
   // Canonical function for the script, if it has a function. For top-level
   // scripts this is nullptr.
-  JSFunction* function() const {
-    // JSFunction's definition isn't visible at this point, so we can't use
-    // the normal |is<JSFunction>| and |as<JSFunction>| pair.
-    if (isFunction()) {
-      return reinterpret_cast<JSFunction*>(functionOrGlobal_.get());
-    }
-    return nullptr;
-  }
+  JSFunction* function() const { return function_; }
 
-  JS::Realm* realm() const { return functionOrGlobal_->nonCCWRealm(); }
-  JS::Compartment* compartment() const {
-    return functionOrGlobal_->compartment();
-  }
+  JS::Realm* realm() const { return sourceObject()->realm(); }
+  JS::Compartment* compartment() const { return sourceObject()->compartment(); }
   JS::Compartment* maybeCompartment() const { return compartment(); }
   inline JSPrincipals* principals() const;
 
@@ -1527,6 +1517,10 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
 
   uint32_t lineno() const { return extent_.lineno; }
   uint32_t column() const { return extent_.column; }
+
+  JS::DelazificationOption delazificationMode() const {
+    return scriptSource()->delazificationMode();
+  }
 
  public:
   ImmutableScriptFlags immutableFlags() const { return immutableFlags_; }
@@ -1590,7 +1584,10 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   }
 
   SharedImmutableScriptData* sharedData() const { return sharedData_; }
-  inline void initSharedData(SharedImmutableScriptData* data);
+  void initSharedData(SharedImmutableScriptData* data) {
+    MOZ_ASSERT(sharedData_ == nullptr);
+    sharedData_ = data;
+  }
   void freeSharedData() { sharedData_ = nullptr; }
 
   // NOTE: Script only has bytecode if JSScript::fullyInitFromStencil completes
@@ -1608,7 +1605,7 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   static const JS::TraceKind TraceKind = JS::TraceKind::Script;
 
   void traceChildren(JSTracer* trc);
-  void finalize(JSFreeOp* fop);
+  void finalize(JS::GCContext* gcx);
 
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
     return mallocSizeOf(data_);
@@ -1637,9 +1634,6 @@ class BaseScript : public gc::TenuredCellWithNonGCPointer<uint8_t> {
   }
 };
 
-template <XDRMode mode>
-XDRResult XDRSourceExtent(XDRState<mode>* xdr, SourceExtent* extent);
-
 extern void SweepScriptData(JSRuntime* rt);
 
 } /* namespace js */
@@ -1657,8 +1651,8 @@ class JSScript : public js::BaseScript {
   using js::BaseScript::BaseScript;
 
  public:
-  static JSScript* Create(JSContext* cx, js::HandleObject functionOrGlobal,
-                          js::HandleScriptSourceObject sourceObject,
+  static JSScript* Create(JSContext* cx, JS::Handle<JSFunction*> function,
+                          JS::Handle<js::ScriptSourceObject*> sourceObject,
                           const js::SourceExtent& extent,
                           js::ImmutableScriptFlags flags);
 
@@ -1729,7 +1723,7 @@ class JSScript : public js::BaseScript {
 
   jsbytecode* lastPC() const {
     jsbytecode* pc = codeEnd() - js::JSOpLength_RetRval;
-    MOZ_ASSERT(JSOp(*pc) == JSOp::RetRval);
+    MOZ_ASSERT(JSOp(*pc) == JSOp::RetRval || JSOp(*pc) == JSOp::Return);
     return pc;
   }
 
@@ -1818,6 +1812,7 @@ class JSScript : public js::BaseScript {
 
   void updateJitCodeRaw(JSRuntime* rt);
 
+  bool isModule() const;
   js::ModuleObject* module() const;
 
   bool isGlobalCode() const;
@@ -1853,9 +1848,9 @@ class JSScript : public js::BaseScript {
   /* Ensure the script has a JitScript. */
   inline bool ensureHasJitScript(JSContext* cx, js::jit::AutoKeepJitScripts&);
 
-  void maybeReleaseJitScript(JSFreeOp* fop);
-  void releaseJitScript(JSFreeOp* fop);
-  void releaseJitScriptOnFinalize(JSFreeOp* fop);
+  void maybeReleaseJitScript(JS::GCContext* gcx);
+  void releaseJitScript(JS::GCContext* gcx);
+  void releaseJitScriptOnFinalize(JS::GCContext* gcx);
 
   inline js::jit::BaselineScript* baselineScript() const;
   inline js::jit::IonScript* ionScript() const;
@@ -2024,7 +2019,7 @@ class JSScript : public js::BaseScript {
     return &gcthings()[index].as<JSObject>();
   }
 
-  JSObject* getObject(jsbytecode* pc) const {
+  JSObject* getObject(const jsbytecode* pc) const {
     MOZ_ASSERT(containsPC<js::GCThingIndex>(pc));
     return getObject(GET_GCTHING_INDEX(pc));
   }
@@ -2033,7 +2028,7 @@ class JSScript : public js::BaseScript {
     return &gcthings()[index].as<js::Shape>();
   }
 
-  js::Shape* getShape(jsbytecode* pc) const {
+  js::Shape* getShape(const jsbytecode* pc) const {
     MOZ_ASSERT(containsPC<js::GCThingIndex>(pc));
     return getShape(GET_GCTHING_INDEX(pc));
   }
@@ -2072,9 +2067,9 @@ class JSScript : public js::BaseScript {
   // The following 3 functions find the static scope just before the
   // execution of the instruction pointed to by pc.
 
-  js::Scope* lookupScope(jsbytecode* pc) const;
+  js::Scope* lookupScope(const jsbytecode* pc) const;
 
-  js::Scope* innermostScope(jsbytecode* pc) const;
+  js::Scope* innermostScope(const jsbytecode* pc) const;
   js::Scope* innermostScope() const { return innermostScope(main()); }
 
   /*
@@ -2136,6 +2131,28 @@ class JSScript : public js::BaseScript {
     void holdScript(JS::HandleFunction fun);
     void dropScript();
   };
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+ public:
+  struct DumpOptions {
+    bool recursive = false;
+    bool runtimeData = false;
+  };
+
+  void dump(JSContext* cx);
+  void dumpRecursive(JSContext* cx);
+
+  static bool dump(JSContext* cx, JS::Handle<JSScript*> script,
+                   DumpOptions& options, js::Sprinter* sp);
+  static bool dumpSrcNotes(JSContext* cx, JS::Handle<JSScript*> script,
+                           js::Sprinter* sp);
+  static bool dumpTryNotes(JSContext* cx, JS::Handle<JSScript*> script,
+                           js::Sprinter* sp);
+  static bool dumpScopeNotes(JSContext* cx, JS::Handle<JSScript*> script,
+                             js::Sprinter* sp);
+  static bool dumpGCThings(JSContext* cx, JS::Handle<JSScript*> script,
+                           js::Sprinter* sp);
+#endif
 };
 
 namespace js {
@@ -2226,6 +2243,17 @@ void FillImmutableFlagsFromCompileOptionsForFunction(
 } /* namespace js */
 
 namespace JS {
+
+template <>
+struct GCPolicy<js::ScriptLCovEntry>
+    : public IgnoreGCPolicy<js::ScriptLCovEntry> {};
+
+#ifdef JS_CACHEIR_SPEW
+template <>
+struct GCPolicy<js::ScriptFinalWarmUpCountEntry>
+    : public IgnoreGCPolicy<js::ScriptFinalWarmUpCountEntry> {};
+#endif
+
 namespace ubi {
 
 template <>

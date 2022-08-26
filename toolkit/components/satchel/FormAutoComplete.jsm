@@ -5,8 +5,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function isAutocompleteDisabled(aField) {
   if (aField.autocomplete !== "") {
     return aField.autocomplete === "off";
@@ -398,27 +396,27 @@ FormAutoComplete.prototype = {
       // in mergeResults).
       // If there were datalist results result is a FormAutoCompleteResult
       // as defined in nsFormAutoCompleteResult.jsm with the entire list
-      // of results in wrappedResult._values and only the results from
+      // of results in wrappedResult._items and only the results from
       // form history in wrappedResult.entries.
       // First, grab the entire list of old results.
-      let allResults = wrappedResult._labels;
-      let datalistResults, datalistLabels;
+      let allResults = wrappedResult._items;
+      let datalistItems;
       if (allResults) {
         // We have datalist results, extract them from the values array.
         // Both allResults and values arrays are in the form of:
         // |--wR.entries--|
         // <history entries><datalist entries>
-        let oldLabels = allResults.slice(wrappedResult.entries.length);
-        let oldValues = wrappedResult._values.slice(
-          wrappedResult.entries.length
-        );
+        let oldItems = allResults.slice(wrappedResult.entries.length);
 
-        datalistLabels = [];
-        datalistResults = [];
-        for (let i = 0; i < oldLabels.length; ++i) {
-          if (oldLabels[i].toLowerCase().includes(searchString)) {
-            datalistLabels.push(oldLabels[i]);
-            datalistResults.push(oldValues[i]);
+        datalistItems = [];
+        for (let i = 0; i < oldItems.length; ++i) {
+          if (oldItems[i].label.toLowerCase().includes(searchString)) {
+            datalistItems.push({
+              value: oldItems[i].value,
+              label: oldItems[i].label,
+              comment: "",
+              removable: oldItems[i].removable,
+            });
           }
         }
       }
@@ -452,23 +450,19 @@ FormAutoComplete.prototype = {
 
       // If we had datalistResults, re-merge them back into the filtered
       // entries.
-      if (datalistResults) {
-        filteredEntries = filteredEntries.map(elt => elt.text);
+      if (datalistItems?.length) {
+        filteredEntries = filteredEntries.map(elt => ({
+          value: elt.text,
+          // History entries don't have labels (their labels would be read
+          // from their values).
+          label: "",
+          comment: "",
+          removable: true,
+        }));
 
-        let comments = new Array(
-          filteredEntries.length + datalistResults.length
-        ).fill("");
-        comments[filteredEntries.length] = "separator";
+        datalistItems[0].comment = "separator";
 
-        // History entries don't have labels (their labels would be read
-        // from their values). Pad out the labels array so the datalist
-        // results (which do have separate values and labels) line up.
-        datalistLabels = new Array(filteredEntries.length)
-          .fill("")
-          .concat(datalistLabels);
-        wrappedResult._values = filteredEntries.concat(datalistResults);
-        wrappedResult._labels = datalistLabels;
-        wrappedResult._comments = comments;
+        wrappedResult._items = filteredEntries.concat(datalistItems);
       }
 
       maybeNotifyListener(result);
@@ -512,20 +506,36 @@ FormAutoComplete.prototype = {
   },
 
   mergeResults(historyResult, datalistResult) {
-    let values = datalistResult.wrappedJSObject._values;
-    let labels = datalistResult.wrappedJSObject._labels;
-    let comments = new Array(values.length).fill("");
+    let items = datalistResult.wrappedJSObject._items;
 
     // historyResult will be null if form autocomplete is disabled. We
     // still want the list values to display.
     let entries = historyResult.wrappedJSObject.entries;
-    let historyResults = entries.map(entry => entry.text);
-    let historyComments = new Array(entries.length).fill("");
+    let historyResults = entries.map(entry => ({
+      value: entry.text,
+      label: entry.text,
+      comment: "",
+      removable: true,
+    }));
 
-    // now put the history results above the datalist suggestions
-    let finalValues = historyResults.concat(values);
-    let finalLabels = historyResults.concat(labels);
-    let finalComments = historyComments.concat(comments);
+    const isInArray = (value, arr, key) =>
+      arr.find(item => item[key].toUpperCase() === value.toUpperCase());
+
+    // Remove items from history list that are already present in data list.
+    // We do this rather than the opposite ( i.e. remove items from data list)
+    // to reflect the order that is specified in the data list.
+    const dedupedHistoryResults = historyResults.filter(
+      historyRes => !isInArray(historyRes.value, items, "value")
+    );
+
+    // Now put the history results above the datalist suggestions.
+    // Note that we don't need to worry about deduplication of elements inside
+    // the datalist suggestions because the datalist is user-provided.
+    const finalItems = dedupedHistoryResults.concat(items);
+
+    historyResult.wrappedJSObject.entries = historyResult.wrappedJSObject.entries.filter(
+      entry => !isInArray(entry.text, items, "value")
+    );
 
     // This is ugly: there are two FormAutoCompleteResult classes in the
     // tree, one in a module and one in this file. Datalist results need to
@@ -541,9 +551,7 @@ FormAutoComplete.prototype = {
       Ci.nsIAutoCompleteResult.RESULT_SUCCESS,
       0,
       "",
-      finalValues,
-      finalLabels,
-      finalComments,
+      finalItems,
       historyResult
     );
   },
@@ -699,6 +707,10 @@ FormAutoCompleteResult.prototype = {
 
   getFinalCompleteValueAt(index) {
     return this.getValueAt(index);
+  },
+
+  isRemovableAt(index) {
+    return true;
   },
 
   removeValueAt(index) {

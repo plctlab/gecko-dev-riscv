@@ -76,7 +76,7 @@ async function runProfilerWithFileIO(features, filename) {
   const entries = 10000;
   const interval = 10;
   const threads = [];
-  Services.profiler.StartProfiler(entries, interval, features, threads);
+  await Services.profiler.StartProfiler(entries, interval, features, threads);
 
   info("Get the file");
   const file = FileUtils.getFile("TmpD", [filename]);
@@ -105,12 +105,7 @@ async function runProfilerWithFileIO(features, filename) {
   info("Remove the file");
   file.remove(false);
 
-  // Pause the profiler as we don't need to collect more samples as we retrieve
-  // and serialize the profile.
-  Services.profiler.Pause();
-
-  const profile = await Services.profiler.getProfileDataAsync();
-  Services.profiler.StopProfiler();
+  const profile = await stopNowAndGetProfile();
   const mainThread = profile.threads.find(({ name }) => name === "GeckoMain");
 
   const schema = getSchema(profile, "FileIO");

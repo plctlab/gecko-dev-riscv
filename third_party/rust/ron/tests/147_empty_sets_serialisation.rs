@@ -13,20 +13,13 @@ struct TupleStruct(UnitStruct, i8);
 #[derive(Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 struct Key(u32);
 
-#[derive(Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
-enum Enum {
-    Unit,
-    Bool(bool),
-    Chars(char, String),
-}
-
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 struct Struct {
     tuple: ((), NewType, TupleStruct),
     vec: Vec<Option<UnitStruct>>,
-    map: HashMap<Key, Enum>,
+    map: HashMap<Key, i32>,
     deep_vec: HashMap<Key, Vec<()>>,
-    deep_map: HashMap<Key, HashMap<Key, Enum>>,
+    deep_map: HashMap<Key, HashMap<Key, i32>>,
 }
 
 #[test]
@@ -42,8 +35,8 @@ fn empty_sets_arrays() {
     };
 
     let pretty = ron::ser::PrettyConfig::new()
-        .with_enumerate_arrays(true)
-        .with_new_line("\n".to_string());
+        .enumerate_arrays(true)
+        .new_line("\n".to_string());
     let serial = ron::ser::to_string_pretty(&value, pretty).unwrap();
 
     println!("Serialized: {}", serial);

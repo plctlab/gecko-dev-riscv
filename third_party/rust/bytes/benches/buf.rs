@@ -46,14 +46,14 @@ impl TestBuf {
 }
 impl Buf for TestBuf {
     fn remaining(&self) -> usize {
-        return self.buf.len() - self.pos;
+        self.buf.len() - self.pos
     }
     fn advance(&mut self, cnt: usize) {
         self.pos += cnt;
         assert!(self.pos <= self.buf.len());
         self.next_readlen();
     }
-    fn bytes(&self) -> &[u8] {
+    fn chunk(&self) -> &[u8] {
         if self.readlen == 0 {
             Default::default()
         } else {
@@ -87,8 +87,8 @@ impl Buf for TestBufC {
         self.inner.advance(cnt)
     }
     #[inline(never)]
-    fn bytes(&self) -> &[u8] {
-        self.inner.bytes()
+    fn chunk(&self) -> &[u8] {
+        self.inner.chunk()
     }
 }
 
@@ -159,7 +159,6 @@ macro_rules! bench_group {
 mod get_u8 {
     use super::*;
     bench_group!(get_u8);
-    bench!(option, option);
 }
 mod get_u16 {
     use super::*;

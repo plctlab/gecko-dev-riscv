@@ -21,6 +21,7 @@
 #include "mozilla/dom/HTMLButtonElement.h"
 #include "mozilla/dom/HTMLInputElement.h"
 #include "mozilla/dom/MutationEventBinding.h"
+#include "mozilla/intl/Segmenter.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_dom.h"
@@ -29,10 +30,10 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
 #include "nsIFile.h"
-#include "nsUnicodeProperties.h"
-#include "mozilla/EventStates.h"
+#include "nsLayoutUtils.h"
 #include "nsTextNode.h"
 #include "nsTextFrame.h"
+#include "gfxContext.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -68,9 +69,9 @@ bool nsFileControlFrame::CropTextToWidth(gfxContext& aRenderingContext,
       nsLayoutUtils::GetFontMetricsForFrame(aFrame, 1.0f);
 
   // see if the text will completely fit in the width given
-  nscoord textWidth = nsLayoutUtils::AppUnitWidthOfStringBidi(
-      aText, aFrame, *fm, aRenderingContext);
-  if (textWidth <= aWidth) {
+  if (const nscoord textWidth = nsLayoutUtils::AppUnitWidthOfStringBidi(
+          aText, aFrame, *fm, aRenderingContext);
+      textWidth <= aWidth) {
     return false;
   }
 
@@ -79,54 +80,49 @@ bool nsFileControlFrame::CropTextToWidth(gfxContext& aRenderingContext,
 
   // see if the width is even smaller than the ellipsis
   fm->SetTextRunRTL(false);
-  textWidth = nsLayoutUtils::AppUnitWidthOfString(kEllipsis, *fm, drawTarget);
-  if (textWidth >= aWidth) {
+  const nscoord ellipsisWidth =
+      nsLayoutUtils::AppUnitWidthOfString(kEllipsis, *fm, drawTarget);
+  if (ellipsisWidth >= aWidth) {
     aText = kEllipsis;
     return true;
   }
 
   // determine how much of the string will fit in the max width
-  nscoord totalWidth = textWidth;
-  using mozilla::unicode::ClusterIterator;
-  using mozilla::unicode::ClusterReverseIterator;
-  ClusterIterator leftIter(aText.Data(), aText.Length());
-  ClusterReverseIterator rightIter(aText.Data(), aText.Length());
-  const char16_t* leftPos = leftIter;
-  const char16_t* rightPos = rightIter;
-  const char16_t* pos;
-  ptrdiff_t length;
+  nscoord totalWidth = ellipsisWidth;
+  const Span text(aText);
+  intl::GraphemeClusterBreakIteratorUtf16 leftIter(text);
+  intl::GraphemeClusterBreakReverseIteratorUtf16 rightIter(text);
+  uint32_t leftPos = 0;
+  uint32_t rightPos = aText.Length();
   nsAutoString leftString, rightString;
 
   while (leftPos < rightPos) {
-    leftIter.Next();
-    pos = leftIter;
-    length = pos - leftPos;
-    textWidth =
-        nsLayoutUtils::AppUnitWidthOfString(leftPos, length, *fm, drawTarget);
-    if (totalWidth + textWidth > aWidth) {
+    Maybe<uint32_t> pos = leftIter.Next();
+    Span chars = text.FromTo(leftPos, *pos);
+    nscoord charWidth =
+        nsLayoutUtils::AppUnitWidthOfString(chars, *fm, drawTarget);
+    if (totalWidth + charWidth > aWidth) {
       break;
     }
 
-    leftString.Append(leftPos, length);
-    leftPos = pos;
-    totalWidth += textWidth;
+    leftString.Append(chars);
+    leftPos = *pos;
+    totalWidth += charWidth;
 
     if (leftPos >= rightPos) {
       break;
     }
 
-    rightIter.Next();
-    pos = rightIter;
-    length = rightPos - pos;
-    textWidth =
-        nsLayoutUtils::AppUnitWidthOfString(pos, length, *fm, drawTarget);
-    if (totalWidth + textWidth > aWidth) {
+    pos = rightIter.Next();
+    chars = text.FromTo(*pos, rightPos);
+    charWidth = nsLayoutUtils::AppUnitWidthOfString(chars, *fm, drawTarget);
+    if (totalWidth + charWidth > aWidth) {
       break;
     }
 
-    rightString.Insert(pos, 0, length);
-    rightPos = pos;
-    totalWidth += textWidth;
+    rightString.Insert(chars, 0);
+    rightPos = *pos;
+    totalWidth += charWidth;
   }
 
   aText = leftString + kEllipsis + rightString;
@@ -207,10 +203,8 @@ void nsFileControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
   nsBlockFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
 }
 
-static already_AddRefed<Element> MakeAnonButton(Document* aDoc,
-                                                const char* labelKey,
-                                                HTMLInputElement* aInputElement,
-                                                const nsAString& aAccessKey) {
+static already_AddRefed<Element> MakeAnonButton(
+    Document* aDoc, const char* labelKey, HTMLInputElement* aInputElement) {
   RefPtr<Element> button = aDoc->CreateHTMLElement(nsGkAtoms::button);
   // NOTE: SetIsNativeAnonymousRoot() has to be called before setting any
   // attribute.
@@ -222,11 +216,10 @@ static already_AddRefed<Element> MakeAnonButton(Document* aDoc,
   nsContentUtils::GetMaybeLocalizedString(nsContentUtils::eFORMS_PROPERTIES,
                                           labelKey, aDoc, buttonTxt);
 
+  auto* nim = aDoc->NodeInfoManager();
   // Set the browse button text. It's a bit of a pain to do because we want to
   // make sure we are not notifying.
-  RefPtr<nsTextNode> textContent = new (button->NodeInfo()->NodeInfoManager())
-      nsTextNode(button->NodeInfo()->NodeInfoManager());
-
+  RefPtr textContent = new (nim) nsTextNode(nim);
   textContent->SetText(buttonTxt, false);
 
   IgnoredErrorResult error;
@@ -235,13 +228,7 @@ static already_AddRefed<Element> MakeAnonButton(Document* aDoc,
     return nullptr;
   }
 
-  // Make sure access key and tab order for the element actually redirect to the
-  // file picking button.
   auto* buttonElement = HTMLButtonElement::FromNode(button);
-  if (!aAccessKey.IsEmpty()) {
-    buttonElement->SetAccessKey(aAccessKey, IgnoreErrors());
-  }
-
   // We allow tabbing over the input itself, not the button.
   buttonElement->SetTabIndex(-1, IgnoreErrors());
   return button.forget();
@@ -250,17 +237,9 @@ static already_AddRefed<Element> MakeAnonButton(Document* aDoc,
 nsresult nsFileControlFrame::CreateAnonymousContent(
     nsTArray<ContentInfo>& aElements) {
   nsCOMPtr<Document> doc = mContent->GetComposedDoc();
+  RefPtr fileContent = HTMLInputElement::FromNode(mContent);
 
-  RefPtr<HTMLInputElement> fileContent =
-      HTMLInputElement::FromNodeOrNull(mContent);
-
-  // The access key is transferred to the "Choose files..." button only. In
-  // effect that access key allows access to the control via that button, then
-  // the user can tab between the two buttons.
-  nsAutoString accessKey;
-  fileContent->GetAccessKey(accessKey);
-
-  mBrowseFilesOrDirs = MakeAnonButton(doc, "Browse", fileContent, accessKey);
+  mBrowseFilesOrDirs = MakeAnonButton(doc, "Browse", fileContent);
   if (!mBrowseFilesOrDirs) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -401,8 +380,7 @@ nsFileControlFrame::DnDListener::HandleEvent(Event* aEvent) {
     } else {
       bool blinkFileSystemEnabled =
           StaticPrefs::dom_webkitBlink_filesystem_enabled();
-      bool dirPickerEnabled = StaticPrefs::dom_input_dirpicker();
-      if (blinkFileSystemEnabled || dirPickerEnabled) {
+      if (blinkFileSystemEnabled) {
         FileList* files = static_cast<FileList*>(fileList.get());
         if (files) {
           for (uint32_t i = 0; i < files->Length(); ++i) {
@@ -426,10 +404,6 @@ nsFileControlFrame::DnDListener::HandleEvent(Event* aEvent) {
         // FileOrDirectory array.
         inputElement->SetFiles(fileList, true);
         inputElement->UpdateEntries(array);
-      }
-      // Directory Upload API
-      else if (dirPickerEnabled) {
-        inputElement->SetFilesOrDirectories(array, true);
       }
       // Normal DnD
       else {
@@ -540,8 +514,7 @@ nscoord nsFileControlFrame::GetPrefISize(gfxContext* aRenderingContext) {
 }
 
 void nsFileControlFrame::SyncDisabledState() {
-  EventStates eventStates = mContent->AsElement()->State();
-  if (eventStates.HasState(NS_EVENT_STATE_DISABLED)) {
+  if (mContent->AsElement()->State().HasState(ElementState::DISABLED)) {
     mBrowseFilesOrDirs->SetAttr(kNameSpaceID_None, nsGkAtoms::disabled, u""_ns,
                                 true);
   } else {
@@ -549,8 +522,8 @@ void nsFileControlFrame::SyncDisabledState() {
   }
 }
 
-void nsFileControlFrame::ContentStatesChanged(EventStates aStates) {
-  if (aStates.HasState(NS_EVENT_STATE_DISABLED)) {
+void nsFileControlFrame::ElementStateChanged(ElementState aStates) {
+  if (aStates.HasState(ElementState::DISABLED)) {
     nsContentUtils::AddScriptRunner(new SyncDisabledStateEvent(this));
   }
 }

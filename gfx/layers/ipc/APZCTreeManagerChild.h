@@ -11,6 +11,8 @@
 #include "mozilla/layers/IAPZCTreeManager.h"
 #include "mozilla/layers/PAPZCTreeManagerChild.h"
 
+#include <unordered_map>
+
 namespace mozilla {
 namespace layers {
 
@@ -63,9 +65,6 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
 
   APZInputBridge* InputBridge() override;
 
-  void AddInputBlockCallback(uint64_t aInputBlockId,
-                             InputBlockCallback&& aCallback) override;
-
   void AddIPDLReference();
   void ReleaseIPDLReference();
   void ActorDestroy(ActorDestroyReason aWhy) override;
@@ -85,6 +84,9 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
 
   mozilla::ipc::IPCResult RecvCancelAutoscroll(
       const ScrollableLayerGuid::ViewID& aScrollId);
+
+  mozilla::ipc::IPCResult RecvNotifyScaleGestureComplete(
+      const ScrollableLayerGuid::ViewID& aScrollId, float aScale);
 
   virtual ~APZCTreeManagerChild();
 

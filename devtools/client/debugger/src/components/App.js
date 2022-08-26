@@ -60,8 +60,28 @@ class App extends Component {
     };
   }
 
+  static get propTypes() {
+    return {
+      activeSearch: PropTypes.oneOf(["file", "project"]),
+      closeActiveSearch: PropTypes.func.isRequired,
+      closeProjectSearch: PropTypes.func.isRequired,
+      closeQuickOpen: PropTypes.func.isRequired,
+      endPanelCollapsed: PropTypes.bool.isRequired,
+      fluentBundles: PropTypes.array.isRequired,
+      openQuickOpen: PropTypes.func.isRequired,
+      orientation: PropTypes.oneOf(["horizontal", "vertical"]).isRequired,
+      quickOpenEnabled: PropTypes.bool.isRequired,
+      selectedSource: PropTypes.object,
+      setActiveSearch: PropTypes.func.isRequired,
+      setOrientation: PropTypes.func.isRequired,
+      startPanelCollapsed: PropTypes.bool.isRequired,
+      toolboxDoc: PropTypes.object.isRequired,
+    };
+  }
+
   getChildContext() {
     return {
+      fluentBundles: this.props.fluentBundles,
       toolboxDoc: this.props.toolboxDoc,
       shortcuts,
       l10n: L10N,
@@ -88,7 +108,7 @@ class App extends Component {
     );
 
     shortcuts.on("Escape", this.onEscape);
-    shortcuts.on("Cmd+/", this.onCommandSlash);
+    shortcuts.on("CmdOrCtrl+/", this.onCommandSlash);
   }
 
   componentWillUnmount() {
@@ -108,6 +128,7 @@ class App extends Component {
     shortcuts.off(L10N.getStr("gotoLineModal.key3"), this.toggleQuickOpenModal);
 
     shortcuts.off("Escape", this.onEscape);
+    shortcuts.off("CmdOrCtrl+/", this.onCommandSlash);
   }
 
   onEscape = e => {
@@ -277,7 +298,7 @@ class App extends Component {
     return (
       <div className={classnames("debugger")}>
         <AppErrorBoundary
-          className="app-error-boundary"
+          componentName="Debugger"
           panel={L10N.getStr("ToolboxDebugger.label")}
         >
           <A11yIntention>
@@ -300,6 +321,7 @@ App.childContextTypes = {
   toolboxDoc: PropTypes.object,
   shortcuts: PropTypes.object,
   l10n: PropTypes.object,
+  fluentBundles: PropTypes.array,
 };
 
 const mapStateToProps = state => ({

@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 // Import common head.
 {
   /* import-globals-from ../head_common.js */
@@ -120,6 +118,34 @@ function expectPlacesObserverNotifications(
             index: event.index,
             oldParentGuid: event.oldParentGuid,
             oldIndex: event.oldIndex,
+            isTagging: event.isTagging,
+          });
+          break;
+        case "bookmark-tags-changed":
+          notifications.push({
+            type: event.type,
+            id: event.id,
+            itemType: event.itemType,
+            url: event.url,
+            guid: event.guid,
+            parentGuid: event.parentGuid,
+            tags: event.tags,
+            lastModified: new Date(event.lastModified),
+            source: event.source,
+            isTagging: event.isTagging,
+          });
+          break;
+        case "bookmark-time-changed":
+          notifications.push({
+            type: event.type,
+            id: event.id,
+            itemType: event.itemType,
+            url: event.url,
+            guid: event.guid,
+            parentGuid: event.parentGuid,
+            dateAdded: new Date(event.dateAdded),
+            lastModified: new Date(event.lastModified),
+            source: event.source,
             isTagging: event.isTagging,
           });
           break;

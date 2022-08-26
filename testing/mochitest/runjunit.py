@@ -156,6 +156,16 @@ class JUnitTestRunner(MochitestDesktop):
 
         # Set preferences
         self.merge_base_profiles(self.options, "geckoview-junit")
+
+        if self.options.web_content_isolation_strategy is not None:
+            self.options.extra_prefs.append(
+                "fission.webContentIsolationStrategy=%s"
+                % self.options.web_content_isolation_strategy
+            )
+        self.options.extra_prefs.append("fission.autostart=true")
+        if self.options.disable_fission:
+            self.options.extra_prefs.pop()
+            self.options.extra_prefs.append("fission.autostart=false")
         prefs = parse_preferences(self.options.extra_prefs)
         self.profile.set_preferences(prefs)
 
@@ -238,12 +248,15 @@ class JUnitTestRunner(MochitestDesktop):
         env["R_LOG_VERBOSE"] = "1"
         env["R_LOG_LEVEL"] = "6"
         env["R_LOG_DESTINATION"] = "stderr"
-        if self.options.enable_webrender:
-            env["MOZ_WEBRENDER"] = "1"
+        # webrender needs gfx.webrender.all=true, gtest doesn't use prefs
+        env["MOZ_WEBRENDER"] = "1"
+        # FIXME: When android switches to using Fission by default,
+        # MOZ_FORCE_DISABLE_FISSION will need to be configured correctly.
+        if self.options.disable_fission:
+            env["MOZ_FORCE_DISABLE_FISSION"] = "1"
         else:
-            env["MOZ_WEBRENDER"] = "0"
-        if self.options.enable_fission:
             env["MOZ_FORCE_ENABLE_FISSION"] = "1"
+
         # Add additional env variables
         for [key, value] in [p.split("=", 1) for p in self.options.add_env]:
             env[key] = value
@@ -385,6 +398,8 @@ class JUnitTestRunner(MochitestDesktop):
         self.log.suite_start(["geckoview-junit"])
         try:
             self.device.grant_runtime_permissions(self.options.app)
+            self.device.add_change_device_settings(self.options.app)
+            self.device.add_mock_location(self.options.app)
             cmd = self.build_command_line(
                 test_filters_file=test_filters_file, test_filters=test_filters
             )
@@ -573,18 +588,18 @@ class JunitArgumentParser(argparse.ArgumentParser):
             help="If collecting code coverage, save the report file in this dir.",
         )
         self.add_argument(
-            "--enable-webrender",
+            "--disable-fission",
             action="store_true",
-            dest="enable_webrender",
+            dest="disable_fission",
             default=False,
-            help="Enable the WebRender compositor in Gecko.",
+            help="Run the tests without Fission (site isolation) enabled.",
         )
         self.add_argument(
-            "--enable-fission",
-            action="store_true",
-            dest="enable_fission",
-            default=False,
-            help="Run the tests with Fission (site isolation) enabled.",
+            "--web-content-isolation-strategy",
+            type=int,
+            dest="web_content_isolation_strategy",
+            help="Strategy used to determine whether or not a particular site should load into "
+            "a webIsolated content process, see fission.webContentIsolationStrategy.",
         )
         self.add_argument(
             "--repeat",

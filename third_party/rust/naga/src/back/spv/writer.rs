@@ -1,17 +1,23 @@
 use super::{
-    helpers::{contains_builtin, map_storage_class},
+    helpers::{contains_builtin, global_needs_wrapper, map_storage_class},
     make_local, Block, BlockContext, CachedExpressions, EntryPointContext, Error, Function,
     FunctionArgument, GlobalVariable, IdGenerator, Instruction, LocalType, LocalVariable,
     LogicalLayout, LookupFunctionType, LookupType, LoopContext, Options, PhysicalLayout,
     PipelineOptions, ResultMember, Writer, WriterFlags, BITS_PER_BYTE,
 };
 use crate::{
-    arena::{Arena, Handle},
-    proc::TypeResolution,
+    arena::{Handle, UniqueArena},
+    back::spv::BindingInfo,
+    proc::{Alignment, TypeResolution},
     valid::{FunctionInfo, ModuleInfo},
 };
 use spirv::Word;
 use std::collections::hash_map::Entry;
+
+struct FunctionInterface<'a> {
+    varying_ids: &'a mut Vec<Word>,
+    stage: crate::ShaderStage,
+}
 
 impl Function {
     fn to_words(&self, sink: &mut impl Extend<Word>) {
@@ -54,6 +60,7 @@ impl Writer {
             id_gen,
             capabilities_available: options.capabilities.clone(),
             capabilities_used,
+            extensions_used: crate::FastHashSet::default(),
             debugs: vec![],
             annotations: vec![],
             flags: options.flags,
@@ -65,6 +72,7 @@ impl Writer {
             constant_ids: Vec::new(),
             cached_constants: crate::FastHashMap::default(),
             global_variables: Vec::new(),
+            binding_map: options.binding_map.clone(),
             saved_cached: CachedExpressions::default(),
             gl450_ext_inst_id,
             temp_list: Vec::new(),
@@ -95,6 +103,7 @@ impl Writer {
             flags: self.flags,
             bounds_check_policies: self.bounds_check_policies,
             capabilities_available: take(&mut self.capabilities_available),
+            binding_map: take(&mut self.binding_map),
 
             // Initialized afresh:
             id_gen,
@@ -103,6 +112,7 @@ impl Writer {
 
             // Recycled:
             capabilities_used: take(&mut self.capabilities_used).recycle(),
+            extensions_used: take(&mut self.extensions_used).recycle(),
             physical_layout: self.physical_layout.clone().recycle(),
             logical_layout: take(&mut self.logical_layout).recycle(),
             debugs: take(&mut self.debugs).recycle(),
@@ -127,7 +137,7 @@ impl Writer {
     /// If nothing in `capabilities` appears in the available capabilities
     /// specified in the [`Options`] from which this `Writer` was created,
     /// return an error. The `what` string is used in the error message to
-    /// explain what provoked the requirement. (If no available capabilites were
+    /// explain what provoked the requirement. (If no available capabilities were
     /// given, assume everything is available.)
     ///
     /// The first acceptable capability will be added to this `Writer`'s
@@ -163,6 +173,11 @@ impl Writer {
         }
     }
 
+    /// Indicate that the code uses the given extension.
+    pub(super) fn use_extension(&mut self, extension: &'static str) {
+        self.extensions_used.insert(extension);
+    }
+
     pub(super) fn get_type_id(&mut self, lookup_ty: LookupType) -> Word {
         match self.lookup_type.entry(lookup_ty) {
             Entry::Occupied(e) => *e.get(),
@@ -190,7 +205,7 @@ impl Writer {
 
     pub(super) fn get_pointer_id(
         &mut self,
-        arena: &Arena<crate::Type>,
+        arena: &UniqueArena<crate::Type>,
         handle: Handle<crate::Type>,
         class: spirv::StorageClass,
     ) -> Result<Word, Error> {
@@ -218,9 +233,38 @@ impl Writer {
             vector_size: None,
             kind: crate::ScalarKind::Uint,
             width: 4,
-            pointer_class: None,
+            pointer_space: None,
         };
         self.get_type_id(local_type.into())
+    }
+
+    pub(super) fn get_float_type_id(&mut self) -> Word {
+        let local_type = LocalType::Value {
+            vector_size: None,
+            kind: crate::ScalarKind::Float,
+            width: 4,
+            pointer_space: None,
+        };
+        self.get_type_id(local_type.into())
+    }
+
+    pub(super) fn get_float_pointer_type_id(&mut self, class: spirv::StorageClass) -> Word {
+        let lookup_type = LookupType::Local(LocalType::Value {
+            vector_size: None,
+            kind: crate::ScalarKind::Float,
+            width: 4,
+            pointer_space: Some(class),
+        });
+        if let Some(&id) = self.lookup_type.get(&lookup_type) {
+            id
+        } else {
+            let id = self.id_gen.next();
+            let ty_id = self.get_float_type_id();
+            let instruction = Instruction::type_pointer(id, class, ty_id);
+            instruction.to_words(&mut self.logical_layout.declarations);
+            self.lookup_type.insert(lookup_type, id);
+            id
+        }
     }
 
     pub(super) fn get_bool_type_id(&mut self) -> Word {
@@ -228,12 +272,12 @@ impl Writer {
             vector_size: None,
             kind: crate::ScalarKind::Bool,
             width: 1,
-            pointer_class: None,
+            pointer_space: None,
         };
         self.get_type_id(local_type.into())
     }
 
-    fn decorate(&mut self, id: Word, decoration: spirv::Decoration, operands: &[Word]) {
+    pub(super) fn decorate(&mut self, id: Word, decoration: spirv::Decoration, operands: &[Word]) {
         self.annotations
             .push(Instruction::decorate(id, decoration, operands));
     }
@@ -243,7 +287,7 @@ impl Writer {
         ir_function: &crate::Function,
         info: &FunctionInfo,
         ir_module: &crate::Module,
-        mut varying_ids: Option<&mut Vec<Word>>,
+        mut interface: Option<FunctionInterface>,
     ) -> Result<Word, Error> {
         let mut function = Function::default();
 
@@ -265,7 +309,10 @@ impl Writer {
                 pointer_type_id,
                 id,
                 spirv::StorageClass::Function,
-                init_word,
+                init_word.or_else(|| {
+                    let type_id = self.get_type_id(LookupType::Handle(variable.ty));
+                    Some(self.write_constant_null(type_id))
+                }),
             );
             function
                 .variables
@@ -291,12 +338,13 @@ impl Writer {
                 )?,
                 false => self.get_type_id(LookupType::Handle(argument.ty)),
             };
-            if let Some(ref mut list) = varying_ids {
+
+            if let Some(ref mut iface) = interface {
                 let id = if let Some(ref binding) = argument.binding {
                     let name = argument.name.as_ref().map(AsRef::as_ref);
                     let varying_id =
                         self.write_varying(ir_module, class, name, argument.ty, binding)?;
-                    list.push(varying_id);
+                    iface.varying_ids.push(varying_id);
                     let id = self.id_gen.next();
                     prelude
                         .body
@@ -313,7 +361,7 @@ impl Writer {
                         let binding = member.binding.as_ref().unwrap();
                         let varying_id =
                             self.write_varying(ir_module, class, name, member.ty, binding)?;
-                        list.push(varying_id);
+                        iface.varying_ids.push(varying_id);
                         let id = self.id_gen.next();
                         prelude
                             .body
@@ -333,6 +381,11 @@ impl Writer {
             } else {
                 let argument_id = self.id_gen.next();
                 let instruction = Instruction::function_parameter(argument_type_id, argument_id);
+                if self.flags.contains(WriterFlags::DEBUG) {
+                    if let Some(ref name) = argument.name {
+                        self.debugs.push(Instruction::name(argument_id, name));
+                    }
+                }
                 function.parameters.push(FunctionArgument {
                     instruction,
                     handle_id: if handle_ty {
@@ -354,13 +407,16 @@ impl Writer {
 
         let return_type_id = match ir_function.result {
             Some(ref result) => {
-                if let Some(ref mut list) = varying_ids {
+                if let Some(ref mut iface) = interface {
+                    let mut has_point_size = false;
                     let class = spirv::StorageClass::Output;
                     if let Some(ref binding) = result.binding {
+                        has_point_size |=
+                            *binding == crate::Binding::BuiltIn(crate::BuiltIn::PointSize);
                         let type_id = self.get_type_id(LookupType::Handle(result.ty));
                         let varying_id =
                             self.write_varying(ir_module, class, None, result.ty, binding)?;
-                        list.push(varying_id);
+                        iface.varying_ids.push(varying_id);
                         ep_context.results.push(ResultMember {
                             id: varying_id,
                             type_id,
@@ -373,9 +429,11 @@ impl Writer {
                             let type_id = self.get_type_id(LookupType::Handle(member.ty));
                             let name = member.name.as_ref().map(AsRef::as_ref);
                             let binding = member.binding.as_ref().unwrap();
+                            has_point_size |=
+                                *binding == crate::Binding::BuiltIn(crate::BuiltIn::PointSize);
                             let varying_id =
                                 self.write_varying(ir_module, class, name, member.ty, binding)?;
-                            list.push(varying_id);
+                            iface.varying_ids.push(varying_id);
                             ep_context.results.push(ResultMember {
                                 id: varying_id,
                                 type_id,
@@ -384,6 +442,29 @@ impl Writer {
                         }
                     } else {
                         unreachable!("Missing result binding on an entry point");
+                    }
+
+                    if self.flags.contains(WriterFlags::FORCE_POINT_SIZE)
+                        && iface.stage == crate::ShaderStage::Vertex
+                        && !has_point_size
+                    {
+                        // add point size artificially
+                        let varying_id = self.id_gen.next();
+                        let pointer_type_id = self.get_float_pointer_type_id(class);
+                        Instruction::variable(pointer_type_id, varying_id, class, None)
+                            .to_words(&mut self.logical_layout.declarations);
+                        self.decorate(
+                            varying_id,
+                            spirv::Decoration::BuiltIn,
+                            &[spirv::BuiltIn::PointSize as u32],
+                        );
+                        iface.varying_ids.push(varying_id);
+
+                        let default_value_id =
+                            self.get_constant_scalar(crate::ScalarValue::Float(1.0), 4);
+                        prelude
+                            .body
+                            .push(Instruction::store(varying_id, default_value_id, None));
                     }
                     self.void_type
                 } else {
@@ -413,26 +494,57 @@ impl Writer {
             function_type,
         ));
 
-        if varying_ids.is_some() {
+        if interface.is_some() {
             function.entry_point_context = Some(ep_context);
         }
 
-        // fill up the `GlobalVariable::handle_id`
+        // fill up the `GlobalVariable::access_id`
         for gv in self.global_variables.iter_mut() {
             gv.reset_for_function();
         }
         for (handle, var) in ir_module.global_variables.iter() {
-            // Handle globals are pre-emitted and should be loaded automatically.
-            if info[handle].is_empty() || var.class != crate::StorageClass::Handle {
+            if info[handle].is_empty() {
                 continue;
             }
-            let id = self.id_gen.next();
-            let result_type_id = self.get_type_id(LookupType::Handle(var.ty));
-            let gv = &mut self.global_variables[handle.index()];
-            prelude
-                .body
-                .push(Instruction::load(result_type_id, id, gv.id, None));
-            gv.handle_id = id;
+
+            let mut gv = self.global_variables[handle.index()].clone();
+
+            // Handle globals are pre-emitted and should be loaded automatically.
+            //
+            // Any that are binding arrays we skip as we cannot load the array, we must load the result after indexing.
+            let is_binding_array = match ir_module.types[var.ty].inner {
+                crate::TypeInner::BindingArray { .. } => true,
+                _ => false,
+            };
+
+            if var.space == crate::AddressSpace::Handle && !is_binding_array {
+                let var_type_id = self.get_type_id(LookupType::Handle(var.ty));
+                let id = self.id_gen.next();
+                prelude
+                    .body
+                    .push(Instruction::load(var_type_id, id, gv.var_id, None));
+                gv.access_id = gv.var_id;
+                gv.handle_id = id;
+            } else if global_needs_wrapper(ir_module, var) {
+                let class = map_storage_class(var.space);
+                let pointer_type_id = self.get_pointer_id(&ir_module.types, var.ty, class)?;
+                let index_id = self.get_index_constant(0);
+
+                let id = self.id_gen.next();
+                prelude.body.push(Instruction::access_chain(
+                    pointer_type_id,
+                    id,
+                    gv.var_id,
+                    &[index_id],
+                ));
+                gv.access_id = id;
+            } else {
+                // by default, the variable ID is accessed as is
+                gv.access_id = gv.var_id;
+            };
+
+            // work around borrow checking in the presence of `self.xxx()` calls
+            self.global_variables[handle.index()] = gv;
         }
 
         // Create a `BlockContext` for generating SPIR-V for the function's
@@ -462,7 +574,12 @@ impl Writer {
         context
             .function
             .consume(prelude, Instruction::branch(main_id));
-        context.write_block(main_id, &ir_function.body, None, LoopContext::default())?;
+        context.write_block(
+            main_id,
+            &ir_function.body,
+            super::block::BlockExit::Return,
+            LoopContext::default(),
+        )?;
 
         // Consume the `BlockContext`, ending its borrows and letting the
         // `Writer` steal back its cached expression table and temp_list.
@@ -501,7 +618,10 @@ impl Writer {
             &entry_point.function,
             info,
             ir_module,
-            Some(&mut interface_ids),
+            Some(FunctionInterface {
+                varying_ids: &mut interface_ids,
+                stage: entry_point.stage,
+            }),
         )?;
 
         let exec_model = match entry_point.stage {
@@ -632,19 +752,19 @@ impl Writer {
                 vector_size: None,
                 kind,
                 width,
-                pointer_class: None,
+                pointer_space: None,
             } => self.make_scalar(id, kind, width),
             LocalType::Value {
                 vector_size: Some(size),
                 kind,
                 width,
-                pointer_class: None,
+                pointer_space: None,
             } => {
                 let scalar_id = self.get_type_id(LookupType::Local(LocalType::Value {
                     vector_size: None,
                     kind,
                     width,
-                    pointer_class: None,
+                    pointer_space: None,
                 }));
                 Instruction::type_vector(id, scalar_id, size)
             }
@@ -657,7 +777,7 @@ impl Writer {
                     vector_size: Some(rows),
                     kind: crate::ScalarKind::Float,
                     width,
-                    pointer_class: None,
+                    pointer_space: None,
                 }));
                 Instruction::type_matrix(id, vector_id, columns)
             }
@@ -669,13 +789,13 @@ impl Writer {
                 vector_size,
                 kind,
                 width,
-                pointer_class: Some(class),
+                pointer_space: Some(class),
             } => {
                 let type_id = self.get_type_id(LookupType::Local(LocalType::Value {
                     vector_size,
                     kind,
                     width,
-                    pointer_class: None,
+                    pointer_space: None,
                 }));
                 Instruction::type_pointer(id, class, type_id)
             }
@@ -684,7 +804,7 @@ impl Writer {
                     vector_size: None,
                     kind: image.sampled_type,
                     width: 4,
-                    pointer_class: None,
+                    pointer_space: None,
                 };
                 let type_id = self.get_type_id(LookupType::Local(local_type));
                 Instruction::type_image(id, type_id, image.dim, image.flags, image.image_format)
@@ -693,6 +813,16 @@ impl Writer {
             LocalType::SampledImage { image_type_id } => {
                 Instruction::type_sampled_image(id, image_type_id)
             }
+            LocalType::BindingArray { base, size } => {
+                let inner_ty = self.get_type_id(LookupType::Handle(base));
+                let scalar_id = self.get_constant_scalar(crate::ScalarValue::Uint(size), 4);
+                Instruction::type_array(id, inner_ty, scalar_id)
+            }
+            LocalType::PointerToBindingArray { base, size } => {
+                let inner_ty =
+                    self.get_type_id(LookupType::Local(LocalType::BindingArray { base, size }));
+                Instruction::type_pointer(id, spirv::StorageClass::UniformConstant, inner_ty)
+            }
         };
 
         instruction.to_words(&mut self.logical_layout.declarations);
@@ -700,12 +830,10 @@ impl Writer {
 
     fn write_type_declaration_arena(
         &mut self,
-        arena: &Arena<crate::Type>,
+        arena: &UniqueArena<crate::Type>,
         handle: Handle<crate::Type>,
     ) -> Result<Word, Error> {
         let ty = &arena[handle];
-        let decorate_layout = true; //TODO?
-
         let id = if let Some(local) = make_local(&ty.inner) {
             // This type can be represented as a `LocalType`, so check if we've
             // already written an instruction for it. If not, do so now, with
@@ -718,6 +846,7 @@ impl Writer {
                 Entry::Vacant(e) => {
                     let id = self.id_gen.next();
                     e.insert(id);
+
                     self.write_type_declaration_local(id, local);
 
                     // If it's an image type, request SPIR-V capabilities here, so
@@ -733,9 +862,7 @@ impl Writer {
             let id = self.id_gen.next();
             let instruction = match ty.inner {
                 crate::TypeInner::Array { base, size, stride } => {
-                    if decorate_layout {
-                        self.decorate(id, Decoration::ArrayStride, &[stride]);
-                    }
+                    self.decorate(id, Decoration::ArrayStride, &[stride]);
 
                     let type_id = self.get_type_id(LookupType::Handle(base));
                     match size {
@@ -746,63 +873,23 @@ impl Writer {
                         crate::ArraySize::Dynamic => Instruction::type_runtime_array(id, type_id),
                     }
                 }
+                crate::TypeInner::BindingArray { base, size } => {
+                    let type_id = self.get_type_id(LookupType::Handle(base));
+                    match size {
+                        crate::ArraySize::Constant(const_handle) => {
+                            let length_id = self.constant_ids[const_handle.index()];
+                            Instruction::type_array(id, type_id, length_id)
+                        }
+                        crate::ArraySize::Dynamic => Instruction::type_runtime_array(id, type_id),
+                    }
+                }
                 crate::TypeInner::Struct {
-                    top_level,
                     ref members,
                     span: _,
                 } => {
-                    if top_level {
-                        self.decorate(id, Decoration::Block, &[]);
-                    }
-
                     let mut member_ids = Vec::with_capacity(members.len());
                     for (index, member) in members.iter().enumerate() {
-                        if decorate_layout {
-                            self.annotations.push(Instruction::member_decorate(
-                                id,
-                                index as u32,
-                                Decoration::Offset,
-                                &[member.offset],
-                            ));
-                        }
-
-                        if self.flags.contains(WriterFlags::DEBUG) {
-                            if let Some(ref name) = member.name {
-                                self.debugs
-                                    .push(Instruction::member_name(id, index as u32, name));
-                            }
-                        }
-
-                        // The matrix decorations also go on arrays of matrices,
-                        // so lets check this first.
-                        let member_array_subty_inner = match arena[member.ty].inner {
-                            crate::TypeInner::Array { base, .. } => &arena[base].inner,
-                            ref other => other,
-                        };
-                        if let crate::TypeInner::Matrix {
-                            columns,
-                            rows: _,
-                            width,
-                        } = *member_array_subty_inner
-                        {
-                            let byte_stride = match columns {
-                                crate::VectorSize::Bi => 2 * width,
-                                crate::VectorSize::Tri | crate::VectorSize::Quad => 4 * width,
-                            };
-                            self.annotations.push(Instruction::member_decorate(
-                                id,
-                                index as u32,
-                                Decoration::ColMajor,
-                                &[],
-                            ));
-                            self.annotations.push(Instruction::member_decorate(
-                                id,
-                                index as u32,
-                                Decoration::MatrixStride,
-                                &[byte_stride as u32],
-                            ));
-                        }
-
+                        self.decorate_struct_member(id, index, member, arena)?;
                         let member_id = self.get_type_id(LookupType::Handle(member.ty));
                         member_ids.push(member_id);
                     }
@@ -927,7 +1014,7 @@ impl Writer {
             vector_size: None,
             kind: value.scalar_kind(),
             width,
-            pointer_class: None,
+            pointer_space: None,
         }));
         let (solo, pair);
         let instruction = match *value {
@@ -938,7 +1025,7 @@ impl Writer {
                         &solo[..]
                     }
                     8 => {
-                        pair = [(val >> 32) as u32, val as u32];
+                        pair = [val as u32, (val >> 32) as u32];
                         &pair
                     }
                     _ => unreachable!(),
@@ -952,7 +1039,7 @@ impl Writer {
                         &solo[..]
                     }
                     8 => {
-                        pair = [(val >> 32) as u32, val as u32];
+                        pair = [val as u32, (val >> 32) as u32];
                         &pair
                     }
                     _ => unreachable!(),
@@ -967,7 +1054,7 @@ impl Writer {
                     }
                     8 => {
                         let bits = f64::to_bits(val);
-                        pair = [(bits >> 32) as u32, bits as u32];
+                        pair = [bits as u32, (bits >> 32) as u32];
                         &pair
                     }
                     _ => unreachable!(),
@@ -1086,12 +1173,20 @@ impl Writer {
             crate::Binding::BuiltIn(built_in) => {
                 use crate::BuiltIn as Bi;
                 let built_in = match built_in {
-                    Bi::Position => {
+                    Bi::Position { invariant } => {
+                        if invariant {
+                            self.decorate(id, Decoration::Invariant, &[]);
+                        }
+
                         if class == spirv::StorageClass::Output {
                             BuiltIn::Position
                         } else {
                             BuiltIn::FragCoord
                         }
+                    }
+                    Bi::ViewIndex => {
+                        self.require_any("`view_index` built-in", &[spirv::Capability::MultiView])?;
+                        BuiltIn::ViewIndex
                     }
                     // vertex
                     Bi::BaseInstance => BuiltIn::BaseInstance,
@@ -1140,17 +1235,13 @@ impl Writer {
         &mut self,
         ir_module: &crate::Module,
         global_variable: &crate::GlobalVariable,
-    ) -> Result<(Instruction, Word), Error> {
+    ) -> Result<Word, Error> {
+        use spirv::Decoration;
+
         let id = self.id_gen.next();
+        let class = map_storage_class(global_variable.space);
 
-        let class = map_storage_class(global_variable.class);
         //self.check(class.required_capabilities())?;
-
-        let init_word = global_variable
-            .init
-            .map(|constant| self.constant_ids[constant.index()]);
-        let pointer_type_id = self.get_pointer_id(&ir_module.types, global_variable.ty, class)?;
-        let instruction = Instruction::variable(pointer_type_id, id, class, init_word);
 
         if self.flags.contains(WriterFlags::DEBUG) {
             if let Some(ref name) = global_variable.name {
@@ -1158,10 +1249,8 @@ impl Writer {
             }
         }
 
-        use spirv::Decoration;
-
-        let storage_access = match global_variable.class {
-            crate::StorageClass::Storage { access } => Some(access),
+        let storage_access = match global_variable.space {
+            crate::AddressSpace::Storage { access } => Some(access),
             _ => match ir_module.types[global_variable.ty].inner {
                 crate::TypeInner::Image {
                     class: crate::ImageClass::Storage { access, .. },
@@ -1179,13 +1268,138 @@ impl Writer {
             }
         }
 
+        let mut substitute_inner_type_lookup = None;
         if let Some(ref res_binding) = global_variable.binding {
             self.decorate(id, Decoration::DescriptorSet, &[res_binding.group]);
             self.decorate(id, Decoration::Binding, &[res_binding.binding]);
+
+            if let Some(&BindingInfo {
+                binding_array_size: Some(remapped_binding_array_size),
+            }) = self.binding_map.get(res_binding)
+            {
+                if let crate::TypeInner::BindingArray { base, .. } =
+                    ir_module.types[global_variable.ty].inner
+                {
+                    substitute_inner_type_lookup =
+                        Some(LookupType::Local(LocalType::PointerToBindingArray {
+                            base,
+                            size: remapped_binding_array_size as u64,
+                        }))
+                }
+            } else {
+            }
+        };
+
+        let init_word = global_variable
+            .init
+            .map(|constant| self.constant_ids[constant.index()]);
+        let inner_type_id = self.get_type_id(
+            substitute_inner_type_lookup.unwrap_or(LookupType::Handle(global_variable.ty)),
+        );
+
+        // generate the wrapping structure if needed
+        let pointer_type_id = if global_needs_wrapper(ir_module, global_variable) {
+            let wrapper_type_id = self.id_gen.next();
+
+            self.decorate(wrapper_type_id, Decoration::Block, &[]);
+            let member = crate::StructMember {
+                name: None,
+                ty: global_variable.ty,
+                binding: None,
+                offset: 0,
+            };
+            self.decorate_struct_member(wrapper_type_id, 0, &member, &ir_module.types)?;
+
+            Instruction::type_struct(wrapper_type_id, &[inner_type_id])
+                .to_words(&mut self.logical_layout.declarations);
+
+            let pointer_type_id = self.id_gen.next();
+            Instruction::type_pointer(pointer_type_id, class, wrapper_type_id)
+                .to_words(&mut self.logical_layout.declarations);
+
+            pointer_type_id
+        } else {
+            // This is a global variable in the Storage address space. The only
+            // way it could have `global_needs_wrapper() == false` is if it has
+            // a runtime-sized array. In this case, we need to decorate it with
+            // Block.
+            if let crate::AddressSpace::Storage { .. } = global_variable.space {
+                self.decorate(inner_type_id, Decoration::Block, &[]);
+            }
+            if substitute_inner_type_lookup.is_some() {
+                inner_type_id
+            } else {
+                self.get_pointer_id(&ir_module.types, global_variable.ty, class)?
+            }
+        };
+
+        let init_word = match global_variable.space {
+            crate::AddressSpace::Private => {
+                init_word.or_else(|| Some(self.write_constant_null(inner_type_id)))
+            }
+            _ => init_word,
+        };
+
+        Instruction::variable(pointer_type_id, id, class, init_word)
+            .to_words(&mut self.logical_layout.declarations);
+        Ok(id)
+    }
+
+    /// Write the necessary decorations for a struct member.
+    ///
+    /// Emit decorations for the `index`'th member of the struct type
+    /// designated by `struct_id`, described by `member`.
+    fn decorate_struct_member(
+        &mut self,
+        struct_id: Word,
+        index: usize,
+        member: &crate::StructMember,
+        arena: &UniqueArena<crate::Type>,
+    ) -> Result<(), Error> {
+        use spirv::Decoration;
+
+        self.annotations.push(Instruction::member_decorate(
+            struct_id,
+            index as u32,
+            Decoration::Offset,
+            &[member.offset],
+        ));
+
+        if self.flags.contains(WriterFlags::DEBUG) {
+            if let Some(ref name) = member.name {
+                self.debugs
+                    .push(Instruction::member_name(struct_id, index as u32, name));
+            }
         }
 
-        // TODO Initializer is optional and not (yet) included in the IR
-        Ok((instruction, id))
+        // Matrices and arrays of matrices both require decorations,
+        // so "see through" an array to determine if they're needed.
+        let member_array_subty_inner = match arena[member.ty].inner {
+            crate::TypeInner::Array { base, .. } => &arena[base].inner,
+            ref other => other,
+        };
+        if let crate::TypeInner::Matrix {
+            columns: _,
+            rows,
+            width,
+        } = *member_array_subty_inner
+        {
+            let byte_stride = Alignment::from(rows) * width as u32;
+            self.annotations.push(Instruction::member_decorate(
+                struct_id,
+                index as u32,
+                Decoration::ColMajor,
+                &[],
+            ));
+            self.annotations.push(Instruction::member_decorate(
+                struct_id,
+                index as u32,
+                Decoration::MatrixStride,
+                &[byte_stride],
+            ));
+        }
+
+        Ok(())
     }
 
     fn get_function_type(&mut self, lookup_function_type: LookupFunctionType) -> Word {
@@ -1218,18 +1432,41 @@ impl Writer {
         mod_info: &ModuleInfo,
         ep_index: Option<usize>,
     ) -> Result<(), Error> {
+        fn has_view_index_check(
+            ir_module: &crate::Module,
+            binding: Option<&crate::Binding>,
+            ty: Handle<crate::Type>,
+        ) -> bool {
+            match ir_module.types[ty].inner {
+                crate::TypeInner::Struct { ref members, .. } => members.iter().any(|member| {
+                    has_view_index_check(ir_module, member.binding.as_ref(), member.ty)
+                }),
+                _ => binding == Some(&crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex)),
+            }
+        }
+
         let has_storage_buffers =
             ir_module
                 .global_variables
                 .iter()
-                .any(|(_, var)| match var.class {
-                    crate::StorageClass::Storage { .. } => true,
+                .any(|(_, var)| match var.space {
+                    crate::AddressSpace::Storage { .. } => true,
                     _ => false,
                 });
+        let has_view_index = ir_module
+            .entry_points
+            .iter()
+            .flat_map(|entry| entry.function.arguments.iter())
+            .any(|arg| has_view_index_check(ir_module, arg.binding.as_ref(), arg.ty));
+
         if self.physical_layout.version < 0x10300 && has_storage_buffers {
             // enable the storage buffer class on < SPV-1.3
             Instruction::extension("SPV_KHR_storage_buffer_storage_class")
                 .to_words(&mut self.logical_layout.extensions);
+        }
+        if has_view_index {
+            Instruction::extension("SPV_KHR_multiview")
+                .to_words(&mut self.logical_layout.extensions)
         }
         Instruction::type_void(self.void_type).to_words(&mut self.logical_layout.declarations);
         Instruction::ext_inst_import(self.gl450_ext_inst_id, "GLSL.std.450")
@@ -1291,8 +1528,7 @@ impl Writer {
                     GlobalVariable::dummy()
                 }
                 _ => {
-                    let (instruction, id) = self.write_global_variable(ir_module, var)?;
-                    instruction.to_words(&mut self.logical_layout.declarations);
+                    let id = self.write_global_variable(ir_module, var)?;
                     GlobalVariable::new(id)
                 }
             };
@@ -1328,6 +1564,9 @@ impl Writer {
 
         for capability in self.capabilities_used.iter() {
             Instruction::capability(*capability).to_words(&mut self.logical_layout.capabilities);
+        }
+        for extension in self.extensions_used.iter() {
+            Instruction::extension(extension).to_words(&mut self.logical_layout.extensions);
         }
         if ir_module.entry_points.is_empty() {
             // SPIR-V doesn't like modules without entry points
@@ -1387,7 +1626,7 @@ impl Writer {
     }
 
     /// Return the set of capabilities the last module written used.
-    pub fn get_capabilities_used(&self) -> &crate::FastHashSet<spirv::Capability> {
+    pub const fn get_capabilities_used(&self) -> &crate::FastHashSet<spirv::Capability> {
         &self.capabilities_used
     }
 }

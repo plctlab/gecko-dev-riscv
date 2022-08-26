@@ -5,12 +5,14 @@
 
 var EXPORTED_SYMBOLS = ["Sniffer"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const gPrefs = {};
+
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  gPrefs,
   "gEnabled",
   "devtools.jsonview.enabled"
 );
@@ -42,7 +44,7 @@ class Sniffer {
     if (request instanceof Ci.nsIChannel) {
       // JSON View is enabled only for top level loads only.
       if (
-        gEnabled &&
+        gPrefs.gEnabled &&
         request.loadInfo?.isTopLevelLoad &&
         request.loadFlags & Ci.nsIChannel.LOAD_DOCUMENT_URI &&
         getContentDisposition(request) != Ci.nsIChannel.DISPOSITION_ATTACHMENT

@@ -176,6 +176,10 @@ nsresult UrlClassifierCommon::SetBlockedContent(nsIChannel* channel,
       NS_SetRequestBlockingReason(
           channel, nsILoadInfo::BLOCKING_REASON_CLASSIFY_SOCIALTRACKING_URI);
       break;
+    case NS_ERROR_EMAILTRACKING_URI:
+      NS_SetRequestBlockingReason(
+          channel, nsILoadInfo::BLOCKING_REASON_CLASSIFY_EMAILTRACKING_URI);
+      break;
     default:
       MOZ_CRASH(
           "Missing nsILoadInfo::BLOCKING_REASON* for the classification error");
@@ -402,7 +406,9 @@ nsresult UrlClassifierCommon::CreatePairwiseEntityListURI(nsIChannel* aChannel,
 
   nsCOMPtr<nsIURI> entitylistURI;
   rv = NS_NewURI(getter_AddRefs(entitylistURI), entitylistEntry);
-  NS_ENSURE_SUCCESS(rv, rv);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
   entitylistURI.forget(aURI);
   return NS_OK;

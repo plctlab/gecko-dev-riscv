@@ -19,7 +19,6 @@
 #include "mozilla/AnimationPropertySegment.h"
 #include "mozilla/AnimationTarget.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ComputedTimingFunction.h"
 #include "mozilla/EffectCompositor.h"
 #include "mozilla/Keyframe.h"
 #include "mozilla/KeyframeEffectParams.h"
@@ -179,7 +178,10 @@ class KeyframeEffect : public AnimationEffect {
       const IterationCompositeOperation& aIterationComposite);
 
   CompositeOperation Composite() const;
-  void SetComposite(const CompositeOperation& aComposite);
+  virtual void SetComposite(const CompositeOperation& aComposite);
+  void SetCompositeFromStyle(const CompositeOperation& aComposite) {
+    KeyframeEffect::SetComposite(aComposite);
+  }
 
   void NotifySpecifiedTimingUpdated();
   void NotifyAnimationTimingUpdated(PostRestyleMode aPostRestyle);
@@ -400,8 +402,7 @@ class KeyframeEffect : public AnimationEffect {
     Style,
     None,
   };
-  already_AddRefed<ComputedStyle> GetTargetComputedStyle(
-      Flush aFlushType) const;
+  already_AddRefed<const ComputedStyle> GetTargetComputedStyle(Flush) const;
 
   // A wrapper for marking cascade update according to the current
   // target and its effectSet.
@@ -413,7 +414,7 @@ class KeyframeEffect : public AnimationEffect {
   void EnsureBaseStyle(const AnimationProperty& aProperty,
                        nsPresContext* aPresContext,
                        const ComputedStyle* aComputedValues,
-                       RefPtr<ComputedStyle>& aBaseComputedValues);
+                       RefPtr<const ComputedStyle>& aBaseComputedValues);
 
   OwningAnimationTarget mTarget;
 
@@ -468,7 +469,7 @@ class KeyframeEffect : public AnimationEffect {
                         const AnimationPropertySegment& aSegment,
                         const ComputedTiming& aComputedTiming);
 
-  already_AddRefed<ComputedStyle> CreateComputedStyleForAnimationValue(
+  already_AddRefed<const ComputedStyle> CreateComputedStyleForAnimationValue(
       nsCSSPropertyID aProperty, const AnimationValue& aValue,
       nsPresContext* aPresContext, const ComputedStyle* aBaseComputedStyle);
 

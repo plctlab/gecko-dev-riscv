@@ -146,7 +146,7 @@ HGRC_PATH = Path(user_config_dir("hg")).joinpath("hgrc")
 )
 @CommandArgument(
     "actions",
-    choices=("prep", "create", "push"),
+    choices=("prep", "create", "push", "clean"),
     nargs="+",
     # This help block will be poorly formatted until we fix bug 1714239
     help="""
@@ -154,6 +154,7 @@ HGRC_PATH = Path(user_config_dir("hg")).joinpath("hgrc")
     "create": create the en-US strings commit an optionally create an
               outgoing() patch.
     "push": push the en-US strings to the quarantine repo.
+    "clean": clean up any sub-repos.
     """,
 )
 def cross_channel(
@@ -179,6 +180,7 @@ def cross_channel(
     strings_path = strings_path.resolve()  # abspath
     if outgoing_path:
         outgoing_path = outgoing_path.resolve()  # abspath
+    get_config = kwargs.get("get_config", None)
     try:
         with tempfile.TemporaryDirectory() as ssh_key_dir:
             retry(
@@ -192,6 +194,7 @@ def cross_channel(
                     ssh_secret,
                     Path(ssh_key_dir),
                     actions,
+                    get_config,
                 ),
             )
     except RetryError as exc:
@@ -205,11 +208,13 @@ def _do_create_content(
     ssh_secret,
     ssh_key_dir,
     actions,
+    get_config,
 ):
-
     from mozxchannel import CrossChannelCreator, get_default_config
 
-    config = get_default_config(Path(command_context.topsrcdir), strings_path)
+    get_config = get_config or get_default_config
+
+    config = get_config(Path(command_context.topsrcdir), strings_path)
     ccc = CrossChannelCreator(config)
     status = 0
     changes = False
@@ -318,6 +323,11 @@ def _do_create_content(
         else:
             command_context.log(logging.INFO, "push", {}, "Skipping empty push.")
 
+    if "clean" in actions:
+        for repo_config in config.get("source", {}).values():
+            if repo_config.get("post-clobber", False):
+                _nuke_hg_repo(command_context, str(repo_config["path"]))
+
     return status
 
 
@@ -397,3 +407,7 @@ def _check_hg_repo(command_context, path, heads=None):
 
 def _clone_hg_repo(command_context, url, path):
     _retry_run_process(command_context, ["hg", "clone", url, str(path)])
+
+
+def _nuke_hg_repo(command_context, path):
+    _retry_run_process(command_context, ["rm", "-rf", str(path)])

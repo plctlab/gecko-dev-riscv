@@ -3,11 +3,9 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 
 let win;
 
@@ -42,7 +40,7 @@ async function testClearingDownloads(clearCallback) {
     httpUrl("file3.txt"),
   ];
 
-  let listbox = win.document.getElementById("downloadsRichListBox");
+  let listbox = win.document.getElementById("downloadsListBox");
   ok(listbox, "download list box present");
 
   let promiseLength = waitForChildrenLength(listbox, DOWNLOAD_DATA.length);
@@ -78,7 +76,7 @@ async function testClearingDownloads(clearCallback) {
   );
 }
 
-add_task(async function setup() {
+add_setup(async function() {
   // Ensure that state is reset in case previous tests didn't finish.
   await task_resetState();
 

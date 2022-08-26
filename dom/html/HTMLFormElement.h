@@ -76,7 +76,7 @@ class HTMLFormElement final : public nsGenericHTMLElement,
   virtual void SetValueMissingState(const nsAString& aName,
                                     bool aValue) override;
 
-  virtual EventStates IntrinsicState() const override;
+  virtual ElementState IntrinsicState() const override;
 
   // EventTarget
   virtual void AsyncEventRunning(AsyncEventDispatcher* aEvent) override;
@@ -224,8 +224,8 @@ class HTMLFormElement final : public nsGenericHTMLElement,
   void OnSubmitClickEnd();
 
   /**
-   * This method will update the form validity so the submit controls states
-   * will be updated (for -moz-submit-invalid pseudo-class).
+   * This method will update the form validity.
+   *
    * This method has to be called by form elements whenever their validity state
    * or status regarding constraint validation changes.
    *
@@ -236,16 +236,6 @@ class HTMLFormElement final : public nsGenericHTMLElement,
    * @param aElementValidityState the new validity state of the element
    */
   void UpdateValidity(bool aElementValidityState);
-
-  /**
-   * Returns the form validity based on the last UpdateValidity() call.
-   *
-   * @return Whether the form was valid the last time UpdateValidity() was
-   * called.
-   *
-   * @note This method may not return the *current* validity state!
-   */
-  bool GetValidity() const { return !mInvalidElementsCount; }
 
   /**
    * This method check the form validity and make invalid form elements send
@@ -267,7 +257,8 @@ class HTMLFormElement final : public nsGenericHTMLElement,
    *
    * @param aFormData the form data object
    */
-  nsresult ConstructEntryList(FormData* aFormData);
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult ConstructEntryList(FormData* aFormData);
 
   /**
    * Whether the submission of this form has been ever prevented because of
@@ -369,7 +360,7 @@ class HTMLFormElement final : public nsGenericHTMLElement,
   MOZ_CAN_RUN_SCRIPT void RequestSubmit(nsGenericHTMLElement* aSubmitter,
                                         ErrorResult& aRv);
 
-  void Reset();
+  MOZ_CAN_RUN_SCRIPT void Reset();
 
   bool CheckValidity() { return CheckFormValidity(nullptr); }
 
@@ -594,7 +585,6 @@ class HTMLFormElement final : public nsGenericHTMLElement,
   /**
    * Number of invalid and candidate for constraint validation elements in the
    * form the last time UpdateValidity has been called.
-   * @note Should only be used by UpdateValidity() and GetValidity()!
    */
   int32_t mInvalidElementsCount;
 

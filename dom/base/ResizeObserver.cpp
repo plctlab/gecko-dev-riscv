@@ -11,6 +11,8 @@
 #include "mozilla/SVGUtils.h"
 #include "nsIContent.h"
 #include "nsIContentInlines.h"
+#include "nsIScrollableFrame.h"
+#include "nsLayoutUtils.h"
 #include <limits>
 
 namespace mozilla::dom {
@@ -45,9 +47,29 @@ static uint32_t GetNodeDepth(nsINode* aNode) {
   return depth;
 }
 
+static nsSize GetContentRectSize(const nsIFrame& aFrame) {
+  if (const nsIScrollableFrame* f = do_QueryFrame(&aFrame)) {
+    // We return the scrollport rect for compat with other UAs, see bug 1733042.
+    // But the scrollPort includes padding (but not border!), so remove it.
+    nsRect scrollPort = f->GetScrollPortRect();
+    nsMargin padding =
+        aFrame.GetUsedPadding().ApplySkipSides(aFrame.GetSkipSides());
+    scrollPort.Deflate(padding);
+    // This can break in some edge cases like when layout overflows sizes or
+    // what not.
+    NS_ASSERTION(
+        !aFrame.PresContext()->UseOverlayScrollbars() ||
+            scrollPort.Size() == aFrame.GetContentRectRelativeToSelf().Size(),
+        "Wrong scrollport?");
+    return scrollPort.Size();
+  }
+  return aFrame.GetContentRectRelativeToSelf().Size();
+}
+
 /**
  * Returns |aTarget|'s size in the form of gfx::Size (in pixels).
- * If the target is SVG, width and height are determined from bounding box.
+ * If the target is an SVG that does not participate in CSS layout,
+ * its width and height are determined from bounding box.
  *
  * https://www.w3.org/TR/resize-observer-1/#calculate-box-size
  */
@@ -60,10 +82,10 @@ static gfx::Size CalculateBoxSize(Element* aTarget,
     return size;
   }
 
-  if (aTarget->IsSVGElement()) {
-    // Per the spec, SVG size is always its bounding box size no matter what
-    // box option you choose, because SVG elements do not use standard CSS box
-    // model.
+  if (frame->HasAnyStateBits(NS_FRAME_SVG_LAYOUT)) {
+    // Per the spec, this target's SVG size is always its bounding box size no
+    // matter what box option you choose, because SVG elements do not use
+    // standard CSS box model.
     const gfxRect bbox = SVGUtils::GetBBox(frame);
     size.width = static_cast<float>(bbox.width);
     size.height = static_cast<float>(bbox.height);
@@ -75,47 +97,58 @@ static gfx::Size CalculateBoxSize(Element* aTarget,
       const LayoutDeviceIntSize snappedSize =
           RoundedToInt(CSSSize::FromUnknownSize(size) *
                        frame->PresContext()->CSSToDevPixelScale());
-      size = gfx::Size(snappedSize.ToUnknownSize());
+      return gfx::Size(snappedSize.ToUnknownSize());
     }
-  } else {
-    // Per the spec, non-replaced inline Elements will always have an empty
-    // content rect. Therefore, we always use the same trivially-empty size
-    // for non-replaced inline elements here, and their IsActive() will
-    // always return false. (So its observation won't be fired.)
-    if (!frame->IsFrameOfType(nsIFrame::eReplaced) &&
-        frame->IsFrameOfType(nsIFrame::eLineParticipant)) {
-      return size;
-    }
-
-    switch (aBox) {
-      case ResizeObserverBoxOptions::Border_box:
-        // GetSize() includes the content area, borders, and padding.
-        size = CSSPixel::FromAppUnits(frame->GetSize()).ToUnknownSize();
-        break;
-      case ResizeObserverBoxOptions::Device_pixel_content_box: {
-        // This is a implementation-dependent for subpixel snapping algorithm.
-        // Gecko relys on LayoutDevicePixel to convert (and snap) the app units
-        // into device pixels in painting and gfx code, so here we simply
-        // convert it into dev pixels and round it.
-        //
-        // Note: This size must contain integer values.
-        // https://drafts.csswg.org/resize-observer/#dom-resizeobserverboxoptions-device-pixel-content-box
-        const LayoutDeviceIntSize snappedSize =
-            LayoutDevicePixel::FromAppUnitsRounded(
-                frame->GetContentRectRelativeToSelf().Size(),
-                frame->PresContext()->AppUnitsPerDevPixel());
-        size = gfx::Size(snappedSize.ToUnknownSize());
-        break;
-      }
-      case ResizeObserverBoxOptions::Content_box:
-      default:
-        size =
-            CSSPixel::FromAppUnits(frame->GetContentRectRelativeToSelf().Size())
-                .ToUnknownSize();
-    }
+    return size;
   }
 
-  return size;
+  // Per the spec, non-replaced inline Elements will always have an empty
+  // content rect. Therefore, we always use the same trivially-empty size
+  // for non-replaced inline elements here, and their IsActive() will
+  // always return false. (So its observation won't be fired.)
+  if (!frame->IsFrameOfType(nsIFrame::eReplaced) &&
+      frame->IsFrameOfType(nsIFrame::eLineParticipant)) {
+    return size;
+  }
+
+  switch (aBox) {
+    case ResizeObserverBoxOptions::Border_box:
+      return CSSPixel::FromAppUnits(frame->GetSize()).ToUnknownSize();
+    case ResizeObserverBoxOptions::Device_pixel_content_box: {
+      // Simply converting from app units to device units is insufficient - we
+      // need to take subpixel snapping into account. Subpixel snapping happens
+      // with respect to the reference frame, so do the dev pixel conversion
+      // with our rectangle positioned relative to the reference frame, then
+      // get the size from there.
+      const auto* referenceFrame = nsLayoutUtils::GetReferenceFrame(frame);
+      // GetOffsetToCrossDoc version handles <iframe>s in addition to normal
+      // cases. We don't expect this to tight loop for additional checks to
+      // matter.
+      const auto offset = frame->GetOffsetToCrossDoc(referenceFrame);
+      const auto contentSize = GetContentRectSize(*frame);
+      // Casting to double here is deliberate to minimize rounding error in
+      // upcoming operations.
+      const auto appUnitsPerDevPixel =
+          static_cast<double>(frame->PresContext()->AppUnitsPerDevPixel());
+      // Calculation here is a greatly simplified version of
+      // `NSRectToSnappedRect` as 1) we're not actually drawing (i.e. no draw
+      // target), and 2) transform does not need to be taken into account.
+      gfx::Rect rect{gfx::Float(offset.X() / appUnitsPerDevPixel),
+                     gfx::Float(offset.Y() / appUnitsPerDevPixel),
+                     gfx::Float(contentSize.Width() / appUnitsPerDevPixel),
+                     gfx::Float(contentSize.Height() / appUnitsPerDevPixel)};
+      gfx::Point tl = rect.TopLeft().Round();
+      gfx::Point br = rect.BottomRight().Round();
+
+      rect.SizeTo(gfx::Size(br.x - tl.x, br.y - tl.y));
+      rect.NudgeToIntegers();
+      return rect.Size().ToUnknownSize();
+    }
+    case ResizeObserverBoxOptions::Content_box:
+    default:
+      break;
+  }
+  return CSSPixel::FromAppUnits(GetContentRectSize(*frame)).ToUnknownSize();
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(ResizeObservation)
@@ -144,11 +177,7 @@ void ResizeObservation::Unlink(RemoveFromObserver aRemoveFromObserver) {
   nsCOMPtr<Element> target = std::move(mTarget);
   if (observer && target) {
     if (aRemoveFromObserver == RemoveFromObserver::Yes) {
-      IgnoredErrorResult rv;
-      observer->Unobserve(*target, rv);
-      MOZ_DIAGNOSTIC_ASSERT(!rv.Failed(),
-                            "How could we keep the observer and target around "
-                            "without being in the observation map?");
+      observer->Unobserve(*target);
     }
     target->UnbindObject(observer);
   }
@@ -173,14 +202,23 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(ResizeObserver)
 NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(ResizeObserver)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(ResizeObserver)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner, mDocument, mCallback,
-                                    mActiveTargets, mObservationMap);
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner, mDocument, mActiveTargets,
+                                    mObservationMap);
+  if (tmp->mCallback.is<RefPtr<ResizeObserverCallback>>()) {
+    ImplCycleCollectionTraverse(
+        cb, tmp->mCallback.as<RefPtr<ResizeObserverCallback>>(), "mCallback",
+        0);
+  }
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(ResizeObserver)
   tmp->Disconnect();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner, mDocument, mCallback, mActiveTargets,
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner, mDocument, mActiveTargets,
                                   mObservationMap);
+  if (tmp->mCallback.is<RefPtr<ResizeObserverCallback>>()) {
+    ImplCycleCollectionUnlink(
+        tmp->mCallback.as<RefPtr<ResizeObserverCallback>>());
+  }
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -190,6 +228,14 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ResizeObserver)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
+
+ResizeObserver::ResizeObserver(Document& aDocument, NativeCallback aCallback)
+    : mOwner(aDocument.GetInnerWindow()),
+      mDocument(&aDocument),
+      mCallback(aCallback) {
+  MOZ_ASSERT(mOwner, "Need a non-null owner window");
+  MOZ_ASSERT(mDocument == mOwner->GetExtantDoc());
+}
 
 already_AddRefed<ResizeObserver> ResizeObserver::Constructor(
     const GlobalObject& aGlobal, ResizeObserverCallback& aCb,
@@ -211,10 +257,10 @@ already_AddRefed<ResizeObserver> ResizeObserver::Constructor(
 }
 
 void ResizeObserver::Observe(Element& aTarget,
-                             const ResizeObserverOptions& aOptions,
-                             ErrorResult& aRv) {
+                             const ResizeObserverOptions& aOptions) {
   if (MOZ_UNLIKELY(!mDocument)) {
-    return aRv.Throw(NS_ERROR_FAILURE);
+    MOZ_ASSERT_UNREACHABLE("How did we call observe() after unlink?");
+    return;
   }
 
   // NOTE(emilio): Per spec, this is supposed to happen on construction, but the
@@ -249,6 +295,18 @@ void ResizeObserver::Observe(Element& aTarget,
   observation =
       new ResizeObservation(aTarget, *this, aOptions.mBox,
                             frame ? frame->GetWritingMode() : WritingMode());
+  if (this == mDocument->GetLastRememberedSizeObserver()) {
+    // Resize observations are initialized with a (0, 0) mLastReportedSize,
+    // this means that the callback won't be called if the element is 0x0.
+    // But we need it called for handling the last remembered size, so set
+    // mLastReportedSize to an invalid size to ensure IsActive() is true
+    // for the current element size.
+    // See https://github.com/w3c/csswg-drafts/issues/3664 about doing this in
+    // the general case, then we won't need this hack for the last remembered
+    // size, and will have consistency with IntersectionObserver.
+    observation->UpdateLastReportedSize(gfx::Size(-1, -1));
+    MOZ_ASSERT(observation->IsActive());
+  }
   mObservationList.insertBack(observation);
 
   // Per the spec, we need to trigger notification in event loop that
@@ -257,7 +315,7 @@ void ResizeObserver::Observe(Element& aTarget,
   mDocument->ScheduleResizeObserversNotification();
 }
 
-void ResizeObserver::Unobserve(Element& aTarget, ErrorResult& aRv) {
+void ResizeObserver::Unobserve(Element& aTarget) {
   RefPtr<ResizeObservation> observation;
   if (!mObservationMap.Remove(&aTarget, getter_AddRefs(observation))) {
     return;
@@ -325,7 +383,7 @@ uint32_t ResizeObserver::BroadcastActiveObservations() {
     gfx::Size devicePixelContentBoxSize = CalculateBoxSize(
         target, ResizeObserverBoxOptions::Device_pixel_content_box);
     RefPtr<ResizeObserverEntry> entry =
-        new ResizeObserverEntry(this, *target, borderBoxSize, contentBoxSize,
+        new ResizeObserverEntry(mOwner, *target, borderBoxSize, contentBoxSize,
                                 devicePixelContentBoxSize);
 
     if (!entries.AppendElement(entry.forget(), fallible)) {
@@ -354,8 +412,13 @@ uint32_t ResizeObserver::BroadcastActiveObservations() {
     }
   }
 
-  RefPtr<ResizeObserverCallback> callback(mCallback);
-  callback->Call(this, entries, *this);
+  if (mCallback.is<RefPtr<ResizeObserverCallback>>()) {
+    RefPtr<ResizeObserverCallback> callback(
+        mCallback.as<RefPtr<ResizeObserverCallback>>());
+    callback->Call(this, entries, *this);
+  } else {
+    mCallback.as<NativeCallback>()(entries, *this);
+  }
 
   mActiveTargets.Clear();
   mHasSkippedTargets = false;
@@ -413,7 +476,7 @@ void ResizeObserverEntry::GetDevicePixelContentBoxSize(
 void ResizeObserverEntry::SetBorderBoxSize(const gfx::Size& aSize) {
   nsIFrame* frame = mTarget->GetPrimaryFrame();
   const WritingMode wm = frame ? frame->GetWritingMode() : WritingMode();
-  mBorderBoxSize = new ResizeObserverSize(this, aSize, wm);
+  mBorderBoxSize = new ResizeObserverSize(mOwner, aSize, wm);
 }
 
 void ResizeObserverEntry::SetContentRectAndSize(const gfx::Size& aSize) {
@@ -425,19 +488,65 @@ void ResizeObserverEntry::SetContentRectAndSize(const gfx::Size& aSize) {
   // our contentRect.
   nsRect rect(nsPoint(padding.left, padding.top),
               CSSPixel::ToAppUnits(CSSSize::FromUnknownSize(aSize)));
-  RefPtr<DOMRect> contentRect = new DOMRect(this);
+  RefPtr<DOMRect> contentRect = new DOMRect(mOwner);
   contentRect->SetLayoutRect(rect);
   mContentRect = std::move(contentRect);
 
   // 2. Update mContentBoxSize.
   const WritingMode wm = frame ? frame->GetWritingMode() : WritingMode();
-  mContentBoxSize = new ResizeObserverSize(this, aSize, wm);
+  mContentBoxSize = new ResizeObserverSize(mOwner, aSize, wm);
 }
 
 void ResizeObserverEntry::SetDevicePixelContentSize(const gfx::Size& aSize) {
   nsIFrame* frame = mTarget->GetPrimaryFrame();
   const WritingMode wm = frame ? frame->GetWritingMode() : WritingMode();
-  mDevicePixelContentBoxSize = new ResizeObserverSize(this, aSize, wm);
+  mDevicePixelContentBoxSize = new ResizeObserverSize(mOwner, aSize, wm);
+}
+
+static void LastRememberedSizeCallback(
+    const Sequence<OwningNonNull<ResizeObserverEntry>>& aEntries,
+    ResizeObserver& aObserver) {
+  for (const auto& entry : aEntries) {
+    Element* target = entry->Target();
+    if (!target->IsInComposedDoc()) {
+      aObserver.Unobserve(*target);
+      target->RemoveLastRememberedBSize();
+      target->RemoveLastRememberedISize();
+      continue;
+    }
+    nsIFrame* frame = target->GetPrimaryFrame();
+    if (!frame) {
+      aObserver.Unobserve(*target);
+      continue;
+    }
+    const nsStylePosition* stylePos = frame->StylePosition();
+    const WritingMode wm = frame->GetWritingMode();
+    bool canRememberBSize = stylePos->ContainIntrinsicBSize(wm).IsAutoLength();
+    bool canRememberISize = stylePos->ContainIntrinsicISize(wm).IsAutoLength();
+    MOZ_ASSERT(canRememberBSize || !target->HasLastRememberedBSize(),
+               "Should have removed the last remembered block size.");
+    MOZ_ASSERT(canRememberISize || !target->HasLastRememberedISize(),
+               "Should have removed the last remembered inline size.");
+    const auto containAxes = frame->StyleDisplay()->GetContainSizeAxes();
+    bool canUpdateBSize = canRememberBSize && !containAxes.mBContained;
+    bool canUpdateISize = canRememberISize && !containAxes.mIContained;
+    MOZ_ASSERT(canUpdateBSize || canUpdateISize,
+               "Should have unobserved if we can't update any size.");
+    AutoTArray<RefPtr<ResizeObserverSize>, 1> retVal;
+    entry->GetContentBoxSize(retVal);
+    const ResizeObserverSize& size = *retVal[0];
+    if (canUpdateBSize) {
+      target->SetLastRememberedBSize(size.BlockSize());
+    }
+    if (canUpdateISize) {
+      target->SetLastRememberedISize(size.InlineSize());
+    }
+  }
+}
+
+/* static */ already_AddRefed<ResizeObserver>
+ResizeObserver::CreateLastRememberedSizeObserver(Document& aDocument) {
+  return do_AddRef(new ResizeObserver(aDocument, LastRememberedSizeCallback));
 }
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(ResizeObserverSize, mOwner)

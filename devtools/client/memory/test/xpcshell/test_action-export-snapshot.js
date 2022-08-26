@@ -25,13 +25,13 @@ add_task(async function() {
   ]);
 
   const exportEvents = Promise.all([
-    waitUntilAction(store, actions.EXPORT_SNAPSHOT_START),
-    waitUntilAction(store, actions.EXPORT_SNAPSHOT_END),
+    waitForDispatch(store, actions.EXPORT_SNAPSHOT_START),
+    waitForDispatch(store, actions.EXPORT_SNAPSHOT_END),
   ]);
   dispatch(exportSnapshot(getState().snapshots[0], destPath));
   await exportEvents;
 
-  const stat = await OS.File.stat(destPath);
+  const stat = await IOUtils.stat(destPath);
   info(stat.size);
   ok(stat.size > 0, "destination file is more than 0 bytes");
 

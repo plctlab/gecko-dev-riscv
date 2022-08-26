@@ -10,25 +10,20 @@ const EXPORTED_SYMBOLS = [
   "_ExperimentFeature",
 ];
 
-// Note: Feature manifest has moved to toolkit/components/nimbus/FeatureManifest.js
-
-function isBooleanValueDefined(value) {
-  return typeof value === "boolean";
-}
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ExperimentStore: "resource://nimbus/lib/ExperimentStore.jsm",
   ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
   RemoteSettings: "resource://services-settings/remote-settings.js",
-  setTimeout: "resource://gre/modules/Timer.jsm",
-  clearTimeout: "resource://gre/modules/Timer.jsm",
   FeatureManifest: "resource://nimbus/FeatureManifest.js",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
 });
 
 const IS_MAIN_PROCESS =
@@ -37,7 +32,7 @@ const IS_MAIN_PROCESS =
 const COLLECTION_ID_PREF = "messaging-system.rsexperimentloader.collection_id";
 const COLLECTION_ID_FALLBACK = "nimbus-desktop-experiments";
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "COLLECTION_ID",
   COLLECTION_ID_PREF,
   COLLECTION_ID_FALLBACK
@@ -69,6 +64,23 @@ function featuresCompat(branch) {
 
   return features;
 }
+
+const experimentBranchAccessor = {
+  get: (target, prop) => {
+    // Offer an API where we can access `branch.feature.*`.
+    // This is a useful shorthand that hides the fact that
+    // even single-feature recipes are still represented
+    // as an array with 1 item
+    if (!(prop in target) && target.features) {
+      return target.features.find(f => f.featureId === prop);
+    } else if (target.feature?.featureId === prop) {
+      // Backwards compatibility for version 1.6.2 and older
+      return target.feature;
+    }
+
+    return target[prop];
+  },
+};
 
 const ExperimentAPI = {
   /**
@@ -106,7 +118,7 @@ const ExperimentAPI = {
       return {
         slug: experimentData.slug,
         active: experimentData.active,
-        branch: this.activateBranch({ slug, featureId }),
+        branch: new Proxy(experimentData.branch, experimentBranchAccessor),
       };
     }
 
@@ -114,10 +126,13 @@ const ExperimentAPI = {
   },
 
   /**
-   * Return experiment slug its status and the enrolled branch slug
-   * Does NOT send exposure event because you only have access to the slugs
+   * Used by getExperimentMetaData and getRolloutMetaData
+   *
+   * @param {{slug: string, featureId: string}} options Enrollment identifier
+   * @param isRollout Is enrollment an experiment or a rollout
+   * @returns {object} Enrollment metadata
    */
-  getExperimentMetaData({ slug, featureId }) {
+  getEnrollmentMetaData({ slug, featureId }, isRollout) {
     if (!slug && !featureId) {
       throw new Error(
         "getExperiment(options) must include a slug or a feature."
@@ -129,7 +144,11 @@ const ExperimentAPI = {
       if (slug) {
         experimentData = this._store.get(slug);
       } else if (featureId) {
-        experimentData = this._store.getExperimentForFeature(featureId);
+        if (isRollout) {
+          experimentData = this._store.getRolloutForFeature(featureId);
+        } else {
+          experimentData = this._store.getExperimentForFeature(featureId);
+        }
       }
     } catch (e) {
       Cu.reportError(e);
@@ -146,11 +165,27 @@ const ExperimentAPI = {
   },
 
   /**
+   * Return experiment slug its status and the enrolled branch slug
+   * Does NOT send exposure event because you only have access to the slugs
+   */
+  getExperimentMetaData(options) {
+    return this.getEnrollmentMetaData(options);
+  },
+
+  /**
+   * Return rollout slug its status and the enrolled branch slug
+   * Does NOT send exposure event because you only have access to the slugs
+   */
+  getRolloutMetaData(options) {
+    return this.getEnrollmentMetaData(options, true);
+  },
+
+  /**
    * Return FeatureConfig from first active experiment where it can be found
    * @param {{slug: string, featureId: string }}
    * @returns {Branch | null}
    */
-  activateBranch({ slug, featureId }) {
+  getActiveBranch({ slug, featureId }) {
     let experiment = null;
     try {
       if (slug) {
@@ -239,6 +274,8 @@ const ExperimentAPI = {
         filters: { slug },
       });
     } catch (e) {
+      // If an error occurs in .get(), an empty list is returned and the destructuring
+      // assignment will throw.
       Cu.reportError(e);
       recipe = undefined;
     }
@@ -263,7 +300,9 @@ const ExperimentAPI = {
     }
 
     const recipe = await this.getRecipe(slug);
-    return recipe?.branches;
+    return recipe?.branches.map(
+      branch => new Proxy(branch, experimentBranchAccessor)
+    );
   },
 
   recordExposureEvent({ featureId, experimentSlug, branchSlug }) {
@@ -282,6 +321,11 @@ const ExperimentAPI = {
     } catch (e) {
       Cu.reportError(e);
     }
+    Glean.nimbusEvents.exposure.record({
+      experiment: experimentSlug,
+      branch: branchSlug,
+      feature_id: featureId,
+    });
   },
 };
 
@@ -290,30 +334,23 @@ const ExperimentAPI = {
  * defined by the FeatureManifest
  */
 const NimbusFeatures = {};
-for (let feature in FeatureManifest) {
-  XPCOMUtils.defineLazyGetter(
-    NimbusFeatures,
-    feature,
-    () => new _ExperimentFeature(feature)
-  );
+for (let feature in lazy.FeatureManifest) {
+  XPCOMUtils.defineLazyGetter(NimbusFeatures, feature, () => {
+    return new _ExperimentFeature(feature);
+  });
 }
 
 class _ExperimentFeature {
   constructor(featureId, manifest) {
     this.featureId = featureId;
     this.prefGetters = {};
-    this.manifest = manifest || FeatureManifest[featureId];
+    this.manifest = manifest || lazy.FeatureManifest[featureId];
     if (!this.manifest) {
       Cu.reportError(
         `No manifest entry for ${featureId}. Please add one to toolkit/components/nimbus/FeatureManifest.js`
       );
     }
     this._didSendExposureEvent = false;
-    this._onRemoteReady = null;
-    this._waitForRemote = new Promise(
-      resolve => (this._onRemoteReady = resolve)
-    );
-    this._listenForRemoteDefaults = this._listenForRemoteDefaults.bind(this);
     const variables = this.manifest?.variables || {};
 
     Object.keys(variables).forEach(key => {
@@ -334,113 +371,18 @@ class _ExperimentFeature {
         );
       }
     });
-
-    /**
-     * There are multiple events that can resolve the wait for remote defaults:
-     * 1. The feature can receive data via the RS update cycle
-     * 2. The RS update cycle finished; no record exists for this feature
-     * 3. User was enrolled in an experiment that targets this feature, resolve
-     * because experiments take priority.
-     */
-    ExperimentAPI._store.on(
-      "remote-defaults-finalized",
-      this._listenForRemoteDefaults
-    );
-    this.onUpdate(this._listenForRemoteDefaults);
-  }
-
-  _listenForRemoteDefaults(eventName, reason) {
-    if (
-      // When the update cycle finished
-      eventName === "remote-defaults-finalized" ||
-      // remote default or experiment available
-      reason === "experiment-updated" ||
-      reason === "remote-defaults-update"
-    ) {
-      ExperimentAPI._store.off(
-        "remote-defaults-updated",
-        this._listenForRemoteDefaults
-      );
-      this.off(this._listenForRemoteDefaults);
-      this._onRemoteReady();
-    }
   }
 
   getPreferenceName(variable) {
     return this.manifest?.variables?.[variable]?.fallbackPref;
   }
 
-  _getUserPrefsValues() {
-    let userPrefs = {};
-    Object.keys(this.manifest?.variables || {}).forEach(variable => {
-      if (
-        this.manifest.variables[variable].fallbackPref &&
-        Services.prefs.prefHasUserValue(
-          this.manifest.variables[variable].fallbackPref
-        )
-      ) {
-        userPrefs[variable] = this.prefGetters[variable];
-      }
-    });
-
-    return userPrefs;
-  }
-
   /**
    * Wait for ExperimentStore to load giving access to experiment features that
-   * do not have a pref cache and wait for remote defaults to load from Remote
-   * Settings.
-   *
-   * @param {number} timeout Optional timeout parameter
+   * do not have a pref cache
    */
-  async ready(timeout) {
-    const REMOTE_DEFAULTS_TIMEOUT_MS = 15 * 1000; // 15 seconds
-    await ExperimentAPI.ready();
-    if (ExperimentAPI._store.hasRemoteDefaultsReady()) {
-      this._onRemoteReady();
-    } else {
-      let remoteTimeoutId = setTimeout(
-        this._onRemoteReady,
-        timeout || REMOTE_DEFAULTS_TIMEOUT_MS
-      );
-      await this._waitForRemote;
-      clearTimeout(remoteTimeoutId);
-    }
-  }
-
-  /**
-   * Lookup feature in active experiments and return enabled.
-   * By default, this will send an exposure event.
-   * @param {{defaultValue?: any}} options
-   * @returns {obj} The feature value
-   */
-  isEnabled({ defaultValue = null } = {}) {
-    const branch = ExperimentAPI.activateBranch({ featureId: this.featureId });
-
-    let feature = featuresCompat(branch).find(
-      ({ featureId }) => featureId === this.featureId
-    );
-
-    // First, try to return an experiment value if it exists.
-    if (isBooleanValueDefined(feature?.enabled)) {
-      return feature.enabled;
-    }
-
-    if (isBooleanValueDefined(this.getRemoteConfig()?.enabled)) {
-      return this.getRemoteConfig().enabled;
-    }
-
-    let enabled;
-    try {
-      enabled = this.getVariable("enabled");
-    } catch (e) {
-      /* This is expected not all features have an enabled flag defined */
-    }
-    if (isBooleanValueDefined(enabled)) {
-      return enabled;
-    }
-
-    return defaultValue;
+  ready() {
+    return ExperimentAPI.ready();
   }
 
   /**
@@ -449,9 +391,7 @@ class _ExperimentFeature {
    * @returns {{[variableName: string]: any}} The feature value
    */
   getAllVariables({ defaultValues = null } = {}) {
-    // Any user pref will override any other configuration
-    let userPrefs = this._getUserPrefsValues();
-    const branch = ExperimentAPI.activateBranch({ featureId: this.featureId });
+    const branch = ExperimentAPI.getActiveBranch({ featureId: this.featureId });
     const featureValue = featuresCompat(branch).find(
       ({ featureId }) => featureId === this.featureId
     )?.value;
@@ -459,16 +399,11 @@ class _ExperimentFeature {
     return {
       ...this.prefGetters,
       ...defaultValues,
-      ...this.getRemoteConfig()?.variables,
-      ...(featureValue || null),
-      ...userPrefs,
+      ...(featureValue ? featureValue : this.getRollout()?.value),
     };
   }
 
   getVariable(variable) {
-    const prefName = this.getPreferenceName(variable);
-    const prefValue = prefName ? this.prefGetters[variable] : undefined;
-
     if (!this.manifest?.variables?.[variable]) {
       // Only throw in nightly/tests
       if (Cu.isInAutomation || AppConstants.NIGHTLY_BUILD) {
@@ -478,13 +413,8 @@ class _ExperimentFeature {
       }
     }
 
-    // If a user value is set for the defined preference, always return that first
-    if (prefName && Services.prefs.prefHasUserValue(prefName)) {
-      return prefValue;
-    }
-
     // Next, check if an experiment is defined
-    const branch = ExperimentAPI.activateBranch({
+    const branch = ExperimentAPI.getActiveBranch({
       featureId: this.featureId,
     });
     const experimentValue = featuresCompat(branch).find(
@@ -496,21 +426,36 @@ class _ExperimentFeature {
     }
 
     // Next, check remote defaults
-    const remoteValue = this.getRemoteConfig()?.variables?.[variable];
+    const remoteValue = this.getRollout()?.value?.[variable];
     if (typeof remoteValue !== "undefined") {
       return remoteValue;
     }
+
     // Return the default preference value
-    return prefValue;
+    const prefName = this.getPreferenceName(variable);
+    return prefName ? this.prefGetters[variable] : undefined;
   }
 
-  getRemoteConfig() {
-    let remoteConfig = ExperimentAPI._store.getRemoteConfig(this.featureId);
+  getRollout() {
+    let remoteConfig = ExperimentAPI._store.getRolloutForFeature(
+      this.featureId
+    );
     if (!remoteConfig) {
       return null;
     }
 
-    return remoteConfig;
+    if (remoteConfig.branch?.features) {
+      return remoteConfig.branch?.features.find(
+        f => f.featureId === this.featureId
+      );
+    }
+
+    // This path is deprecated and will be removed in the future
+    if (remoteConfig.branch?.feature) {
+      return remoteConfig.branch.feature;
+    }
+
+    return null;
   }
 
   recordExposureEvent({ once = false } = {}) {
@@ -518,16 +463,21 @@ class _ExperimentFeature {
       return;
     }
 
-    let experimentData = ExperimentAPI.getExperiment({
+    let enrollmentData = ExperimentAPI.getExperimentMetaData({
       featureId: this.featureId,
     });
+    if (!enrollmentData) {
+      enrollmentData = ExperimentAPI.getRolloutMetaData({
+        featureId: this.featureId,
+      });
+    }
 
     // Exposure only sent if user is enrolled in an experiment
-    if (experimentData) {
+    if (enrollmentData) {
       ExperimentAPI.recordExposureEvent({
         featureId: this.featureId,
-        experimentSlug: experimentData.slug,
-        branchSlug: experimentData.branch?.slug,
+        experimentSlug: enrollmentData.slug,
+        branchSlug: enrollmentData.branch?.slug,
       });
       this._didSendExposureEvent = true;
     }
@@ -541,29 +491,35 @@ class _ExperimentFeature {
     ExperimentAPI._store._offFeatureUpdate(this.featureId, callback);
   }
 
+  /**
+   * The applications this feature applies to.
+   *
+   */
+  get applications() {
+    return this.manifest.applications ?? ["firefox-desktop"];
+  }
+
   debug() {
     return {
-      enabled: this.isEnabled(),
       variables: this.getAllVariables(),
       experiment: ExperimentAPI.getExperimentMetaData({
         featureId: this.featureId,
       }),
-      fallbackPrefs:
-        this.prefGetters &&
-        Object.keys(this.prefGetters).map(prefName => [
-          prefName,
-          this.prefGetters[prefName],
-        ]),
-      userPrefs: this._getUserPrefsValues(),
-      remoteDefaults: this.getRemoteConfig(),
+      fallbackPrefs: Object.keys(this.prefGetters).map(prefName => [
+        prefName,
+        this.prefGetters[prefName],
+      ]),
+      rollouts: this.getRollout(),
     };
   }
 }
 
 XPCOMUtils.defineLazyGetter(ExperimentAPI, "_store", function() {
-  return IS_MAIN_PROCESS ? ExperimentManager.store : new ExperimentStore();
+  return IS_MAIN_PROCESS
+    ? lazy.ExperimentManager.store
+    : new lazy.ExperimentStore();
 });
 
 XPCOMUtils.defineLazyGetter(ExperimentAPI, "_remoteSettingsClient", function() {
-  return RemoteSettings(COLLECTION_ID);
+  return lazy.RemoteSettings(lazy.COLLECTION_ID);
 });

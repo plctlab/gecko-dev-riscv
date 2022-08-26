@@ -85,7 +85,6 @@ def _make_artifacts(
     skip_cache=False,
     download_tests=True,
     download_symbols=False,
-    download_host_bins=False,
     download_maven_zip=False,
     no_process=False,
 ):
@@ -108,8 +107,6 @@ def _make_artifacts(
             raise ValueError("--maven-zip requires --no-tests")
         if download_symbols:
             raise ValueError("--maven-zip requires no --symbols")
-        if download_host_bins:
-            raise ValueError("--maven-zip requires no --host-bins")
         if not no_process:
             raise ValueError("--maven-zip requires --no-process")
 
@@ -128,7 +125,6 @@ def _make_artifacts(
         topsrcdir=topsrcdir,
         download_tests=download_tests,
         download_symbols=download_symbols,
-        download_host_bins=download_host_bins,
         download_maven_zip=download_maven_zip,
         no_process=no_process,
         mozbuild=command_context,
@@ -155,7 +151,6 @@ def _make_artifacts(
 )
 @CommandArgument("--no-tests", action="store_true", help="Don't install tests.")
 @CommandArgument("--symbols", nargs="?", action=SymbolsAction, help="Download symbols.")
-@CommandArgument("--host-bins", action="store_true", help="Download host binaries.")
 @CommandArgument("--distdir", help="Where to install artifacts to.")
 @CommandArgument(
     "--no-process",
@@ -174,7 +169,6 @@ def artifact_install(
     verbose=False,
     no_tests=False,
     symbols=False,
-    host_bins=False,
     distdir=None,
     no_process=False,
     maven_zip=False,
@@ -187,7 +181,6 @@ def artifact_install(
         skip_cache=skip_cache,
         download_tests=not no_tests,
         download_symbols=symbols,
-        download_host_bins=host_bins,
         download_maven_zip=maven_zip,
         no_process=no_process,
     )
@@ -228,6 +221,12 @@ def artifact_clear_cache(command_context, tree=None, job=None, verbose=False):
     "BUILD is a name of a toolchain task, e.g. linux64-clang",
 )
 @CommandArgument(
+    "--from-task",
+    metavar="TASK_ID:ARTIFACT",
+    nargs="+",
+    help="Download toolchain artifact from a given task.",
+)
+@CommandArgument(
     "--tooltool-manifest",
     metavar="MANIFEST",
     help="Explicit tooltool manifest to process",
@@ -255,6 +254,7 @@ def artifact_toolchain(
     cache_dir=None,
     skip_cache=False,
     from_build=(),
+    from_task=(),
     tooltool_manifest=None,
     no_unpack=False,
     retry=0,
@@ -264,11 +264,10 @@ def artifact_toolchain(
     """Download, cache and install pre-built toolchains."""
     from mozbuild.artifacts import ArtifactCache
     from mozbuild.action.tooltool import FileRecord, open_manifest, unpack_file
+    from taskgraph.util.taskcluster import get_artifact_url
     import redo
     import requests
     import time
-
-    from taskgraph.util.taskcluster import get_artifact_url
 
     start = time.time()
     command_context._set_log_level(verbose)
@@ -374,7 +373,7 @@ def artifact_toolchain(
                 "should be determined in the decision task.",
             )
             return 1
-        from taskgraph.optimize.strategies import IndexSearch
+        from gecko_taskgraph.optimize.strategies import IndexSearch
         from mozbuild.toolchains import toolchain_task_definitions
 
         tasks = toolchain_task_definitions()
@@ -467,6 +466,20 @@ def artifact_toolchain(
 
             record = ArtifactRecord(task_id, artifact_name)
             records[record.filename] = record
+
+    # Handle the list of files of the form task_id:path from --from-task.
+    for f in from_task or ():
+        task_id, colon, name = f.partition(":")
+        if not colon:
+            command_context.log(
+                logging.ERROR,
+                "artifact",
+                {},
+                "Expected an argument of the form task_id:path",
+            )
+            return 1
+        record = ArtifactRecord(task_id, name)
+        records[record.filename] = record
 
     for record in six.itervalues(records):
         command_context.log(
@@ -565,6 +578,8 @@ def artifact_toolchain(
 
     if not downloaded:
         command_context.log(logging.ERROR, "artifact", {}, "Nothing to download")
+        if from_task:
+            return 1
 
     if artifacts:
         ensureParentDir(artifact_manifest)

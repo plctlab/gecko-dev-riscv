@@ -63,6 +63,7 @@ class ProcessSelector:
     ALLOW_IN_VR_PROCESS = 0x8
     ALLOW_IN_SOCKET_PROCESS = 0x10
     ALLOW_IN_RDD_PROCESS = 0x20
+    ALLOW_IN_UTILITY_PROCESS = 0x30
     ALLOW_IN_GPU_AND_MAIN_PROCESS = ALLOW_IN_GPU_PROCESS | MAIN_PROCESS_ONLY
     ALLOW_IN_GPU_AND_SOCKET_PROCESS = ALLOW_IN_GPU_PROCESS | ALLOW_IN_SOCKET_PROCESS
     ALLOW_IN_GPU_AND_VR_PROCESS = ALLOW_IN_GPU_PROCESS | ALLOW_IN_VR_PROCESS
@@ -73,11 +74,24 @@ class ProcessSelector:
     ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS = (
         ALLOW_IN_GPU_PROCESS | ALLOW_IN_RDD_PROCESS | ALLOW_IN_SOCKET_PROCESS
     )
+    ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS = (
+        ALLOW_IN_GPU_PROCESS
+        | ALLOW_IN_RDD_PROCESS
+        | ALLOW_IN_SOCKET_PROCESS
+        | ALLOW_IN_UTILITY_PROCESS
+    )
     ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS = (
         ALLOW_IN_GPU_PROCESS
         | ALLOW_IN_RDD_PROCESS
         | ALLOW_IN_VR_PROCESS
         | ALLOW_IN_SOCKET_PROCESS
+    )
+    ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS = (
+        ALLOW_IN_GPU_PROCESS
+        | ALLOW_IN_RDD_PROCESS
+        | ALLOW_IN_VR_PROCESS
+        | ALLOW_IN_SOCKET_PROCESS
+        | ALLOW_IN_UTILITY_PROCESS
     )
 
 
@@ -97,7 +111,9 @@ PROCESSES = {
     ProcessSelector.ALLOW_IN_GPU_VR_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_VR_AND_SOCKET_PROCESS",
     ProcessSelector.ALLOW_IN_RDD_AND_SOCKET_PROCESS: "ALLOW_IN_RDD_AND_SOCKET_PROCESS",
     ProcessSelector.ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS",
+    ProcessSelector.ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS: "ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS",  # NOQA: E501
     ProcessSelector.ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS",  # NOQA: E501
+    ProcessSelector.ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS: "ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS",  # NOQA: E501
 }
 
 
@@ -266,6 +282,7 @@ class ModuleEntry(object):
         self.init_method = data.get("init_method", [])
 
         self.jsm = data.get("jsm", None)
+        self.esModule = data.get("esModule", None)
 
         self.external = data.get(
             "external", not (self.headers or self.legacy_constructor)
@@ -288,6 +305,16 @@ class ModuleEntry(object):
             )
 
         if self.jsm:
+            if not self.constructor:
+                error("JavaScript components must specify a constructor")
+
+            for prop in ("init_method", "legacy_constructor", "headers"):
+                if getattr(self, prop):
+                    error(
+                        "JavaScript components may not specify a '%s' "
+                        "property" % prop
+                    )
+        elif self.esModule:
             if not self.constructor:
                 error("JavaScript components must specify a constructor")
 
@@ -384,7 +411,7 @@ class ModuleEntry(object):
 
         if self.legacy_constructor:
             res += (
-                "      return /* legacy */ %s(nullptr, aIID, aResult);\n"
+                "      return /* legacy */ %s(aIID, aResult);\n"
                 % self.legacy_constructor
             )
             return res
@@ -396,6 +423,14 @@ class ModuleEntry(object):
                 "                                    %s,\n"
                 "                                    getter_AddRefs(inst)));"
                 "\n" % (json.dumps(self.jsm), json.dumps(self.constructor))
+            )
+        elif self.esModule:
+            res += (
+                "      nsCOMPtr<nsISupports> inst;\n"
+                "      MOZ_TRY(ConstructESModuleComponent(nsLiteralCString(%s),\n"
+                "                                         %s,\n"
+                "                                         getter_AddRefs(inst)));"
+                "\n" % (json.dumps(self.esModule), json.dumps(self.constructor))
             )
         elif self.external:
             res += (
@@ -719,7 +754,7 @@ def gen_substs(manifests):
                     value, process = entry
                 else:
                     value, process = entry, 0
-                categories[category].append((key, value, process))
+                categories[category].append(({"name": key}, value, process))
 
     cids = set()
     contracts = []
@@ -727,6 +762,7 @@ def gen_substs(manifests):
     js_services = {}
 
     jsms = set()
+    esModules = set()
 
     types = set()
 
@@ -750,6 +786,9 @@ def gen_substs(manifests):
 
         if mod.jsm:
             jsms.add(mod.jsm)
+
+        if mod.esModule:
+            esModules.add(mod.esModule)
 
         if mod.js_name:
             if mod.js_name in js_services:
@@ -788,6 +827,12 @@ def gen_substs(manifests):
 
     substs["component_jsms"] = (
         "\n".join(" %s," % strings.entry_to_cxx(jsm) for jsm in sorted(jsms)) + "\n"
+    )
+    substs["component_esmodules"] = (
+        "\n".join(
+            " %s," % strings.entry_to_cxx(esModule) for esModule in sorted(esModules)
+        )
+        + "\n"
     )
 
     substs["interfaces"] = gen_interfaces(interfaces)
@@ -951,6 +996,10 @@ namespace xpcom {
 enum class ModuleID : uint16_t {
 %(module_ids)s
 };
+
+// May be added as a friend function to allow constructing services via
+// private constructors and init methods.
+nsresult CreateInstanceImpl(ModuleID aID, const nsIID& aIID, void** aResult);
 
 class MOZ_STACK_CLASS StaticModuleHelper : public nsCOMPtr_helper {
  public:

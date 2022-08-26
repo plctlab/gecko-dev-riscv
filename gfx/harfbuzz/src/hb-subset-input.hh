@@ -42,20 +42,24 @@ struct hb_subset_input_t
 {
   hb_object_header_t header;
 
+  struct sets_t {
+    hb_set_t *glyphs;
+    hb_set_t *unicodes;
+    hb_set_t *no_subset_tables;
+    hb_set_t *drop_tables;
+    hb_set_t *name_ids;
+    hb_set_t *name_languages;
+    hb_set_t *layout_features;
+    hb_set_t *layout_scripts;
+  };
+
   union {
-    struct {
-      hb_set_t *glyphs;
-      hb_set_t *unicodes;
-      hb_set_t *no_subset_tables;
-      hb_set_t *drop_tables;
-      hb_set_t *name_ids;
-      hb_set_t *name_languages;
-      hb_set_t *layout_features;
-    } sets;
-    hb_set_t* set_ptrs[sizeof (sets) / sizeof (hb_set_t*)];
+    sets_t sets;
+    hb_set_t* set_ptrs[sizeof (sets_t) / sizeof (hb_set_t*)];
   };
 
   unsigned flags;
+  hb_hashmap_t<hb_tag_t, float> *axes_location;
 
   inline unsigned num_sets () const
   {
@@ -74,7 +78,8 @@ struct hb_subset_input_t
       if (unlikely (set_ptrs[i]->in_error ()))
         return true;
     }
-    return false;
+
+    return axes_location->in_error ();
   }
 };
 

@@ -65,7 +65,7 @@ class FuncType {
   // V128 types are excluded per spec but are guarded against separately.
   bool temporarilyUnsupportedReftypeForEntry() const {
     for (ValType arg : args()) {
-      if (arg.isReference() && (!arg.isExternRef() || !arg.isNullable())) {
+      if (arg.isRefType() && (!arg.isExternRef() || !arg.isNullable())) {
         return true;
       }
     }
@@ -82,7 +82,7 @@ class FuncType {
   // Unexposable types must be guarded against separately.
   bool temporarilyUnsupportedReftypeForExit() const {
     for (ValType result : results()) {
-      if (result.isReference() &&
+      if (result.isRefType() &&
           (!result.isExternRef() || !result.isNullable())) {
         return true;
       }
@@ -99,15 +99,6 @@ class FuncType {
     MOZ_ASSERT(args_.empty());
     MOZ_ASSERT(results_.empty());
     return args_.appendAll(src.args_) && results_.appendAll(src.results_);
-  }
-
-  void renumber(const RenumberVector& renumbering) {
-    for (auto& arg : args_) {
-      arg.renumber(renumbering);
-    }
-    for (auto& result : results_) {
-      result.renumber(renumbering);
-    }
   }
 
   ValType arg(unsigned i) const { return args_[i]; }
@@ -133,6 +124,15 @@ class FuncType {
 
   bool canHaveJitEntry() const;
   bool canHaveJitExit() const;
+
+  bool hasInt64Arg() const {
+    for (ValType arg : args()) {
+      if (arg.kind() == ValType::Kind::I64) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   bool hasUnexposableArgOrRet() const {
     for (ValType arg : args()) {
@@ -164,7 +164,8 @@ class FuncType {
   }
 #endif
 
-  WASM_DECLARE_SERIALIZABLE(FuncType)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+  WASM_DECLARE_FRIEND_SERIALIZE(FuncType);
 };
 
 struct FuncTypeHashPolicy {
@@ -183,7 +184,11 @@ struct StructField {
   FieldType type;
   uint32_t offset;
   bool isMutable;
+
+  WASM_CHECK_CACHEABLE_POD(type, offset, isMutable);
 };
+
+WASM_DECLARE_CACHEABLE_POD(StructField);
 
 using StructFieldVector = Vector<StructField, 0, SystemAllocPolicy>;
 
@@ -209,12 +214,6 @@ class StructType {
     return true;
   }
 
-  void renumber(const RenumberVector& renumbering) {
-    for (auto& field : fields_) {
-      field.type.renumber(renumbering);
-    }
-  }
-
   bool isDefaultable() const {
     for (auto& field : fields_) {
       if (!field.type.isDefaultable()) {
@@ -225,7 +224,8 @@ class StructType {
   }
   [[nodiscard]] bool computeLayout();
 
-  WASM_DECLARE_SERIALIZABLE(StructType)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+  WASM_DECLARE_FRIEND_SERIALIZE(StructType);
 };
 
 using StructTypeVector = Vector<StructType, 0, SystemAllocPolicy>;
@@ -253,6 +253,8 @@ class ArrayType {
   FieldType elementType_;  // field type
   bool isMutable_;         // mutability
 
+  WASM_CHECK_CACHEABLE_POD(elementType_, isMutable_);
+
  public:
   ArrayType(FieldType elementType, bool isMutable)
       : elementType_(elementType), isMutable_(isMutable) {}
@@ -269,14 +271,12 @@ class ArrayType {
     return true;
   }
 
-  void renumber(const RenumberVector& renumbering) {
-    elementType_.renumber(renumbering);
-  }
-
   bool isDefaultable() const { return elementType_.isDefaultable(); }
 
-  WASM_DECLARE_SERIALIZABLE(ArrayType)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 };
+
+WASM_DECLARE_CACHEABLE_POD(ArrayType);
 
 using ArrayTypeVector = Vector<ArrayType, 0, SystemAllocPolicy>;
 using ArrayTypePtrVector = Vector<const ArrayType*, 0, SystemAllocPolicy>;
@@ -422,29 +422,11 @@ class TypeDef {
     return arrayType_;
   }
 
-  void renumber(const RenumberVector& renumbering) {
-    switch (kind_) {
-      case TypeDefKind::Func:
-        funcType_.renumber(renumbering);
-        break;
-      case TypeDefKind::Struct:
-        structType_.renumber(renumbering);
-        break;
-      case TypeDefKind::Array:
-        arrayType_.renumber(renumbering);
-        break;
-      case TypeDefKind::None:
-        break;
-    }
-  }
-
-  WASM_DECLARE_SERIALIZABLE(TypeDef)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+  WASM_DECLARE_FRIEND_SERIALIZE(TypeDef);
 };
 
 using TypeDefVector = Vector<TypeDef, 0, SystemAllocPolicy>;
-
-template <typename T>
-using DerivedTypeDefVector = Vector<T, 0, SystemAllocPolicy>;
 
 // A type cache maintains a cache of equivalence and subtype relations between
 // wasm types. This is required for the computation of equivalence and subtyping
@@ -525,8 +507,7 @@ class TypeContext : public AtomicRefCounted<TypeContext> {
   TypeContext(const FeatureArgs& features, TypeDefVector&& types)
       : features_(features), types_(std::move(types)) {}
 
-  template <typename T>
-  [[nodiscard]] bool cloneDerived(const DerivedTypeDefVector<T>& source) {
+  [[nodiscard]] bool clone(const TypeDefVector& source) {
     MOZ_ASSERT(types_.length() == 0);
     if (!types_.resize(source.length())) {
       return false;
@@ -629,25 +610,9 @@ class TypeContext : public AtomicRefCounted<TypeContext> {
     }
 
     // A reference may be equal to another reference
-    if (first.isReference() && second.isReference()) {
+    if (first.isRefType() && second.isRefType()) {
       return isRefEquivalent(first.refType(), second.refType(), cache);
     }
-
-#ifdef ENABLE_WASM_GC
-    // An rtt may be a equal to another rtt
-    if (first.isRtt() && second.isRtt()) {
-      // Equivalent rtts must both have depths or not have depths
-      if (first.hasRttDepth() != second.hasRttDepth()) {
-        return TypeResult::False;
-      }
-      // Equivalent rtts must have the same depth, if any
-      if (second.hasRttDepth() && first.rttDepth() != second.rttDepth()) {
-        return TypeResult::False;
-      }
-      return isTypeIndexEquivalent(first.typeIndex(), second.typeIndex(),
-                                   cache);
-    }
-#endif
 
     return TypeResult::False;
   }
@@ -681,26 +646,9 @@ class TypeContext : public AtomicRefCounted<TypeContext> {
     }
 
     // A reference may be a subtype of another reference
-    if (subType.isReference() && superType.isReference()) {
+    if (subType.isRefType() && superType.isRefType()) {
       return isRefSubtypeOf(subType.refType(), superType.refType(), cache);
     }
-
-    // An rtt may be a subtype of another rtt
-#ifdef ENABLE_WASM_GC
-    if (subType.isRtt() && superType.isRtt()) {
-      // A subtype must have a depth if the supertype has depth
-      if (!subType.hasRttDepth() && superType.hasRttDepth()) {
-        return TypeResult::False;
-      }
-      // A subtype must have the same depth as the supertype, if it has any
-      if (superType.hasRttDepth() &&
-          subType.rttDepth() != superType.rttDepth()) {
-        return TypeResult::False;
-      }
-      return isTypeIndexEquivalent(subType.typeIndex(), superType.typeIndex(),
-                                   cache);
-    }
-#endif
 
     return TypeResult::False;
   }
@@ -786,20 +734,6 @@ class TypeHandle {
 // is given a unique value and no canonicalization is done (which would require
 // hash-consing of infinite-trees), this is not yet spec compliant.
 //
-// # wasm::Metadata and renumbering
-//
-// Once module compilation is finished, types are transfered to wasm::Metadata
-// for use during runtime. Only non-immediate function and GC types are
-// transfered, creating a new index space for types. Types are 'renumbered' to
-// account for this. The map from source type index to renumbered type index is
-// transferred with wasm::Metadata and used for constant expressions that have
-// encoded source type indices. All other uses of type indices, such as in
-// function, global, and table types are renumbered.
-//
-// The renumbering map itself is an array from source type index to renumbered
-// type index. For types that are immediates, the renumbered type index is
-// UINT32_MAX.
-//
 // # wasm::Instance and the global type context
 //
 // As GC objects (aka TypedObject) may outlive the module they are created in,
@@ -817,6 +751,8 @@ class TypeIdDesc {
   TypeIdDescKind kind_;
   size_t bits_;
 
+  WASM_CHECK_CACHEABLE_POD(kind_, bits_);
+
   TypeIdDesc(TypeIdDescKind kind, size_t bits) : kind_(kind), bits_(bits) {}
 
  public:
@@ -829,7 +765,7 @@ class TypeIdDesc {
 
   bool isGlobal() const { return kind_ == TypeIdDescKind::Global; }
 
-  size_t immediate() const {
+  uint32_t immediate() const {
     MOZ_ASSERT(kind_ == TypeIdDescKind::Immediate);
     return bits_;
   }
@@ -838,6 +774,8 @@ class TypeIdDesc {
     return bits_;
   }
 };
+
+WASM_DECLARE_CACHEABLE_POD(TypeIdDesc);
 
 using TypeIdDescVector = Vector<TypeIdDesc, 0, SystemAllocPolicy>;
 
@@ -854,7 +792,7 @@ struct TypeDefWithId : public TypeDef {
   TypeDefWithId(TypeDef&& typeDef, TypeIdDesc id)
       : TypeDef(std::move(typeDef)), id(id) {}
 
-  WASM_DECLARE_SERIALIZABLE(TypeDefWithId)
+  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 };
 
 using TypeDefWithIdVector = Vector<TypeDefWithId, 0, SystemAllocPolicy>;

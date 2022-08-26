@@ -9,7 +9,6 @@
 
 #include <glib.h>
 #include <gtk/gtk.h>
-#include <gdk/gdkx.h>
 #include <stdio.h>
 #include "mozilla/WidgetUtilsGtk.h"
 
@@ -148,7 +147,6 @@ void moz_container_class_init(MozContainerClass* klass) {
 
 void moz_container_init(MozContainer* container) {
   gtk_widget_set_can_focus(GTK_WIDGET(container), TRUE);
-  gtk_container_set_resize_mode(GTK_CONTAINER(container), GTK_RESIZE_IMMEDIATE);
   gtk_widget_set_redraw_on_allocate(GTK_WIDGET(container), FALSE);
 #ifdef MOZ_WAYLAND
   if (mozilla::widget::GdkIsWaylandDisplay()) {
@@ -166,6 +164,9 @@ void moz_container_map(GtkWidget* widget) {
 
   g_return_if_fail(IS_MOZ_CONTAINER(widget));
   container = MOZ_CONTAINER(widget);
+
+  LOGCONTAINER(("moz_container_map() [%p]",
+                (void*)moz_container_get_nsWindow(container)));
 
   gtk_widget_set_mapped(widget, TRUE);
 
@@ -186,6 +187,9 @@ void moz_container_map(GtkWidget* widget) {
 
 void moz_container_unmap(GtkWidget* widget) {
   g_return_if_fail(IS_MOZ_CONTAINER(widget));
+
+  LOGCONTAINER(("moz_container_unmap() [%p]",
+                (void*)moz_container_get_nsWindow(MOZ_CONTAINER(widget))));
 
   gtk_widget_set_mapped(widget, FALSE);
 

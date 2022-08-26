@@ -52,6 +52,10 @@ fn get_nss() -> Result<(PathBuf, PathBuf), NoNssDir> {
     let nss_dir = env("NSS_DIR").ok_or(NoNssDir)?;
     let nss_dir = Path::new(&nss_dir);
     if !nss_dir.exists() {
+        println!(
+            "NSS_DIR path (obtained via `env`) does not exist: {}",
+            nss_dir.display()
+        );
         panic!("It looks like NSS is not built. Please run `libs/verify-[platform]-environment.sh` first!");
     }
     let lib_dir = nss_dir.join("lib");
@@ -78,6 +82,13 @@ fn link_nss_libs(kind: LinkingKind) {
     for lib in libs {
         println!("cargo:rustc-link-lib={}={}", kind_str, lib);
     }
+    // Link against C++ stdlib (for mozpkix)
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if target_os == "android" || target_os == "linux" {
+        println!("cargo:rustc-link-lib=stdc++");
+    } else {
+        println!("cargo:rustc-link-lib=c++");
+    }
 }
 
 fn get_nss_libs(kind: LinkingKind) -> Vec<&'static str> {
@@ -88,6 +99,7 @@ fn get_nss_libs(kind: LinkingKind) -> Vec<&'static str> {
                 "certhi",
                 "cryptohi",
                 "freebl_static",
+                "mozpkix",
                 "nspr4",
                 "nss_static",
                 "nssb",

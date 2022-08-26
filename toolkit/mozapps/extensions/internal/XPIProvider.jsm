@@ -19,21 +19,26 @@
 
 var EXPORTED_SYMBOLS = ["XPIProvider", "XPIInternal"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AddonManager, AddonManagerPrivate } = ChromeUtils.import(
   "resource://gre/modules/AddonManager.jsm"
 );
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonSettings: "resource://gre/modules/addons/AddonSettings.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   AsyncShutdown: "resource://gre/modules/AsyncShutdown.jsm",
   Dictionary: "resource://gre/modules/Extension.jsm",
   Extension: "resource://gre/modules/Extension.jsm",
+  ExtensionData: "resource://gre/modules/Extension.jsm",
   Langpack: "resource://gre/modules/Extension.jsm",
+  SitePermission: "resource://gre/modules/Extension.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   JSONFile: "resource://gre/modules/JSONFile.jsm",
   TelemetrySession: "resource://gre/modules/TelemetrySession.jsm",
@@ -43,7 +48,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   XPIInstall: "resource://gre/modules/addons/XPIInstall.jsm",
 });
 
-XPCOMUtils.defineLazyServiceGetters(this, {
+XPCOMUtils.defineLazyServiceGetters(lazy, {
   aomStartup: [
     "@mozilla.org/addons/addon-manager-startup;1",
     "amIAddonManagerStartup",
@@ -86,9 +91,6 @@ const PREF_EM_LAST_APP_BUILD_ID = "extensions.lastAppBuildId";
 // Specify a list of valid built-in add-ons to load.
 const BUILT_IN_ADDONS_URI = "chrome://browser/content/built_in_addons.json";
 
-const URI_EXTENSION_STRINGS =
-  "chrome://mozapps/locale/extensions/extensions.properties";
-
 const DIR_EXTENSIONS = "extensions";
 const DIR_SYSTEM_ADDONS = "features";
 const DIR_APP_SYSTEM_PROFILE = "system-extensions";
@@ -127,19 +129,19 @@ const XPI_PERMISSION = "install";
 
 const XPI_SIGNATURE_CHECK_PERIOD = 24 * 60 * 60;
 
-const DB_SCHEMA = 33;
+const DB_SCHEMA = 35;
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "enabledScopesPref",
   PREF_EM_ENABLED_SCOPES,
   AddonManager.SCOPE_ALL
 );
 
-Object.defineProperty(this, "enabledScopes", {
+Object.defineProperty(lazy, "enabledScopes", {
   get() {
     // The profile location is always enabled
-    return enabledScopesPref | AddonManager.SCOPE_PROFILE;
+    return lazy.enabledScopesPref | AddonManager.SCOPE_PROFILE;
   },
 });
 
@@ -167,14 +169,18 @@ const BOOTSTRAP_REASONS = {
   ADDON_DOWNGRADE: 8,
 };
 
-const ALL_EXTERNAL_TYPES = new Set([
+// All addonTypes supported by the XPIProvider. These values can be passed to
+// AddonManager.getAddonsByTypes in order to get XPIProvider.getAddonsByTypes
+// to return only supported add-ons. Without these, it is possible for
+// AddonManager.getAddonsByTypes to return addons from other providers, or even
+// add-on types that are no longer supported by XPIProvider.
+const ALL_XPI_TYPES = new Set([
   "dictionary",
   "extension",
   "locale",
+  "sitepermission",
   "theme",
 ]);
-
-var gGlobalScope = this;
 
 /**
  * Valid IDs fit this pattern.
@@ -359,7 +365,7 @@ function buildJarURI(aJarfile, aPath) {
 
 function maybeResolveURI(uri) {
   if (uri.schemeIs("resource")) {
-    return Services.io.newURI(resProto.resolveURI(uri));
+    return Services.io.newURI(lazy.resProto.resolveURI(uri));
   }
   return uri;
 }
@@ -561,6 +567,14 @@ class XPIState {
     return this.loader == null;
   }
 
+  get isPrivileged() {
+    return lazy.ExtensionData.getIsPrivileged({
+      signedState: this.signedState,
+      builtIn: this.location.isBuiltin,
+      temporarilyInstalled: this.location.isTemporary,
+    });
+  }
+
   /**
    * Update the last modified time for an add-on on disk.
    *
@@ -641,8 +655,8 @@ class XPIState {
       this.getModTime(this.file);
       if (this.lastModifiedTime != aDBAddon.updateDate) {
         aDBAddon.updateDate = this.lastModifiedTime;
-        if (XPIDatabase.initialized) {
-          XPIDatabase.saveChanges();
+        if (lazy.XPIDatabase.initialized) {
+          lazy.XPIDatabase.saveChanges();
         }
       }
     }
@@ -992,7 +1006,7 @@ class DirectoryLocation extends XPIStateLocation {
     if (this.locked) {
       return null;
     }
-    return new XPIInstall.DirectoryInstaller(this);
+    return new lazy.XPIInstall.DirectoryInstaller(this);
   }
 
   /**
@@ -1208,7 +1222,7 @@ class SystemAddonLocation extends DirectoryLocation {
     if (this.locked) {
       return null;
     }
-    return new XPIInstall.SystemAddonInstaller(this);
+    return new lazy.XPIInstall.SystemAddonInstaller(this);
   }
 
   /**
@@ -1381,7 +1395,7 @@ var XPIStates = {
   loadExtensionState() {
     let state;
     try {
-      state = aomStartup.readStartupData();
+      state = lazy.aomStartup.readStartupData();
     } catch (e) {
       logger.warn("Error parsing extensions state: ${error}", { error: e });
     }
@@ -1464,7 +1478,7 @@ var XPIStates = {
       // Don't bother scanning scopes where we don't have addons installed if they
       // do not allow sideloading new addons.  Once we have an addon in one of those
       // locations, we need to check the location for changes (updates/deletions).
-      if (!loc.size && !(loc.scope & AddonSettings.SCOPES_SIDELOAD)) {
+      if (!loc.size && !(loc.scope & lazy.AddonSettings.SCOPES_SIDELOAD)) {
         continue;
       }
 
@@ -1477,7 +1491,10 @@ var XPIStates = {
           // If the location is not supported for sideloading, skip new
           // addons.  We handle this here so changes for existing sideloads
           // will function.
-          if (!loc.isSystem && !(loc.scope & AddonSettings.SCOPES_SIDELOAD)) {
+          if (
+            !loc.isSystem &&
+            !(loc.scope & lazy.AddonSettings.SCOPES_SIDELOAD)
+          ) {
             continue;
           }
           logger.debug("New add-on ${id} in ${loc}", { id, loc: loc.name });
@@ -1626,7 +1643,7 @@ var XPIStates = {
    */
   save() {
     if (!this._jsonFile) {
-      this._jsonFile = new JSONFile({
+      this._jsonFile = new lazy.JSONFile({
         path: PathUtils.join(
           Services.dirsvc.get("ProfD", Ci.nsIFile).path,
           FILE_XPI_STATES
@@ -1795,7 +1812,7 @@ class BootstrapScope {
           this._pendingDisable = true;
           for (let addon of XPIProvider.getDependentAddons(this.addon)) {
             if (addon.active) {
-              await XPIDatabase.updateAddonDisabledState(addon);
+              await lazy.XPIDatabase.updateAddonDisabledState(addon);
             }
           }
         }
@@ -1809,6 +1826,7 @@ class BootstrapScope {
         temporarilyInstalled: addon.location.isTemporary,
         builtIn: addon.location.isBuiltin,
         isSystem: addon.location.isSystem,
+        isPrivileged: addon.isPrivileged,
         recommendationState: addon.recommendationState,
       };
 
@@ -1844,7 +1862,7 @@ class BootstrapScope {
       // Extensions are automatically initialized in the correct order at startup.
       if (aMethod == "startup" && aReason != BOOTSTRAP_REASONS.APP_STARTUP) {
         for (let addon of XPIProvider.getDependentAddons(this.addon)) {
-          XPIDatabase.updateAddonDisabledState(addon);
+          lazy.XPIDatabase.updateAddonDisabledState(addon);
         }
       }
     }
@@ -1880,15 +1898,19 @@ class BootstrapScope {
       switch (this.addon.type) {
         case "extension":
         case "theme":
-          this.scope = Extension.getBootstrapScope();
+          this.scope = lazy.Extension.getBootstrapScope();
+          break;
+
+        case "sitepermission":
+          this.scope = lazy.SitePermission.getBootstrapScope();
           break;
 
         case "locale":
-          this.scope = Langpack.getBootstrapScope();
+          this.scope = lazy.Langpack.getBootstrapScope();
           break;
 
         case "dictionary":
-          this.scope = Dictionary.getBootstrapScope();
+          this.scope = lazy.Dictionary.getBootstrapScope();
           break;
 
         default:
@@ -2046,7 +2068,7 @@ class BootstrapScope {
     this.unloadBootstrapScope();
 
     if (this.file) {
-      XPIInstall.flushJarCache(this.file);
+      lazy.XPIInstall.flushJarCache(this.file);
     }
   }
 
@@ -2072,7 +2094,7 @@ class BootstrapScope {
    *        completed.
    */
   async update(newAddon, startup = false, updateCallback) {
-    let reason = XPIInstall.newVersionReason(
+    let reason = lazy.XPIInstall.newVersionReason(
       this.addon.version,
       newAddon.version
     );
@@ -2094,11 +2116,11 @@ class BootstrapScope {
     if (callUpdate && existingAddon.type === "extension") {
       if (this.addon instanceof XPIState) {
         // The existing addon will be cached in the database.
-        existingAddon = await XPIDatabase.getAddonByID(this.addon.id);
+        existingAddon = await lazy.XPIDatabase.getAddonByID(this.addon.id);
       }
 
       if (newAddon instanceof XPIState) {
-        newAddon = await XPIInstall.loadManifestFromFile(
+        newAddon = await lazy.XPIInstall.loadManifestFromFile(
           newAddon.file,
           newAddon.location
         );
@@ -2156,8 +2178,8 @@ var XPIProvider = {
     // Make sure we don't touch the XPIDatabase getter before it's
     // actually loaded, and force an early load.
     return (
-      (Object.getOwnPropertyDescriptor(gGlobalScope, "XPIDatabase").value &&
-        XPIDatabase.initialized) ||
+      (Object.getOwnPropertyDescriptor(lazy, "XPIDatabase").value &&
+        lazy.XPIDatabase.initialized) ||
       false
     );
   },
@@ -2236,7 +2258,7 @@ var XPIProvider = {
   setupInstallLocations(aAppChanged) {
     function DirectoryLoc(aName, aScope, aKey, aPaths, aLocked, aIsSystem) {
       try {
-        var dir = FileUtils.getDir(aKey, aPaths);
+        var dir = lazy.FileUtils.getDir(aKey, aPaths);
       } catch (e) {
         return null;
       }
@@ -2245,7 +2267,7 @@ var XPIProvider = {
 
     function SystemDefaultsLoc(name, scope, key, paths) {
       try {
-        var dir = FileUtils.getDir(key, paths);
+        var dir = lazy.FileUtils.getDir(key, paths);
       } catch (e) {
         return null;
       }
@@ -2254,7 +2276,7 @@ var XPIProvider = {
 
     function SystemLoc(aName, aScope, aKey, aPaths) {
       try {
-        var dir = FileUtils.getDir(aKey, aPaths);
+        var dir = lazy.FileUtils.getDir(aKey, aPaths);
       } catch (e) {
         return null;
       }
@@ -2361,7 +2383,7 @@ var XPIProvider = {
     ];
 
     for (let [constructor, name, scope, ...args] of locations) {
-      if (!scope || enabledScopes & scope) {
+      if (!scope || lazy.enabledScopes & scope) {
         try {
           let loc = constructor(name, scope, ...args);
           if (loc) {
@@ -2390,7 +2412,7 @@ var XPIProvider = {
       let uri = Services.io.newURI(`resource://gre/${path}`);
 
       this.dictionaries[lang] = uri;
-      spellCheck.addDictionary(lang, uri);
+      lazy.spellCheck.addDictionary(lang, uri);
     }
   },
 
@@ -2404,20 +2426,23 @@ var XPIProvider = {
    *        unregistered.
    */
   unregisterDictionaries(aDicts) {
-    let origDict = spellCheck.dictionary;
+    let origDicts = lazy.spellCheck.dictionaries.slice();
+    let toRemove = [];
 
     for (let [lang, uri] of Object.entries(aDicts)) {
       if (
-        spellCheck.removeDictionary(lang, uri) &&
+        lazy.spellCheck.removeDictionary(lang, uri) &&
         this.dictionaries.hasOwnProperty(lang)
       ) {
-        spellCheck.addDictionary(lang, this.dictionaries[lang]);
-
-        if (lang == origDict) {
-          spellCheck.dictionary = origDict;
-        }
+        lazy.spellCheck.addDictionary(lang, this.dictionaries[lang]);
+      } else {
+        toRemove.push(lang);
       }
     }
+
+    lazy.spellCheck.dictionaries = origDicts.filter(
+      lang => !toRemove.includes(lang)
+    );
   },
 
   /**
@@ -2509,28 +2534,6 @@ var XPIProvider = {
         this.addAddonsToCrashReporter();
       }
 
-      // This is a one-time migration when incognito is turned on.  Any previously
-      // enabled extension will be migrated.
-      try {
-        if (
-          !Services.prefs.getBoolPref("extensions.incognito.migrated", false)
-        ) {
-          XPIDatabase.syncLoadDB(false);
-          let promises = [];
-          for (let addon of XPIDatabase.getAddons()) {
-            if (addon.type == "extension" && addon.active) {
-              promises.push(Extension.migratePrivateBrowsing(addon));
-            }
-          }
-          if (promises.length) {
-            awaitPromise(Promise.all(promises));
-          }
-          Services.prefs.setBoolPref("extensions.incognito.migrated", true);
-        }
-      } catch (e) {
-        logger.error("private browsing migration failed", e);
-      }
-
       try {
         AddonManagerPrivate.recordTimestamp("XPI_bootstrap_addons_begin");
 
@@ -2581,7 +2584,7 @@ var XPIProvider = {
 
       // Let these shutdown a little earlier when they still have access to most
       // of XPCOM
-      AsyncShutdown.quitApplicationGranted.addBlocker(
+      lazy.AsyncShutdown.quitApplicationGranted.addBlocker(
         "XPIProvider shutdown",
         async () => {
           XPIProvider._closing = true;
@@ -2608,7 +2611,7 @@ var XPIProvider = {
                 loc => !loc.isTemporary
               );
               if (existing) {
-                reason = XPIInstall.newVersionReason(
+                reason = lazy.XPIInstall.newVersionReason(
                   addon.version,
                   existing.version
                 );
@@ -2617,7 +2620,7 @@ var XPIProvider = {
 
             let scope = BootstrapScope.get(addon);
             let promise = scope.shutdown(reason);
-            AsyncShutdown.profileChangeTeardown.addBlocker(
+            lazy.AsyncShutdown.profileChangeTeardown.addBlocker(
               `Extension shutdown: ${addon.id}`,
               promise,
               {
@@ -2673,7 +2676,7 @@ var XPIProvider = {
             Services.obs.removeObserver(observer, event);
           }
 
-          XPIDatabase.asyncLoadDB();
+          lazy.XPIDatabase.asyncLoadDB();
         };
         for (let event of EVENTS) {
           Services.obs.addObserver(observer, event);
@@ -2682,10 +2685,10 @@ var XPIProvider = {
 
       AddonManagerPrivate.recordTimestamp("XPI_startup_end");
 
-      timerManager.registerTimer(
+      lazy.timerManager.registerTimer(
         "xpi-signature-verification",
         () => {
-          XPIDatabase.verifySignatures();
+          lazy.XPIDatabase.verifySignatures();
         },
         XPI_SIGNATURE_CHECK_PERIOD
       );
@@ -2708,9 +2711,9 @@ var XPIProvider = {
     this.allAppGlobal = true;
 
     // Stop anything we were doing asynchronously
-    XPIInstall.cancelAll();
+    lazy.XPIInstall.cancelAll();
 
-    for (let install of XPIInstall.installs) {
+    for (let install of lazy.XPIInstall.installs) {
       if (install.onShutdown()) {
         install.onShutdown();
       }
@@ -2719,11 +2722,11 @@ var XPIProvider = {
     // If there are pending operations then we must update the list of active
     // add-ons
     if (Services.prefs.getBoolPref(PREF_PENDING_OPERATIONS, false)) {
-      XPIDatabase.updateActiveAddons();
+      lazy.XPIDatabase.updateActiveAddons();
       Services.prefs.setBoolPref(PREF_PENDING_OPERATIONS, false);
     }
 
-    await XPIDatabase.shutdown();
+    await lazy.XPIDatabase.shutdown();
   },
 
   cleanupTemporaryAddons() {
@@ -2744,12 +2747,12 @@ var XPIProvider = {
       if (existing) {
         promise = bootstrap.update(existing, false, () => {
           cleanup();
-          XPIDatabase.makeAddonLocationVisible(id, existing.location);
+          lazy.XPIDatabase.makeAddonLocationVisible(id, existing.location);
         });
       } else {
         promise = bootstrap.uninstall().then(cleanup);
       }
-      AsyncShutdown.profileChangeTeardown.addBlocker(
+      lazy.AsyncShutdown.profileChangeTeardown.addBlocker(
         `Temporary extension shutdown: ${addon.id}`,
         promise
       );
@@ -2775,7 +2778,7 @@ var XPIProvider = {
       Services.appinfo.annotateCrashReport("Add-ons", data);
     } catch (e) {}
 
-    TelemetrySession.setAddOns(data);
+    lazy.TelemetrySession.setAddOns(data);
   },
 
   /**
@@ -2806,7 +2809,7 @@ var XPIProvider = {
 
         aManifests[loc.name][id] = null;
         promises.push(
-          XPIInstall.installStagedAddon(id, metadata, loc).then(
+          lazy.XPIInstall.installStagedAddon(id, metadata, loc).then(
             addon => {
               aManifests[loc.name][id] = addon;
             },
@@ -2860,7 +2863,9 @@ var XPIProvider = {
   installDistributionAddons(aManifests, aAppChanged, aOldAppVersion) {
     let distroDirs = [];
     try {
-      distroDirs.push(FileUtils.getDir(KEY_APP_DISTRIBUTION, [DIR_EXTENSIONS]));
+      distroDirs.push(
+        lazy.FileUtils.getDir(KEY_APP_DISTRIBUTION, [DIR_EXTENSIONS])
+      );
     } catch (e) {
       return false;
     }
@@ -2919,7 +2924,12 @@ var XPIProvider = {
         try {
           let loc = XPIStates.getLocation(KEY_APP_PROFILE);
           let addon = awaitPromise(
-            XPIInstall.installDistributionAddon(id, file, loc, aOldAppVersion)
+            lazy.XPIInstall.installDistributionAddon(
+              id,
+              file,
+              loc,
+              aOldAppVersion
+            )
           );
 
           if (addon) {
@@ -2956,7 +2966,7 @@ var XPIProvider = {
    */
   async maybeInstallBuiltinAddon(aID, aVersion, aBase) {
     let installed;
-    if (enabledScopes & BuiltInLocation.scope) {
+    if (lazy.enabledScopes & BuiltInLocation.scope) {
       let existing = BuiltInLocation.get(aID);
       if (!existing || existing.version != aVersion) {
         installed = this.installBuiltinAddon(aBase);
@@ -2967,7 +2977,7 @@ var XPIProvider = {
   },
 
   getDependentAddons(aAddon) {
-    return Array.from(XPIDatabase.getAddons()).filter(addon =>
+    return Array.from(lazy.XPIDatabase.getAddons()).filter(addon =>
       addon.dependencies.includes(aAddon.id)
     );
   },
@@ -3061,9 +3071,9 @@ var XPIProvider = {
           "XPIDB_startup_load_reasons",
           updateReasons
         );
-        XPIDatabase.syncLoadDB(false);
+        lazy.XPIDatabase.syncLoadDB(false);
         try {
-          extensionListChanged = XPIDatabaseReconcile.processFileChanges(
+          extensionListChanged = lazy.XPIDatabaseReconcile.processFileChanges(
             manifests,
             aAppChanged,
             aOldAppVersion,
@@ -3078,7 +3088,7 @@ var XPIProvider = {
       // If the application crashed before completing any pending operations then
       // we should perform them now.
       if (extensionListChanged || hasPendingChanges) {
-        XPIDatabase.updateActiveAddons();
+        lazy.XPIDatabase.updateActiveAddons();
         return;
       }
 
@@ -3098,9 +3108,9 @@ var XPIProvider = {
   async getNewSideloads() {
     if (XPIStates.scanForChanges(false)) {
       // We detected changes. Update the database to account for them.
-      await XPIDatabase.asyncLoadDB(false);
-      XPIDatabaseReconcile.processFileChanges({}, false);
-      XPIDatabase.updateActiveAddons();
+      await lazy.XPIDatabase.asyncLoadDB(false);
+      lazy.XPIDatabaseReconcile.processFileChanges({}, false);
+      lazy.XPIDatabase.updateActiveAddons();
     }
 
     let addons = await Promise.all(
@@ -3187,10 +3197,10 @@ var XPIProvider = {
   },
 
   async getAddonsByTypes(aTypes) {
-    if (aTypes && !aTypes.some(type => ALL_EXTERNAL_TYPES.has(type))) {
+    if (aTypes && !aTypes.some(type => ALL_XPI_TYPES.has(type))) {
       return [];
     }
-    return XPIDatabase.getAddonsByTypes(aTypes);
+    return lazy.XPIDatabase.getAddonsByTypes(aTypes);
   },
 
   /**
@@ -3239,7 +3249,7 @@ var XPIProvider = {
     switch (aTopic) {
       case NOTIFICATION_FLUSH_PERMISSIONS:
         if (!aData || aData == XPI_PERMISSION) {
-          XPIDatabase.importPermissions();
+          lazy.XPIDatabase.importPermissions();
         }
         break;
 
@@ -3247,7 +3257,7 @@ var XPIProvider = {
         switch (aData) {
           case PREF_XPI_SIGNATURES_REQUIRED:
           case PREF_LANGPACK_SIGNATURES:
-            XPIDatabase.updateAddonAppDisabledStates();
+            lazy.XPIDatabase.updateAddonAppDisabledStates();
             break;
         }
     }
@@ -3255,7 +3265,7 @@ var XPIProvider = {
 
   uninstallSystemProfileAddon(aID) {
     let location = XPIStates.getLocation(KEY_APP_SYSTEM_PROFILE);
-    return XPIInstall.uninstallAddonFromLocation(aID, location);
+    return lazy.XPIInstall.uninstallAddonFromLocation(aID, location);
   },
 };
 
@@ -3271,7 +3281,7 @@ for (let meth of [
   "stageLangpacksForAppUpdate",
 ]) {
   XPIProvider[meth] = function() {
-    return XPIInstall[meth](...arguments);
+    return lazy.XPIInstall[meth](...arguments);
   };
 }
 
@@ -3283,7 +3293,7 @@ for (let meth of [
   "updateAddonAppDisabledStates",
 ]) {
   XPIProvider[meth] = function() {
-    return XPIDatabase[meth](...arguments);
+    return lazy.XPIDatabase[meth](...arguments);
   };
 }
 
@@ -3298,7 +3308,6 @@ var XPIInternal = {
   KEY_APP_SYSTEM_PROFILE,
   KEY_APP_SYSTEM_ADDONS,
   KEY_APP_SYSTEM_DEFAULTS,
-  KEY_PROFILEDIR,
   PREF_BRANCH_INSTALLED_ADDON,
   PREF_SYSTEM_ADDON_SET,
   SystemAddonLocation,
@@ -3314,37 +3323,11 @@ var XPIInternal = {
   maybeResolveURI,
   migrateAddonLoader,
   resolveDBReady,
+
+  // Used by tests to shut down AddonManager.
+  overrideAsyncShutdown(mockAsyncShutdown) {
+    lazy.AsyncShutdown = mockAsyncShutdown;
+  },
 };
 
-var addonTypes = [
-  new AddonManagerPrivate.AddonType(
-    "extension",
-    URI_EXTENSION_STRINGS,
-    "type.extension.name",
-    AddonManager.VIEW_TYPE_LIST,
-    4000
-  ),
-  new AddonManagerPrivate.AddonType(
-    "theme",
-    URI_EXTENSION_STRINGS,
-    "type.themes.name",
-    AddonManager.VIEW_TYPE_LIST,
-    5000
-  ),
-  new AddonManagerPrivate.AddonType(
-    "dictionary",
-    URI_EXTENSION_STRINGS,
-    "type.dictionary.name",
-    AddonManager.VIEW_TYPE_LIST,
-    7000
-  ),
-  new AddonManagerPrivate.AddonType(
-    "locale",
-    URI_EXTENSION_STRINGS,
-    "type.locale.name",
-    AddonManager.VIEW_TYPE_LIST,
-    8000
-  ),
-];
-
-AddonManagerPrivate.registerProvider(XPIProvider, addonTypes);
+AddonManagerPrivate.registerProvider(XPIProvider, Array.from(ALL_XPI_TYPES));

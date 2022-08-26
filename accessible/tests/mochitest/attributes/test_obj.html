@@ -28,7 +28,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=558036
       testAttrs("autocomplete", {"autocomplete": "true"}, true);
       testAttrs("checkbox", {"checkable": "true"}, true);
       testAttrs("checkedCheckbox", {"checkable": "true"}, true);
-      testAbsentAttrs("checkedMenuitem", {"checkable": "true"}, true);
+      testAbsentAttrs("checkedMenuitem", {"checkable": "true"});
       testAttrs("checkedMenuitemCheckbox", {"checkable": "true"}, true);
       testAttrs("checkedMenuitemRadio", {"checkable": "true"}, true);
       testAttrs("checkedOption", {"checkable": "true"}, true);
@@ -58,10 +58,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=558036
       testAttrs("currentOther", {"current": "true"}, true);
       testAbsentAttrs("currentFalse", {"current": "true"});
       testAttrs("currentSpan", {"current": "page"}, true);
-
-      // inherited attributes by subdocuments
-      var subdoc = getAccessible("iframe").firstChild;
-      testAttrs(subdoc, {"busy": "true"}, true);
 
       // live object attribute
 
@@ -148,7 +144,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=558036
       testAttrs("th2", { "axis": "social" }, true);
 
       // don't barf on an empty abbr element.
-      testAbsentAttrs("th3", { "abbr": "" }, true);
+      testAbsentAttrs("th3", { "abbr": "" });
 
       // application accessible
       if (WIN) {
@@ -232,10 +228,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=558036
     <li><a href="...">Page 2</a></li>
     <li><span id="currentSpan" aria-current="page">This page</span></li>
   </ol>
-
-  <!-- inherited from iframe -->
-  <iframe id="iframe" src="data:text/html,<html><body></body></html>"
-          aria-busy="true"></iframe>
 
   <!-- html -->
   <output id="output"></output>

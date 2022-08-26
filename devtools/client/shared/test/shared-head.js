@@ -6,9 +6,18 @@
 
 "use strict";
 
-// This shared-head.js file is used for multiple mochitest test directories in
-// devtools.
+// This shared-head.js file is used by most mochitests
+// and we start using it in xpcshell tests as well.
 // It contains various common helper functions.
+
+const isMochitest = "gTestPath" in this;
+const isXpcshell = !isMochitest;
+if (isXpcshell) {
+  // gTestPath isn't exposed to xpcshell tests
+  // _TEST_FILE is an array for a unique string
+  /* global _TEST_FILE */
+  this.gTestPath = _TEST_FILE[0];
+}
 
 const { Constructor: CC } = Components;
 
@@ -23,7 +32,7 @@ if (DEBUG_ALLOCATIONS) {
   // as it instantiates custom Debugger API instances and has to be running in a distinct
   // compartments from DevTools and system scopes (JSMs, XPCOM,...)
   const { DevToolsLoader } = ChromeUtils.import(
-    "resource://devtools/shared/Loader.jsm"
+    "resource://devtools/shared/loader/Loader.jsm"
   );
   const loader = new DevToolsLoader({
     invisibleToDebugger: true,
@@ -44,8 +53,14 @@ if (DEBUG_ALLOCATIONS) {
 }
 
 const { loader, require } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+  "resource://devtools/shared/loader/Loader.jsm"
 );
+
+// When loaded from xpcshell test, this file is loaded via xpcshell.ini's head property
+// and so it loaded first before anything else and isn't having access to Services global.
+// Whereas many head.js files from mochitest import this file via loadSubScript
+// and already expose Services as a global.
+var Services = this.Services || require("Services");
 
 const { gDevTools } = require("devtools/client/framework/devtools");
 const {
@@ -62,6 +77,22 @@ loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
   "devtools/client/responsive/manager"
+);
+loader.lazyRequireGetter(
+  this,
+  "localTypes",
+  "devtools/client/responsive/types"
+);
+loader.lazyRequireGetter(
+  this,
+  "ResponsiveMessageHelper",
+  "devtools/client/responsive/utils/message"
+);
+
+loader.lazyRequireGetter(
+  this,
+  "FluentReact",
+  "devtools/client/shared/vendor/fluent-react"
 );
 
 const TEST_DIR = gTestPath.substr(0, gTestPath.lastIndexOf("/"));
@@ -94,6 +125,10 @@ const URL_ROOT_NET = CHROME_URL_ROOT.replace(
   "chrome://mochitests/content/",
   "http://example.net/"
 );
+const URL_ROOT_NET_SSL = CHROME_URL_ROOT.replace(
+  "chrome://mochitests/content/",
+  "https://example.net/"
+);
 // mochi.test:8888 is the actual primary location where files are served.
 const URL_ROOT_MOCHI_8888 = CHROME_URL_ROOT.replace(
   "chrome://mochitests/content/",
@@ -103,10 +138,12 @@ const URL_ROOT_MOCHI_8888 = CHROME_URL_ROOT.replace(
 const TARGET_SWITCHING_PREF = "devtools.target-switching.server.enabled";
 
 try {
-  Services.scriptloader.loadSubScript(
-    "chrome://mochitests/content/browser/devtools/client/shared/test/telemetry-test-helpers.js",
-    this
-  );
+  if (isMochitest) {
+    Services.scriptloader.loadSubScript(
+      "chrome://mochitests/content/browser/devtools/client/shared/test/telemetry-test-helpers.js",
+      this
+    );
+  }
 } catch (e) {
   ok(
     false,
@@ -119,6 +156,151 @@ try {
 
 // Force devtools to be initialized so menu items and keyboard shortcuts get installed
 require("devtools/client/framework/devtools-browser");
+
+// All tests are asynchronous
+if (isMochitest) {
+  waitForExplicitFinish();
+}
+
+var EXPECTED_DTU_ASSERT_FAILURE_COUNT = 0;
+
+registerCleanupFunction(function() {
+  if (
+    DevToolsUtils.assertionFailureCount !== EXPECTED_DTU_ASSERT_FAILURE_COUNT
+  ) {
+    ok(
+      false,
+      "Should have had the expected number of DevToolsUtils.assert() failures." +
+        " Expected " +
+        EXPECTED_DTU_ASSERT_FAILURE_COUNT +
+        ", got " +
+        DevToolsUtils.assertionFailureCount
+    );
+  }
+});
+
+// Uncomment this pref to dump all devtools emitted events to the console.
+// Services.prefs.setBoolPref("devtools.dump.emit", true);
+
+/**
+ * Watch console messages for failed propType definitions in React components.
+ */
+function onConsoleMessage(subject) {
+  const message = subject.wrappedJSObject.arguments[0];
+
+  if (message && /Failed propType/.test(message.toString())) {
+    ok(false, message);
+  }
+}
+
+const ConsoleAPIStorage = Cc["@mozilla.org/consoleAPI-storage;1"].getService(
+  Ci.nsIConsoleAPIStorage
+);
+
+ConsoleAPIStorage.addLogEventListener(
+  onConsoleMessage,
+  Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+);
+registerCleanupFunction(() => {
+  ConsoleAPIStorage.removeLogEventListener(onConsoleMessage);
+});
+
+Services.prefs.setBoolPref("devtools.inspector.three-pane-enabled", true);
+
+// Disable this preference to reduce exceptions related to pending `listWorkers`
+// requests occuring after a process is created/destroyed. See Bug 1620983.
+Services.prefs.setBoolPref("dom.ipc.processPrelaunch.enabled", false);
+
+// Disable this preference to capture async stacks across all locations during
+// DevTools mochitests. Async stacks provide very valuable information to debug
+// intermittents, but come with a performance overhead, which is why they are
+// only captured in Debuggees by default.
+Services.prefs.setBoolPref(
+  "javascript.options.asyncstack_capture_debuggee_only",
+  false
+);
+
+registerCleanupFunction(() => {
+  Services.prefs.clearUserPref("devtools.dump.emit");
+  Services.prefs.clearUserPref("devtools.inspector.three-pane-enabled");
+  Services.prefs.clearUserPref("dom.ipc.processPrelaunch.enabled");
+  Services.prefs.clearUserPref("devtools.toolbox.host");
+  Services.prefs.clearUserPref("devtools.toolbox.previousHost");
+  Services.prefs.clearUserPref("devtools.toolbox.splitconsoleEnabled");
+  Services.prefs.clearUserPref("devtools.toolbox.splitconsoleHeight");
+  Services.prefs.clearUserPref(
+    "javascript.options.asyncstack_capture_debuggee_only"
+  );
+});
+
+var {
+  BrowserConsoleManager,
+} = require("devtools/client/webconsole/browser-console-manager");
+
+registerCleanupFunction(async function cleanup() {
+  // Closing the browser console if there's one
+  const browserConsole = BrowserConsoleManager.getBrowserConsole();
+  if (browserConsole) {
+    await safeCloseBrowserConsole({ clearOutput: true });
+  }
+
+  // Close any tab opened by the test.
+  // There should be only one tab opened by default when firefox starts the test.
+  while (isMochitest && gBrowser.tabs.length > 1) {
+    await closeTabAndToolbox(gBrowser.selectedTab);
+  }
+
+  // Note that this will run before cleanup functions registered by tests or other head.js files.
+  // So all connections must be cleaned up by the test when the test ends,
+  // before the harness starts invoking the cleanup functions
+  await waitForTick();
+
+  // All connections must be cleaned up by the test when the test ends.
+  const { DevToolsServer } = require("devtools/server/devtools-server");
+  ok(
+    !DevToolsServer.hasConnection(),
+    "The main process DevToolsServer has no pending connection when the test ends"
+  );
+  // If there is still open connection, close all of them so that following tests
+  // could pass.
+  if (DevToolsServer.hasConnection()) {
+    for (const conn of Object.values(DevToolsServer._connections)) {
+      conn.close();
+    }
+  }
+});
+
+async function safeCloseBrowserConsole({ clearOutput = false } = {}) {
+  const hud = BrowserConsoleManager.getBrowserConsole();
+  if (!hud) {
+    return;
+  }
+
+  if (clearOutput) {
+    info("Clear the browser console output");
+    const { ui } = hud;
+    const promises = [ui.once("messages-cleared")];
+    // If there's an object inspector, we need to wait for the actors to be released.
+    if (ui.outputNode.querySelector(".object-inspector")) {
+      promises.push(ui.once("fronts-released"));
+    }
+    await ui.clearOutput(true);
+    await Promise.all(promises);
+    info("Browser console cleared");
+  }
+
+  info("Wait for all Browser Console targets to be attached");
+  // It might happen that waitForAllTargetsToBeAttached does not resolve, so we set a
+  // timeout of 1s before closing
+  await Promise.race([
+    waitForAllTargetsToBeAttached(hud.commands.targetCommand),
+    wait(1000),
+  ]);
+
+  info("Close the Browser Console");
+  await BrowserConsoleManager.closeBrowserConsole();
+  info("Browser Console closed");
+}
 
 /**
  * Observer code to register the test actor in every DevTools server which
@@ -140,14 +322,16 @@ require("devtools/client/framework/devtools-browser");
  * we listen to this message to cleanup the observer.
  */
 function highlighterTestActorBootstrap() {
+  /* eslint-env mozilla/process-script */
   const HIGHLIGHTER_TEST_ACTOR_URL =
     "chrome://mochitests/content/browser/devtools/client/shared/test/highlighter-test-actor.js";
 
   const { require: _require } = ChromeUtils.import(
-    "resource://devtools/shared/Loader.jsm"
+    "resource://devtools/shared/loader/Loader.jsm"
   );
   _require(HIGHLIGHTER_TEST_ACTOR_URL);
 
+  /* eslint-disable-next-line no-shadow */
   const Services = _require("Services");
 
   const actorRegistryObserver = subject => {
@@ -179,18 +363,22 @@ function highlighterTestActorBootstrap() {
   );
 }
 
-const highlighterTestActorBootstrapScript =
-  "data:,(" + highlighterTestActorBootstrap + ")()";
-Services.ppmm.loadProcessScript(
-  highlighterTestActorBootstrapScript,
-  // Load this script in all processes (created or to be created)
-  true
-);
+if (isMochitest) {
+  const highlighterTestActorBootstrapScript =
+    "data:,(" + highlighterTestActorBootstrap + ")()";
+  Services.ppmm.loadProcessScript(
+    highlighterTestActorBootstrapScript,
+    // Load this script in all processes (created or to be created)
+    true
+  );
 
-registerCleanupFunction(() => {
-  Services.ppmm.broadcastAsyncMessage("remove-devtools-testactor-observer");
-  Services.ppmm.removeDelayedProcessScript(highlighterTestActorBootstrapScript);
-});
+  registerCleanupFunction(() => {
+    Services.ppmm.broadcastAsyncMessage("remove-devtools-testactor-observer");
+    Services.ppmm.removeDelayedProcessScript(
+      highlighterTestActorBootstrapScript
+    );
+  });
+}
 
 /**
  * Spawn an instance of the highlighter test actor for the given toolbox
@@ -238,146 +426,6 @@ async function getHighlighterTestFrontWithoutToolbox(tab) {
   return targetFront.getFront("highlighterTest");
 }
 
-// All test are asynchronous
-waitForExplicitFinish();
-
-var EXPECTED_DTU_ASSERT_FAILURE_COUNT = 0;
-
-registerCleanupFunction(function() {
-  if (
-    DevToolsUtils.assertionFailureCount !== EXPECTED_DTU_ASSERT_FAILURE_COUNT
-  ) {
-    ok(
-      false,
-      "Should have had the expected number of DevToolsUtils.assert() failures." +
-        " Expected " +
-        EXPECTED_DTU_ASSERT_FAILURE_COUNT +
-        ", got " +
-        DevToolsUtils.assertionFailureCount
-    );
-  }
-});
-
-// Uncomment this pref to dump all devtools emitted events to the console.
-// Services.prefs.setBoolPref("devtools.dump.emit", true);
-
-/**
- * Watch console messages for failed propType definitions in React components.
- */
-const ConsoleObserver = {
-  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
-
-  observe: function(subject) {
-    const message = subject.wrappedJSObject.arguments[0];
-
-    if (message && /Failed propType/.test(message.toString())) {
-      ok(false, message);
-    }
-  },
-};
-
-Services.obs.addObserver(ConsoleObserver, "console-api-log-event");
-registerCleanupFunction(() => {
-  Services.obs.removeObserver(ConsoleObserver, "console-api-log-event");
-});
-
-Services.prefs.setBoolPref("devtools.inspector.three-pane-enabled", true);
-
-// Disable this preference to reduce exceptions related to pending `listWorkers`
-// requests occuring after a process is created/destroyed. See Bug 1620983.
-Services.prefs.setBoolPref("dom.ipc.processPrelaunch.enabled", false);
-
-// Disable this preference to capture async stacks across all locations during
-// DevTools mochitests. Async stacks provide very valuable information to debug
-// intermittents, but come with a performance overhead, which is why they are
-// only captured in Debuggees by default.
-Services.prefs.setBoolPref(
-  "javascript.options.asyncstack_capture_debuggee_only",
-  false
-);
-
-registerCleanupFunction(() => {
-  Services.prefs.clearUserPref("devtools.dump.emit");
-  Services.prefs.clearUserPref("devtools.inspector.three-pane-enabled");
-  Services.prefs.clearUserPref("dom.ipc.processPrelaunch.enabled");
-  Services.prefs.clearUserPref("devtools.toolbox.host");
-  Services.prefs.clearUserPref("devtools.toolbox.previousHost");
-  Services.prefs.clearUserPref("devtools.toolbox.splitconsoleEnabled");
-  Services.prefs.clearUserPref("devtools.toolbox.splitconsoleHeight");
-  Services.prefs.clearUserPref(
-    "javascript.options.asyncstack_capture_debuggee_only"
-  );
-});
-
-var {
-  BrowserConsoleManager,
-} = require("devtools/client/webconsole/browser-console-manager");
-
-registerCleanupFunction(async function cleanup() {
-  // Closing the browser console if there's one
-  const browserConsole = BrowserConsoleManager.getBrowserConsole();
-  if (browserConsole) {
-    await safeCloseBrowserConsole({ clearOutput: true });
-  }
-
-  // Close any tab opened by the test.
-  // There should be only one tab opened by default when firefox starts the test.
-  while (gBrowser.tabs.length > 1) {
-    await closeTabAndToolbox(gBrowser.selectedTab);
-  }
-
-  // Note that this will run before cleanup functions registered by tests or other head.js files.
-  // So all connections must be cleaned up by the test when the test ends,
-  // before the harness starts invoking the cleanup functions
-  await waitForTick();
-
-  // All connections must be cleaned up by the test when the test ends.
-  const { DevToolsServer } = require("devtools/server/devtools-server");
-  ok(
-    !DevToolsServer.hasConnection(),
-    "The main process DevToolsServer has no pending connection when the test ends"
-  );
-  // If there is still open connection, close all of them so that following tests
-  // could pass.
-  if (DevToolsServer.hasConnection()) {
-    for (const conn of Object.values(DevToolsServer._connections)) {
-      conn.close();
-    }
-  }
-});
-
-async function safeCloseBrowserConsole({ clearOutput = false } = {}) {
-  const hud = BrowserConsoleManager.getBrowserConsole();
-  if (!hud) {
-    return;
-  }
-
-  if (clearOutput) {
-    info("Clear the browser console output");
-    const { ui } = hud;
-    const promises = [ui.once("messages-cleared")];
-    // If there's an object inspector, we need to wait for the actors to be released.
-    if (ui.outputNode.querySelector(".object-inspector")) {
-      promises.push(ui.once("fronts-released"));
-    }
-    ui.clearOutput(true);
-    await Promise.all(promises);
-    info("Browser console cleared");
-  }
-
-  info("Wait for all Browser Console targets to be attached");
-  // It might happen that waitForAllTargetsToBeAttached does not resolve, so we set a
-  // timeout of 1s before closing
-  await Promise.race([
-    waitForAllTargetsToBeAttached(hud.commands.targetCommand),
-    wait(1000),
-  ]);
-
-  info("Close the Browser Console");
-  await BrowserConsoleManager.closeBrowserConsole();
-  info("Browser Console closed");
-}
-
 /**
  * Returns a Promise that resolves when all the targets are fully attached.
  *
@@ -387,7 +435,7 @@ function waitForAllTargetsToBeAttached(targetCommand) {
   return Promise.allSettled(
     targetCommand
       .getAllTargets(targetCommand.ALL_TYPES)
-      .map(target => target._onThreadInitialized)
+      .map(target => target.initialized)
   );
 }
 
@@ -402,7 +450,7 @@ function waitForAllTargetsToBeAttached(targetCommand) {
  *   - {Boolean} waitForLoad Wait for the page in the new tab to load. (Defaults to true.)
  * @return a promise that resolves to the tab object when the url is loaded
  */
-var addTab = async function(url, options = {}) {
+async function addTab(url, options = {}) {
   info("Adding a new tab with URL: " + url);
 
   const {
@@ -432,14 +480,14 @@ var addTab = async function(url, options = {}) {
   }
 
   return tab;
-};
+}
 
 /**
  * Remove the given tab.
  * @param {Object} tab The tab to be removed.
  * @return Promise<undefined> resolved when the tab is successfully removed.
  */
-var removeTab = async function(tab) {
+async function removeTab(tab) {
   info("Removing tab.");
 
   const { gBrowser } = tab.ownerDocument.defaultView;
@@ -448,7 +496,7 @@ var removeTab = async function(tab) {
   await onClose;
 
   info("Tab removed and finished closing");
-};
+}
 
 /**
  * Alias for navigateTo which will reuse the current URI of the provided browser
@@ -594,15 +642,15 @@ async function _watchForToolboxReload(
   { isErrorPage, waitForLoad } = {}
 ) {
   const tab = gBrowser.getTabForBrowser(browser);
+
   const toolbox = await gDevTools.getToolboxForTab(tab);
+
   if (!toolbox) {
     // No toolbox to wait for
     return function() {};
   }
-  const currentToolId = toolbox.currentToolId;
-  const panel = toolbox.getCurrentPanel();
 
-  const waitForCurrentPanelReload = watchForPanelReload(currentToolId, panel);
+  const waitForCurrentPanelReload = watchForCurrentPanelReload(toolbox);
   const waitForToolboxCommandsReload = await watchForCommandsReload(
     toolbox.commands,
     { isErrorPage, waitForLoad }
@@ -667,7 +715,60 @@ async function _watchForResponsiveReload(
   };
 }
 
-function watchForPanelReload(toolId, panel) {
+/**
+ * Watch for the current panel selected in the provided toolbox to be reloaded.
+ * Some panels implement custom events that should be expected for every reload.
+ *
+ * Note about returning a method instead of a promise:
+ * In general this pattern is useful so that we can check if a target switch
+ * occurred or not, and decide which events to listen for. So far no panel is
+ * behaving differently whether there was a target switch or not. But to remain
+ * consistent with other watch* methods we still return a function here.
+ *
+ * @param {Toolbox}
+ *        The Toolbox instance which is going to experience a reload
+ * @return {function} An async method to be called and awaited after the reload
+ *         started. Will return `null` for panels which don't implement any
+ *         specific reload event.
+ */
+function watchForCurrentPanelReload(toolbox) {
+  return _watchForPanelReload(toolbox, toolbox.currentToolId);
+}
+
+/**
+ * Watch for all the panels loaded in the provided toolbox to be reloaded.
+ * Some panels implement custom events that should be expected for every reload.
+ *
+ * Note about returning a method instead of a promise:
+ * See comment for watchForCurrentPanelReload
+ *
+ * @param {Toolbox}
+ *        The Toolbox instance which is going to experience a reload
+ * @return {function} An async method to be called and awaited after the reload
+ *         started.
+ */
+function watchForLoadedPanelsReload(toolbox) {
+  const waitForPanels = [];
+  for (const [id] of toolbox.getToolPanels()) {
+    // Store a watcher method for each panel already loaded.
+    waitForPanels.push(_watchForPanelReload(toolbox, id));
+  }
+
+  return function() {
+    return Promise.all(
+      waitForPanels.map(async watchPanel => {
+        // Wait for all panels to be reloaded.
+        if (watchPanel) {
+          await watchPanel();
+        }
+      })
+    );
+  };
+}
+
+function _watchForPanelReload(toolbox, toolId) {
+  const panel = toolbox.getPanel(toolId);
+
   if (toolId == "inspector") {
     const markuploaded = panel.once("markuploaded");
     const onNewRoot = panel.once("new-root");
@@ -687,16 +788,10 @@ function watchForPanelReload(toolId, panel) {
       info("Waiting for inspector updates after page reload");
       await onReloaded;
     };
-  } else if (toolId == "netmonitor") {
+  } else if (["netmonitor", "accessibility", "webconsole"].includes(toolId)) {
     const onReloaded = panel.once("reloaded");
     return async function() {
-      info("Waiting for netmonitor updates after page reload");
-      await onReloaded;
-    };
-  } else if (toolId == "accessibility") {
-    const onReloaded = panel.once("reloaded");
-    return async function() {
-      info("Waiting for accessibility updates after page reload");
+      info(`Waiting for ${toolId} updates after page reload`);
       await onReloaded;
     };
   }
@@ -818,7 +913,6 @@ async function createAndAttachTargetForTab(tab) {
   await commands.targetCommand.startListening();
 
   const target = commands.targetCommand.targetFront;
-  await target.attach();
   return target;
 }
 
@@ -828,6 +922,13 @@ function isFissionEnabled() {
 
 function isServerTargetSwitchingEnabled() {
   return Services.prefs.getBoolPref(TARGET_SWITCHING_PREF);
+}
+
+/**
+ * Enables server target switching
+ */
+async function enableTargetSwitching() {
+  await pushPref(TARGET_SWITCHING_PREF, true);
 }
 
 function isEveryFrameTargetEnabled() {
@@ -844,13 +945,13 @@ function isEveryFrameTargetEnabled() {
  * @return A promise that is resolved once the tab and inspector have loaded
  *         with an object: { tab, toolbox, inspector, highlighterTestFront }.
  */
-var openInspectorForURL = async function(url, hostType) {
+async function openInspectorForURL(url, hostType) {
   const tab = await addTab(url);
   const { inspector, toolbox, highlighterTestFront } = await openInspector(
     hostType
   );
   return { tab, inspector, toolbox, highlighterTestFront };
-};
+}
 
 async function getActiveInspector() {
   const toolbox = await gDevTools.getToolboxForTab(gBrowser.selectedTab);
@@ -946,13 +1047,7 @@ async function waitFor(condition, message = "", interval = 10, maxTries = 500) {
     );
     return value;
   } catch (e) {
-    const errorMessage =
-      "Failed waitFor(): " +
-      message +
-      "\n" +
-      "Failed condition: " +
-      condition +
-      "\n";
+    const errorMessage = `Failed waitFor(): ${message} \nFailed condition: ${condition} \nException Message: ${e}`;
     throw new Error(errorMessage);
   }
 }
@@ -1075,7 +1170,7 @@ function loadHelperScript(filePath) {
  * @param {String} hostType Optional. The type of toolbox host to be used.
  * @return {Promise} Resolves with the toolbox, when it has been opened.
  */
-var openToolboxForTab = async function(tab, toolId, hostType) {
+async function openToolboxForTab(tab, toolId, hostType) {
   info("Opening the toolbox");
 
   let toolbox;
@@ -1098,7 +1193,7 @@ var openToolboxForTab = async function(tab, toolId, hostType) {
   info("Toolbox opened and focused");
 
   return toolbox;
-};
+}
 
 /**
  * Add a new tab and open the toolbox in it.
@@ -1108,10 +1203,10 @@ var openToolboxForTab = async function(tab, toolId, hostType) {
  * @return {Promise} Resolves when the tab has been added, loaded and the
  * toolbox has been opened. Resolves to the toolbox.
  */
-var openNewTabAndToolbox = async function(url, toolId, hostType) {
+async function openNewTabAndToolbox(url, toolId, hostType) {
   const tab = await addTab(url);
   return openToolboxForTab(tab, toolId, hostType);
-};
+}
 
 /**
  * Close a tab and if necessary, the toolbox that belongs to it
@@ -1119,7 +1214,7 @@ var openNewTabAndToolbox = async function(url, toolId, hostType) {
  * @return {Promise} Resolves when the toolbox and tab have been destroyed and
  * closed.
  */
-var closeTabAndToolbox = async function(tab = gBrowser.selectedTab) {
+async function closeTabAndToolbox(tab = gBrowser.selectedTab) {
   if (TabDescriptorFactory.isKnownTab(tab)) {
     await gDevTools.closeToolboxForTab(tab);
   }
@@ -1127,7 +1222,7 @@ var closeTabAndToolbox = async function(tab = gBrowser.selectedTab) {
   await removeTab(tab);
 
   await new Promise(resolve => setTimeout(resolve, 0));
-};
+}
 
 /**
  * Close a toolbox and the current tab.
@@ -1135,41 +1230,9 @@ var closeTabAndToolbox = async function(tab = gBrowser.selectedTab) {
  * @return {Promise} Resolves when the toolbox and tab have been destroyed and
  * closed.
  */
-var closeToolboxAndTab = async function(toolbox) {
+async function closeToolboxAndTab(toolbox) {
   await toolbox.destroy();
   await removeTab(gBrowser.selectedTab);
-};
-
-/**
- * Retrieve all tool ids compatible with a target created for the provided tab.
- *
- * @param {XULTab} tab
- *        The tab for which we want to get the list of supported toolIds
- * @return {Array<String>} array of tool ids
- */
-async function getSupportedToolIds(tab) {
-  info("Getting the entire list of tools supported in this tab");
-
-  let shouldDestroyToolbox = false;
-
-  // Get the toolbox for this tab, or create one if needed.
-  let toolbox = await gDevTools.getToolboxForTab(tab);
-  if (!toolbox) {
-    toolbox = await gDevTools.showToolboxForTab(tab);
-    shouldDestroyToolbox = true;
-  }
-
-  const toolIds = gDevTools
-    .getToolDefinitionArray()
-    .filter(def => def.isTargetSupported(toolbox.target))
-    .map(def => def.id);
-
-  if (shouldDestroyToolbox) {
-    // Only close the toolbox if it was explicitly created here.
-    await toolbox.destroy();
-  }
-
-  return toolIds;
 }
 
 /**
@@ -1285,23 +1348,9 @@ function pushPref(preferenceName, value) {
   return SpecialPowers.pushPrefEnv(options);
 }
 
-/**
- * Lookup the provided dotted path ("prop1.subprop2.myProp") in the provided object.
- *
- * @param {Object} obj
- *        Object to expand.
- * @param {String} path
- *        Dotted path to use to expand the object.
- * @return {?} anything that is found at the provided path in the object.
- */
-function lookupPath(obj, path) {
-  const segments = path.split(".");
-  return segments.reduce((prev, current) => prev[current], obj);
-}
-
-var closeToolbox = async function() {
+async function closeToolbox() {
   await gDevTools.closeToolboxForTab(gBrowser.selectedTab);
-};
+}
 
 /**
  * Clean the logical clipboard content. This method only clears the OS clipboard on
@@ -1320,27 +1369,6 @@ function isWindows() {
 }
 
 /**
- * Enables server target switching
- */
-async function enableTargetSwitching() {
-  await pushPref(TARGET_SWITCHING_PREF, true);
-}
-
-/**
- * Wait for a given toolbox to get its title updated.
- */
-function waitForTitleChange(toolbox) {
-  return new Promise(resolve => {
-    toolbox.topWindow.addEventListener("message", function onmessage(event) {
-      if (event.data.name == "set-host-title") {
-        toolbox.topWindow.removeEventListener("message", onmessage);
-        resolve();
-      }
-    });
-  });
-}
-
-/**
  * Create an HTTP server that can be used to simulate custom requests within
  * a test.  It is automatically cleaned up when the test ends, so no need to
  * call `destroy`.
@@ -1352,7 +1380,6 @@ function waitForTitleChange(toolbox) {
  *
  *   const server = createTestHTTPServer();
  *   let url = "http://localhost: " + server.identity.primaryPort + "/path";
- *
  * @returns {HttpServer}
  */
 function createTestHTTPServer() {
@@ -1396,7 +1423,7 @@ async function registerActorInContentProcess(url, options) {
     args => {
       // eslint-disable-next-line no-shadow
       const { require } = ChromeUtils.import(
-        "resource://devtools/shared/Loader.jsm"
+        "resource://devtools/shared/loader/Loader.jsm"
       );
       const {
         ActorRegistry,
@@ -1470,7 +1497,6 @@ async function unregisterAllServiceWorkers(client) {
  *           - {Int} g: The green component of the pixel
  *           - {Int} b: The blue component of the pixel
  */
-
 function colorAt(image, x, y) {
   // Create a test canvas element.
   const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -1490,8 +1516,13 @@ function colorAt(image, x, y) {
 let allDownloads = [];
 /**
  * Returns a Promise that resolves when a new screenshot is available in the download folder.
+ *
+ * @param {Object} [options]
+ * @param {Boolean} options.isWindowPrivate: Set to true if the window from which the screenshot
+ *                  is taken is a private window. This will ensure that we check that the
+ *                  screenshot appears in the private window, not the non-private one (See Bug 1783373)
  */
-async function waitUntilScreenshot() {
+async function waitUntilScreenshot({ isWindowPrivate = false } = {}) {
   const { Downloads } = require("resource://gre/modules/Downloads.jsm");
   const list = await Downloads.getList(Downloads.ALL);
 
@@ -1502,6 +1533,14 @@ async function waitUntilScreenshot() {
         if (allDownloads.includes(download)) {
           return;
         }
+
+        is(
+          !!download.source.isPrivate,
+          isWindowPrivate,
+          `The download occured in the expected${
+            isWindowPrivate ? " private" : ""
+          } window`
+        );
 
         allDownloads.push(download);
         resolve(download.target.path);
@@ -1519,10 +1558,10 @@ async function waitUntilScreenshot() {
 async function resetDownloads() {
   info("Reset downloads");
   const { Downloads } = require("resource://gre/modules/Downloads.jsm");
-  const publicList = await Downloads.getList(Downloads.PUBLIC);
-  const downloads = await publicList.getAll();
+  const downloadList = await Downloads.getList(Downloads.ALL);
+  const downloads = await downloadList.getAll();
   for (const download of downloads) {
-    publicList.remove(download);
+    downloadList.remove(download);
     await download.finalize(true);
   }
   allDownloads = [];
@@ -1549,11 +1588,11 @@ async function takeNodeScreenshot(inspector) {
   info("Create an image using the downloaded fileas source");
   const image = new Image();
   const onImageLoad = once(image, "load");
-  image.src = OS.Path.toFileURI(filePath);
+  image.src = PathUtils.toFileURI(filePath);
   await onImageLoad;
 
   info("Remove the downloaded screenshot file");
-  await OS.File.remove(filePath);
+  await IOUtils.remove(filePath);
 
   // See intermittent Bug 1508435. Even after removing the file, tests still manage to
   // reuse files from the previous test if they have the same name. Since our file name
@@ -1611,17 +1650,31 @@ function checkImageColorAt({ image, x = 0, y, expectedColor, label }) {
 }
 
 /**
- * Assert that a given parent pool has the expected number of children for
- * a given typeName.
+ * Wait until the store has reached a state that matches the predicate.
+ * @param Store store
+ *        The Redux store being used.
+ * @param function predicate
+ *        A function that returns true when the store has reached the expected
+ *        state.
+ * @return Promise
+ *         Resolved once the store reaches the expected state.
  */
-function checkPoolChildrenSize(parentPool, typeName, expected) {
-  const children = [...parentPool.poolChildren()];
-  const childrenByType = children.filter(pool => pool.typeName === typeName);
-  is(
-    childrenByType.length,
-    expected,
-    `${parentPool.actorID} should have ${expected} children of type ${typeName}`
-  );
+function waitUntilState(store, predicate) {
+  return new Promise(resolve => {
+    const unsubscribe = store.subscribe(check);
+
+    info(`Waiting for state predicate "${predicate}"`);
+    function check() {
+      if (predicate(store.getState())) {
+        info(`Found state predicate "${predicate}"`);
+        unsubscribe();
+        resolve();
+      }
+    }
+
+    // Fire the check immediately in case the action has already occurred
+    check();
+  });
 }
 
 /**
@@ -1688,8 +1741,9 @@ async function getBrowsingContextInFrames(browsingContext, selectors) {
     );
   }
 
-  while (selectors.length) {
-    const selector = selectors.shift();
+  const clonedSelectors = [...selectors];
+  while (clonedSelectors.length) {
+    const selector = clonedSelectors.shift();
     context = await SpecialPowers.spawn(context, [selector], _selector => {
       return content.document.querySelector(_selector).browsingContext;
     });
@@ -1830,7 +1884,7 @@ async function waitForNextTopLevelDomCompleteResource(commands) {
  *
  * @param {BrowsingContext} context
  **/
-const waitForPresShell = function(context) {
+function waitForPresShell(context) {
   return SpecialPowers.spawn(context, [], async () => {
     const winUtils = SpecialPowers.getDOMWindowUtils(content);
     await ContentTaskUtils.waitForCondition(() => {
@@ -1841,4 +1895,123 @@ const waitForPresShell = function(context) {
       }
     }, "Waiting for a valid presShell");
   });
-};
+}
+
+/**
+ * In tests using Fluent localization, it is preferable to match DOM elements using
+ * a message ID rather than the raw string as:
+ *
+ *  1. It allows testing infrastructure to be multilingual if needed.
+ *  2. It isolates the tests from localization changes.
+ *
+ * @param {Array<string>} resourceIds A list of .ftl files to load.
+ * @returns {(id: string, args?: Record<string, FluentVariable>) => string}
+ */
+async function getFluentStringHelper(resourceIds) {
+  const locales = Services.locale.appLocalesAsBCP47;
+  const generator = L10nRegistry.getInstance().generateBundles(
+    locales,
+    resourceIds
+  );
+
+  const bundles = [];
+  for await (const bundle of generator) {
+    bundles.push(bundle);
+  }
+
+  const reactLocalization = new FluentReact.ReactLocalization(bundles);
+
+  /**
+   * Get the string from a message id. It throws when the message is not found.
+   *
+   * @param {string} id
+   * @param {string} attributeName: attribute name if you need to access a specific attribute
+   *                 defined in the fluent string, e.g. setting "title" for this param
+   *                 will retrieve the `title` string in
+   *                    compatibility-issue-browsers-list =
+   *                      .title = This is the title
+   * @param {Record<string, FluentVariable>} [args] optional
+   * @returns {string}
+   */
+  return (id, attributeName, args) => {
+    let string;
+
+    if (!attributeName) {
+      string = reactLocalization.getString(id, args);
+    } else {
+      for (const bundle of reactLocalization.bundles) {
+        const msg = bundle.getMessage(id);
+        if (msg?.attributes[attributeName]) {
+          string = bundle.formatPattern(
+            msg.attributes[attributeName],
+            args,
+            []
+          );
+          break;
+        }
+      }
+    }
+
+    if (!string) {
+      throw new Error(
+        `Could not find a string for "${id}"${
+          attributeName ? ` and attribute "${attributeName}")` : ""
+        }. Was the correct resource bundle loaded?`
+      );
+    }
+    return string;
+  };
+}
+
+/**
+ * Open responsive design mode for the given tab.
+ */
+async function openRDM(tab, { waitForDeviceList = true } = {}) {
+  info("Opening responsive design mode");
+  const manager = ResponsiveUIManager;
+  const ui = await manager.openIfNeeded(tab.ownerGlobal, tab, {
+    trigger: "test",
+  });
+  info("Responsive design mode opened");
+
+  await ResponsiveMessageHelper.wait(ui.toolWindow, "post-init");
+  info("Responsive design initialized");
+
+  await waitForRDMLoaded(ui, { waitForDeviceList });
+
+  return { ui, manager };
+}
+
+async function waitForRDMLoaded(ui, { waitForDeviceList = true } = {}) {
+  // Always wait for the viewport to be added.
+  const { store } = ui.toolWindow;
+  await waitUntilState(store, state => state.viewports.length == 1);
+
+  if (waitForDeviceList) {
+    // Wait until the device list has been loaded.
+    await waitUntilState(
+      store,
+      state => state.devices.listState == localTypes.loadableState.LOADED
+    );
+  }
+}
+
+/**
+ * Close responsive design mode for the given tab.
+ */
+async function closeRDM(tab, options) {
+  info("Closing responsive design mode");
+  const manager = ResponsiveUIManager;
+  await manager.closeIfNeeded(tab.ownerGlobal, tab, options);
+  info("Responsive design mode closed");
+}
+
+function getInputStream(data) {
+  const BufferStream = CC(
+    "@mozilla.org/io/arraybuffer-input-stream;1",
+    "nsIArrayBufferInputStream",
+    "setData"
+  );
+  const buffer = new TextEncoder().encode(data).buffer;
+  return new BufferStream(buffer, 0, buffer.byteLength);
+}

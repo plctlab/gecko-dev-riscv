@@ -24,28 +24,20 @@ void UuidMetric::Set(const nsACString& aValue) const {
   if (scalarId) {
     Telemetry::ScalarSet(scalarId.extract(), NS_ConvertUTF8toUTF16(aValue));
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_uuid_set(mId, &aValue);
-#endif
 }
 
 void UuidMetric::GenerateAndSet() const {
   // We don't have the generated value to mirror to the scalar,
   // so calling this function on a mirrored metric is likely an error.
   (void)NS_WARN_IF(ScalarIdForMetric(mId).isSome());
-#ifndef MOZ_GLEAN_ANDROID
   fog_uuid_generate_and_set(mId);
-#endif
 }
 
 Result<Maybe<nsCString>, nsCString> UuidMetric::TestGetValue(
     const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<nsCString>();
-#else
   nsCString err;
-  if (fog_uuid_test_get_error(mId, &aPingName, &err)) {
+  if (fog_uuid_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_uuid_test_has_value(mId, &aPingName)) {
@@ -54,7 +46,6 @@ Result<Maybe<nsCString>, nsCString> UuidMetric::TestGetValue(
   nsCString ret;
   fog_uuid_test_get_value(mId, &aPingName, &ret);
   return Some(ret);
-#endif
 }
 
 }  // namespace impl
@@ -76,7 +67,7 @@ GleanUuid::GenerateAndSet() {
 
 NS_IMETHODIMP
 GleanUuid::TestGetValue(const nsACString& aStorageName, JSContext* aCx,
-                        JS::MutableHandleValue aResult) {
+                        JS::MutableHandle<JS::Value> aResult) {
   auto result = mUuid.TestGetValue(aStorageName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());

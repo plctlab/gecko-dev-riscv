@@ -12,6 +12,7 @@ const {
 } = require("devtools/server/actors/webconsole/listeners/document-events");
 
 class DocumentEventWatcher {
+  #abortController = new AbortController();
   /**
    * Start watching for all document event related to a given Target Actor.
    *
@@ -57,9 +58,12 @@ class DocumentEventWatcher {
           // make the payload bigger for events where we either don't have a title yet,
           // or where we already had a chance to get the title.
           title: name === "dom-interactive" ? targetActor.title : undefined,
-          // only send `url` on dom loading so we don't make the payload bigger for
-          // other events
-          url: name === "dom-loading" ? targetActor.url : undefined,
+          // only send `url` on dom loading and dom-interactive so we don't make the
+          // payload bigger for other events
+          url:
+            name === "dom-loading" || name === "dom-interactive"
+              ? targetActor.url
+              : undefined,
           // only send `newURI` on will navigate so we don't make the payload bigger for
           // other events
           newURI: name === "will-navigate" ? newURI : null,
@@ -72,11 +76,33 @@ class DocumentEventWatcher {
     };
 
     this.listener = new DocumentEventsListener(targetActor);
-    this.listener.on("*", onDocumentEvent);
+
+    this.listener.on(
+      "will-navigate",
+      data => onDocumentEvent("will-navigate", data),
+      { signal: this.#abortController.signal }
+    );
+    this.listener.on(
+      "dom-loading",
+      data => onDocumentEvent("dom-loading", data),
+      { signal: this.#abortController.signal }
+    );
+    this.listener.on(
+      "dom-interactive",
+      data => onDocumentEvent("dom-interactive", data),
+      { signal: this.#abortController.signal }
+    );
+    this.listener.on(
+      "dom-complete",
+      data => onDocumentEvent("dom-complete", data),
+      { signal: this.#abortController.signal }
+    );
+
     this.listener.listen();
   }
 
   destroy() {
+    this.#abortController.abort();
     if (this.listener) {
       this.listener.destroy();
     }

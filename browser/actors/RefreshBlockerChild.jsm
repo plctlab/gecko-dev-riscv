@@ -10,7 +10,6 @@
 
 var EXPORTED_SYMBOLS = ["RefreshBlockerChild", "RefreshBlockerObserverChild"];
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
 
 const REFRESHBLOCKING_PREF = "accessibility.blockautorefresh";
@@ -164,7 +163,7 @@ class RefreshBlockerChild extends JSWindowActorChild {
         let docShell = data.browsingContext.docShell;
         let refreshURI = docShell.QueryInterface(Ci.nsIRefreshURI);
         let URI = Services.io.newURI(data.URI);
-        refreshURI.forceRefreshURI(URI, null, data.delay, true);
+        refreshURI.forceRefreshURI(URI, null, data.delay);
         break;
 
       case "PreferenceChanged":

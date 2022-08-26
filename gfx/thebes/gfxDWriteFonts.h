@@ -28,7 +28,6 @@ class gfxDWriteFont final : public gfxFont {
                 gfxFontEntry* aFontEntry, const gfxFontStyle* aFontStyle,
                 RefPtr<IDWriteFontFace> aFontFace = nullptr,
                 AntialiasOption = kAntialiasDefault);
-  ~gfxDWriteFont();
 
   static bool InitDWriteSupport();
 
@@ -39,10 +38,9 @@ class gfxDWriteFont final : public gfxFont {
 
   static void SystemTextQualityChanged();
 
-  mozilla::UniquePtr<gfxFont> CopyWithAntialiasOption(
-      AntialiasOption anAAOption) override;
+  gfxFont* CopyWithAntialiasOption(AntialiasOption anAAOption) const override;
 
-  bool AllowSubpixelAA() override { return mAllowManualShowGlyphs; }
+  bool AllowSubpixelAA() const override { return mAllowManualShowGlyphs; }
 
   bool IsValid() const;
 
@@ -59,7 +57,8 @@ class gfxDWriteFont final : public gfxFont {
 
   int32_t GetGlyphWidth(uint16_t aGID) override;
 
-  bool GetGlyphBounds(uint16_t aGID, gfxRect* aBounds, bool aTight) override;
+  bool GetGlyphBounds(uint16_t aGID, gfxRect* aBounds,
+                      bool aTight) const override;
 
   void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                               FontCacheSizes* aSizes) const override;
@@ -69,14 +68,14 @@ class gfxDWriteFont final : public gfxFont {
   FontType GetType() const override { return FONT_TYPE_DWRITE; }
 
   already_AddRefed<mozilla::gfx::ScaledFont> GetScaledFont(
-      mozilla::gfx::DrawTarget* aTarget) override;
-  already_AddRefed<mozilla::gfx::ScaledFont> GetScaledFontNoGDI(
-      mozilla::gfx::DrawTarget* aTarget) override;
+      const TextRunDrawParams& aRunParams) override;
 
   bool ShouldRoundXOffset(cairo_t* aCairo) const override;
 
  protected:
-  const Metrics& GetHorizontalMetrics() override;
+  ~gfxDWriteFont() override;
+
+  const Metrics& GetHorizontalMetrics() const override { return mMetrics; }
 
   bool GetFakeMetricsForArialBlack(DWRITE_FONT_METRICS* aFontMetrics);
 
@@ -94,7 +93,7 @@ class gfxDWriteFont final : public gfxFont {
   RefPtr<IDWriteFontFace> mFontFace;
   RefPtr<IDWriteFontFace1> mFontFace1;  // may be unavailable on older DWrite
 
-  Metrics* mMetrics;
+  Metrics mMetrics;
 
   // cache of glyph widths in 16.16 fixed-point pixels
   mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, int32_t>> mGlyphWidths;
@@ -104,10 +103,12 @@ class gfxDWriteFont final : public gfxFont {
 
   // Used to record the sUseClearType setting at the time mAzureScaledFont
   // was set up, so we can tell if it's stale and needs to be re-created.
-  bool mAzureScaledFontUsedClearType;
-  bool mAzureScaledFontNoGDIUsedClearType = false;
+  mozilla::Atomic<bool> mAzureScaledFontUsedClearType;
 
-  RefPtr<mozilla::gfx::ScaledFont> mAzureScaledFontNoGDI;
+  // Cache the GDI version of the ScaledFont so that font keys and other
+  // meta-data can remain stable even if there is thrashing between GDI and
+  // non-GDI usage.
+  mozilla::Atomic<mozilla::gfx::ScaledFont*> mAzureScaledFontGDI;
 
   bool UsingClearType() {
     return mozilla::gfx::gfxVars::SystemTextQuality() == CLEARTYPE_QUALITY;

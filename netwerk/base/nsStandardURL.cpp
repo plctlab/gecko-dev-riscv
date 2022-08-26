@@ -68,6 +68,7 @@ constexpr bool TestForInvalidHostCharacters(char c) {
   // Testing for these:
   // CONTROL_CHARACTERS " #/:?@[\\]*<>|\"";
   return (c > 0 && c < 32) ||  // The control characters are [1, 31]
+         c == 0x7F ||          // // DEL (delete)
          c == ' ' || c == '#' || c == '/' || c == ':' || c == '?' || c == '@' ||
          c == '[' || c == '\\' || c == ']' || c == '*' || c == '<' ||
          c == '^' ||
@@ -143,10 +144,7 @@ int32_t nsStandardURL::nsSegmentEncoder::EncodeSegmentCount(
 
       size_t totalRead = 0;
       for (;;) {
-        uint32_t encoderResult;
-        size_t read;
-        size_t written;
-        Tie(encoderResult, read, written) =
+        auto [encoderResult, read, written] =
             encoder->EncodeFromUTF8WithoutReplacement(
                 AsBytes(span.From(totalRead)), AsWritableBytes(buffer), true);
         totalRead += read;
@@ -201,7 +199,7 @@ const nsACString& nsStandardURL::nsSegmentEncoder::EncodeSegment(
 //----------------------------------------------------------------------------
 
 #ifdef DEBUG_DUMP_URLS_AT_SHUTDOWN
-static StaticMutex gAllURLsMutex;
+static StaticMutex gAllURLsMutex MOZ_UNANNOTATED;
 static LinkedList<nsStandardURL> gAllURLs;
 #endif
 
@@ -279,7 +277,7 @@ bool nsStandardURL::IsValid() {
 void nsStandardURL::SanityCheck() {
   if (!IsValid()) {
     nsPrintfCString msg(
-        "mLen:%X, mScheme (%X,%X), mAuthority (%X,%X), mUsername (%X,%X), "
+        "mLen:%zX, mScheme (%X,%X), mAuthority (%X,%X), mUsername (%X,%X), "
         "mPassword (%X,%X), mHost (%X,%X), mPath (%X,%X), mFilepath (%X,%X), "
         "mDirectory (%X,%X), mBasename (%X,%X), mExtension (%X,%X), mQuery "
         "(%X,%X), mRef (%X,%X)",
@@ -312,8 +310,6 @@ nsStandardURL::~nsStandardURL() {
     }
   }
 #endif
-
-  SanityCheck();
 }
 
 #ifdef DEBUG_DUMP_URLS_AT_SHUTDOWN
@@ -604,6 +600,12 @@ nsresult nsStandardURL::NormalizeIPv4(const nsACString& host,
       return NS_ERROR_FAILURE;
     }
     ipv4 += number << (8 * (3 - i));
+  }
+
+  // A special case for ipv4 URL like "127." should have the same result as
+  // "127".
+  if (dotCount == 1 && dotIndex[0] == length - 1) {
+    ipv4 = (ipv4 & 0xff000000) >> 24;
   }
 
   uint8_t ipSegments[4];
@@ -3098,7 +3100,7 @@ nsresult nsStandardURL::SetRef(const nsACString& input) {
 
   InvalidateCache();
 
-  if (!ref || !*ref) {
+  if (input.IsEmpty()) {
     // remove existing ref
     if (mRef.mLen >= 0) {
       // remove ref and leading '#'

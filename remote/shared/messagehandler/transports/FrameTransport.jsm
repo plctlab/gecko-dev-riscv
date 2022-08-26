@@ -6,16 +6,26 @@
 
 const EXPORTED_SYMBOLS = ["FrameTransport"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
 
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  ContextDescriptorType:
+    "chrome://remote/content/shared/messagehandler/MessageHandler.jsm",
+  isBrowsingContextCompatible:
+    "chrome://remote/content/shared/messagehandler/transports/FrameContextUtils.jsm",
+  Log: "chrome://remote/content/shared/Log.jsm",
   MessageHandlerFrameActor:
     "chrome://remote/content/shared/messagehandler/transports/js-window-actors/MessageHandlerFrameActor.jsm",
+  TabManager: "chrome://remote/content/shared/TabManager.jsm",
 });
+
+XPCOMUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
+
+const MAX_RETRY_ATTEMPTS = 10;
 
 /**
  * FrameTransport is intended to be used from a ROOT MessageHandler to communicate
@@ -32,7 +42,7 @@ class FrameTransport {
 
     // FrameTransport will rely on the MessageHandlerFrame JSWindow actors.
     // Make sure they are registered when instanciating a FrameTransport.
-    MessageHandlerFrameActor.register();
+    lazy.MessageHandlerFrameActor.register();
   }
 
   /**
@@ -46,9 +56,9 @@ class FrameTransport {
    *     being processed by WINDOW_GLOBAL MessageHandlers.
    */
   forwardCommand(command) {
-    if (command.destination.id && command.destination.broadcast) {
+    if (command.destination.id && command.destination.contextDescriptor) {
       throw new Error(
-        "Invalid command destination with both 'id' and 'broadcast' properties"
+        "Invalid command destination with both 'id' and 'contextDescriptor' properties"
       );
     }
 
@@ -63,18 +73,21 @@ class FrameTransport {
       return this._sendCommandToBrowsingContext(command, browsingContext);
     }
 
-    // ... otherwise broadcast to all registered destinations.
-    if (command.destination.broadcast) {
+    // ... otherwise broadcast to destinations matching the contextDescriptor.
+    if (command.destination.contextDescriptor) {
       return this._broadcastCommand(command);
     }
 
     throw new Error(
-      "Unrecognized command destination, missing 'id' or 'broadcast' properties"
+      "Unrecognized command destination, missing 'id' or 'contextDescriptor' properties"
     );
   }
 
   _broadcastCommand(command) {
-    const browsingContexts = this._getAllBrowsingContexts();
+    const { contextDescriptor } = command.destination;
+    const browsingContexts = this._getBrowsingContextsForDescriptor(
+      contextDescriptor
+    );
 
     return Promise.all(
       browsingContexts.map(async browsingContext => {
@@ -94,45 +107,85 @@ class FrameTransport {
     );
   }
 
-  _sendCommandToBrowsingContext(command, browsingContext) {
-    return browsingContext.currentWindowGlobal
-      .getActor("MessageHandlerFrame")
-      .sendCommand(command, this._messageHandler.sessionId);
+  async _sendCommandToBrowsingContext(command, browsingContext) {
+    const name = `${command.moduleName}.${command.commandName}`;
+
+    // The browsing context might be destroyed by a navigation. Keep a reference
+    // to the webProgress, which will persist, and always use it to retrieve the
+    // currently valid browsing context.
+    const webProgress = browsingContext.webProgress;
+
+    const { retryOnAbort = false } = command;
+
+    let attempts = 0;
+    while (true) {
+      try {
+        return await webProgress.browsingContext.currentWindowGlobal
+          .getActor("MessageHandlerFrame")
+          .sendCommand(command, this._messageHandler.sessionId);
+      } catch (e) {
+        if (!retryOnAbort || e.name != "AbortError") {
+          // Only retry if the command supports retryOnAbort and when the
+          // JSWindowActor pair gets destroyed.
+          throw e;
+        }
+
+        if (++attempts > MAX_RETRY_ATTEMPTS) {
+          lazy.logger.trace(
+            `FrameTransport reached the limit of retry attempts (${MAX_RETRY_ATTEMPTS})` +
+              ` for command ${name} and browsing context ${webProgress.browsingContext.id}.`
+          );
+          throw e;
+        }
+
+        lazy.logger.trace(
+          `FrameTransport retrying command ${name} for ` +
+            `browsing context ${webProgress.browsingContext.id}, attempt: ${attempts}.`
+        );
+        await new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
+      }
+    }
   }
 
   toString() {
     return `[object ${this.constructor.name} ${this._messageHandler.name}]`;
   }
 
-  _getAllBrowsingContexts() {
+  _getBrowsingContextsForDescriptor(contextDescriptor) {
+    const { id, type } = contextDescriptor;
+
+    if (type === lazy.ContextDescriptorType.All) {
+      return this._getBrowsingContexts();
+    }
+
+    if (type === lazy.ContextDescriptorType.TopBrowsingContext) {
+      return this._getBrowsingContexts({ browserId: id });
+    }
+
+    // TODO: Handle other types of context descriptors.
+    throw new Error(
+      `Unsupported contextDescriptor type for broadcasting: ${type}`
+    );
+  }
+
+  /**
+   * Get all browsing contexts, optionally matching the provided options.
+   *
+   * @param {Object} options
+   * @param {String=} options.browserId
+   *    The id of the browser to filter the browsing contexts by (optional).
+   * @return {Array<BrowsingContext>}
+   *    The browsing contexts matching the provided options or all browsing contexts
+   *    if no options are provided.
+   */
+  _getBrowsingContexts(options = {}) {
+    // extract browserId from options
+    const { browserId } = options;
     let browsingContexts = [];
-    // Fetch all top level window's browsing contexts
-    // Note that getWindowEnumerator works from all processes, including the content process.
-    // Looping on windows this way limits to desktop Firefox. See Bug 1723919.
-    for (const win of Services.ww.getWindowEnumerator("navigator:browser")) {
-      if (!win.gBrowser) {
-        continue;
-      }
 
-      for (const { browsingContext } of win.gBrowser.browsers) {
-        // Skip window globals running in the parent process, unless we want to
-        // support debugging Chrome context, see Bug 1713440.
-        const isChrome = browsingContext.currentWindowGlobal.osPid === -1;
-
-        // Skip temporary initial documents that are about to be replaced by
-        // another document. The new document will be linked to a new window
-        // global, new JSWindowActors, etc. So attempting to forward any command
-        // to the temporary initial document would be useless as it has no
-        // connection to the real document that will be loaded shortly after.
-        // The new document will be handled as a new context, which should rely
-        // on session data (Bug 1713443) to setup the necessary configuration
-        // , events, etc.
-        const isInitialDocument =
-          browsingContext.currentWindowGlobal.isInitialDocument;
-        if (isChrome || isInitialDocument) {
-          continue;
-        }
-
+    // Fetch all tab related browsing contexts for top-level windows.
+    for (const { browsingContext } of lazy.TabManager.browsers) {
+      if (lazy.isBrowsingContextCompatible(browsingContext, { browserId })) {
         browsingContexts = browsingContexts.concat(
           browsingContext.getAllBrowsingContextsInSubtree()
         );

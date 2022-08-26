@@ -51,11 +51,15 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   bool SendStateChangeEvent(const uint64_t& aID, const uint64_t& aState,
                             const bool& aEnabled);
   bool SendCaretMoveEvent(const uint64_t& aID, const int32_t& aOffset,
-                          const bool& aIsSelectionCollapsed);
+                          const bool& aIsSelectionCollapsed,
+                          const bool& aIsAtEndOfLine,
+                          const int32_t& aGranularity);
   bool SendCaretMoveEvent(const uint64_t& aID,
                           const LayoutDeviceIntRect& aCaretRect,
                           const int32_t& aOffset,
-                          const bool& aIsSelectionCollapsed);
+                          const bool& aIsSelectionCollapsed,
+                          const bool& aIsAtEndOfLine,
+                          const int32_t& aGranularity);
   bool SendFocusEvent(const uint64_t& aID);
   bool SendFocusEvent(const uint64_t& aID,
                       const LayoutDeviceIntRect& aCaretRect);
@@ -173,22 +177,28 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   struct SerializedCaretMove final : public DeferredEvent {
     SerializedCaretMove(DocAccessibleChild* aTarget, uint64_t aID,
                         const LayoutDeviceIntRect& aCaretRect, int32_t aOffset,
-                        bool aIsSelectionCollapsed)
+                        bool aIsSelectionCollapsed, bool aIsAtEndOfLine,
+                        int32_t aGranularity)
         : DeferredEvent(aTarget),
           mID(aID),
           mCaretRect(aCaretRect),
           mOffset(aOffset),
-          mIsSelectionCollapsed(aIsSelectionCollapsed) {}
+          mIsSelectionCollapsed(aIsSelectionCollapsed),
+          mIsAtEndOfLine(aIsAtEndOfLine),
+          mGranularity(aGranularity) {}
 
     void Dispatch(DocAccessibleChild* aIPCDoc) override {
       Unused << aIPCDoc->SendCaretMoveEvent(mID, mCaretRect, mOffset,
-                                            mIsSelectionCollapsed);
+                                            mIsSelectionCollapsed,
+                                            mIsAtEndOfLine, mGranularity);
     }
 
     uint64_t mID;
     LayoutDeviceIntRect mCaretRect;
     int32_t mOffset;
     bool mIsSelectionCollapsed;
+    bool mIsAtEndOfLine;
+    int32_t mGranularity;
   };
 
   struct SerializedFocus final : public DeferredEvent {
@@ -299,10 +309,13 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   struct SerializedChildDocConstructor final : public DeferredEvent {
     SerializedChildDocConstructor(DocAccessibleChild* aIPCDoc,
                                   DocAccessibleChild* aParentIPCDoc,
-                                  uint64_t aUniqueID, uint32_t aMsaaID)
+                                  uint64_t aUniqueID,
+                                  dom::BrowsingContext* aBrowsingContext,
+                                  uint32_t aMsaaID)
         : DeferredEvent(aParentIPCDoc),
           mIPCDoc(aIPCDoc),
           mUniqueID(aUniqueID),
+          mBrowsingContext(aBrowsingContext),
           mMsaaID(aMsaaID) {}
 
     void Dispatch(DocAccessibleChild* aParentIPCDoc) override {
@@ -310,12 +323,18 @@ class DocAccessibleChild : public DocAccessibleChildBase {
           static_cast<dom::BrowserChild*>(aParentIPCDoc->Manager());
       MOZ_ASSERT(browserChild);
       Unused << browserChild->SendPDocAccessibleConstructor(
-          mIPCDoc, aParentIPCDoc, mUniqueID, mMsaaID, IAccessibleHolder());
+          mIPCDoc, aParentIPCDoc, mUniqueID, mBrowsingContext, mMsaaID,
+          IAccessibleHolder());
       mIPCDoc->SetConstructedInParentProcess();
     }
 
     DocAccessibleChild* mIPCDoc;
     uint64_t mUniqueID;
+    // By the time we replay this, the document and its BrowsingContext might
+    // be dead, so we use MaybeDiscardedBrowsingContext here. Ideally, we just
+    // wouldn't replay this, but this is tricky because IPDL should manage the
+    // lifetime of DocAccessibleChild, which means we must send the constructor.
+    dom::MaybeDiscardedBrowsingContext mBrowsingContext;
     uint32_t mMsaaID;
   };
 

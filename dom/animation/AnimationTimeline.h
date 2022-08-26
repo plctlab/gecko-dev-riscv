@@ -17,11 +17,11 @@
 #include "nsIGlobalObject.h"
 #include "nsTHashSet.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Animation;
 class Document;
+class ScrollTimeline;
 
 class AnimationTimeline : public nsISupports, public nsWrapperCache {
  public:
@@ -31,6 +31,10 @@ class AnimationTimeline : public nsISupports, public nsWrapperCache {
 
  protected:
   virtual ~AnimationTimeline();
+
+  // Tick animations and may remove them from the list if we don't need to
+  // tick it. Return true if any animations need to be ticked.
+  bool Tick();
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -94,8 +98,22 @@ class AnimationTimeline : public nsISupports, public nsWrapperCache {
   bool HasAnimations() const { return !mAnimations.IsEmpty(); }
 
   virtual void RemoveAnimation(Animation* aAnimation);
+  virtual void NotifyAnimationContentVisibilityChanged(Animation* aAnimation,
+                                                       bool visible);
 
   virtual Document* GetDocument() const = 0;
+
+  virtual bool IsMonotonicallyIncreasing() const = 0;
+
+  virtual bool IsScrollTimeline() const { return false; }
+  virtual const ScrollTimeline* AsScrollTimeline() const { return nullptr; }
+
+  // For a monotonic timeline, there is no upper bound on current time, and
+  // timeline duration is unresolved. For a non-monotonic (e.g. scroll)
+  // timeline, the duration has a fixed upper bound.
+  //
+  // https://drafts.csswg.org/web-animations-2/#timeline-duration
+  virtual Nullable<TimeDuration> TimelineDuration() const { return nullptr; }
 
  protected:
   nsCOMPtr<nsIGlobalObject> mWindow;
@@ -103,7 +121,8 @@ class AnimationTimeline : public nsISupports, public nsWrapperCache {
   // Animations observing this timeline
   //
   // We store them in (a) a hashset for quick lookup, and (b) an array
-  // to maintain a fixed sampling order.
+  // to maintain a fixed sampling order. Animations that are hidden by
+  // `content-visibility` are not sampled and will only be in the hashset.
   //
   // The hashset keeps a strong reference to each animation since
   // dealing with addref/release with LinkedList is difficult.
@@ -112,7 +131,6 @@ class AnimationTimeline : public nsISupports, public nsWrapperCache {
   LinkedList<dom::Animation> mAnimationOrder;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_AnimationTimeline_h

@@ -15,6 +15,7 @@
 #include "jstypes.h"  // JS_PUBLIC_API
 
 #include "ds/TraceableFifo.h"
+#include "frontend/NameCollections.h"
 #include "gc/Memory.h"
 #include "irregexp/RegExpTypes.h"
 #include "js/CharacterEncoding.h"
@@ -24,6 +25,7 @@
 #include "js/Interrupt.h"
 #include "js/Promise.h"
 #include "js/Result.h"
+#include "js/Stack.h"  // JS::NativeStackBase, JS::NativeStackLimit
 #include "js/Utility.h"
 #include "js/Vector.h"
 #include "threading/ProtectedData.h"
@@ -57,7 +59,6 @@ class DebugModeOSRVolatileJitFrameIter;
 }  // namespace jit
 
 namespace gc {
-class AutoCheckCanAccessAtomsDuringGC;
 class AutoSuppressNurseryCellAlloc;
 }  // namespace gc
 
@@ -83,7 +84,7 @@ class MOZ_RAII AutoCycleDetector {
 
 struct AutoResolving;
 
-struct ParseTask;
+struct OffThreadFrontendErrors;  // vm/HelperThreadState.h
 
 class InternalJobQueue : public JS::JobQueue {
  public:
@@ -155,6 +156,8 @@ enum class InterruptReason : uint32_t {
   CallbackCanWait = 1 << 3,
 };
 
+enum class ShouldCaptureStack { Maybe, Always };
+
 } /* namespace js */
 
 /*
@@ -177,23 +180,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   js::ContextData<JS::ContextOptions> options_;
 
-  // Free lists for allocating in the current zone.
-  js::ContextData<js::gc::FreeLists*> freeLists_;
-
-  // This is reset each time we switch zone, then added to the variable in the
-  // zone when we switch away from it.  This would be a js::ThreadData but we
-  // need to take its address.
-  uint32_t allocsThisZoneSinceMinorGC_;
-
-  // Free lists for parallel allocation in the atoms zone on helper threads.
-  js::ContextData<js::gc::FreeLists*> atomsZoneFreeLists_;
-
-  js::ContextData<JSFreeOp> defaultFreeOp_;
-
   // Thread that the JSContext is currently running on, if in use.
   js::ThreadId currentThread_;
 
-  js::ParseTask* parseTask_;
+  js::OffThreadFrontendErrors* errors_;
 
   // When a helper thread is using a context, it may need to periodically
   // free unused memory.
@@ -203,12 +193,17 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // double-count execution time in reentrant situations.
   js::ContextData<bool> measuringExecutionTime_;
 
+  // This variable is used by the HelperThread scheduling to update the priority
+  // of task based on whether JavaScript is being executed on the main thread.
+  mozilla::Atomic<bool, mozilla::ReleaseAcquire> isExecuting_;
+
  public:
   // This is used by helper threads to change the runtime their context is
   // currently operating on.
   void setRuntime(JSRuntime* rt);
 
-  void setHelperThread(const js::AutoLockHelperThreadState& locked);
+  void setHelperThread(const JS::ContextOptions& options,
+                       const js::AutoLockHelperThreadState& locked);
   void clearHelperThread(const js::AutoLockHelperThreadState& locked);
 
   bool contextAvailable(js::AutoLockHelperThreadState& locked) {
@@ -227,6 +222,15 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     measuringExecutionTime_ = value;
   }
 
+  // While JSContexts are meant to be used on a single thread, this reference is
+  // meant to be shared to helper thread tasks. This is used by helper threads
+  // to change the priority of tasks based on whether JavaScript is executed on
+  // the main thread.
+  const mozilla::Atomic<bool, mozilla::ReleaseAcquire>& isExecutingRef() const {
+    return isExecuting_;
+  }
+  void setIsExecuting(bool value) { isExecuting_ = value; }
+
 #ifdef DEBUG
   bool isInitialized() const { return kind_ != js::ContextKind::Uninitialized; }
 #endif
@@ -239,16 +243,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return kind_ == js::ContextKind::HelperThread;
   }
 
-  js::gc::FreeLists& freeLists() {
-    MOZ_ASSERT(freeLists_);
-    return *freeLists_;
-  }
-
-  js::gc::FreeLists& atomsZoneFreeLists() {
-    MOZ_ASSERT(atomsZoneFreeLists_);
-    return *atomsZoneFreeLists_;
-  }
-
   template <typename T>
   bool isInsideCurrentZone(T thing) const {
     return thing->zoneFromAnyThread() == zone_;
@@ -259,6 +253,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return thing->compartment() == compartment();
   }
 
+  void onOutOfMemory();
   void* onOutOfMemory(js::AllocFunction allocFunc, arena_id_t arena,
                       size_t nbytes, void* reallocPtr = nullptr) {
     if (isHelperThreadContext()) {
@@ -268,29 +263,16 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return runtime_->onOutOfMemory(allocFunc, arena, nbytes, reallocPtr, this);
   }
 
+  void onOverRecursed();
+
   /* Clear the pending exception (if any) due to OOM. */
   void recoverFromOutOfMemory();
 
-  void reportAllocationOverflow() { js::ReportAllocationOverflow(this); }
-
-  void noteTenuredAlloc() { allocsThisZoneSinceMinorGC_++; }
-
-  uint32_t* addressOfTenuredAllocCount() {
-    return &allocsThisZoneSinceMinorGC_;
-  }
-
-  uint32_t getAndResetAllocsThisZoneSinceMinorGC() {
-    uint32_t allocs = allocsThisZoneSinceMinorGC_;
-    allocsThisZoneSinceMinorGC_ = 0;
-    return allocs;
-  }
+  void reportAllocationOverflow();
 
   // Accessors for immutable runtime data.
   JSAtomState& names() { return *runtime_->commonNames; }
   js::StaticStrings& staticStrings() { return *runtime_->staticStrings; }
-  js::SharedImmutableStringsCache& sharedImmutableStrings() {
-    return runtime_->sharedImmutableStrings();
-  }
   bool permanentAtomsPopulated() { return runtime_->permanentAtomsPopulated(); }
   const js::FrozenAtomSet& permanentAtoms() {
     return *runtime_->permanentAtoms();
@@ -299,9 +281,14 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return *runtime_->wellKnownSymbols;
   }
   js::PropertyName* emptyString() { return runtime_->emptyString; }
-  JSFreeOp* defaultFreeOp() { return &defaultFreeOp_.ref(); }
-  uintptr_t stackLimit(JS::StackKind kind) { return nativeStackLimit[kind]; }
-  uintptr_t stackLimitForJitCode(JS::StackKind kind);
+  JS::GCContext* gcContext() { return runtime_->gcContext(); }
+  JS::StackKind stackKindForCurrentPrincipal();
+  JS::NativeStackLimit stackLimitForCurrentPrincipal();
+  JS::NativeStackLimit stackLimit(JS::StackKind kind) {
+    MOZ_ASSERT(isMainThreadContext());
+    return nativeStackLimit[kind];
+  }
+  JS::NativeStackLimit stackLimitForJitCode(JS::StackKind kind);
   size_t gcSystemPageSize() { return js::gc::SystemPageSize(); }
 
   /*
@@ -324,8 +311,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   inline void enterAtomsZone();
   inline void leaveAtomsZone(JS::Realm* oldRealm);
-  enum IsAtomsZone { AtomsZone, NotAtomsZone };
-  inline void setZone(js::Zone* zone, IsAtomsZone isAtomsZone);
+  inline void setZone(js::Zone* zone);
 
   friend class js::AutoAllocInAtomsZone;
   friend class js::AutoMaybeLeaveAtomsZone;
@@ -341,8 +327,12 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   inline void leaveRealm(JS::Realm* oldRealm);
 
-  void setParseTask(js::ParseTask* parseTask) { parseTask_ = parseTask; }
-  js::ParseTask* parseTask() const { return parseTask_; }
+  void setOffThreadFrontendErrors(js::OffThreadFrontendErrors* errors) {
+    errors_ = errors;
+  }
+  js::OffThreadFrontendErrors* offThreadFrontendErrors() const {
+    return errors_;
+  }
 
   bool isNurseryAllocSuppressed() const { return nurserySuppressions_; }
 
@@ -376,9 +366,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   js::AtomsTable& atoms() { return runtime_->atoms(); }
 
-  const JS::Zone* atomsZone(const js::AutoAccessAtomsZone& access) {
-    return runtime_->atomsZone(access);
-  }
+  const JS::Zone* atomsZone() { return runtime_->atomsZone(); }
 
   js::SymbolRegistry& symbolRegistry() { return runtime_->symbolRegistry(); }
 
@@ -397,12 +385,12 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     atomMarking().markAtomValue(this, value);
   }
 
+  // Interface for recording telemetry metrics.
+  js::Metrics metrics() { return js::Metrics(runtime_); }
+
   // Methods specific to any HelperThread for the context.
-  bool addPendingCompileError(js::CompileError** err);
   void addPendingOverRecursed();
   void addPendingOutOfMemory();
-
-  bool isCompileErrorPending() const;
 
   JSRuntime* runtime() { return runtime_; }
   const JSRuntime* runtime() const { return runtime_; }
@@ -413,6 +401,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   friend class js::jit::DebugModeOSRVolatileJitFrameIter;
   friend void js::ReportOutOfMemory(JSContext*);
   friend void js::ReportOverRecursed(JSContext*);
+  friend void js::ReportOversizedAllocation(JSContext*, const unsigned);
 
  public:
   inline JS::Result<> boolToResult(bool ok);
@@ -487,10 +476,13 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
  private:
   // Base address of the native stack for the current thread.
-  mozilla::Maybe<uintptr_t> nativeStackBase_;
+  mozilla::Maybe<JS::NativeStackBase> nativeStackBase_;
 
  public:
-  uintptr_t nativeStackBase() const { return *nativeStackBase_; }
+  JS::NativeStackBase nativeStackBase() const {
+    MOZ_ASSERT(isMainThreadContext());
+    return *nativeStackBase_;
+  }
 
  public:
   /* If non-null, report JavaScript entry points to this monitor. */
@@ -516,11 +508,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
  public:
   js::jit::Simulator* simulator() const;
-  uintptr_t* addressOfSimulatorStackLimit();
-#endif
-
-#ifdef JS_TRACE_LOGGING
-  js::UnprotectedData<js::TraceLoggerThread*> traceLogger;
+  JS::NativeStackLimit* addressOfSimulatorStackLimit();
 #endif
 
  public:
@@ -533,37 +521,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
    */
   js::ContextData<int32_t> suppressGC;
 
-  // clang-format off
-  enum class GCUse {
-    // This thread is not running in the garbage collector.
-    None,
-
-    // This thread is currently marking GC things. This thread could be the main
-    // thread or a helper thread doing sweep-marking.
-    Marking,
-
-    // This thread is currently sweeping GC things. This thread could be the
-    // main thread or a helper thread while the main thread is running the
-    // mutator.
-    Sweeping,
-
-    // Whether this thread is currently finalizing GC things. This thread could
-    // be the main thread or a helper thread doing finalization while the main
-    // thread is running the mutator.
-    Finalizing
-  };
-  // clang-format on
-
 #ifdef DEBUG
-  // Which part of the garbage collector this context is running at the moment.
-  js::ContextData<GCUse> gcUse;
-
-  // The specific zone currently being swept, if any.
-  js::ContextData<JS::Zone*> gcSweepZone;
-
-  // Whether this thread is currently manipulating possibly-gray GC things.
-  js::ContextData<size_t> isTouchingGrayThings;
-
   js::ContextData<size_t> noNurseryAllocationCheck;
 
   /*
@@ -596,10 +554,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::ContextData<bool> runningOOMTest;
 #endif
 
-#ifdef DEBUG
-  js::ContextData<bool> disableCompartmentCheckTracer;
-#endif
-
   /*
    * Some regions of code are hard for the static rooting hazard analysis to
    * understand. In those cases, we trade the static analysis for a dynamic
@@ -614,12 +568,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // Some code cannot tolerate compacting GC so it can be disabled temporarily
   // with AutoDisableCompactingGC which uses this counter.
   js::ContextData<unsigned> compactingDisabledCount;
-
-  bool canCollectAtoms() const {
-    // TODO: We may be able to improve this by collecting if
-    // !isOffThreadParseRunning() (bug 1468422).
-    return !runtime()->hasHelperThreadZones();
-  }
 
  private:
   // Pools used for recycling name maps and vectors when parsing and
@@ -692,12 +640,13 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   }
 
 #ifdef DEBUG
-  // True if this context has ever called ReportOverRecursed.
-  js::ContextData<bool> hadOverRecursed_;
+  // True if this context has ever called ReportOverRecursed,
+  // ReportOutOfMemory, or ReportOversizedAllocation.
+  js::ContextData<bool> hadNondeterministicException_;
 
  public:
   bool hadNondeterministicException() const {
-    return hadOverRecursed_ || runtime()->hadOutOfMemory ||
+    return hadNondeterministicException_ ||
            js::oom::simulator.isThreadSimulatingAny();
   }
 #endif
@@ -724,6 +673,17 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   }
   const js::AutoCycleDetector::Vector& cycleDetectorVector() const {
     return cycleDetectorVector_.ref();
+  }
+
+ private:
+  js::ContextData<JS::PersistentRooted<JSFunction*>> watchtowerTestingCallback_;
+
+ public:
+  JSFunction*& watchtowerTestingCallbackRef() {
+    if (!watchtowerTestingCallback_.ref().initialized()) {
+      watchtowerTestingCallback_.ref().init(this);
+    }
+    return watchtowerTestingCallback_.ref().get();
   }
 
   /* Client opaque pointer. */
@@ -806,8 +766,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   bool isThrowingDebuggeeWouldRun();
   bool isClosingGenerator();
 
-  void setPendingException(JS::HandleValue v, js::HandleSavedFrame stack);
-  void setPendingExceptionAndCaptureStack(JS::HandleValue v);
+  void setPendingException(JS::HandleValue v,
+                           JS::Handle<js::SavedFrame*> stack);
+  void setPendingException(JS::HandleValue v,
+                           js::ShouldCaptureStack captureStack);
 
   void clearPendingException() {
     status = JS::ExceptionStatus::None;
@@ -839,6 +801,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
    */
   inline bool runningWithTrustedPrincipals();
 
+  // Checks if the page's Content-Security-Policy (CSP) allows
+  // runtime code generation "unsafe-eval", or "wasm-unsafe-eval" for Wasm.
+  bool isRuntimeCodeGenEnabled(JS::RuntimeCode kind, js::HandleString code);
+
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
@@ -865,16 +831,16 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
   // Any thread can call requestInterrupt() to request that this thread
   // stop running. To stop this thread, requestInterrupt sets two fields:
-  // interruptBits_ (a bitset of InterruptReasons) and jitStackLimit_ (set to
-  // UINTPTR_MAX). The JS engine must continually poll one of these fields
-  // and call handleInterrupt if either field has the interrupt value.
+  // interruptBits_ (a bitset of InterruptReasons) and jitStackLimit (set to
+  // JS::NativeStackLimitMin). The JS engine must continually poll one of these
+  // fields and call handleInterrupt if either field has the interrupt value.
   //
-  // The point of setting jitStackLimit_ to UINTPTR_MAX is that JIT code
-  // already needs to guard on jitStackLimit_ in every function prologue to
+  // The point of setting jitStackLimit to JS::NativeStackLimitMin is that JIT
+  // code already needs to guard on jitStackLimit in every function prologue to
   // avoid stack overflow, so we avoid a second branch on interruptBits_ by
-  // setting jitStackLimit_ to a value that is guaranteed to fail the guard.)
+  // setting jitStackLimit to a value that is guaranteed to fail the guard.)
   //
-  // Note that the writes to interruptBits_ and jitStackLimit_ use a Relaxed
+  // Note that the writes to interruptBits_ and jitStackLimit use a Relaxed
   // Atomic so, while the writes are guaranteed to eventually be visible to
   // this thread, it can happen in any order. handleInterrupt calls the
   // interrupt callback if either is set, so it really doesn't matter as long
@@ -902,8 +868,12 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
  public:
   void* addressOfInterruptBits() { return &interruptBits_; }
-  void* addressOfJitStackLimit() { return &jitStackLimit; }
+  void* addressOfJitStackLimit() {
+    MOZ_ASSERT(isMainThreadContext());
+    return &jitStackLimit;
+  }
   void* addressOfJitStackLimitNoInterrupt() {
+    MOZ_ASSERT(isMainThreadContext());
     return &jitStackLimitNoInterrupt;
   }
   void* addressOfZone() { return &zone_; }
@@ -916,10 +886,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // object.
   js::FutexThread fx;
 
-  mozilla::Atomic<uintptr_t, mozilla::Relaxed> jitStackLimit;
+  mozilla::Atomic<JS::NativeStackLimit, mozilla::Relaxed> jitStackLimit;
 
   // Like jitStackLimit, but not reset to trigger interrupts.
-  js::ContextData<uintptr_t> jitStackLimitNoInterrupt;
+  js::ContextData<JS::NativeStackLimit> jitStackLimitNoInterrupt;
 
   // Queue of pending jobs as described in ES2016 section 8.4.
   //
@@ -1043,7 +1013,7 @@ extern void DestroyContext(JSContext* cx);
 extern void ReportUsageErrorASCII(JSContext* cx, HandleObject callee,
                                   const char* msg);
 
-extern void ReportIsNotDefined(JSContext* cx, HandlePropertyName name);
+extern void ReportIsNotDefined(JSContext* cx, Handle<PropertyName*> name);
 
 extern void ReportIsNotDefined(JSContext* cx, HandleId id);
 
@@ -1142,22 +1112,6 @@ class MOZ_RAII AutoLockScriptData {
   }
 };
 
-// A token used to prove you can safely access the atoms zone. This zone is
-// accessed by the main thread and by off-thread parsing. There are two
-// situations in which it is safe:
-//
-//  - the current thread holds all atoms table locks (off-thread parsing may be
-//    running and must also take one of these locks for access)
-//
-//  - the GC is running and is collecting the atoms zone (this cannot be started
-//    while off-thread parsing is happening)
-class MOZ_STACK_CLASS AutoAccessAtomsZone {
- public:
-  MOZ_IMPLICIT AutoAccessAtomsZone(const AutoLockAllAtoms& lock) {}
-  MOZ_IMPLICIT AutoAccessAtomsZone(
-      const gc::AutoCheckCanAccessAtomsDuringGC& canAccess) {}
-};
-
 class MOZ_RAII AutoNoteDebuggerEvaluationWithOnNativeCallHook {
   JSContext* cx;
   Debugger* oldValue;
@@ -1211,67 +1165,6 @@ class MOZ_RAII AutoUnsafeCallWithABI {
 };
 
 namespace gc {
-
-// Set/restore the performing GC flag for the current thread.
-class MOZ_RAII AutoSetThreadIsPerformingGC {
-  JSContext* cx;
-  bool prev;
-
- public:
-  AutoSetThreadIsPerformingGC()
-      : cx(TlsContext.get()), prev(cx->defaultFreeOp()->isCollecting_) {
-    cx->defaultFreeOp()->isCollecting_ = true;
-  }
-
-  ~AutoSetThreadIsPerformingGC() { cx->defaultFreeOp()->isCollecting_ = prev; }
-};
-
-struct MOZ_RAII AutoSetThreadGCUse {
- protected:
-#ifndef DEBUG
-  explicit AutoSetThreadGCUse(JSContext::GCUse use, Zone* sweepZone = nullptr) {
-  }
-#else
-  explicit AutoSetThreadGCUse(JSContext::GCUse use, Zone* sweepZone = nullptr)
-      : cx(TlsContext.get()), prevUse(cx->gcUse), prevZone(cx->gcSweepZone) {
-    MOZ_ASSERT_IF(sweepZone, use == JSContext::GCUse::Sweeping);
-    cx->gcUse = use;
-    cx->gcSweepZone = sweepZone;
-  }
-
-  ~AutoSetThreadGCUse() {
-    cx->gcUse = prevUse;
-    cx->gcSweepZone = prevZone;
-    MOZ_ASSERT_IF(cx->gcUse == JSContext::GCUse::None, !cx->gcSweepZone);
-  }
-
- private:
-  JSContext* cx;
-  JSContext::GCUse prevUse;
-  JS::Zone* prevZone;
-#endif
-};
-
-// In debug builds, update the context state to indicate that the current thread
-// is being used for GC marking.
-struct MOZ_RAII AutoSetThreadIsMarking : public AutoSetThreadGCUse {
-  explicit AutoSetThreadIsMarking()
-      : AutoSetThreadGCUse(JSContext::GCUse::Marking) {}
-};
-
-// In debug builds, update the context state to indicate that the current thread
-// is being used for GC sweeping.
-struct MOZ_RAII AutoSetThreadIsSweeping : public AutoSetThreadGCUse {
-  explicit AutoSetThreadIsSweeping(Zone* zone = nullptr)
-      : AutoSetThreadGCUse(JSContext::GCUse::Sweeping, zone) {}
-};
-
-// In debug builds, update the context state to indicate that the current thread
-// is being used for GC finalization.
-struct MOZ_RAII AutoSetThreadIsFinalizing : public AutoSetThreadGCUse {
-  explicit AutoSetThreadIsFinalizing()
-      : AutoSetThreadGCUse(JSContext::GCUse::Finalizing) {}
-};
 
 // Note that this class does not suppress buffer allocation/reallocation in the
 // nursery, only Cells themselves.

@@ -99,7 +99,7 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
     js::gc::PostWriteBarrierImpl<BigInt>(cellp, prev, next);
   }
 
-  void finalize(JSFreeOp* fop);
+  void finalize(JS::GCContext* gcx);
   js::HashNumber hash() const;
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
   size_t sizeOfExcludingThisInNursery(mozilla::MallocSizeOf mallocSizeOf) const;
@@ -137,8 +137,8 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   static BigInt* bitOr(JSContext* cx, Handle<BigInt*> x, Handle<BigInt*> y);
   static BigInt* bitNot(JSContext* cx, Handle<BigInt*> x);
 
-  static int64_t toInt64(BigInt* x);
-  static uint64_t toUint64(BigInt* x);
+  static int64_t toInt64(const BigInt* x);
+  static uint64_t toUint64(const BigInt* x);
 
   // Return true if the BigInt is without loss of precision representable as an
   // int64 and store the int64 value in the output. Otherwise return false and
@@ -455,8 +455,8 @@ extern JS::BigInt* NumberToBigInt(JSContext* cx, double d);
 
 // Parse a BigInt from a string, using the method specified for StringToBigInt.
 // Used by the BigInt constructor among other places.
-extern JS::Result<JS::BigInt*, JS::OOM> StringToBigInt(
-    JSContext* cx, JS::Handle<JSString*> str);
+extern JS::Result<JS::BigInt*> StringToBigInt(JSContext* cx,
+                                              JS::Handle<JSString*> str);
 
 // Parse a BigInt from an already-validated numeric literal.  Used by the
 // parser.  Can only fail in out-of-memory situations.

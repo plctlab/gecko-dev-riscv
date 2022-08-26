@@ -18,9 +18,7 @@
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/SecurityPolicyViolationEvent.h"
 #include "mozilla/dom/SessionStoreRestoreData.h"
-#include "mozilla/dom/SessionStoreDataCollector.h"
 #include "mozilla/dom/WindowGlobalActorsBinding.h"
-#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/WindowContext.h"
 #include "mozilla/dom/InProcessChild.h"
 #include "mozilla/dom/InProcessParent.h"
@@ -33,7 +31,6 @@
 #include "nsFocusManager.h"
 #include "nsFrameLoaderOwner.h"
 #include "nsGlobalWindowInner.h"
-#include "nsFrameLoaderOwner.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
 #include "nsSerializationHelper.h"
@@ -73,7 +70,8 @@ WindowGlobalChild::WindowGlobalChild(dom::WindowContext* aWindowContext,
   }
   profiler_register_page(BrowsingContext()->BrowserId(), InnerWindowId(),
                          aDocumentURI->GetSpecOrDefault(),
-                         embedderInnerWindowID);
+                         embedderInnerWindowID,
+                         BrowsingContext()->UsePrivateBrowsing());
 }
 
 already_AddRefed<WindowGlobalChild> WindowGlobalChild::Create(
@@ -328,11 +326,6 @@ void WindowGlobalChild::Destroy() {
   if (!browserChild || !browserChild->IsDestroyed()) {
     SendDestroy();
   }
-
-  if (mSessionStoreDataCollector) {
-    mSessionStoreDataCollector->Cancel();
-    mSessionStoreDataCollector = nullptr;
-  }
 }
 
 mozilla::ipc::IPCResult WindowGlobalChild::RecvMakeFrameLocal(
@@ -486,12 +479,6 @@ WindowGlobalChild::RecvSaveStorageAccessPermissionGranted() {
     inner->SaveStorageAccessPermissionGranted();
   }
 
-  nsCOMPtr<nsPIDOMWindowOuter> outer =
-      nsPIDOMWindowOuter::GetFromCurrentInner(inner);
-  if (outer) {
-    nsGlobalWindowOuter::Cast(outer)->SetStorageAccessPermissionGranted(true);
-  }
-
   return IPC_OK();
 }
 
@@ -580,12 +567,12 @@ IPCResult WindowGlobalChild::RecvRawMessage(
   Maybe<StructuredCloneData> data;
   if (aData) {
     data.emplace();
-    data->BorrowFromClonedMessageDataForChild(*aData);
+    data->BorrowFromClonedMessageData(*aData);
   }
   Maybe<StructuredCloneData> stack;
   if (aStack) {
     stack.emplace();
-    stack->BorrowFromClonedMessageDataForChild(*aStack);
+    stack->BorrowFromClonedMessageData(*aStack);
   }
   ReceiveRawMessage(aMeta, std::move(data), std::move(stack));
   return IPC_OK();
@@ -602,7 +589,8 @@ void WindowGlobalChild::SetDocumentURI(nsIURI* aDocumentURI) {
   }
   profiler_register_page(BrowsingContext()->BrowserId(), InnerWindowId(),
                          aDocumentURI->GetSpecOrDefault(),
-                         embedderInnerWindowID);
+                         embedderInnerWindowID,
+                         BrowsingContext()->UsePrivateBrowsing());
   mDocumentURI = aDocumentURI;
   SendUpdateDocumentURI(aDocumentURI);
 }
@@ -636,7 +624,8 @@ already_AddRefed<JSWindowActorChild> WindowGlobalChild::GetExistingActor(
 }
 
 already_AddRefed<JSActor> WindowGlobalChild::InitJSActor(
-    JS::HandleObject aMaybeActor, const nsACString& aName, ErrorResult& aRv) {
+    JS::Handle<JSObject*> aMaybeActor, const nsACString& aName,
+    ErrorResult& aRv) {
   RefPtr<JSWindowActorChild> actor;
   if (aMaybeActor.get()) {
     aRv = UNWRAP_OBJECT(JSWindowActorChild, aMaybeActor.get(), actor);
@@ -703,20 +692,9 @@ nsISupports* WindowGlobalChild::GetParentObject() {
   return xpc::NativeGlobal(xpc::PrivilegedJunkScope());
 }
 
-void WindowGlobalChild::SetSessionStoreDataCollector(
-    SessionStoreDataCollector* aCollector) {
-  mSessionStoreDataCollector = aCollector;
-}
-
-SessionStoreDataCollector* WindowGlobalChild::GetSessionStoreDataCollector()
-    const {
-  return mSessionStoreDataCollector;
-}
-
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(WindowGlobalChild, mWindowGlobal,
                                                mContainerFeaturePolicy,
-                                               mWindowContext,
-                                               mSessionStoreDataCollector)
+                                               mWindowContext)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WindowGlobalChild)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY

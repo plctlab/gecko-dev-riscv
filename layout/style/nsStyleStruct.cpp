@@ -30,7 +30,8 @@
 #include "imgIContainer.h"
 #include "CounterStyleManager.h"
 
-#include "mozilla/dom/AnimationEffectBinding.h"  // for PlaybackDirection
+#include "mozilla/dom/AnimationEffectBinding.h"    // for PlaybackDirection
+#include "mozilla/dom/BaseKeyframeTypesBinding.h"  // for CompositeOperation
 #include "mozilla/dom/DocGroup.h"
 #include "mozilla/dom/ImageTracker.h"
 #include "mozilla/CORSMode.h"
@@ -228,7 +229,7 @@ nsStyleFont::nsStyleFont(const Document& aDocument)
       mFontSizeOffset{0},
       mFontSizeKeyword(StyleFontSizeKeyword::Medium),
       mMathDepth(0),
-      mMathVariant(NS_MATHML_MATHVARIANT_NONE),
+      mMathVariant(StyleMathVariant::None),
       mMathStyle(NS_STYLE_MATH_STYLE_NORMAL),
       mMinFontSizeRatio(100),  // 100%
       mExplicitLanguage(false),
@@ -240,6 +241,7 @@ nsStyleFont::nsStyleFont(const Document& aDocument)
       mLanguage(aDocument.GetLanguageForStyle()) {
   MOZ_COUNT_CTOR(nsStyleFont);
   MOZ_ASSERT(NS_IsMainThread());
+  mFont.family.is_initial = true;
   mFont.size = mSize;
   if (!nsContentUtils::IsChromeDoc(&aDocument)) {
     Length minimumFontSize =
@@ -298,12 +300,15 @@ static StyleRect<T> StyleRectWithAllSides(const T& aSide) {
 nsStyleMargin::nsStyleMargin(const Document& aDocument)
     : mMargin(StyleRectWithAllSides(
           LengthPercentageOrAuto::LengthPercentage(LengthPercentage::Zero()))),
-      mScrollMargin(StyleRectWithAllSides(StyleLength{0.})) {
+      mScrollMargin(StyleRectWithAllSides(StyleLength{0.})),
+      mOverflowClipMargin(StyleLength::Zero()) {
   MOZ_COUNT_CTOR(nsStyleMargin);
 }
 
 nsStyleMargin::nsStyleMargin(const nsStyleMargin& aSrc)
-    : mMargin(aSrc.mMargin), mScrollMargin(aSrc.mScrollMargin) {
+    : mMargin(aSrc.mMargin),
+      mScrollMargin(aSrc.mScrollMargin),
+      mOverflowClipMargin(aSrc.mOverflowClipMargin) {
   MOZ_COUNT_CTOR(nsStyleMargin);
 }
 
@@ -321,6 +326,10 @@ nsChangeHint nsStyleMargin::CalcDifference(
   if (mScrollMargin != aNewData.mScrollMargin) {
     // FIXME: Bug 1530253 Support re-snapping when scroll-margin changes.
     hint |= nsChangeHint_NeutralChange;
+  }
+
+  if (mOverflowClipMargin != aNewData.mOverflowClipMargin) {
+    hint |= nsChangeHint_UpdateOverflow | nsChangeHint_RepaintFrame;
   }
 
   return hint;
@@ -554,18 +563,21 @@ nsStyleOutline::nsStyleOutline(const nsStyleOutline& aSrc)
 
 nsChangeHint nsStyleOutline::CalcDifference(
     const nsStyleOutline& aNewData) const {
-  if (mActualOutlineWidth != aNewData.mActualOutlineWidth ||
-      (mActualOutlineWidth > 0 && mOutlineOffset != aNewData.mOutlineOffset)) {
+  const bool shouldPaintOutline = ShouldPaintOutline();
+  // We need the explicit 'outline-style: auto' check because
+  // 'outline-style: auto' effectively also changes 'outline-width'.
+  if (shouldPaintOutline != aNewData.ShouldPaintOutline() ||
+      mActualOutlineWidth != aNewData.mActualOutlineWidth ||
+      mOutlineStyle.IsAuto() != aNewData.mOutlineStyle.IsAuto() ||
+      (shouldPaintOutline && mOutlineOffset != aNewData.mOutlineOffset)) {
     return nsChangeHint_UpdateOverflow | nsChangeHint_SchedulePaint |
            nsChangeHint_RepaintFrame;
   }
 
   if (mOutlineStyle != aNewData.mOutlineStyle ||
       mOutlineColor != aNewData.mOutlineColor) {
-    if (mActualOutlineWidth > 0) {
-      return nsChangeHint_RepaintFrame;
-    }
-    return nsChangeHint_NeutralChange;
+    return shouldPaintOutline ? nsChangeHint_RepaintFrame
+                              : nsChangeHint_NeutralChange;
   }
 
   if (mOutlineWidth != aNewData.mOutlineWidth ||
@@ -584,8 +596,7 @@ nsStyleList::nsStyleList(const Document& aDocument)
     : mListStylePosition(NS_STYLE_LIST_STYLE_POSITION_OUTSIDE),
       mQuotes(StyleQuotes::Auto()),
       mListStyleImage(StyleImage::None()),
-      mImageRegion(StyleClipRectOrAuto::Auto()),
-      mMozListReversed(StyleMozListReversed::False) {
+      mImageRegion(StyleClipRectOrAuto::Auto()) {
   MOZ_COUNT_CTOR(nsStyleList);
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -599,8 +610,7 @@ nsStyleList::nsStyleList(const nsStyleList& aSource)
       mCounterStyle(aSource.mCounterStyle),
       mQuotes(aSource.mQuotes),
       mListStyleImage(aSource.mListStyleImage),
-      mImageRegion(aSource.mImageRegion),
-      mMozListReversed(aSource.mMozListReversed) {
+      mImageRegion(aSource.mImageRegion) {
   MOZ_COUNT_CTOR(nsStyleList);
 }
 
@@ -634,11 +644,6 @@ nsChangeHint nsStyleList::CalcDifference(
   } else if (mListStylePosition != aNewData.mListStylePosition ||
              mCounterStyle != aNewData.mCounterStyle) {
     hint = nsChangeHint_NeutralChange;
-  }
-  // This is an internal UA-sheet property that is true only for <ol reversed>
-  // so hopefully it changes rarely.
-  if (mMozListReversed != aNewData.mMozListReversed) {
-    return NS_STYLE_HINT_REFLOW;
   }
   // list-style-image and -moz-image-region may affect some XUL elements
   // regardless of display value, so we still need to check them.
@@ -1046,7 +1051,7 @@ bool nsStyleSVGReset::HasMask() const {
 
 nsChangeHint nsStylePage::CalcDifference(const nsStylePage& aNewData) const {
   // Page rule styling only matters when printing or using print preview.
-  if (aNewData.mSize != mSize) {
+  if (aNewData.mSize != mSize || aNewData.mPage != mPage) {
     return nsChangeHint_NeutralChange;
   }
   return nsChangeHint_Empty;
@@ -1086,7 +1091,9 @@ nsStylePosition::nsStylePosition(const Document& aDocument)
       mGridTemplateRows(StyleGridTemplateComponent::None()),
       mGridTemplateAreas(StyleGridTemplateAreas::None()),
       mColumnGap(NonNegativeLengthPercentageOrNormal::Normal()),
-      mRowGap(NonNegativeLengthPercentageOrNormal::Normal()) {
+      mRowGap(NonNegativeLengthPercentageOrNormal::Normal()),
+      mContainIntrinsicWidth(StyleContainIntrinsicSize::None()),
+      mContainIntrinsicHeight(StyleContainIntrinsicSize::None()) {
   MOZ_COUNT_CTOR(nsStylePosition);
 
   // The initial value of grid-auto-columns and grid-auto-rows is 'auto',
@@ -1139,7 +1146,9 @@ nsStylePosition::nsStylePosition(const nsStylePosition& aSource)
       mGridRowStart(aSource.mGridRowStart),
       mGridRowEnd(aSource.mGridRowEnd),
       mColumnGap(aSource.mColumnGap),
-      mRowGap(aSource.mRowGap) {
+      mRowGap(aSource.mRowGap),
+      mContainIntrinsicWidth(aSource.mContainIntrinsicWidth),
+      mContainIntrinsicHeight(aSource.mContainIntrinsicHeight) {
   MOZ_COUNT_CTOR(nsStylePosition);
 }
 
@@ -1177,6 +1186,11 @@ nsChangeHint nsStylePosition::CalcDifference(
   if (mObjectFit != aNewData.mObjectFit ||
       mObjectPosition != aNewData.mObjectPosition) {
     hint |= nsChangeHint_RepaintFrame | nsChangeHint_NeedReflow;
+  }
+
+  if (mContainIntrinsicWidth != aNewData.mContainIntrinsicWidth ||
+      mContainIntrinsicHeight != aNewData.mContainIntrinsicHeight) {
+    hint |= NS_STYLE_HINT_REFLOW;
   }
 
   if (mOrder != aNewData.mOrder) {
@@ -1303,6 +1317,16 @@ nsChangeHint nsStylePosition::CalcDifference(
     }
   }
   return hint;
+}
+
+const StyleContainIntrinsicSize& nsStylePosition::ContainIntrinsicBSize(
+    const WritingMode& aWM) const {
+  return aWM.IsVertical() ? mContainIntrinsicWidth : mContainIntrinsicHeight;
+}
+
+const StyleContainIntrinsicSize& nsStylePosition::ContainIntrinsicISize(
+    const WritingMode& aWM) const {
+  return aWM.IsVertical() ? mContainIntrinsicHeight : mContainIntrinsicWidth;
 }
 
 StyleAlignSelf nsStylePosition::UsedAlignSelf(
@@ -2123,7 +2147,7 @@ bool nsStyleBackground::IsTransparent(const nsIFrame* aFrame) const {
   return IsTransparent(aFrame->Style());
 }
 
-bool nsStyleBackground::IsTransparent(mozilla::ComputedStyle* aStyle) const {
+bool nsStyleBackground::IsTransparent(const ComputedStyle* aStyle) const {
   return BottomLayer().mImage.IsNone() && mImage.mImageCount == 1 &&
          NS_GET_A(BackgroundColor(aStyle)) == 0;
 }
@@ -2131,7 +2155,8 @@ bool nsStyleBackground::IsTransparent(mozilla::ComputedStyle* aStyle) const {
 StyleTransition::StyleTransition(const StyleTransition& aCopy) = default;
 
 void StyleTransition::SetInitialValues() {
-  mTimingFunction = nsTimingFunction(StyleTimingKeyword::Ease);
+  mTimingFunction =
+      StyleComputedTimingFunction::Keyword(StyleTimingKeyword::Ease);
   mDuration = 0.0;
   mDelay = 0.0;
   mProperty = eCSSPropertyExtra_all_properties;
@@ -2148,7 +2173,8 @@ bool StyleTransition::operator==(const StyleTransition& aOther) const {
 StyleAnimation::StyleAnimation(const StyleAnimation& aCopy) = default;
 
 void StyleAnimation::SetInitialValues() {
-  mTimingFunction = nsTimingFunction(StyleTimingKeyword::Ease);
+  mTimingFunction =
+      StyleComputedTimingFunction::Keyword(StyleTimingKeyword::Ease);
   mDuration = 0.0;
   mDelay = 0.0;
   mName = nsGkAtoms::_empty;
@@ -2156,6 +2182,7 @@ void StyleAnimation::SetInitialValues() {
   mFillMode = dom::FillMode::None;
   mPlayState = StyleAnimationPlayState::Running;
   mIterationCount = 1.0f;
+  mComposition = dom::CompositeOperation::Replace;
   mTimeline = StyleAnimationTimeline::Auto();
 }
 
@@ -2165,34 +2192,18 @@ bool StyleAnimation::operator==(const StyleAnimation& aOther) const {
          mName == aOther.mName && mDirection == aOther.mDirection &&
          mFillMode == aOther.mFillMode && mPlayState == aOther.mPlayState &&
          mIterationCount == aOther.mIterationCount &&
-         mTimeline == aOther.mTimeline;
+         mComposition == aOther.mComposition && mTimeline == aOther.mTimeline;
 }
 
 // --------------------
 // nsStyleDisplay
 //
 nsStyleDisplay::nsStyleDisplay(const Document& aDocument)
-    : mTransitions(
-          nsStyleAutoArray<StyleTransition>::WITH_SINGLE_INITIAL_ELEMENT),
-      mTransitionTimingFunctionCount(1),
-      mTransitionDurationCount(1),
-      mTransitionDelayCount(1),
-      mTransitionPropertyCount(1),
-      mAnimations(
-          nsStyleAutoArray<StyleAnimation>::WITH_SINGLE_INITIAL_ELEMENT),
-      mAnimationTimingFunctionCount(1),
-      mAnimationDurationCount(1),
-      mAnimationDelayCount(1),
-      mAnimationNameCount(1),
-      mAnimationDirectionCount(1),
-      mAnimationFillModeCount(1),
-      mAnimationPlayStateCount(1),
-      mAnimationIterationCountCount(1),
-      mAnimationTimelineCount(1),
-      mWillChange{{}, {0}},
-      mDisplay(StyleDisplay::Inline),
+    : mDisplay(StyleDisplay::Inline),
       mOriginalDisplay(StyleDisplay::Inline),
       mContain(StyleContain::NONE),
+      mContentVisibility(StyleContentVisibility::Visible),
+      mContainerType(StyleContainerType::NONE),
       mAppearance(StyleAppearance::None),
       mDefaultAppearance(StyleAppearance::None),
       mPosition(StylePositionProperty::Static),
@@ -2205,6 +2216,7 @@ nsStyleDisplay::nsStyleDisplay(const Document& aDocument)
       mOverflowY(StyleOverflow::Visible),
       mOverflowClipBoxBlock(StyleOverflowClipBox::PaddingBox),
       mOverflowClipBoxInline(StyleOverflowClipBox::PaddingBox),
+      mScrollbarGutter(StyleScrollbarGutter::AUTO),
       mResize(StyleResize::None),
       mOrient(StyleOrient::Inline),
       mIsolation(StyleIsolation::Auto),
@@ -2218,13 +2230,13 @@ nsStyleDisplay::nsStyleDisplay(const Document& aDocument)
                        StyleScrollSnapAlignKeyword::None},
       mScrollSnapType{StyleScrollSnapAxis::Both,
                       StyleScrollSnapStrictness::None},
-      mLineClamp(0),
-      mRotate(StyleRotate::None()),
-      mTranslate(StyleTranslate::None()),
-      mScale(StyleScale::None()),
       mBackfaceVisibility(StyleBackfaceVisibility::Visible),
       mTransformStyle(StyleTransformStyle::Flat),
       mTransformBox(StyleGeometryBox::BorderBox),
+      mRotate(StyleRotate::None()),
+      mTranslate(StyleTranslate::None()),
+      mScale(StyleScale::None()),
+      mWillChange{{}, {0}},
       mOffsetPath(StyleOffsetPath::None()),
       mOffsetDistance(LengthPercentage::Zero()),
       mOffsetRotate{true, StyleAngle{0.0}},
@@ -2236,34 +2248,18 @@ nsStyleDisplay::nsStyleDisplay(const Document& aDocument)
       mPerspectiveOrigin(Position::FromPercentage(0.5f)),
       mVerticalAlign(
           StyleVerticalAlign::Keyword(StyleVerticalAlignKeyword::Baseline)),
+      mLineClamp(0),
       mShapeMargin(LengthPercentage::Zero()),
       mShapeOutside(StyleShapeOutside::None()) {
   MOZ_COUNT_CTOR(nsStyleDisplay);
-
-  mTransitions[0].SetInitialValues();
-  mAnimations[0].SetInitialValues();
 }
 
 nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
-    : mTransitions(aSource.mTransitions.Clone()),
-      mTransitionTimingFunctionCount(aSource.mTransitionTimingFunctionCount),
-      mTransitionDurationCount(aSource.mTransitionDurationCount),
-      mTransitionDelayCount(aSource.mTransitionDelayCount),
-      mTransitionPropertyCount(aSource.mTransitionPropertyCount),
-      mAnimations(aSource.mAnimations.Clone()),
-      mAnimationTimingFunctionCount(aSource.mAnimationTimingFunctionCount),
-      mAnimationDurationCount(aSource.mAnimationDurationCount),
-      mAnimationDelayCount(aSource.mAnimationDelayCount),
-      mAnimationNameCount(aSource.mAnimationNameCount),
-      mAnimationDirectionCount(aSource.mAnimationDirectionCount),
-      mAnimationFillModeCount(aSource.mAnimationFillModeCount),
-      mAnimationPlayStateCount(aSource.mAnimationPlayStateCount),
-      mAnimationIterationCountCount(aSource.mAnimationIterationCountCount),
-      mAnimationTimelineCount(aSource.mAnimationTimelineCount),
-      mWillChange(aSource.mWillChange),
-      mDisplay(aSource.mDisplay),
+    : mDisplay(aSource.mDisplay),
       mOriginalDisplay(aSource.mOriginalDisplay),
       mContain(aSource.mContain),
+      mContentVisibility(aSource.mContentVisibility),
+      mContainerType(aSource.mContainerType),
       mAppearance(aSource.mAppearance),
       mDefaultAppearance(aSource.mDefaultAppearance),
       mPosition(aSource.mPosition),
@@ -2276,6 +2272,7 @@ nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
       mOverflowY(aSource.mOverflowY),
       mOverflowClipBoxBlock(aSource.mOverflowClipBoxBlock),
       mOverflowClipBoxInline(aSource.mOverflowClipBoxInline),
+      mScrollbarGutter(aSource.mScrollbarGutter),
       mResize(aSource.mResize),
       mOrient(aSource.mOrient),
       mIsolation(aSource.mIsolation),
@@ -2287,14 +2284,15 @@ nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
       mOverflowAnchor(aSource.mOverflowAnchor),
       mScrollSnapAlign(aSource.mScrollSnapAlign),
       mScrollSnapType(aSource.mScrollSnapType),
-      mLineClamp(aSource.mLineClamp),
+      mBackfaceVisibility(aSource.mBackfaceVisibility),
+      mTransformStyle(aSource.mTransformStyle),
+      mTransformBox(aSource.mTransformBox),
       mTransform(aSource.mTransform),
       mRotate(aSource.mRotate),
       mTranslate(aSource.mTranslate),
       mScale(aSource.mScale),
-      mBackfaceVisibility(aSource.mBackfaceVisibility),
-      mTransformStyle(aSource.mTransformStyle),
-      mTransformBox(aSource.mTransformBox),
+      mContainerName(aSource.mContainerName),
+      mWillChange(aSource.mWillChange),
       mOffsetPath(aSource.mOffsetPath),
       mOffsetDistance(aSource.mOffsetDistance),
       mOffsetRotate(aSource.mOffsetRotate),
@@ -2303,6 +2301,7 @@ nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
       mChildPerspective(aSource.mChildPerspective),
       mPerspectiveOrigin(aSource.mPerspectiveOrigin),
       mVerticalAlign(aSource.mVerticalAlign),
+      mLineClamp(aSource.mLineClamp),
       mShapeImageThreshold(aSource.mShapeImageThreshold),
       mShapeMargin(aSource.mShapeMargin),
       mShapeOutside(aSource.mShapeOutside) {
@@ -2382,30 +2381,54 @@ static bool ScrollbarGenerationChanged(const nsStyleDisplay& aOld,
          changed(aOld.mOverflowY, aNew.mOverflowY);
 }
 
+static bool AppearanceValueAffectsFrames(StyleAppearance aDefaultAppearance,
+                                         StyleAppearance aAppearance) {
+  switch (aAppearance) {
+    case StyleAppearance::Textfield:
+      // This is for <input type=number> where we allow authors to specify a
+      // |-moz-appearance:textfield| to get a control without a spinner. (The
+      // spinner is present for |-moz-appearance:number-input| but also other
+      // values such as 'none'.) We need to reframe since this affects the
+      // spinbox creation in nsNumberControlFrame::CreateAnonymousContent.
+      return aDefaultAppearance == StyleAppearance::NumberInput;
+    case StyleAppearance::Menulist:
+      // This affects the menulist button creation.
+      return aDefaultAppearance == StyleAppearance::Menulist;
+    default:
+      return false;
+  }
+}
+
 nsChangeHint nsStyleDisplay::CalcDifference(
     const nsStyleDisplay& aNewData, const nsStylePosition& aOldPosition) const {
   if (mDisplay != aNewData.mDisplay || mContain != aNewData.mContain ||
       (mFloat == StyleFloat::None) != (aNewData.mFloat == StyleFloat::None) ||
-      mScrollBehavior != aNewData.mScrollBehavior ||
-      mScrollSnapType != aNewData.mScrollSnapType ||
       mTopLayer != aNewData.mTopLayer || mResize != aNewData.mResize) {
+    return nsChangeHint_ReconstructFrame;
+  }
+
+  // `content-visibility` can impact whether or not this frame has containment,
+  // so we reconstruct the frame like we do above.
+  // TODO: We should avoid reconstruction here, per bug 1765615.
+  if (mContentVisibility != aNewData.mContentVisibility) {
+    return nsChangeHint_ReconstructFrame;
+  }
+
+  // Same issue as above for now.
+  if (mContainerType != aNewData.mContainerType) {
     return nsChangeHint_ReconstructFrame;
   }
 
   auto oldAppearance = EffectiveAppearance();
   auto newAppearance = aNewData.EffectiveAppearance();
-
-  if ((oldAppearance == StyleAppearance::Textfield &&
-       newAppearance != StyleAppearance::Textfield) ||
-      (oldAppearance != StyleAppearance::Textfield &&
-       newAppearance == StyleAppearance::Textfield)) {
-    // This is for <input type=number> where we allow authors to specify a
-    // |-moz-appearance:textfield| to get a control without a spinner. (The
-    // spinner is present for |-moz-appearance:number-input| but also other
-    // values such as 'none'.) We need to reframe since we want to use
-    // nsTextControlFrame instead of nsNumberControlFrame if the author
-    // specifies 'textfield'.
-    return nsChangeHint_ReconstructFrame;
+  if (oldAppearance != newAppearance) {
+    // Changes to the relevant default appearance changes in
+    // AppearanceValueRequiresFrameReconstruction require reconstruction on
+    // their own, so we can just pick either the new or the old.
+    if (AppearanceValueAffectsFrames(oldAppearance, mDefaultAppearance) ||
+        AppearanceValueAffectsFrames(newAppearance, mDefaultAppearance)) {
+      return nsChangeHint_ReconstructFrame;
+    }
   }
 
   auto hint = nsChangeHint(0);
@@ -2424,8 +2447,8 @@ nsChangeHint nsStyleDisplay::CalcDifference(
     }
     // We start or stop being a containing block for abspos descendants. This
     // also causes painting to change, as we'd become a pseudo-stacking context.
-    if (IsRelativelyPositionedStyle() !=
-        aNewData.IsRelativelyPositionedStyle()) {
+    if (IsRelativelyOrStickyPositionedStyle() !=
+        aNewData.IsRelativelyOrStickyPositionedStyle()) {
       hint |= nsChangeHint_UpdateContainingBlock | nsChangeHint_RepaintFrame;
     }
     if (IsPositionForcingStackingContext() !=
@@ -2437,8 +2460,12 @@ nsChangeHint nsStyleDisplay::CalcDifference(
     hint |= nsChangeHint_NeedReflow | nsChangeHint_ReflowChangesSizeOrPosition;
   }
 
-  if (mScrollSnapAlign != aNewData.mScrollSnapAlign) {
-    // FIXME: Bug 1530253 Support re-snapping when scroll-snap-align changes.
+  if (mScrollSnapAlign != aNewData.mScrollSnapAlign ||
+      mScrollSnapType != aNewData.mScrollSnapType ||
+      mScrollSnapStop != aNewData.mScrollSnapStop) {
+    hint |= nsChangeHint_RepaintFrame;
+  }
+  if (mScrollBehavior != aNewData.mScrollBehavior) {
     hint |= nsChangeHint_NeutralChange;
   }
 
@@ -2450,17 +2477,10 @@ nsChangeHint nsStyleDisplay::CalcDifference(
       hint |= nsChangeHint_ScrollbarChange;
     } else if (isScrollable) {
       if (ScrollbarGenerationChanged(*this, aNewData)) {
-        // We need to reframe in the case of hidden -> non-hidden case though,
-        // since ScrollFrameHelper::CreateAnonymousContent avoids creating
-        // scrollbars altogether for overflow: hidden. That seems it could
-        // create some interesting perf cliffs...
-        //
-        // We reframe when non-hidden -> hidden too, for now.
-        //
-        // FIXME(bug 1590247): Seems we could avoid reframing once we've created
-        // scrollbars, which should get us the optimization for elements that
-        // have toggled scrollbars, but would prevent the cliff of toggling
-        // overflow causing jank.
+        // We might need to reframe in the case of hidden -> non-hidden case
+        // though, since ScrollFrameHelper::CreateAnonymousContent avoids
+        // creating scrollbars altogether for overflow: hidden. That seems it
+        // could create some interesting perf cliffs...
         hint |= nsChangeHint_ScrollbarChange;
       } else {
         // Otherwise, for changes where both overflow values are scrollable,
@@ -2476,21 +2496,16 @@ nsChangeHint nsStyleDisplay::CalcDifference(
     }
   }
 
-  /* Note: When mScrollBehavior or mScrollSnapType are changed,
-   * nsChangeHint_NeutralChange is not sufficient to enter
-   * nsCSSFrameConstructor::PropagateScrollToViewport. By using the same hint as
-   * used when the overflow css property changes, nsChangeHint_ReconstructFrame,
-   * PropagateScrollToViewport will be called.
-   *
-   * The scroll-behavior css property is not expected to change often (the
-   * CSSOM-View DOM methods are likely to be used in those cases); however,
-   * if this does become common perhaps a faster-path might be worth while.
-   *
-   * FIXME(emilio): Can we do what we do for overflow changes?
-   *
-   * FIXME(emilio): These properties no longer propagate from the body to the
-   * viewport.
-   */
+  if (mScrollbarGutter != aNewData.mScrollbarGutter) {
+    if (IsScrollableOverflow()) {
+      // Changing scrollbar-gutter affects available inline-size of a inner
+      // scrolled frame, so we need a reflow for scrollbar change.
+      hint |= nsChangeHint_ReflowHintsForScrollbarChange;
+    } else {
+      // scrollbar-gutter only applies to the scroll containers.
+      hint |= nsChangeHint_NeutralChange;
+    }
+  }
 
   if (mFloat != aNewData.mFloat) {
     // Changing which side we're floating on (float:none was handled above).
@@ -2560,28 +2575,7 @@ nsChangeHint nsStyleDisplay::CalcDifference(
      * comparisons but turn all the resulting change hints into
      * nsChangeHint_NeutralChange.
      */
-    nsChangeHint transformHint = nsChangeHint(0);
-
-    transformHint |= CompareTransformValues(mTransform, aNewData.mTransform);
-    transformHint |= CompareTransformValues(mRotate, aNewData.mRotate);
-    transformHint |= CompareTransformValues(mTranslate, aNewData.mTranslate);
-    transformHint |= CompareTransformValues(mScale, aNewData.mScale);
-    transformHint |= CompareMotionValues(*this, aNewData);
-
-    if (mTransformOrigin != aNewData.mTransformOrigin) {
-      transformHint |= nsChangeHint_UpdateTransformLayer |
-                       nsChangeHint_UpdatePostTransformOverflow;
-    }
-
-    if (mPerspectiveOrigin != aNewData.mPerspectiveOrigin ||
-        mTransformStyle != aNewData.mTransformStyle ||
-        mTransformBox != aNewData.mTransformBox) {
-      transformHint |= nsChangeHint_UpdateOverflow | nsChangeHint_RepaintFrame;
-    }
-
-    if (mBackfaceVisibility != aNewData.mBackfaceVisibility) {
-      transformHint |= nsChangeHint_RepaintFrame;
-    }
+    nsChangeHint transformHint = CalcTransformPropertyDifference(aNewData);
 
     if (transformHint) {
       if (HasTransformStyle()) {
@@ -2666,30 +2660,44 @@ nsChangeHint nsStyleDisplay::CalcDifference(
   // But we still need to return nsChangeHint_NeutralChange for these
   // properties, since some data did change in the style struct.
 
-  if (!hint && (mTransitions != aNewData.mTransitions ||
-                mTransitionTimingFunctionCount !=
-                    aNewData.mTransitionTimingFunctionCount ||
-                mTransitionDurationCount != aNewData.mTransitionDurationCount ||
-                mTransitionDelayCount != aNewData.mTransitionDelayCount ||
-                mTransitionPropertyCount != aNewData.mTransitionPropertyCount ||
-                mAnimations != aNewData.mAnimations ||
-                mAnimationTimingFunctionCount !=
-                    aNewData.mAnimationTimingFunctionCount ||
-                mAnimationDurationCount != aNewData.mAnimationDurationCount ||
-                mAnimationDelayCount != aNewData.mAnimationDelayCount ||
-                mAnimationNameCount != aNewData.mAnimationNameCount ||
-                mAnimationDirectionCount != aNewData.mAnimationDirectionCount ||
-                mAnimationFillModeCount != aNewData.mAnimationFillModeCount ||
-                mAnimationPlayStateCount != aNewData.mAnimationPlayStateCount ||
-                mAnimationIterationCountCount !=
-                    aNewData.mAnimationIterationCountCount ||
-                mAnimationTimelineCount != aNewData.mAnimationTimelineCount ||
-                mWillChange != aNewData.mWillChange ||
-                mOverflowAnchor != aNewData.mOverflowAnchor)) {
+  // TODO(emilio): Figure out change hints for container-name, maybe it needs to
+  // be handled by the style system as a special-case (since it changes
+  // container-query selection on descendants).
+  if (!hint && (mWillChange != aNewData.mWillChange ||
+                mOverflowAnchor != aNewData.mOverflowAnchor ||
+                mContainerName != aNewData.mContainerName)) {
     hint |= nsChangeHint_NeutralChange;
   }
 
   return hint;
+}
+
+nsChangeHint nsStyleDisplay::CalcTransformPropertyDifference(
+    const nsStyleDisplay& aNewData) const {
+  nsChangeHint transformHint = nsChangeHint(0);
+
+  transformHint |= CompareTransformValues(mTransform, aNewData.mTransform);
+  transformHint |= CompareTransformValues(mRotate, aNewData.mRotate);
+  transformHint |= CompareTransformValues(mTranslate, aNewData.mTranslate);
+  transformHint |= CompareTransformValues(mScale, aNewData.mScale);
+  transformHint |= CompareMotionValues(*this, aNewData);
+
+  if (mTransformOrigin != aNewData.mTransformOrigin) {
+    transformHint |= nsChangeHint_UpdateTransformLayer |
+                     nsChangeHint_UpdatePostTransformOverflow;
+  }
+
+  if (mPerspectiveOrigin != aNewData.mPerspectiveOrigin ||
+      mTransformStyle != aNewData.mTransformStyle ||
+      mTransformBox != aNewData.mTransformBox) {
+    transformHint |= nsChangeHint_UpdateOverflow | nsChangeHint_RepaintFrame;
+  }
+
+  if (mBackfaceVisibility != aNewData.mBackfaceVisibility) {
+    transformHint |= nsChangeHint_RepaintFrame;
+  }
+
+  return transformHint;
 }
 
 // --------------------
@@ -2705,7 +2713,8 @@ nsStyleVisibility::nsStyleVisibility(const Document& aDocument)
       mImageRendering(StyleImageRendering::Auto),
       mWritingMode(StyleWritingModeProperty::HorizontalTb),
       mTextOrientation(StyleTextOrientation::Mixed),
-      mColorAdjust(StyleColorAdjust::Economy) {
+      mMozBoxLayout(StyleMozBoxLayout::Legacy),
+      mPrintColorAdjust(StylePrintColorAdjust::Economy) {
   MOZ_COUNT_CTOR(nsStyleVisibility);
 }
 
@@ -2716,7 +2725,8 @@ nsStyleVisibility::nsStyleVisibility(const nsStyleVisibility& aSource)
       mImageRendering(aSource.mImageRendering),
       mWritingMode(aSource.mWritingMode),
       mTextOrientation(aSource.mTextOrientation),
-      mColorAdjust(aSource.mColorAdjust) {
+      mMozBoxLayout(aSource.mMozBoxLayout),
+      mPrintColorAdjust(aSource.mPrintColorAdjust) {
   MOZ_COUNT_CTOR(nsStyleVisibility);
 }
 
@@ -2725,39 +2735,39 @@ nsChangeHint nsStyleVisibility::CalcDifference(
   nsChangeHint hint = nsChangeHint(0);
 
   if (mDirection != aNewData.mDirection ||
-      mWritingMode != aNewData.mWritingMode) {
+      mWritingMode != aNewData.mWritingMode ||
+      mMozBoxLayout != aNewData.mMozBoxLayout) {
     // It's important that a change in mWritingMode results in frame
     // reconstruction, because it may affect intrinsic size (see
     // nsSubDocumentFrame::GetIntrinsicISize/BSize).
     // Also, the used writing-mode value is now a field on nsIFrame and some
     // classes (e.g. table rows/cells) copy their value from an ancestor.
-    hint |= nsChangeHint_ReconstructFrame;
-  } else {
-    if ((mImageOrientation != aNewData.mImageOrientation)) {
-      hint |= nsChangeHint_AllReflowHints | nsChangeHint_RepaintFrame;
+    return nsChangeHint_ReconstructFrame;
+  }
+  if (mImageOrientation != aNewData.mImageOrientation) {
+    hint |= nsChangeHint_AllReflowHints | nsChangeHint_RepaintFrame;
+  }
+  if (mVisible != aNewData.mVisible) {
+    if (mVisible == StyleVisibility::Visible ||
+        aNewData.mVisible == StyleVisibility::Visible) {
+      hint |= nsChangeHint_VisibilityChange;
     }
-    if (mVisible != aNewData.mVisible) {
-      if (mVisible == StyleVisibility::Visible ||
-          aNewData.mVisible == StyleVisibility::Visible) {
-        hint |= nsChangeHint_VisibilityChange;
-      }
-      if (StyleVisibility::Collapse == mVisible ||
-          StyleVisibility::Collapse == aNewData.mVisible) {
-        hint |= NS_STYLE_HINT_REFLOW;
-      } else {
-        hint |= NS_STYLE_HINT_VISUAL;
-      }
-    }
-    if (mTextOrientation != aNewData.mTextOrientation) {
+    if (StyleVisibility::Collapse == mVisible ||
+        StyleVisibility::Collapse == aNewData.mVisible) {
       hint |= NS_STYLE_HINT_REFLOW;
+    } else {
+      hint |= NS_STYLE_HINT_VISUAL;
     }
-    if (mImageRendering != aNewData.mImageRendering) {
-      hint |= nsChangeHint_RepaintFrame;
-    }
-    if (mColorAdjust != aNewData.mColorAdjust) {
-      // color-adjust only affects media where dynamic changes can't happen.
-      hint |= nsChangeHint_NeutralChange;
-    }
+  }
+  if (mTextOrientation != aNewData.mTextOrientation) {
+    hint |= NS_STYLE_HINT_REFLOW;
+  }
+  if (mImageRendering != aNewData.mImageRendering) {
+    hint |= nsChangeHint_RepaintFrame;
+  }
+  if (mPrintColorAdjust != aNewData.mPrintColorAdjust) {
+    // color-adjust only affects media where dynamic changes can't happen.
+    hint |= nsChangeHint_NeutralChange;
   }
   return hint;
 }
@@ -2887,8 +2897,9 @@ nsChangeHint nsStyleTextReset::CalcDifference(
 //
 
 static StyleRGBA DefaultColor(const Document& aDocument) {
-  return StyleRGBA::FromColor(
-      PreferenceSheet::PrefsFor(aDocument).mColors.mDefault);
+  return StyleRGBA::FromColor(PreferenceSheet::PrefsFor(aDocument)
+                                  .ColorsFor(aDocument.DefaultColorScheme())
+                                  .mDefault);
 }
 
 nsStyleText::nsStyleText(const Document& aDocument)
@@ -2961,7 +2972,8 @@ nsStyleText::nsStyleText(const nsStyleText& aSource)
       mTextUnderlinePosition(aSource.mTextUnderlinePosition),
       mWebkitTextStrokeWidth(aSource.mWebkitTextStrokeWidth),
       mTextShadow(aSource.mTextShadow),
-      mTextEmphasisStyle(aSource.mTextEmphasisStyle) {
+      mTextEmphasisStyle(aSource.mTextEmphasisStyle),
+      mHyphenateCharacter(aSource.mHyphenateCharacter) {
   MOZ_COUNT_CTOR(nsStyleText);
 }
 
@@ -2995,7 +3007,8 @@ nsChangeHint nsStyleText::CalcDifference(const nsStyleText& aNewData) const {
       (mTextIndent != aNewData.mTextIndent) ||
       (mTextJustify != aNewData.mTextJustify) ||
       (mWordSpacing != aNewData.mWordSpacing) ||
-      (mTabSize != aNewData.mTabSize)) {
+      (mTabSize != aNewData.mTabSize) ||
+      (mHyphenateCharacter != aNewData.mHyphenateCharacter)) {
     return NS_STYLE_HINT_REFLOW;
   }
 
@@ -3120,28 +3133,38 @@ void nsStyleUI::TriggerImageLoads(Document& aDocument,
 }
 
 nsChangeHint nsStyleUI::CalcDifference(const nsStyleUI& aNewData) const {
+  // SVGGeometryFrame's mRect depends on stroke _and_ on the value of
+  // pointer-events. See SVGGeometryFrame::ReflowSVG's use of GetHitTestFlags.
+  // (Only a reflow, no visual change.)
+  //
+  // pointer-events changes can change event regions overrides on layers and
+  // so needs a repaint.
+  const auto kPointerEventsHint =
+      nsChangeHint_NeedReflow |
+      nsChangeHint_NeedDirtyReflow |  // XXX remove me: bug 876085
+      nsChangeHint_SchedulePaint;
+
   nsChangeHint hint = nsChangeHint(0);
   if (mCursor != aNewData.mCursor) {
     hint |= nsChangeHint_UpdateCursor;
   }
 
   if (mPointerEvents != aNewData.mPointerEvents) {
-    // SVGGeometryFrame's mRect depends on stroke _and_ on the value
-    // of pointer-events. See SVGGeometryFrame::ReflowSVG's use of
-    // GetHitTestFlags. (Only a reflow, no visual change.)
-    hint |= nsChangeHint_NeedReflow |
-            nsChangeHint_NeedDirtyReflow |  // XXX remove me: bug 876085
-            nsChangeHint_SchedulePaint;     // pointer-events changes can change
-                                            // event regions overrides on layers
-                                            // and so needs a repaint.
+    hint |= kPointerEventsHint;
   }
 
   if (mUserModify != aNewData.mUserModify) {
     hint |= NS_STYLE_HINT_VISUAL;
   }
 
-  if (mUserFocus != aNewData.mUserFocus || mInert != aNewData.mInert ||
-      mUserInput != aNewData.mUserInput) {
+  if (mInert != aNewData.mInert) {
+    // inert affects pointer-events, user-modify, user-select, user-focus and
+    // -moz-user-input, do the union of all them (minus
+    // nsChangeHint_NeutralChange which isn't needed if there's any other hint).
+    hint |= NS_STYLE_HINT_VISUAL | kPointerEventsHint;
+  }
+
+  if (mUserFocus != aNewData.mUserFocus || mUserInput != aNewData.mUserInput) {
     hint |= nsChangeHint_NeutralChange;
   }
 
@@ -3167,10 +3190,32 @@ nsStyleUIReset::nsStyleUIReset(const Document& aDocument)
       mWindowDragging(StyleWindowDragging::Default),
       mWindowShadow(StyleWindowShadow::Default),
       mWindowOpacity(1.0),
+      mMozWindowInputRegionMargin(StyleLength::Zero()),
       mWindowTransformOrigin{LengthPercentage::FromPercentage(0.5),
                              LengthPercentage::FromPercentage(0.5),
-                             {0.}} {
+                             {0.}},
+      mTransitions(
+          nsStyleAutoArray<StyleTransition>::WITH_SINGLE_INITIAL_ELEMENT),
+      mTransitionTimingFunctionCount(1),
+      mTransitionDurationCount(1),
+      mTransitionDelayCount(1),
+      mTransitionPropertyCount(1),
+      mAnimations(
+          nsStyleAutoArray<StyleAnimation>::WITH_SINGLE_INITIAL_ELEMENT),
+      mAnimationTimingFunctionCount(1),
+      mAnimationDurationCount(1),
+      mAnimationDelayCount(1),
+      mAnimationNameCount(1),
+      mAnimationDirectionCount(1),
+      mAnimationFillModeCount(1),
+      mAnimationPlayStateCount(1),
+      mAnimationIterationCountCount(1),
+      mAnimationCompositionCount(1),
+      mAnimationTimelineCount(1),
+      mScrollTimelineAxis(StyleScrollAxis::Block) {
   MOZ_COUNT_CTOR(nsStyleUIReset);
+  mTransitions[0].SetInitialValues();
+  mAnimations[0].SetInitialValues();
 }
 
 nsStyleUIReset::nsStyleUIReset(const nsStyleUIReset& aSource)
@@ -3181,8 +3226,27 @@ nsStyleUIReset::nsStyleUIReset(const nsStyleUIReset& aSource)
       mWindowDragging(aSource.mWindowDragging),
       mWindowShadow(aSource.mWindowShadow),
       mWindowOpacity(aSource.mWindowOpacity),
+      mMozWindowInputRegionMargin(aSource.mMozWindowInputRegionMargin),
       mMozWindowTransform(aSource.mMozWindowTransform),
-      mWindowTransformOrigin(aSource.mWindowTransformOrigin) {
+      mWindowTransformOrigin(aSource.mWindowTransformOrigin),
+      mTransitions(aSource.mTransitions.Clone()),
+      mTransitionTimingFunctionCount(aSource.mTransitionTimingFunctionCount),
+      mTransitionDurationCount(aSource.mTransitionDurationCount),
+      mTransitionDelayCount(aSource.mTransitionDelayCount),
+      mTransitionPropertyCount(aSource.mTransitionPropertyCount),
+      mAnimations(aSource.mAnimations.Clone()),
+      mAnimationTimingFunctionCount(aSource.mAnimationTimingFunctionCount),
+      mAnimationDurationCount(aSource.mAnimationDurationCount),
+      mAnimationDelayCount(aSource.mAnimationDelayCount),
+      mAnimationNameCount(aSource.mAnimationNameCount),
+      mAnimationDirectionCount(aSource.mAnimationDirectionCount),
+      mAnimationFillModeCount(aSource.mAnimationFillModeCount),
+      mAnimationPlayStateCount(aSource.mAnimationPlayStateCount),
+      mAnimationIterationCountCount(aSource.mAnimationIterationCountCount),
+      mAnimationCompositionCount(aSource.mAnimationCompositionCount),
+      mAnimationTimelineCount(aSource.mAnimationTimelineCount),
+      mScrollTimelineName(aSource.mScrollTimelineName),
+      mScrollTimelineAxis(aSource.mScrollTimelineAxis) {
   MOZ_COUNT_CTOR(nsStyleUIReset);
 }
 
@@ -3215,13 +3279,45 @@ nsChangeHint nsStyleUIReset::CalcDifference(
     hint |= nsChangeHint_SchedulePaint;
   }
 
-  if (!hint && (mIMEMode != aNewData.mIMEMode ||
-                mWindowOpacity != aNewData.mWindowOpacity ||
-                mMozWindowTransform != aNewData.mMozWindowTransform)) {
+  if (!hint &&
+      (mTransitions != aNewData.mTransitions ||
+       mTransitionTimingFunctionCount !=
+           aNewData.mTransitionTimingFunctionCount ||
+       mTransitionDurationCount != aNewData.mTransitionDurationCount ||
+       mTransitionDelayCount != aNewData.mTransitionDelayCount ||
+       mTransitionPropertyCount != aNewData.mTransitionPropertyCount ||
+       mAnimations != aNewData.mAnimations ||
+       mAnimationTimingFunctionCount !=
+           aNewData.mAnimationTimingFunctionCount ||
+       mAnimationDurationCount != aNewData.mAnimationDurationCount ||
+       mAnimationDelayCount != aNewData.mAnimationDelayCount ||
+       mAnimationNameCount != aNewData.mAnimationNameCount ||
+       mAnimationDirectionCount != aNewData.mAnimationDirectionCount ||
+       mAnimationFillModeCount != aNewData.mAnimationFillModeCount ||
+       mAnimationPlayStateCount != aNewData.mAnimationPlayStateCount ||
+       mAnimationIterationCountCount !=
+           aNewData.mAnimationIterationCountCount ||
+       mAnimationCompositionCount != aNewData.mAnimationCompositionCount ||
+       mAnimationTimelineCount != aNewData.mAnimationTimelineCount ||
+       mIMEMode != aNewData.mIMEMode ||
+       mWindowOpacity != aNewData.mWindowOpacity ||
+       mMozWindowInputRegionMargin != aNewData.mMozWindowInputRegionMargin ||
+       mMozWindowTransform != aNewData.mMozWindowTransform ||
+       mScrollTimelineName != aNewData.mScrollTimelineName ||
+       mScrollTimelineAxis != aNewData.mScrollTimelineAxis)) {
     hint |= nsChangeHint_NeutralChange;
   }
 
   return hint;
+}
+
+StyleScrollbarWidth nsStyleUIReset::ScrollbarWidth() const {
+  if (MOZ_UNLIKELY(StaticPrefs::layout_css_scrollbar_width_thin_disabled())) {
+    if (mScrollbarWidth == StyleScrollbarWidth::Thin) {
+      return StyleScrollbarWidth::Auto;
+    }
+  }
+  return mScrollbarWidth;
 }
 
 //-----------------------
@@ -3496,4 +3592,91 @@ template <>
 nscoord StyleCalcNode::Resolve(nscoord aBasis,
                                CoordPercentageRounder aRounder) const {
   return ResolveInternal(aBasis, aRounder);
+}
+
+static bool CanUseLastRememberedSize(const nsIFrame& aFrame) {
+  switch (aFrame.StyleDisplay()->mContentVisibility) {
+    case StyleContentVisibility::Visible:
+      return false;
+    case StyleContentVisibility::Auto:
+      // TODO: return true if the element skips its contents, i.e. if it's not
+      // relevant to the user.
+      return false;
+    case StyleContentVisibility::Hidden:
+      return true;
+  }
+  MOZ_ASSERT_UNREACHABLE("Unknown content-visibility value");
+  return false;
+}
+
+static nscoord Resolve(const StyleContainIntrinsicSize& aSize,
+                       nscoord aNoneValue, const nsIFrame& aFrame,
+                       LogicalAxis aAxis) {
+  if (aSize.IsNone()) {
+    return aNoneValue;
+  }
+  if (aSize.IsLength()) {
+    return aSize.AsLength().ToAppUnits();
+  }
+  MOZ_ASSERT(aSize.IsAutoLength());
+  if (const auto* element = Element::FromNodeOrNull(aFrame.GetContent())) {
+    Maybe<float> lastSize = aAxis == eLogicalAxisBlock
+                                ? element->GetLastRememberedBSize()
+                                : element->GetLastRememberedISize();
+    if (lastSize && CanUseLastRememberedSize(aFrame)) {
+      return CSSPixel::ToAppUnits(*lastSize);
+    }
+  }
+  return aSize.AsAutoLength().ToAppUnits();
+}
+
+Maybe<nscoord> ContainSizeAxes::ContainIntrinsicBSize(
+    const nsIFrame& aFrame, nscoord aNoneValue) const {
+  if (!mBContained) {
+    return Nothing();
+  }
+  const StyleContainIntrinsicSize& bSize =
+      aFrame.StylePosition()->ContainIntrinsicBSize(aFrame.GetWritingMode());
+  return Some(Resolve(bSize, aNoneValue, aFrame, eLogicalAxisBlock));
+}
+
+Maybe<nscoord> ContainSizeAxes::ContainIntrinsicISize(
+    const nsIFrame& aFrame, nscoord aNoneValue) const {
+  if (!mIContained) {
+    return Nothing();
+  }
+  const StyleContainIntrinsicSize& iSize =
+      aFrame.StylePosition()->ContainIntrinsicISize(aFrame.GetWritingMode());
+  return Some(Resolve(iSize, aNoneValue, aFrame, eLogicalAxisInline));
+}
+
+nsSize ContainSizeAxes::ContainSize(const nsSize& aUncontainedSize,
+                                    const nsIFrame& aFrame) const {
+  if (!IsAny()) {
+    return aUncontainedSize;
+  }
+  if (aFrame.GetWritingMode().IsVertical()) {
+    return nsSize(
+        ContainIntrinsicBSize(aFrame).valueOr(aUncontainedSize.Width()),
+        ContainIntrinsicISize(aFrame).valueOr(aUncontainedSize.Height()));
+  }
+  return nsSize(
+      ContainIntrinsicISize(aFrame).valueOr(aUncontainedSize.Width()),
+      ContainIntrinsicBSize(aFrame).valueOr(aUncontainedSize.Height()));
+}
+
+IntrinsicSize ContainSizeAxes::ContainIntrinsicSize(
+    const IntrinsicSize& aUncontainedSize, const nsIFrame& aFrame) const {
+  if (!IsAny()) {
+    return aUncontainedSize;
+  }
+  IntrinsicSize result(aUncontainedSize);
+  const bool isVerticalWM = aFrame.GetWritingMode().IsVertical();
+  if (Maybe<nscoord> containBSize = ContainIntrinsicBSize(aFrame)) {
+    (isVerticalWM ? result.width : result.height) = containBSize;
+  }
+  if (Maybe<nscoord> containISize = ContainIntrinsicISize(aFrame)) {
+    (isVerticalWM ? result.height : result.width) = containISize;
+  }
+  return result;
 }

@@ -4,14 +4,15 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const PREF_LOGLEVEL = "browser.policies.loglevel";
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     prefix: "GPOParser.jsm",
@@ -36,14 +37,14 @@ var WindowsGPOParser = {
     try {
       policies = registryToObject(childWrk, policies);
     } catch (e) {
-      log.error(e);
+      lazy.log.error(e);
     } finally {
       childWrk.close();
     }
     // Need an extra check here so we don't
     // JSON.stringify if we aren't in debug mode
-    if (log._maxLogLevel == "debug") {
-      log.debug(JSON.stringify(policies, null, 2));
+    if (lazy.log._maxLogLevel == "debug") {
+      lazy.log.debug(JSON.stringify(policies, null, 2));
     }
     return policies;
   },
@@ -66,7 +67,9 @@ function registryToObject(wrk, policies) {
     for (let i = 0; i < wrk.valueCount; i++) {
       let name = wrk.getValueName(i);
       let value = readRegistryValue(wrk, name);
-      policies[name] = value;
+      if (value != undefined) {
+        policies[name] = value;
+      }
     }
   }
   if (wrk.childCount > 0) {
@@ -95,7 +98,15 @@ function registryToObject(wrk, policies) {
 function readRegistryValue(wrk, value) {
   switch (wrk.getValueType(value)) {
     case 7: // REG_MULTI_SZ
-      return wrk.readStringValue(value).replace(/\0/g, "\n");
+      // While we support JSON in REG_SZ and REG_MULTI_SZ, if it's REG_MULTI_SZ,
+      // we know it must be JSON. So we go ahead and JSON.parse it here so it goes
+      // through the schema validator.
+      try {
+        return JSON.parse(wrk.readStringValue(value).replace(/\0/g, "\n"));
+      } catch (e) {
+        lazy.log.error(`Unable to parse JSON for ${value}`);
+        return undefined;
+      }
     case 2: // REG_EXPAND_SZ
     case wrk.TYPE_STRING:
       return wrk.readStringValue(value);

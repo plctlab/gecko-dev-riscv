@@ -45,6 +45,7 @@ pub trait ClientCertsBackend {
     type Cert: CryptokiObject;
     type Key: CryptokiObject + Sign;
 
+    #[allow(clippy::type_complexity)]
     fn find_objects(&self) -> Result<(Vec<Self::Cert>, Vec<Self::Key>), Error>;
 }
 
@@ -123,13 +124,7 @@ impl ManagerProxy {
             .name("osclientcert".into())
             .spawn(move || {
                 let mut real_manager = Manager::new(backend);
-                loop {
-                    let arguments = match manager_receiver.recv() {
-                        Ok(arguments) => arguments,
-                        Err(_) => {
-                            break;
-                        }
-                    };
+                while let Ok(arguments) = manager_receiver.recv() {
                     let results = match arguments {
                         ManagerArguments::OpenSession(slot_type) => {
                             ManagerReturnValue::OpenSession(real_manager.open_session(slot_type))
@@ -146,7 +141,7 @@ impl ManagerProxy {
                         }
                         ManagerArguments::StartSearch(session, attrs) => {
                             ManagerReturnValue::StartSearch(
-                                real_manager.start_search(session, &attrs),
+                                real_manager.start_search(session, attrs),
                             )
                         }
                         ManagerArguments::Search(session, max_objects) => {
@@ -167,18 +162,15 @@ impl ManagerProxy {
                         }
                         ManagerArguments::GetSignatureLength(session, data) => {
                             ManagerReturnValue::GetSignatureLength(
-                                real_manager.get_signature_length(session, &data),
+                                real_manager.get_signature_length(session, data),
                             )
                         }
                         ManagerArguments::Sign(session, data) => {
-                            ManagerReturnValue::Sign(real_manager.sign(session, &data))
+                            ManagerReturnValue::Sign(real_manager.sign(session, data))
                         }
                         ManagerArguments::Stop => ManagerReturnValue::Stop(Ok(())),
                     };
-                    let stop_after_send = match &results {
-                        &ManagerReturnValue::Stop(_) => true,
-                        _ => false,
-                    };
+                    let stop_after_send = matches!(&results, &ManagerReturnValue::Stop(_));
                     match manager_sender.send(results) {
                         Ok(()) => {}
                         Err(_) => {
@@ -342,7 +334,7 @@ fn search_is_for_all_certificates_or_keys(
     if attrs.len() != 2 {
         return Ok(false);
     }
-    let token_bytes = vec![1 as u8];
+    let token_bytes = vec![1_u8];
     let mut found_token = false;
     let cko_certificate_bytes = serialize_uint(CKO_CERTIFICATE)?;
     let cko_private_key_bytes = serialize_uint(CKO_PRIVATE_KEY)?;
@@ -397,28 +389,28 @@ impl<B: ClientCertsBackend> Object<B> {
 
     fn id(&self) -> Result<&[u8], Error> {
         self.get_attribute(CKA_ID)
-            .ok_or(error_here!(ErrorType::LibraryFailure))
+            .ok_or_else(|| error_here!(ErrorType::LibraryFailure))
     }
 
     fn get_signature_length(
         &mut self,
-        data: &[u8],
+        data: Vec<u8>,
         params: &Option<CK_RSA_PKCS_PSS_PARAMS>,
     ) -> Result<usize, Error> {
         match self {
             Object::Cert(_) => Err(error_here!(ErrorType::InvalidArgument)),
-            Object::Key(key) => key.get_signature_length(data, params),
+            Object::Key(key) => key.get_signature_length(&data, params),
         }
     }
 
     fn sign(
         &mut self,
-        data: &[u8],
+        data: Vec<u8>,
         params: &Option<CK_RSA_PKCS_PSS_PARAMS>,
     ) -> Result<Vec<u8>, Error> {
         match self {
             Object::Cert(_) => Err(error_here!(ErrorType::InvalidArgument)),
-            Object::Key(key) => key.sign(data, params),
+            Object::Key(key) => key.sign(&data, params),
         }
     }
 }
@@ -426,7 +418,7 @@ impl<B: ClientCertsBackend> Object<B> {
 /// The `Manager` keeps track of the state of this module with respect to the PKCS #11
 /// specification. This includes what sessions are open, which search and sign operations are
 /// ongoing, and what objects are known and by what handle.
-struct Manager<B: ClientCertsBackend> {
+pub struct Manager<B: ClientCertsBackend> {
     /// A map of session to session type (modern or legacy). Sessions can be created (opened) and
     /// later closed.
     sessions: BTreeMap<CK_SESSION_HANDLE, SlotType>,
@@ -514,7 +506,7 @@ impl<B: ClientCertsBackend> Manager<B> {
     pub fn close_session(&mut self, session: CK_SESSION_HANDLE) -> Result<(), Error> {
         self.sessions
             .remove(&session)
-            .ok_or(error_here!(ErrorType::InvalidInput))
+            .ok_or_else(|| error_here!(ErrorType::InvalidInput))
             .map(|_| ())
     }
 
@@ -546,7 +538,7 @@ impl<B: ClientCertsBackend> Manager<B> {
     pub fn start_search(
         &mut self,
         session: CK_SESSION_HANDLE,
-        attrs: &[(CK_ATTRIBUTE_TYPE, Vec<u8>)],
+        attrs: Vec<(CK_ATTRIBUTE_TYPE, Vec<u8>)>,
     ) -> Result<(), Error> {
         let slot_type = match self.sessions.get(&session) {
             Some(slot_type) => *slot_type,
@@ -554,7 +546,7 @@ impl<B: ClientCertsBackend> Manager<B> {
         };
         // If the search is for an attribute we don't support, no objects will match. This check
         // saves us having to look through all of our objects.
-        for (attr, _) in attrs {
+        for (attr, _) in &attrs {
             if !SUPPORTED_ATTRIBUTES.contains(attr) {
                 self.searches.insert(session, Vec::new());
                 return Ok(());
@@ -565,12 +557,12 @@ impl<B: ClientCertsBackend> Manager<B> {
         // indication for the backend to re-scan for new objects from tokens that may have been
         // inserted or certificates that may have been imported into the OS. Since these searches
         // are relatively rare, this minimizes the impact of doing these re-scans.
-        if search_is_for_all_certificates_or_keys(attrs)? {
+        if search_is_for_all_certificates_or_keys(&attrs)? {
             self.maybe_find_new_objects()?;
         }
         let mut handles = Vec::new();
         for (handle, object) in &self.objects {
-            if object.matches(slot_type, attrs) {
+            if object.matches(slot_type, &attrs) {
                 handles.push(*handle);
             }
         }
@@ -622,10 +614,9 @@ impl<B: ClientCertsBackend> Manager<B> {
         };
         let mut results = Vec::with_capacity(attr_types.len());
         for attr_type in attr_types {
-            let result = match object.get_attribute(attr_type) {
-                Some(value) => Some(value.to_owned()),
-                None => None,
-            };
+            let result = object
+                .get_attribute(attr_type)
+                .map(|value| value.to_owned());
             results.push(result);
         }
         Ok(results)
@@ -651,20 +642,20 @@ impl<B: ClientCertsBackend> Manager<B> {
     pub fn get_signature_length(
         &mut self,
         session: CK_SESSION_HANDLE,
-        data: &[u8],
+        data: Vec<u8>,
     ) -> Result<usize, Error> {
         let (key_handle, params) = match self.signs.get(&session) {
             Some((key_handle, params)) => (key_handle, params),
             None => return Err(error_here!(ErrorType::InvalidArgument)),
         };
-        let key = match self.objects.get_mut(&key_handle) {
+        let key = match self.objects.get_mut(key_handle) {
             Some(key) => key,
             None => return Err(error_here!(ErrorType::InvalidArgument)),
         };
         key.get_signature_length(data, params)
     }
 
-    pub fn sign(&mut self, session: CK_SESSION_HANDLE, data: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn sign(&mut self, session: CK_SESSION_HANDLE, data: Vec<u8>) -> Result<Vec<u8>, Error> {
         // Performing the signature (via C_Sign, which is the only way we support) finishes the sign
         // operation, so it needs to be removed here.
         let (key_handle, params) = match self.signs.remove(&session) {

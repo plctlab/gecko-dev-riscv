@@ -66,9 +66,11 @@ add_task(
     // Install and start a test webextension.
     const extension = ExtensionTestUtils.loadExtension({
       useAddonManager: "temporary",
-      background: function() {
+      background() {
         const { browser } = this;
         browser.test.log("background script executed");
+        // window is available in background scripts
+        // eslint-disable-next-line no-undef
         browser.test.sendMessage("background page ready", window.location.href);
       },
     });
@@ -94,7 +96,7 @@ add_task(
         );
       })
       .pop();
-    equal(backgroundPageFrame.addonID, extension.id, "Got an extension frame");
+    ok(backgroundPageFrame, "Found the frame for the background page");
 
     const threadFront = await addonTarget.attachThread();
 
@@ -142,11 +144,9 @@ add_task(
     Assert.deepEqual(
       {
         url: frameUpdate.frames[0].url,
-        addonID: frameUpdate.frames[0].addonID,
       },
       {
         url: bgPageURL,
-        addonID: extension.id,
       },
       "Got the expected frame update when the addon background page was loaded back"
     );

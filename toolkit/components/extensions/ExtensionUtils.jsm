@@ -7,21 +7,20 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch", "btoa"]);
-
 // xpcshell doesn't handle idle callbacks well.
-XPCOMUtils.defineLazyGetter(this, "idleTimeout", () =>
+XPCOMUtils.defineLazyGetter(lazy, "idleTimeout", () =>
   Services.appinfo.name === "XPCShell" ? 500 : undefined
 );
 
@@ -46,7 +45,7 @@ function getUniqueId() {
 }
 
 function promiseTimeout(delay) {
-  return new Promise(resolve => setTimeout(resolve, delay));
+  return new Promise(resolve => lazy.setTimeout(resolve, delay));
 }
 
 /**
@@ -59,7 +58,7 @@ class ExtensionError extends DOMException {
   }
   // Custom JS classes can't survive IPC, so need to check error name.
   static [Symbol.hasInstance](e) {
-    return e instanceof DOMException && e.name === "ExtensionError";
+    return DOMException.isInstance(e) && e.name === "ExtensionError";
   }
 }
 
@@ -68,6 +67,19 @@ function filterStack(error) {
     /(^.*(Task\.jsm|Promise-backend\.js).*\n)+/gm,
     "<Promise Chain>\n"
   );
+}
+
+/**
+ * An Error subclass used to recognize the errors that should
+ * to be forwarded to the worker thread and being accessible
+ * to the extension worker script (vs. the errors that should be
+ * only logged internally and raised to the worker script as
+ * the generic unexpected error).
+ */
+class WorkerExtensionError extends DOMException {
+  constructor(message) {
+    super(message, "Error");
+  }
 }
 
 /**
@@ -192,7 +204,7 @@ function promiseDocumentReady(doc) {
 function promiseDocumentIdle(window) {
   return window.document.documentReadyForIdle.then(() => {
     return new Promise(resolve =>
-      window.requestIdleCallback(resolve, { timeout: idleTimeout })
+      window.requestIdleCallback(resolve, { timeout: lazy.idleTimeout })
     );
   });
 }
@@ -340,4 +352,5 @@ var ExtensionUtils = {
   DefaultWeakMap,
   ExtensionError,
   LimitedSet,
+  WorkerExtensionError,
 };

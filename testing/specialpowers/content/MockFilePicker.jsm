@@ -4,8 +4,10 @@
 
 var EXPORTED_SYMBOLS = ["MockFilePicker"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WrapPrivileged",
   "resource://specialpowers/WrapPrivileged.jsm"
 );
@@ -15,11 +17,10 @@ const Cm = Components.manager;
 const CONTRACT_ID = "@mozilla.org/filepicker;1";
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 /* globals __URI__ */
 if (__URI__.includes("specialpowers")) {
@@ -31,14 +32,8 @@ var oldClassID;
 var newClassID = Services.uuid.generateUUID();
 var newFactory = function(window) {
   return {
-    createInstance(aOuter, aIID) {
-      if (aOuter) {
-        throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-      }
+    createInstance(aIID) {
       return new MockFilePickerInstance(window).QueryInterface(aIID);
-    },
-    lockFactory(aLock) {
-      throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     },
     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
   };
@@ -108,7 +103,7 @@ var MockFilePicker = {
   },
 
   useAnyFile() {
-    var file = FileUtils.getDir("TmpD", [], false);
+    var file = lazy.FileUtils.getDir("TmpD", [], false);
     file.append("testfile");
     file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0o644);
     let promise = this.window.File.createFromNsIFile(file)
@@ -148,7 +143,7 @@ var MockFilePicker = {
     this.pendingPromises = [];
 
     for (let file of files) {
-      if (file instanceof this.window.File) {
+      if (this.window.File.isInstance(file)) {
         this.returnData.push(this.internalFileData({ domFile: file }));
       } else {
         let promise = this.window.File.createFromNsIFile(file, {
@@ -280,7 +275,7 @@ MockFilePickerInstance.prototype = {
             if (MockFilePicker.showCallback != this.showCallback) {
               this.showCallback = MockFilePicker.showCallback;
               if (Cu.isXrayWrapper(this.window)) {
-                this.showCallbackWrapped = WrapPrivileged.wrapCallback(
+                this.showCallbackWrapped = lazy.WrapPrivileged.wrapCallback(
                   MockFilePicker.showCallback,
                   this.window
                 );

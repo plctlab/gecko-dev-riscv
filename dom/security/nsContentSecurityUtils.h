@@ -19,11 +19,9 @@ class nsIHttpChannel;
 class nsIPrincipal;
 class NS_ConvertUTF8toUTF16;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Document;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using FilenameTypeAndDetails = std::pair<nsCString, mozilla::Maybe<nsString>>;
 
@@ -81,8 +79,7 @@ class nsContentSecurityUtils {
   static void AssertAboutPageHasCSP(mozilla::dom::Document* aDocument);
 #endif
 
-  static bool ValidateScriptFilename(const char* aFilename,
-                                     bool aIsSystemRealm);
+  static bool ValidateScriptFilename(JSContext* cx, const char* aFilename);
   // Helper Function to Post a message to the corresponding JS-Console
   static void LogMessageToConsole(nsIHttpChannel* aChannel, const char* aMsg);
 };

@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/EventStates.h"
 #include "mozilla/dom/HTMLProgressElement.h"
 #include "mozilla/dom/HTMLProgressElementBinding.h"
 
@@ -20,18 +19,19 @@ HTMLProgressElement::HTMLProgressElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsGenericHTMLElement(std::move(aNodeInfo)) {
   // We start out indeterminate
-  AddStatesSilently(NS_EVENT_STATE_INDETERMINATE);
+  AddStatesSilently(ElementState::INDETERMINATE);
 }
 
 HTMLProgressElement::~HTMLProgressElement() = default;
 
 NS_IMPL_ELEMENT_CLONE(HTMLProgressElement)
 
-EventStates HTMLProgressElement::IntrinsicState() const {
-  EventStates state = nsGenericHTMLElement::IntrinsicState();
+ElementState HTMLProgressElement::IntrinsicState() const {
+  ElementState state = nsGenericHTMLElement::IntrinsicState();
 
-  if (IsIndeterminate()) {
-    state |= NS_EVENT_STATE_INDETERMINATE;
+  const nsAttrValue* attrValue = mAttrs.GetAttr(nsGkAtoms::value);
+  if (!attrValue || attrValue->Type() != nsAttrValue::eDoubleValue) {
+    state |= ElementState::INDETERMINATE;
   }
 
   return state;
@@ -73,16 +73,11 @@ double HTMLProgressElement::Max() const {
 }
 
 double HTMLProgressElement::Position() const {
-  if (IsIndeterminate()) {
+  if (State().HasState(ElementState::INDETERMINATE)) {
     return kIndeterminatePosition;
   }
 
   return Value() / Max();
-}
-
-bool HTMLProgressElement::IsIndeterminate() const {
-  const nsAttrValue* attrValue = mAttrs.GetAttr(nsGkAtoms::value);
-  return !attrValue || attrValue->Type() != nsAttrValue::eDoubleValue;
 }
 
 JSObject* HTMLProgressElement::WrapNode(JSContext* aCx,

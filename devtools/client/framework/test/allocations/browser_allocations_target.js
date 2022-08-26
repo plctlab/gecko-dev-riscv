@@ -8,7 +8,9 @@
 const TEST_URL =
   "data:text/html;charset=UTF-8,<div>Target allocations test</div>";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
 const {
   CommandsFactory,
 } = require("devtools/shared/commands/commands-factory");
@@ -22,6 +24,10 @@ async function testScript(tab) {
 
   // destroy the commands to also destroy the dedicated client.
   await commands.destroy();
+
+  // Spin the event loop to ensure commands destruction is fully completed
+  // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+  await new Promise(resolve => setTimeout(resolve, 0));
 }
 
 add_task(async function() {

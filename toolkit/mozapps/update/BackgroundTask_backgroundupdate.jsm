@@ -5,34 +5,41 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = ["backgroundTaskTimeoutSec", "runBackgroundTask"];
+var EXPORTED_SYMBOLS = [
+  "backgroundTaskTimeoutSec",
+  "maybeSubmitBackgroundUpdatePing",
+  "runBackgroundTask",
+];
 
-const { EXIT_CODE } = ChromeUtils.import(
+const { BackgroundUpdate } = ChromeUtils.import(
   "resource://gre/modules/BackgroundUpdate.jsm"
-).BackgroundUpdate;
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+);
+const { EXIT_CODE } = BackgroundUpdate;
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AppUpdater: "resource:///modules/AppUpdater.jsm",
   BackgroundTasksUtils: "resource://gre/modules/BackgroundTasksUtils.jsm",
-  BackgroundUpdate: "resource://gre/modules/BackgroundUpdate.jsm",
   ExtensionUtils: "resource://gre/modules/ExtensionUtils.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   UpdateUtils: "resource://gre/modules/UpdateUtils.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "UpdateService",
   "@mozilla.org/updates/update-service;1",
   "nsIApplicationUpdateService"
 );
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   let consoleOptions = {
     // tip: set maxLogLevel to "debug" and use log.debug() to create detailed
@@ -43,8 +50,6 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   };
   return new ConsoleAPI(consoleOptions);
 });
-
-Cu.importGlobalProperties(["Glean", "GleanPings"]);
 
 const backgroundTaskTimeoutSec = Services.prefs.getIntPref(
   "app.update.background.timeoutSec",
@@ -68,21 +73,21 @@ async function _attemptBackgroundUpdate() {
   // necessary, but we want to run for consistency and any migrations added in the future) and then
   // dispatches `post-update-processing` (if appropriate).  We want to do this very early, so that
   // the real update service is in its fully initialized state before any usage.
-  log.debug(
+  lazy.log.debug(
     `${SLUG}: creating UpdateServiceStub() for "post-update-processing"`
   );
   Cc["@mozilla.org/updates/update-service-stub;1"].createInstance(
     Ci.nsISupports
   );
 
-  log.debug(
+  lazy.log.debug(
     `${SLUG}: checking for preconditions necessary to update this installation`
   );
   let reasons = await BackgroundUpdate._reasonsToNotUpdateInstallation();
 
   if (BackgroundUpdate._force()) {
     // We want to allow developers and testers to monkey with the system.
-    log.debug(
+    lazy.log.debug(
       `${SLUG}: app.update.background.force=true, ignoring reasons: ${JSON.stringify(
         reasons
       )}`
@@ -97,7 +102,7 @@ async function _attemptBackgroundUpdate() {
 
   let enabled = !reasons.length;
   if (!enabled) {
-    log.info(
+    lazy.log.info(
       `${SLUG}: not running background update task: '${JSON.stringify(
         reasons
       )}'`
@@ -107,32 +112,32 @@ async function _attemptBackgroundUpdate() {
   }
 
   let result = new Promise(resolve => {
-    let appUpdater = new AppUpdater();
+    let appUpdater = new lazy.AppUpdater();
 
     let _appUpdaterListener = (status, progress, progressMax) => {
-      let stringStatus = AppUpdater.STATUS.debugStringFor(status);
+      let stringStatus = lazy.AppUpdater.STATUS.debugStringFor(status);
       Glean.backgroundUpdate.states.add(stringStatus);
       Glean.backgroundUpdate.finalState.set(stringStatus);
 
-      if (AppUpdater.STATUS.isTerminalStatus(status)) {
-        log.debug(
+      if (lazy.AppUpdater.STATUS.isTerminalStatus(status)) {
+        lazy.log.debug(
           `${SLUG}: background update transitioned to terminal status ${status}: ${stringStatus}`
         );
         appUpdater.removeListener(_appUpdaterListener);
         resolve(true);
-      } else if (status == AppUpdater.STATUS.CHECKING) {
+      } else if (status == lazy.AppUpdater.STATUS.CHECKING) {
         // The usual initial flow for the Background Update Task is to kick off
         // the update download and immediately exit. For consistency, we are
         // going to enforce this flow. So if we are just now checking for
         // updates, we will limit the updater such that it cannot start staging,
         // even if we immediately download the entire update.
-        log.debug(
+        lazy.log.debug(
           `${SLUG}: This session will be limited to downloading updates only.`
         );
-        UpdateService.onlyDownloadUpdatesThisSession = true;
+        lazy.UpdateService.onlyDownloadUpdatesThisSession = true;
       } else if (
-        status == AppUpdater.STATUS.DOWNLOADING &&
-        (UpdateService.onlyDownloadUpdatesThisSession ||
+        status == lazy.AppUpdater.STATUS.DOWNLOADING &&
+        (lazy.UpdateService.onlyDownloadUpdatesThisSession ||
           (progress !== undefined && progressMax !== undefined))
       ) {
         // We get a DOWNLOADING callback with no progress or progressMax values
@@ -142,25 +147,25 @@ async function _attemptBackgroundUpdate() {
         // we can count on being meaningful, but it will be set to -1 for BITS
         // transfers that haven't begun yet.
         if (
-          UpdateService.onlyDownloadUpdatesThisSession ||
+          lazy.UpdateService.onlyDownloadUpdatesThisSession ||
           progressMax < 0 ||
           progress != progressMax
         ) {
-          log.debug(
+          lazy.log.debug(
             `${SLUG}: Download in progress. Exiting task while download ` +
               `transfers`
           );
           // If the download is still in progress, we don't want the Background
           // Update Task to hang around waiting for it to complete.
-          UpdateService.onlyDownloadUpdatesThisSession = true;
+          lazy.UpdateService.onlyDownloadUpdatesThisSession = true;
 
           appUpdater.removeListener(_appUpdaterListener);
           resolve(true);
         } else {
-          log.debug(`${SLUG}: Download has completed!`);
+          lazy.log.debug(`${SLUG}: Download has completed!`);
         }
       } else {
-        log.debug(
+        lazy.log.debug(
           `${SLUG}: background update transitioned to status ${status}: ${stringStatus}`
         );
       }
@@ -189,12 +194,12 @@ async function maybeSubmitBackgroundUpdatePing() {
 
   GleanPings.backgroundUpdate.submit();
 
-  log.info(`${SLUG}: submitted "background-update" ping`);
+  lazy.log.info(`${SLUG}: submitted "background-update" ping`);
 }
 
-async function runBackgroundTask() {
+async function runBackgroundTask(commandLine) {
   let SLUG = "runBackgroundTask";
-  log.error(`${SLUG}: backgroundupdate`);
+  lazy.log.error(`${SLUG}: backgroundupdate`);
 
   // Help debugging.  This is a pared down version of
   // `dataProviders.application` in `Troubleshoot.jsm`.  When adding to this
@@ -212,10 +217,10 @@ async function runBackgroundTask() {
     distributionID: Services.prefs
       .getDefaultBranch("")
       .getCharPref("distribution.id", ""),
-    updateChannel: UpdateUtils.UpdateChannel,
+    updateChannel: lazy.UpdateUtils.UpdateChannel,
     UpdRootD: Services.dirsvc.get("UpdRootD", Ci.nsIFile).path,
   };
-  log.debug(`${SLUG}: current configuration`, data);
+  lazy.log.debug(`${SLUG}: current configuration`, data);
 
   // Other instances running are a transient precondition (during this invocation).  We'd prefer to
   // check this later, as a reason for not updating, but Glean is not tested in multi-process
@@ -226,12 +231,12 @@ async function runBackgroundTask() {
   // multiple processes using the same Glean storage.  If and when more and longer-running
   // background tasks become common, we may need to be more fine-grained and share just the Glean
   // storage resource.
-  log.debug(`${SLUG}: checking if other instance is running`);
+  lazy.log.debug(`${SLUG}: checking if other instance is running`);
   let syncManager = Cc["@mozilla.org/updates/update-sync-manager;1"].getService(
     Ci.nsIUpdateSyncManager
   );
   if (syncManager.isOtherInstanceRunning()) {
-    log.error(`${SLUG}: another instance is running`);
+    lazy.log.error(`${SLUG}: another instance is running`);
     return EXIT_CODE.OTHER_INSTANCE;
   }
 
@@ -241,27 +246,49 @@ async function runBackgroundTask() {
   // downloading, and applying updates, since such prefs should be be per-installation prefs, using
   // the mechanisms of Bug 1691486.  Sadly using this mechanism for many relevant prefs (namely
   // `app.update.BITS.enabled` and `app.update.service.enabled`) is difficult: see Bug 1657533.
+  //
+  // We also read any Nimbus targeting snapshot from the default profile.
+  let defaultProfileTargetingSnapshot = {};
   try {
     let defaultProfilePrefs;
-    await BackgroundTasksUtils.withProfileLock(async lock => {
+    await lazy.BackgroundTasksUtils.withProfileLock(async lock => {
       let predicate = name => {
         return (
           name.startsWith("app.update.") || // For obvious reasons.
           name.startsWith("datareporting.") || // For Glean.
           name.startsWith("logging.") || // For Glean.
           name.startsWith("telemetry.fog.") || // For Glean.
-          name.startsWith("app.partner.") // For our metrics.
+          name.startsWith("app.partner.") || // For our metrics.
+          name === "app.shield.optoutstudies.enabled" || // For Nimbus.
+          name === "services.settings.server" || // For Remote Settings via Nimbus.
+          name === "services.settings.preview_enabled" || // For Remote Settings via Nimbus.
+          name === "messaging-system.rsexperimentloader.collection_id" // For Firefox Messaging System.
         );
       };
 
-      defaultProfilePrefs = await BackgroundTasksUtils.readPreferences(
+      defaultProfilePrefs = await lazy.BackgroundTasksUtils.readPreferences(
         predicate,
         lock
       );
-      let telemetryClientID = await BackgroundTasksUtils.readTelemetryClientID(
+      let telemetryClientID = await lazy.BackgroundTasksUtils.readTelemetryClientID(
         lock
       );
       Glean.backgroundUpdate.clientId.set(telemetryClientID);
+
+      try {
+        defaultProfileTargetingSnapshot = await lazy.BackgroundTasksUtils.readFirefoxMessagingSystemTargetingSnapshot();
+      } catch (f) {
+        if (DOMException.isInstance(f) && f.name === "NotFoundError") {
+          lazy.log.info(
+            `${SLUG}: no default profile targeting snapshot exists`
+          );
+        } else {
+          lazy.log.warn(
+            `${SLUG}: ignoring exception reading default profile targeting snapshot`,
+            f
+          );
+        }
+      }
     });
 
     for (let [name, value] of Object.entries(defaultProfilePrefs)) {
@@ -282,17 +309,20 @@ async function runBackgroundTask() {
       }
     }
   } catch (e) {
-    if (!BackgroundTasksUtils.hasDefaultProfile()) {
-      log.error(`${SLUG}: caught exception; no default profile exists`, e);
+    if (!lazy.BackgroundTasksUtils.hasDefaultProfile()) {
+      lazy.log.error(`${SLUG}: caught exception; no default profile exists`, e);
       return EXIT_CODE.DEFAULT_PROFILE_DOES_NOT_EXIST;
     }
 
     if (e.name == "CannotLockProfileError") {
-      log.error(`${SLUG}: caught exception; could not lock default profile`, e);
+      lazy.log.error(
+        `${SLUG}: caught exception; could not lock default profile`,
+        e
+      );
       return EXIT_CODE.DEFAULT_PROFILE_CANNOT_BE_LOCKED;
     }
 
-    log.error(
+    lazy.log.error(
       `${SLUG}: caught exception reading preferences and telemetry client ID from default profile`,
       e
     );
@@ -309,20 +339,29 @@ async function runBackgroundTask() {
   // The final leaf is for the benefit of `FileUtils`.  To help debugging, use
   // the `GLEAN_LOG_PINGS` and `GLEAN_DEBUG_VIEW_TAG` environment variables: see
   // https://mozilla.github.io/glean/book/user/debugging/index.html.
-  let gleanRoot = FileUtils.getFile("UpdRootD", [
+  let gleanRoot = lazy.FileUtils.getFile("UpdRootD", [
     "backgroundupdate",
     "datareporting",
     "glean",
     "__dummy__",
   ]).parent.path;
-  let FOG = Cc["@mozilla.org/toolkit/glean;1"].createInstance(Ci.nsIFOG);
-  FOG.initializeFOG(gleanRoot, "firefox.desktop.background.update");
+  Services.fog.initializeFOG(gleanRoot, "firefox.desktop.background.update");
 
   // For convenience, mirror our loglevel.
-  Services.prefs.setCharPref(
-    "toolkit.backgroundtasks.loglevel",
-    Services.prefs.getCharPref("app.update.background.loglevel", "error")
+  let logLevel = Services.prefs.getCharPref(
+    "app.update.background.loglevel",
+    "error"
   );
+  const logLevelPrefs = [
+    "browser.newtabpage.activity-stream.asrouter.debugLogLevel",
+    "messaging-system.log",
+    "services.settings.loglevel",
+    "toolkit.backgroundtasks.loglevel",
+  ];
+  for (let logLevelPref of logLevelPrefs) {
+    lazy.log.info(`${SLUG}: setting ${logLevelPref}=${logLevel}`);
+    Services.prefs.setCharPref(logLevelPref, logLevel);
+  }
 
   // The langpack updating mechanism expects the addons manager, but in background task mode, the
   // addons manager is not present.  Since we can't update langpacks from the background task
@@ -336,8 +375,8 @@ async function runBackgroundTask() {
 
   let result = EXIT_CODE.SUCCESS;
 
-  let stringStatus = AppUpdater.STATUS.debugStringFor(
-    AppUpdater.STATUS.NEVER_CHECKED
+  let stringStatus = lazy.AppUpdater.STATUS.debugStringFor(
+    lazy.AppUpdater.STATUS.NEVER_CHECKED
   );
   Glean.backgroundUpdate.states.add(stringStatus);
   Glean.backgroundUpdate.finalState.set(stringStatus);
@@ -345,12 +384,37 @@ async function runBackgroundTask() {
   try {
     await _attemptBackgroundUpdate();
 
-    log.info(`${SLUG}: attempted background update`);
+    lazy.log.info(`${SLUG}: attempted background update`);
     Glean.backgroundUpdate.exitCodeSuccess.set(true);
+
+    try {
+      // Now that we've pumped the update loop, we can start Nimbus and the Firefox Messaging System
+      // and see if we should message the user.  This minimizes the risk of messaging impacting the
+      // function of the background update system.
+      await lazy.BackgroundTasksUtils.enableNimbus(
+        commandLine,
+        defaultProfileTargetingSnapshot.environment
+      );
+
+      await lazy.BackgroundTasksUtils.enableFirefoxMessagingSystem(
+        defaultProfileTargetingSnapshot.environment
+      );
+    } catch (f) {
+      // Try to make it easy to witness errors in this system.  We can pass through any exception
+      // without disrupting (future) background updates.
+      //
+      // Most meaningful issues with the Nimbus/experiments system will be reported via Glean
+      // events.
+      lazy.log.warn(
+        `${SLUG}: exception raised from Nimbus/Firefox Messaging System`,
+        f
+      );
+      throw f;
+    }
   } catch (e) {
     // TODO: in the future, we might want to classify failures into transient and persistent and
     // backoff the update task in the face of continuous persistent errors.
-    log.error(`${SLUG}: caught exception attempting background update`, e);
+    lazy.log.error(`${SLUG}: caught exception attempting background update`, e);
 
     result = EXIT_CODE.EXCEPTION;
     Glean.backgroundUpdate.exitCodeException.set(true);
@@ -362,7 +426,7 @@ async function runBackgroundTask() {
 
   // TODO: ensure the update service has persisted its state before we exit.  Bug 1700846.
   // TODO: ensure that Glean's upload mechanism is aware of Gecko shutdown.  Bug 1703572.
-  await ExtensionUtils.promiseTimeout(500);
+  await lazy.ExtensionUtils.promiseTimeout(500);
 
   return result;
 }

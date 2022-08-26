@@ -4,7 +4,7 @@ const BASE_PROBE_NAME = "browser.engagement.navigation.";
 const SCALAR_CONTEXT_MENU = BASE_PROBE_NAME + "contextmenu";
 const SCALAR_ABOUT_NEWTAB = BASE_PROBE_NAME + "about_newtab";
 
-add_task(async function setup() {
+add_setup(async function() {
   // Create two new search engines. Mark one as the default engine, so
   // the test don't crash. We need to engines for this test as the searchbar
   // in content doesn't display the default search engine among the one-off engines.
@@ -135,6 +135,7 @@ add_task(async function test_about_newtab() {
   // Let's reset the counts.
   Services.telemetry.clearScalars();
   Services.telemetry.clearEvents();
+  Services.fog.testResetFOG();
   let search_hist = TelemetryTestUtils.getAndClearKeyedHistogram(
     "SEARCH_COUNTS"
   );
@@ -189,6 +190,19 @@ add_task(async function test_about_newtab() {
       },
     ],
     { category: "navigation", method: "search" }
+  );
+
+  // Also also check Glean events.
+  const record = Glean.newtabSearch.issued.testGetValue();
+  Assert.ok(!!record, "Must have recorded a search issuance");
+  Assert.equal(record.length, 1, "One search, one event");
+  Assert.deepEqual(
+    {
+      search_access_point: "about_newtab",
+      telemetry_id: "other-MozSearch",
+    },
+    record[0].extra,
+    "Must have recorded the expected information."
   );
 
   BrowserTestUtils.removeTab(tab);

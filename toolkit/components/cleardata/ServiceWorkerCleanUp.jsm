@@ -4,13 +4,14 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const lazy = {};
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "serviceWorkerManager",
   "@mozilla.org/serviceworkers/manager;1",
   "nsIServiceWorkerManager"
@@ -22,7 +23,7 @@ if (Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_CONTENT) {
   );
 }
 
-this.EXPORTED_SYMBOLS = ["ServiceWorkerCleanUp"];
+const EXPORTED_SYMBOLS = ["ServiceWorkerCleanUp"];
 
 function unregisterServiceWorker(aSW) {
   return new Promise(resolve => {
@@ -33,7 +34,7 @@ function unregisterServiceWorker(aSW) {
         "nsIServiceWorkerUnregisterCallback",
       ]),
     };
-    serviceWorkerManager.propagateUnregister(
+    lazy.serviceWorkerManager.propagateUnregister(
       aSW.principal,
       unregisterCallback,
       aSW.scope
@@ -43,7 +44,7 @@ function unregisterServiceWorker(aSW) {
 
 function unregisterServiceWorkersMatching(filterFn) {
   let promises = [];
-  let serviceWorkers = serviceWorkerManager.getAllRegistrations();
+  let serviceWorkers = lazy.serviceWorkerManager.getAllRegistrations();
   for (let i = 0; i < serviceWorkers.length; i++) {
     let sw = serviceWorkers.queryElementAt(
       i,
@@ -56,7 +57,7 @@ function unregisterServiceWorkersMatching(filterFn) {
   return Promise.all(promises);
 }
 
-this.ServiceWorkerCleanUp = {
+const ServiceWorkerCleanUp = {
   removeFromHost(aHost) {
     return unregisterServiceWorkersMatching(sw =>
       Services.eTLD.hasRootDomain(sw.principal.host, aHost)
@@ -80,7 +81,7 @@ this.ServiceWorkerCleanUp = {
   },
 
   removeFromOriginAttributes(aOriginAttributesString) {
-    serviceWorkerManager.removeRegistrationsByOriginAttributes(
+    lazy.serviceWorkerManager.removeRegistrationsByOriginAttributes(
       aOriginAttributesString
     );
     return Promise.resolve();

@@ -33,6 +33,9 @@
 #include "vm/JSContext-inl.h"
 #include "vm/JSObject-inl.h"
 #include "vm/PlainObject-inl.h"
+#ifdef ENABLE_RECORD_TUPLE
+#  include "vm/TupleType.h"
+#endif
 
 using namespace js;
 using namespace js::gc;
@@ -44,13 +47,13 @@ constexpr size_t MAX_DEDUPLICATABLE_STRING_LENGTH = 500;
 TenuringTracer::TenuringTracer(JSRuntime* rt, Nursery* nursery)
     : GenericTracer(rt, JS::TracerKind::Tenuring,
                     JS::WeakMapTraceAction::TraceKeysAndValues),
-      nursery_(*nursery),
-      tenuredSize(0),
-      tenuredCells(0),
-      objHead(nullptr),
-      objTail(&objHead),
-      stringHead(nullptr),
-      stringTail(&stringHead) {}
+      nursery_(*nursery) {}
+
+size_t TenuringTracer::getTenuredSize() const {
+  return tenuredSize + tenuredCells * sizeof(NurseryCellHeader);
+}
+
+size_t TenuringTracer::getTenuredCells() const { return tenuredCells; }
 
 static inline void UpdateAllocSiteOnTenure(Cell* cell) {
   AllocSite* site = NurseryCellHeader::from(cell)->allocSite();
@@ -137,11 +140,19 @@ void TenuringTracer::traverse(JS::Value* thingp) {
   Value post;
   if (value.isObject()) {
     post = JS::ObjectValue(*onObjectEdge(&value.toObject()));
-  } else if (value.isString()) {
+  }
+#ifdef ENABLE_RECORD_TUPLE
+  else if (value.isExtendedPrimitive()) {
+    post =
+        JS::ExtendedPrimitiveValue(*onObjectEdge(&value.toExtendedPrimitive()));
+  }
+#endif
+  else if (value.isString()) {
     post = JS::StringValue(onStringEdge(value.toString()));
   } else if (value.isBigInt()) {
     post = JS::BigIntValue(onBigIntEdge(value.toBigInt()));
   } else {
+    MOZ_ASSERT_IF(value.isGCThing(), !IsInsideNursery(value.toGCThing()));
     return;
   }
 
@@ -457,9 +468,8 @@ static inline ptrdiff_t OffsetToChunkEnd(void* p) {
 /* Insert the given relocation entry into the list of things to visit. */
 inline void js::TenuringTracer::insertIntoObjectFixupList(
     RelocationOverlay* entry) {
-  *objTail = entry;
-  objTail = &entry->nextRef();
-  *objTail = nullptr;
+  entry->setNext(objHead);
+  objHead = entry;
 }
 
 template <typename T>
@@ -478,27 +488,21 @@ JSString* js::TenuringTracer::allocTenuredString(JSString* src, Zone* zone,
 
 JSObject* js::TenuringTracer::moveToTenuredSlow(JSObject* src) {
   MOZ_ASSERT(IsInsideNursery(src));
-  MOZ_ASSERT(!src->nurseryZone()->usedByHelperThread());
   MOZ_ASSERT(!src->is<PlainObject>());
 
   AllocKind dstKind = src->allocKindForTenure(nursery());
   auto dst = allocTenured<JSObject>(src->nurseryZone(), dstKind);
 
   size_t srcSize = Arena::thingSize(dstKind);
-  size_t dstSize = srcSize;
 
-  /*
-   * Arrays do not necessarily have the same AllocKind between src and dst.
-   * We deal with this by copying elements manually, possibly re-inlining
-   * them if there is adequate room inline in dst.
-   *
-   * For Arrays we're reducing tenuredSize to the smaller srcSize
-   * because moveElementsToTenured() accounts for all Array elements,
-   * even if they are inlined.
-   */
-  if (src->is<ArrayObject>()) {
-    dstSize = srcSize = sizeof(NativeObject);
-  } else if (src->is<TypedArrayObject>()) {
+  // Arrays and Tuples do not necessarily have the same AllocKind between src
+  // and dst. We deal with this by copying elements manually, possibly
+  // re-inlining them if there is adequate room inline in dst.
+  //
+  // For Arrays and Tuples we're reducing tenuredSize to the smaller srcSize
+  // because moveElementsToTenured() accounts for all Array or Tuple elements,
+  // even if they are inlined.
+  if (src->is<TypedArrayObject>()) {
     TypedArrayObject* tarray = &src->as<TypedArrayObject>();
     // Typed arrays with inline data do not necessarily have the same
     // AllocKind between src and dst. The nursery does not allocate an
@@ -513,9 +517,11 @@ JSObject* js::TenuringTracer::moveToTenuredSlow(JSObject* src) {
       size_t headerSize = Arena::thingSize(srcKind);
       srcSize = headerSize + tarray->byteLength();
     }
+  } else if (src->canHaveFixedElements()) {
+    srcSize = sizeof(NativeObject);
   }
 
-  tenuredSize += dstSize;
+  tenuredSize += srcSize;
   tenuredCells++;
 
   // Copy the Cell contents.
@@ -529,9 +535,6 @@ JSObject* js::TenuringTracer::moveToTenuredSlow(JSObject* src) {
     NativeObject* nsrc = &src->as<NativeObject>();
     tenuredSize += moveSlotsToTenured(ndst, nsrc);
     tenuredSize += moveElementsToTenured(ndst, nsrc, dstKind);
-
-    // There is a pointer into a dictionary mode object from the head of its
-    // shape list. This is updated in Nursery::sweepDictionaryModeObjects().
   }
 
   JSObjectMovedOp op = dst->getClass()->extObjectMovedOp();
@@ -557,7 +560,6 @@ inline JSObject* js::TenuringTracer::movePlainObjectToTenured(
   // Fast path version of moveToTenuredSlow() for specialized for PlainObject.
 
   MOZ_ASSERT(IsInsideNursery(src));
-  MOZ_ASSERT(!src->nurseryZone()->usedByHelperThread());
 
   AllocKind dstKind = src->allocKindForTenure();
   auto dst = allocTenured<PlainObject>(src->nurseryZone(), dstKind);
@@ -593,9 +595,10 @@ size_t js::TenuringTracer::moveSlotsToTenured(NativeObject* dst,
 
   Zone* zone = src->nurseryZone();
   size_t count = src->numDynamicSlots();
+  size_t allocSize = ObjectSlots::allocSize(count);
 
   if (!nursery().isInside(src->slots_)) {
-    AddCellMemory(dst, ObjectSlots::allocSize(count), MemoryUse::ObjectSlots);
+    AddCellMemory(dst, allocSize, MemoryUse::ObjectSlots);
     nursery().removeMallocedBufferDuringMinorGC(src->getSlotsHeader());
     return 0;
   }
@@ -605,8 +608,7 @@ size_t js::TenuringTracer::moveSlotsToTenured(NativeObject* dst,
     HeapSlot* allocation =
         zone->pod_malloc<HeapSlot>(ObjectSlots::allocCount(count));
     if (!allocation) {
-      oomUnsafe.crash(ObjectSlots::allocSize(count),
-                      "Failed to allocate slots while tenuring.");
+      oomUnsafe.crash(allocSize, "Failed to allocate slots while tenuring.");
     }
 
     ObjectSlots* slotsHeader = new (allocation)
@@ -614,12 +616,12 @@ size_t js::TenuringTracer::moveSlotsToTenured(NativeObject* dst,
     dst->slots_ = slotsHeader->slots();
   }
 
-  AddCellMemory(dst, ObjectSlots::allocSize(count), MemoryUse::ObjectSlots);
+  AddCellMemory(dst, allocSize, MemoryUse::ObjectSlots);
 
   PodCopy(dst->slots_, src->slots_, count);
   nursery().setSlotsForwardingPointer(src->slots_, dst->slots_, count);
 
-  return count * sizeof(HeapSlot);
+  return allocSize;
 }
 
 size_t js::TenuringTracer::moveElementsToTenured(NativeObject* dst,
@@ -633,6 +635,7 @@ size_t js::TenuringTracer::moveElementsToTenured(NativeObject* dst,
 
   ObjectElements* srcHeader = src->getElementsHeader();
   size_t nslots = srcHeader->numAllocatedElements();
+  size_t allocSize = nslots * sizeof(HeapSlot);
 
   void* srcAllocatedHeader = src->getUnshiftedElementsHeader();
 
@@ -641,7 +644,7 @@ size_t js::TenuringTracer::moveElementsToTenured(NativeObject* dst,
     MOZ_ASSERT(src->elements_ == dst->elements_);
     nursery().removeMallocedBufferDuringMinorGC(srcAllocatedHeader);
 
-    AddCellMemory(dst, nslots * sizeof(HeapSlot), MemoryUse::ObjectElements);
+    AddCellMemory(dst, allocSize, MemoryUse::ObjectElements);
 
     return 0;
   }
@@ -649,15 +652,15 @@ size_t js::TenuringTracer::moveElementsToTenured(NativeObject* dst,
   // Shifted elements are copied too.
   uint32_t numShifted = srcHeader->numShiftedElements();
 
-  /* Unlike other objects, Arrays can have fixed elements. */
-  if (src->is<ArrayObject>() && nslots <= GetGCKindSlots(dstKind)) {
-    dst->as<ArrayObject>().setFixedElements();
-    js_memcpy(dst->getElementsHeader(), srcAllocatedHeader,
-              nslots * sizeof(HeapSlot));
+  /* Unlike other objects, Arrays and Tuples can have fixed elements. */
+  if (src->canHaveFixedElements() && nslots <= GetGCKindSlots(dstKind)) {
+    dst->as<NativeObject>().setFixedElements();
+    js_memcpy(dst->getElementsHeader(), srcAllocatedHeader, allocSize);
     dst->elements_ += numShifted;
+    dst->getElementsHeader()->flags |= ObjectElements::FIXED;
     nursery().setElementsForwardingPointer(srcHeader, dst->getElementsHeader(),
                                            srcHeader->capacity);
-    return nslots * sizeof(HeapSlot);
+    return allocSize;
   }
 
   MOZ_ASSERT(nslots >= 2);
@@ -668,30 +671,28 @@ size_t js::TenuringTracer::moveElementsToTenured(NativeObject* dst,
     dstHeader =
         reinterpret_cast<ObjectElements*>(zone->pod_malloc<HeapSlot>(nslots));
     if (!dstHeader) {
-      oomUnsafe.crash(sizeof(HeapSlot) * nslots,
-                      "Failed to allocate elements while tenuring.");
+      oomUnsafe.crash(allocSize, "Failed to allocate elements while tenuring.");
     }
   }
 
-  AddCellMemory(dst, nslots * sizeof(HeapSlot), MemoryUse::ObjectElements);
+  AddCellMemory(dst, allocSize, MemoryUse::ObjectElements);
 
-  js_memcpy(dstHeader, srcAllocatedHeader, nslots * sizeof(HeapSlot));
+  js_memcpy(dstHeader, srcAllocatedHeader, allocSize);
   dst->elements_ = dstHeader->elements() + numShifted;
+  dst->getElementsHeader()->flags &= ~ObjectElements::FIXED;
   nursery().setElementsForwardingPointer(srcHeader, dst->getElementsHeader(),
                                          srcHeader->capacity);
-  return nslots * sizeof(HeapSlot);
+  return allocSize;
 }
 
 inline void js::TenuringTracer::insertIntoStringFixupList(
     StringRelocationOverlay* entry) {
-  *stringTail = entry;
-  stringTail = &entry->nextRef();
-  *stringTail = nullptr;
+  entry->setNext(stringHead);
+  stringHead = entry;
 }
 
 JSString* js::TenuringTracer::moveToTenured(JSString* src) {
   MOZ_ASSERT(IsInsideNursery(src));
-  MOZ_ASSERT(!src->nurseryZone()->usedByHelperThread());
   MOZ_ASSERT(!src->isExternal());
 
   AllocKind dstKind = src->getAllocKind();
@@ -777,7 +778,7 @@ JSString* js::TenuringTracer::moveToTenured(JSString* src) {
 }
 
 template <typename CharT>
-void js::Nursery::relocateDependentStringChars(
+void js::TenuringTracer::relocateDependentStringChars(
     JSDependentString* tenuredDependentStr, JSLinearString* baseOrRelocOverlay,
     size_t* offset, bool* rootBaseNotYetForwarded, JSLinearString** rootBase) {
   MOZ_ASSERT(*offset == 0);
@@ -842,7 +843,6 @@ void js::Nursery::relocateDependentStringChars(
 
 JS::BigInt* js::TenuringTracer::moveToTenured(JS::BigInt* src) {
   MOZ_ASSERT(IsInsideNursery(src));
-  MOZ_ASSERT(!src->nurseryZone()->usedByHelperThread());
 
   AllocKind dstKind = src->getAllocKind();
   Zone* zone = src->nurseryZone();
@@ -858,15 +858,18 @@ JS::BigInt* js::TenuringTracer::moveToTenured(JS::BigInt* src) {
   return dst;
 }
 
-void js::Nursery::collectToObjectFixedPoint(TenuringTracer& mover) {
-  for (RelocationOverlay* p = mover.objHead; p; p = p->next()) {
+void js::TenuringTracer::collectToObjectFixedPoint() {
+  while (RelocationOverlay* p = objHead) {
+    objHead = objHead->next();
     auto* obj = static_cast<JSObject*>(p->forwardingAddress());
-    mover.traceObject(obj);
+    traceObject(obj);
   }
 }
 
-void js::Nursery::collectToStringFixedPoint(TenuringTracer& mover) {
-  for (StringRelocationOverlay* p = mover.stringHead; p; p = p->next()) {
+void js::TenuringTracer::collectToStringFixedPoint() {
+  while (StringRelocationOverlay* p = stringHead) {
+    stringHead = stringHead->next();
+
     auto* tenuredStr = static_cast<JSString*>(p->forwardingAddress());
     // To ensure the NON_DEDUP_BIT was reset properly.
     MOZ_ASSERT(tenuredStr->isDeduplicatable());
@@ -891,7 +894,7 @@ void js::Nursery::collectToStringFixedPoint(TenuringTracer& mover) {
       }
     }
 
-    mover.traceString(tenuredStr);
+    traceString(tenuredStr);
 
     if (rootBaseNotYetForwarded) {
       MOZ_ASSERT(rootBase->isForwarded(),
@@ -974,4 +977,24 @@ size_t js::TenuringTracer::moveBigIntToTenured(JS::BigInt* dst, JS::BigInt* src,
   }
 
   return size;
+}
+
+MinorSweepingTracer::MinorSweepingTracer(JSRuntime* rt)
+    : GenericTracerImpl(rt, JS::TracerKind::MinorSweeping,
+                        JS::WeakMapTraceAction::TraceKeysAndValues) {
+  MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime()));
+  MOZ_ASSERT(JS::RuntimeHeapIsMinorCollecting());
+}
+
+template <typename T>
+inline T* MinorSweepingTracer::onEdge(T* thing) {
+  if (thing->isTenured()) {
+    return thing;
+  }
+
+  if (IsForwarded(thing)) {
+    return Forwarded(thing);
+  }
+
+  return nullptr;
 }

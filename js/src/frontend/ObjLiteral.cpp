@@ -17,7 +17,6 @@
 #include "frontend/ParserAtom.h"                   // frontend::ParserAtomTable
 #include "frontend/TaggedParserAtomIndexHasher.h"  // TaggedParserAtomIndexHasher
 #include "gc/AllocKind.h"                          // gc::AllocKind
-#include "gc/Rooting.h"                            // RootedPlainObject
 #include "js/Id.h"                                 // INT_TO_JSID
 #include "js/RootingAPI.h"                         // Rooted
 #include "js/TypeDecls.h"                          // RootedId, RootedValue
@@ -35,7 +34,7 @@
 
 namespace js {
 
-bool ObjLiteralWriter::checkForDuplicatedNames(JSContext* cx) {
+bool ObjLiteralWriter::checkForDuplicatedNames(ErrorContext* ec) {
   if (!mightContainDuplicatePropertyNames_) {
     return true;
   }
@@ -48,7 +47,7 @@ bool ObjLiteralWriter::checkForDuplicatedNames(JSContext* cx) {
       propNameSet;
 
   if (!propNameSet.reserve(propertyCount_)) {
-    js::ReportOutOfMemory(cx);
+    js::ReportOutOfMemory(ec);
     return false;
   }
 
@@ -116,7 +115,7 @@ enum class PropertySetKind {
 };
 
 template <PropertySetKind kind>
-bool InterpretObjLiteralObj(JSContext* cx, HandlePlainObject obj,
+bool InterpretObjLiteralObj(JSContext* cx, Handle<PlainObject*> obj,
                             const frontend::CompilationAtomCache& atomCache,
                             const mozilla::Span<const uint8_t> literalInsns) {
   ObjLiteralReader reader(literalInsns);
@@ -134,7 +133,7 @@ bool InterpretObjLiteralObj(JSContext* cx, HandlePlainObject obj,
                   !insn.getKey().isArrayIndex());
 
     if (kind == PropertySetKind::Normal && insn.getKey().isArrayIndex()) {
-      propId = INT_TO_JSID(insn.getKey().getArrayIndex());
+      propId = PropertyKey::Int(insn.getKey().getArrayIndex());
     } else {
       JSAtom* jsatom =
           atomCache.getExistingAtomAt(cx, insn.getKey().getAtomIndex());
@@ -145,7 +144,7 @@ bool InterpretObjLiteralObj(JSContext* cx, HandlePlainObject obj,
     InterpretObjLiteralValue(cx, atomCache, insn, &propVal);
 
     if constexpr (kind == PropertySetKind::UniqueNames) {
-      if (!AddDataPropertyNonPrototype(cx, obj, propId, propVal)) {
+      if (!AddDataPropertyToPlainObject(cx, obj, propId, propVal)) {
         return false;
       }
     } else {
@@ -171,7 +170,7 @@ static JSObject* InterpretObjLiteralObj(
     uint32_t propertyCount) {
   gc::AllocKind allocKind = AllocKindForObjectLiteral(propertyCount);
 
-  RootedPlainObject obj(
+  Rooted<PlainObject*> obj(
       cx, NewPlainObjectWithAllocKind(cx, allocKind, TenuredObject));
   if (!obj) {
     return nullptr;
@@ -268,14 +267,6 @@ Shape* InterpretObjLiteralShape(JSContext* cx,
                      GlobalObject::getOrCreatePrototype(cx, JSProto_Object));
   if (!proto) {
     return nullptr;
-  }
-
-  // In rare cases involving off-thread XDR, Object.prototype is not yet marked
-  // used-as-prototype, so do that now.
-  if (MOZ_UNLIKELY(!proto->isUsedAsPrototype())) {
-    if (!JSObject::setIsUsedAsPrototype(cx, proto)) {
-      return nullptr;
-    }
   }
 
   return SharedShape::getInitialOrPropMapShape(

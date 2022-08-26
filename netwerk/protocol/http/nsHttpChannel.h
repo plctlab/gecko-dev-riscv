@@ -16,6 +16,7 @@
 #include "nsIProtocolProxyCallback.h"
 #include "nsIHttpAuthenticableChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
+#include "nsIEarlyHintObserver.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsIThreadRetargetableStreamListener.h"
 #include "nsWeakReference.h"
@@ -74,7 +75,8 @@ class nsHttpChannel final : public HttpBaseChannel,
                             public nsSupportsWeakReference,
                             public nsICorsPreflightCallback,
                             public nsIRaceCacheWithNetwork,
-                            public nsIRequestTailUnblockCallback {
+                            public nsIRequestTailUnblockCallback,
+                            public nsIEarlyHintObserver {
  public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIREQUESTOBSERVER
@@ -92,6 +94,7 @@ class nsHttpChannel final : public HttpBaseChannel,
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_HTTPCHANNEL_IID)
   NS_DECL_NSIRACECACHEWITHNETWORK
   NS_DECL_NSIREQUESTTAILUNBLOCKCALLBACK
+  NS_DECL_NSIEARLYHINTOBSERVER
 
   // nsIHttpAuthenticableChannel. We can't use
   // NS_DECL_NSIHTTPAUTHENTICABLECHANNEL because it duplicates cancel() and
@@ -120,10 +123,12 @@ class nsHttpChannel final : public HttpBaseChannel,
 
   nsHttpChannel();
 
-  [[nodiscard]] virtual nsresult Init(
-      nsIURI* aURI, uint32_t aCaps, nsProxyInfo* aProxyInfo,
-      uint32_t aProxyResolveFlags, nsIURI* aProxyURI, uint64_t aChannelId,
-      ExtContentPolicyType aContentPolicyType) override;
+  [[nodiscard]] virtual nsresult Init(nsIURI* aURI, uint32_t aCaps,
+                                      nsProxyInfo* aProxyInfo,
+                                      uint32_t aProxyResolveFlags,
+                                      nsIURI* aProxyURI, uint64_t aChannelId,
+                                      ExtContentPolicyType aContentPolicyType,
+                                      nsILoadInfo* aLoadInfo) override;
 
   [[nodiscard]] nsresult OnPush(uint32_t aPushedStreamId,
                                 const nsACString& aUrl,
@@ -156,6 +161,8 @@ class nsHttpChannel final : public HttpBaseChannel,
   NS_IMETHOD SetClassFlags(uint32_t inFlags) override;
   NS_IMETHOD AddClassFlags(uint32_t inFlags) override;
   NS_IMETHOD ClearClassFlags(uint32_t inFlags) override;
+  NS_IMETHOD SetClassOfService(ClassOfService cos) override;
+  NS_IMETHOD SetIncremental(bool incremental) override;
 
   // nsIResumableChannel
   NS_IMETHOD ResumeAt(uint64_t startPos, const nsACString& entityID) override;
@@ -186,6 +193,8 @@ class nsHttpChannel final : public HttpBaseChannel,
   NS_IMETHOD LogMimeTypeMismatch(const nsACString& aMessageName, bool aWarning,
                                  const nsAString& aURL,
                                  const nsAString& aContentType) override;
+
+  NS_IMETHOD SetEarlyHintObserver(nsIEarlyHintObserver* aObserver) override;
 
   void SetWarningReporter(HttpChannelSecurityWarningReporter* aReporter);
   HttpChannelSecurityWarningReporter* GetWarningReporter();
@@ -247,14 +256,12 @@ class nsHttpChannel final : public HttpBaseChannel,
   using ChildEndpointPromise =
       MozPromise<mozilla::ipc::Endpoint<extensions::PStreamFilterChild>, bool,
                  true>;
-  [[nodiscard]] RefPtr<ChildEndpointPromise> AttachStreamFilter(
-      base::ProcessId aChildProcessId);
+  [[nodiscard]] RefPtr<ChildEndpointPromise> AttachStreamFilter();
 
  private:  // used for alternate service validation
   RefPtr<TransactionObserver> mTransactionObserver;
 
  public:
-  void SetConnectionInfo(nsHttpConnectionInfo*);  // clones the argument
   void SetTransactionObserver(TransactionObserver* arg) {
     mTransactionObserver = arg;
   }
@@ -449,8 +456,7 @@ class nsHttpChannel final : public HttpBaseChannel,
    * Some basic consistency checks have been applied to the channel. Called
    * from ProcessSecurityHeaders.
    */
-  [[nodiscard]] nsresult ProcessHSTSHeader(nsITransportSecurityInfo* aSecInfo,
-                                           uint32_t aFlags);
+  [[nodiscard]] nsresult ProcessHSTSHeader(nsITransportSecurityInfo* aSecInfo);
 
   void InvalidateCacheEntryForLocation(const char* location);
   void AssembleCacheKey(const char* spec, uint32_t postID, nsACString& key);
@@ -502,6 +508,7 @@ class nsHttpChannel final : public HttpBaseChannel,
 
   void SetOriginHeader();
   void SetDoNotTrack();
+  void SetGlobalPrivacyControl();
 
   already_AddRefed<nsChannelClassifier> GetOrCreateChannelClassifier();
 
@@ -793,7 +800,7 @@ class nsHttpChannel final : public HttpBaseChannel,
   bool mIgnoreCacheEntry{false};
   // Lock preventing SetupTransaction/MaybeCreateCacheEntryWhenRCWN and
   // OnCacheEntryCheck being called at the same time.
-  mozilla::Mutex mRCWNLock{"nsHttpChannel.mRCWNLock"};
+  mozilla::Mutex mRCWNLock MOZ_UNANNOTATED{"nsHttpChannel.mRCWNLock"};
 
   TimeStamp mNavigationStartTimeStamp;
 
@@ -825,6 +832,9 @@ class nsHttpChannel final : public HttpBaseChannel,
 
  private:  // cache telemetry
   bool mDidReval{false};
+
+  RefPtr<nsIEarlyHintObserver> mEarlyHintObserver;
+  Maybe<nsCString> mOpenerCallingScriptLocation;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsHttpChannel, NS_HTTPCHANNEL_IID)

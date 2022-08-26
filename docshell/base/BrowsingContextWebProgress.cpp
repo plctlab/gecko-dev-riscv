@@ -267,7 +267,7 @@ BrowsingContextWebProgress::OnLocationChange(nsIWebProgress* aWebProgress,
                                              uint32_t aFlags) {
   MOZ_LOG(
       gBCWebProgressLog, LogLevel::Info,
-      ("OnProgressChange(%s, %s, %s, %s) on %s",
+      ("OnLocationChange(%s, %s, %s, %s) on %s",
        DescribeWebProgress(aWebProgress).get(), DescribeRequest(aRequest).get(),
        aLocation ? aLocation->GetSpecOrDefault().get() : "<null>",
        DescribeWebProgressFlags(aFlags, "LOCATION_CHANGE_"_ns).get(),
@@ -327,6 +327,12 @@ BrowsingContextWebProgress::OnContentBlockingEvent(nsIWebProgress* aWebProgress,
                              listener->OnContentBlockingEvent(aWebProgress,
                                                               aRequest, aEvent);
                            });
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BrowsingContextWebProgress::GetDocumentRequest(nsIRequest** aRequest) {
+  NS_IF_ADDREF(*aRequest = mLoadingDocumentRequest);
   return NS_OK;
 }
 

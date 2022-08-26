@@ -8,10 +8,8 @@
  * Implementation of the OS-independent methods of the TimeStamp class
  */
 
-#include "mozilla/Atomics.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Uptime.h"
-#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -47,11 +45,7 @@ struct TimeStampInitialization {
 
 static TimeStampInitialization sInitOnce;
 
-MFBT_API TimeStamp TimeStamp::ProcessCreation(bool* aIsInconsistent) {
-  if (aIsInconsistent) {
-    *aIsInconsistent = false;
-  }
-
+MFBT_API TimeStamp TimeStamp::ProcessCreation() {
   if (sInitOnce.mProcessCreation.IsNull()) {
     char* mozAppRestart = getenv("MOZ_APP_RESTART");
     TimeStamp ts;
@@ -67,15 +61,9 @@ MFBT_API TimeStamp TimeStamp::ProcessCreation(bool* aIsInconsistent) {
       TimeStamp now = Now();
       uint64_t uptime = ComputeProcessUptime();
 
-      ts = now - TimeDuration::FromMicroseconds(uptime);
+      ts = now - TimeDuration::FromMicroseconds(static_cast<double>(uptime));
 
       if ((ts > sInitOnce.mFirstTimeStamp) || (uptime == 0)) {
-        /* If the process creation timestamp was inconsistent replace it with
-         * the first one instead and notify that a telemetry error was
-         * detected. */
-        if (aIsInconsistent) {
-          *aIsInconsistent = true;
-        }
         ts = sInitOnce.mFirstTimeStamp;
       }
     }
@@ -88,6 +76,10 @@ MFBT_API TimeStamp TimeStamp::ProcessCreation(bool* aIsInconsistent) {
 
 void TimeStamp::RecordProcessRestart() {
   sInitOnce.mProcessCreation = TimeStamp();
+}
+
+MFBT_API TimeStamp TimeStamp::FirstTimeStamp() {
+  return sInitOnce.mFirstTimeStamp;
 }
 
 }  // namespace mozilla

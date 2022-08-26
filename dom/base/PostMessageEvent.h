@@ -78,7 +78,7 @@ class PostMessageEvent final : public Runnable {
     mHolder.construct<ipc::StructuredCloneData>();
     // FIXME Want to steal!
     //       See https://bugzilla.mozilla.org/show_bug.cgi?id=1516349.
-    mHolder.ref<ipc::StructuredCloneData>().CopyFromClonedMessageDataForChild(
+    mHolder.ref<ipc::StructuredCloneData>().CopyFromClonedMessageData(
         aMessageData);
   }
 
@@ -93,10 +93,13 @@ class PostMessageEvent final : public Runnable {
                    const Maybe<nsID>& aCallerAgentClusterId);
   ~PostMessageEvent();
 
-  void Dispatch(nsGlobalWindowInner* aTargetWindow, Event* aEvent);
+  MOZ_CAN_RUN_SCRIPT void Dispatch(nsGlobalWindowInner* aTargetWindow,
+                                   Event* aEvent);
 
-  void DispatchError(JSContext* aCx, nsGlobalWindowInner* aTargetWindow,
-                     mozilla::dom::EventTarget* aEventTarget);
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void DispatchError(
+      JSContext* aCx, nsGlobalWindowInner* aTargetWindow,
+      mozilla::dom::EventTarget* aEventTarget);
 
   RefPtr<BrowsingContext> mSource;
   nsString mCallerOrigin;

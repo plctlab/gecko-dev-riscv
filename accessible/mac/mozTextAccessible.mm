@@ -77,14 +77,9 @@ inline NSString* ToNSString(id aValue) {
     // grammar, or spelling. We query the attribute value here in order
     // to find the correct string to return.
     RefPtr<AccAttributes> attributes;
-    if (LocalAccessible* acc = mGeckoAccessible->AsLocal()) {
-      HyperTextAccessible* text = acc->AsHyperText();
-      if (text && text->IsTextRole()) {
-        attributes = text->DefaultTextAttributes();
-      }
-    } else {
-      RemoteAccessible* proxy = mGeckoAccessible->AsRemote();
-      proxy->DefaultTextAttributes(&attributes);
+    HyperTextAccessibleBase* text = mGeckoAccessible->AsHyperTextBase();
+    if (text && mGeckoAccessible->IsTextRole()) {
+      attributes = text->DefaultTextAttributes();
     }
 
     nsAutoString invalidStr;
@@ -306,7 +301,8 @@ inline NSString* ToNSString(id aValue) {
     @"AXTextStateChangeType" : @(AXTextStateChangeTypeEdit),
     @"AXTextChangeValues" : @[ @{
       @"AXTextChangeValue" : (change ? change : @""),
-      @"AXTextChangeValueStartMarker" : startMarker.CreateAXTextMarker(),
+      @"AXTextChangeValueStartMarker" :
+          (__bridge id)startMarker.CreateAXTextMarker(),
       @"AXTextEditType" : isInserted ? @(AXTextEditTypeTyping)
                                      : @(AXTextEditTypeDelete)
     } ]
@@ -392,7 +388,8 @@ inline NSString* ToNSString(id aValue) {
 }
 
 - (NSString*)moxValue {
-  return [super moxTitle];
+  NSString* val = [super moxTitle];
+  return [val length] ? val : nil;
 }
 
 - (NSString*)moxTitle {
@@ -401,6 +398,13 @@ inline NSString* ToNSString(id aValue) {
 
 - (NSString*)moxLabel {
   return nil;
+}
+
+- (BOOL)moxIgnoreWithParent:(mozAccessible*)parent {
+  // Don't render text nodes that are completely empty
+  // or those that should be ignored based on our
+  // standard ignore rules
+  return [self moxValue] == nil || [super moxIgnoreWithParent:parent];
 }
 
 - (NSString*)moxStringForRange:(NSValue*)range {

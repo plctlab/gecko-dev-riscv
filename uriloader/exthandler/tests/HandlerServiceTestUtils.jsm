@@ -12,25 +12,27 @@ var EXPORTED_SYMBOLS = ["HandlerServiceTestUtils"];
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Assert } = ChromeUtils.import("resource://testing-common/Assert.jsm");
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gExternalProtocolService",
   "@mozilla.org/uriloader/external-protocol-service;1",
   "nsIExternalProtocolService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gMIMEService",
   "@mozilla.org/mime;1",
   "nsIMIMEService"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gHandlerService",
   "@mozilla.org/uriloader/handler-service;1",
   "nsIHandlerService"
@@ -45,7 +47,10 @@ var HandlerServiceTestUtils = {
    *         alphabetically regardless of category.
    */
   getAllHandlerInfoTypes() {
-    return Array.from(gHandlerService.enumerate(), info => info.type).sort();
+    return Array.from(
+      lazy.gHandlerService.enumerate(),
+      info => info.type
+    ).sort();
   },
 
   /**
@@ -84,7 +89,7 @@ var HandlerServiceTestUtils = {
       // access to getMIMEInfoFromOS. This means that we have to reset the data
       // that may have been imported from the default nsIHandlerService instance
       // and is not overwritten by fillHandlerInfo later.
-      let handlerInfo = gMIMEService.getFromTypeAndExtension(type, null);
+      let handlerInfo = lazy.gMIMEService.getFromTypeAndExtension(type, null);
       if (AppConstants.platform == "android") {
         // On Android, the first handler application is always the internal one.
         while (handlerInfo.possibleApplicationHandlers.length > 1) {
@@ -95,8 +100,8 @@ var HandlerServiceTestUtils = {
       }
       handlerInfo.setFileExtensions("");
       // Populate the object from the handler service instance under testing.
-      if (gHandlerService.exists(handlerInfo)) {
-        gHandlerService.fillHandlerInfo(handlerInfo, "");
+      if (lazy.gHandlerService.exists(handlerInfo)) {
+        lazy.gHandlerService.fillHandlerInfo(handlerInfo, "");
       }
       return handlerInfo;
     }
@@ -105,14 +110,14 @@ var HandlerServiceTestUtils = {
     // testing, like the nsIExternalProtocolService::GetProtocolHandlerInfo
     // method does on the default nsIHandlerService instance.
     let osDefaultHandlerFound = {};
-    let handlerInfo = gExternalProtocolService.getProtocolHandlerInfoFromOS(
+    let handlerInfo = lazy.gExternalProtocolService.getProtocolHandlerInfoFromOS(
       type,
       osDefaultHandlerFound
     );
-    if (gHandlerService.exists(handlerInfo)) {
-      gHandlerService.fillHandlerInfo(handlerInfo, "");
+    if (lazy.gHandlerService.exists(handlerInfo)) {
+      lazy.gHandlerService.fillHandlerInfo(handlerInfo, "");
     } else {
-      gExternalProtocolService.setProtocolHandlerDefaults(
+      lazy.gExternalProtocolService.setProtocolHandlerDefaults(
         handlerInfo,
         osDefaultHandlerFound.value
       );
@@ -137,6 +142,8 @@ var HandlerServiceTestUtils = {
     let handlerInfo = this.getHandlerInfo(type);
 
     let preferredAction, preferredApplicationHandler;
+    let alwaysAskBeforeHandling = true;
+
     if (AppConstants.platform == "android") {
       // On Android, the default preferredAction for MIME types is useHelperApp.
       // For protocols, we always behave as if an operating system provided
@@ -151,17 +158,27 @@ var HandlerServiceTestUtils = {
       };
     } else {
       // On Desktop, the default preferredAction for MIME types is saveToDisk,
-      // while for protocols it is alwaysAsk.
-      preferredAction = type.includes("/")
-        ? Ci.nsIHandlerInfo.saveToDisk
-        : Ci.nsIHandlerInfo.alwaysAsk;
+      // while for protocols it is alwaysAsk. Since Bug 1735843, for new MIME
+      // types we default to not asking before handling unless a pref is set.
+      alwaysAskBeforeHandling = Services.prefs.getBoolPref(
+        "browser.download.always_ask_before_handling_new_types",
+        false
+      );
+
+      if (type.includes("/")) {
+        preferredAction = Ci.nsIHandlerInfo.saveToDisk;
+      } else {
+        preferredAction = Ci.nsIHandlerInfo.alwaysAsk;
+        // we'll always ask before handling protocols
+        alwaysAskBeforeHandling = true;
+      }
       preferredApplicationHandler = null;
     }
 
     this.assertHandlerInfoMatches(handlerInfo, {
       type,
       preferredAction,
-      alwaysAskBeforeHandling: true,
+      alwaysAskBeforeHandling,
       preferredApplicationHandler,
     });
     return handlerInfo;

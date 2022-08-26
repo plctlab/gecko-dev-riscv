@@ -766,7 +766,6 @@ system_headers = [
     'SIOUX.h',
     'size_t.h',
     'smime.h',
-    'sndio.h',
     'someincludefile.h',
     'soundcard.h',
     'Sound.h',
@@ -1030,6 +1029,7 @@ if CONFIG['MOZ_X11']:
         'X11/extensions/Xfixes.h',
         'X11/extensions/Xrandr.h',
         'X11/extensions/XShm.h',
+        'X11/extensions/XTest.h',
         'X11/ImUtil.h',
         'X11/Intrinsic.h',
         'X11/keysymdef.h',
@@ -1241,6 +1241,11 @@ if CONFIG['MOZ_JACK']:
     system_headers += [
         'jack/jack.h',
         'jack/statistics.h',
+    ]
+
+if CONFIG['MOZ_SNDIO']:
+    system_headers += [
+        'sndio.h',
     ]
 
 if CONFIG['MOZ_SYSTEM_JPEG']:

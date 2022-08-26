@@ -28,7 +28,7 @@ needs-focus == passwd-9-with-TextEditor.html passwd-2.html
 == emptypasswd-2.html emptypasswd-ref.html
 == caret_on_positioned.html caret_on_positioned-ref.html
 # Android turns off spellchecker (Bug 1541697)
-skip-if(Android) needs-focus != spellcheck-input-disabled.html spellcheck-input-ref.html
+skip-if(Android) skip-if(cocoaWidget) needs-focus != spellcheck-input-disabled.html spellcheck-input-ref.html # Bug 1666056
 skip-if(Android) == spellcheck-input-attr-before.html spellcheck-input-nofocus-ref.html
 skip-if(Android) needs-focus != spellcheck-input-attr-before.html spellcheck-input-ref.html
 skip-if(Android) == spellcheck-input-attr-after.html spellcheck-input-nofocus-ref.html
@@ -154,3 +154,4 @@ fuzzy-if(Android,0-1,0-1) needs-focus == 1443902-2.html 1443902-2-ref.html
 fuzzy-if(Android,0-1,0-1) needs-focus == 1443902-3.html 1443902-3-ref.html
 fuzzy-if(Android,0-1,0-1) needs-focus == 1443902-4.html 1443902-4-ref.html
 == exec-command-indent-ws.html exec-command-indent-ws-ref.html
+needs-focus == inline-table-editor-position-after-updating-table-size-from-input-event-listener.html inline-table-editor-position-after-updating-table-size-from-input-event-listener-ref.html

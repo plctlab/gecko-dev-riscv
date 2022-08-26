@@ -10,10 +10,15 @@
  * about account state changes.
  */
 
-var EXPORTED_SYMBOLS = ["EnsureFxAccountsWebChannel"];
+var EXPORTED_SYMBOLS = [
+  "EnsureFxAccountsWebChannel",
+  // These are exported for tests.
+  "FxAccountsWebChannel",
+  "FxAccountsWebChannelHelpers",
+];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const {
   COMMAND_PROFILE_CHANGE,
@@ -30,68 +35,65 @@ const {
   COMMAND_PAIR_DECLINE,
   COMMAND_PAIR_COMPLETE,
   COMMAND_PAIR_PREFERENCES,
+  COMMAND_FIREFOX_VIEW,
   FX_OAUTH_CLIENT_ID,
   ON_PROFILE_CHANGE_NOTIFICATION,
   PREF_LAST_FXA_USER,
-  SCOPE_OLD_SYNC,
   WEBCHANNEL_ID,
   log,
   logPII,
 } = ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "WebChannel",
   "resource://gre/modules/WebChannel.jsm"
 );
+XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "fxAccounts",
-  "resource://gre/modules/FxAccounts.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FxAccountsStorageManagerCanStoreField",
   "resource://gre/modules/FxAccountsStorage.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Weave",
   "resource://services-sync/main.js"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CryptoUtils",
   "resource://services-crypto/utils.js"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FxAccountsPairingFlow",
   "resource://gre/modules/FxAccountsPairing.jsm"
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "pairingEnabled",
   "identity.fxaccounts.pairing.enabled"
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "separatePrivilegedMozillaWebContentProcess",
   "browser.tabs.remote.separatePrivilegedMozillaWebContentProcess",
   false
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "separatedMozillaDomains",
   "browser.tabs.remote.separatedMozillaDomains",
   "",
@@ -99,7 +101,7 @@ XPCOMUtils.defineLazyPreferenceGetter(
   val => val.split(",")
 );
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "accountServer",
   "identity.fxaccounts.remote.root",
   null,
@@ -149,7 +151,7 @@ function getErrorDetails(error) {
  *     Helpers functions. Should only be passed in for testing.
  * @constructor
  */
-this.FxAccountsWebChannel = function(options) {
+function FxAccountsWebChannel(options) {
   if (!options) {
     throw new Error("Missing configuration options");
   }
@@ -169,7 +171,7 @@ this.FxAccountsWebChannel = function(options) {
   });
 
   this._setupChannel();
-};
+}
 
 FxAccountsWebChannel.prototype = {
   /**
@@ -218,13 +220,12 @@ FxAccountsWebChannel.prototype = {
 
   _receiveMessage(message, sendingContext) {
     const { command, data } = message;
-
     let shouldCheckRemoteType =
-      separatePrivilegedMozillaWebContentProcess &&
-      separatedMozillaDomains.some(function(val) {
+      lazy.separatePrivilegedMozillaWebContentProcess &&
+      lazy.separatedMozillaDomains.some(function(val) {
         return (
-          accountServer.asciiHost == val ||
-          accountServer.asciiHost.endsWith("." + val)
+          lazy.accountServer.asciiHost == val ||
+          lazy.accountServer.asciiHost.endsWith("." + val)
         );
       });
     let { currentRemoteType } = sendingContext.browsingContext;
@@ -271,11 +272,27 @@ FxAccountsWebChannel.prototype = {
         this._helpers.openSyncPreferences(browser, data.entryPoint);
         break;
       case COMMAND_PAIR_PREFERENCES:
-        if (pairingEnabled) {
-          browser.loadURI("about:preferences?action=pair#sync", {
-            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-          });
+        if (lazy.pairingEnabled) {
+          let window = browser.ownerGlobal;
+          // We should close the FxA tab after we open our pref page
+          let selectedTab = window.gBrowser.selectedTab;
+          window.switchToTabHavingURI(
+            "about:preferences?action=pair#sync",
+            true,
+            {
+              ignoreQueryString: true,
+              replaceQueryString: true,
+              adoptIntoActiveWindow: true,
+              ignoreFragment: "whenComparing",
+              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            }
+          );
+          // close the tab
+          window.gBrowser.removeTab(selectedTab);
         }
+        break;
+      case COMMAND_FIREFOX_VIEW:
+        this._helpers.openFirefoxView(browser, data.entryPoint);
         break;
       case COMMAND_CHANGE_PASSWORD:
         this._helpers
@@ -308,7 +325,7 @@ FxAccountsWebChannel.prototype = {
         log.debug(`Pairing command ${command} received`);
         const { channel_id: channelId } = data;
         delete data.channel_id;
-        const flow = FxAccountsPairingFlow.get(channelId);
+        const flow = lazy.FxAccountsPairingFlow.get(channelId);
         if (!flow) {
           log.warn(`Could not find a pairing flow for ${channelId}`);
           return;
@@ -327,7 +344,7 @@ FxAccountsWebChannel.prototype = {
       default:
         log.warn("Unrecognized FxAccountsWebChannel command", command);
         // As a safety measure we also terminate any pending FxA pairing flow.
-        FxAccountsPairingFlow.finalizeAll();
+        lazy.FxAccountsPairingFlow.finalizeAll();
         break;
     }
   },
@@ -385,7 +402,10 @@ FxAccountsWebChannel.prototype = {
     };
 
     this._channelCallback = listener;
-    this._channel = new WebChannel(this._webChannelId, this._webChannelOrigin);
+    this._channel = new lazy.WebChannel(
+      this._webChannelId,
+      this._webChannelOrigin
+    );
     this._channel.listen(listener);
     log.debug(
       "FxAccountsWebChannel registered: " +
@@ -396,14 +416,14 @@ FxAccountsWebChannel.prototype = {
   },
 };
 
-this.FxAccountsWebChannelHelpers = function(options) {
+function FxAccountsWebChannelHelpers(options) {
   options = options || {};
 
-  this._fxAccounts = options.fxAccounts || fxAccounts;
+  this._fxAccounts = options.fxAccounts || lazy.fxAccounts;
   this._weaveXPCOM = options.weaveXPCOM || null;
   this._privateBrowsingUtils =
-    options.privateBrowsingUtils || PrivateBrowsingUtils;
-};
+    options.privateBrowsingUtils || lazy.PrivateBrowsingUtils;
+}
 
 FxAccountsWebChannelHelpers.prototype = {
   // If the last fxa account used for sync isn't this account, we display
@@ -475,7 +495,7 @@ FxAccountsWebChannelHelpers.prototype = {
             }
           });
           log.debug("Received declined engines", declinedEngines);
-          Weave.Service.engineManager.setDeclined(declinedEngines);
+          lazy.Weave.Service.engineManager.setDeclined(declinedEngines);
           declinedEngines.forEach(engine => {
             Services.prefs.setBoolPref(`services.sync.engine.${engine}`, false);
           });
@@ -580,7 +600,7 @@ FxAccountsWebChannelHelpers.prototype = {
       clientId: FX_OAUTH_CLIENT_ID,
       capabilities: {
         multiService: true,
-        pairing: pairingEnabled,
+        pairing: lazy.pairingEnabled,
         engines: this._getAvailableExtraEngines(),
       },
     };
@@ -610,12 +630,14 @@ FxAccountsWebChannelHelpers.prototype = {
     // So we just remove field names we know aren't handled.
     let newCredentials = {
       device: null, // Force a brand new device registration.
+      // We force the re-encryption of the send tab keys using the new sync key after the password change
+      encryptedSendTabKeys: null,
     };
     for (let name of Object.keys(credentials)) {
       if (
         name == "email" ||
         name == "uid" ||
-        FxAccountsStorageManagerCanStoreField(name)
+        lazy.FxAccountsStorageManagerCanStoreField(name)
       ) {
         newCredentials[name] = credentials[name];
       } else {
@@ -623,14 +645,6 @@ FxAccountsWebChannelHelpers.prototype = {
       }
     }
     await this._fxAccounts._internal.updateUserAccountData(newCredentials);
-    // Force the keys derivation, to be able to register a send-tab command
-    // in updateDeviceRegistration (but it's not clear we really do need to
-    // force keys here - see bug 1580398 for more)
-    try {
-      await this._fxAccounts.keys.getKeyForScope(SCOPE_OLD_SYNC);
-    } catch (e) {
-      log.error("getKeyForScope errored", e);
-    }
     await this._fxAccounts._internal.updateDeviceRegistration();
   },
 
@@ -653,7 +667,7 @@ FxAccountsWebChannelHelpers.prototype = {
   setPreviousAccountNameHashPref(acctName) {
     Services.prefs.setStringPref(
       PREF_LAST_FXA_USER,
-      CryptoUtils.sha256Base64(acctName)
+      lazy.CryptoUtils.sha256Base64(acctName)
     );
   },
 
@@ -676,6 +690,16 @@ FxAccountsWebChannelHelpers.prototype = {
   },
 
   /**
+   * Open Firefox View in the browser's window
+   *
+   * @param {Object} browser the browser in whose window we'll open Firefox View
+   * @param {String} [entryPoint] entryPoint Optional string to use for logging
+   */
+  openFirefoxView(browser, entryPoint) {
+    browser.ownerGlobal.FirefoxViewHandler.openTab(entryPoint);
+  },
+
+  /**
    * If a user signs in using a different account, the data from the
    * previous account and the new account will be merged. Ask the user
    * if they want to continue.
@@ -684,7 +708,9 @@ FxAccountsWebChannelHelpers.prototype = {
    */
   _needRelinkWarning(acctName) {
     let prevAcctHash = this.getPreviousAccountNameHashPref();
-    return prevAcctHash && prevAcctHash != CryptoUtils.sha256Base64(acctName);
+    return (
+      prevAcctHash && prevAcctHash != lazy.CryptoUtils.sha256Base64(acctName)
+    );
   },
 
   /**

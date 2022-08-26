@@ -8,8 +8,8 @@ Test the login-item component
   <title>Test the login-item component</title>
   <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"></script>
   <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"></script>
-  <script type="module" src="chrome://browser/content/aboutlogins/components/login-item.js"></script>
-  <script type="module" src="chrome://browser/content/aboutlogins/components/confirmation-dialog.js"></script>
+  <script type="module" src="chrome://browser/content/aboutlogins/components/login-item.mjs"></script>
+  <script type="module" src="chrome://browser/content/aboutlogins/components/confirmation-dialog.mjs"></script>
   <script src="aboutlogins_common.js"></script>
 
   <link rel="stylesheet" href="/tests/SimpleTest/test.css"/>
@@ -58,7 +58,7 @@ TEST_BREACHES_MAP.set(TEST_LOGIN_1.guid, TEST_BREACH);
 const TEST_VULNERABLE_MAP = new Map();
 TEST_VULNERABLE_MAP.set(TEST_LOGIN_2.guid, true);
 
-add_task(async function setup() {
+add_setup(async () => {
   let templateFrame = document.getElementById("templateFrame");
   let displayEl = document.getElementById("display");
   await importDependencies(templateFrame, displayEl);
@@ -256,7 +256,7 @@ add_task(async function test_reveal_password_change_selected_login() {
   revealCheckbox.click();
   ok(revealCheckbox.checked, "reveal-checkbox should be checked after clicking");
   await SimpleTest.promiseWaitForCondition(() => passwordInput.type == "text",
-    "waiting for password input type to change after checking for master password");
+    "waiting for password input type to change after checking for primary password");
   is(passwordInput.type, "text", "Password should be unmasked when checkbox is clicked");
   ok(!isHidden(passwordInput), "Password input should be visible");
 
@@ -433,7 +433,7 @@ add_task(async function test_copy_button_state() {
 
   copyPasswordButton.click();
   await SimpleTest.promiseWaitForCondition(() => copyPasswordButton.disabled,
-  "waiting for copy-password-button to become disabled after checking for master password");
+  "waiting for copy-password-button to become disabled after checking for primary password");
 
   ok(copyPasswordButton.disabled, "The copy-passwoed-button should be disabled when it is clicked");
   ok(!copyUsernameButton.disabled, "The copy-username-button should be enabled when the copy-password-button is clicked");
@@ -446,7 +446,7 @@ add_task(async function test_copy_button_state() {
 
   copyPasswordButton.click();
   await SimpleTest.promiseWaitForCondition(() => copyPasswordButton.disabled,
-  "waiting for copy-password-button to become disabled after checking for master password");
+  "waiting for copy-password-button to become disabled after checking for primary password");
 
   ok(copyPasswordButton.disabled, "The copy-passwoed-button should be disabled when it is clicked");
   ok(copyUsernameButton.disabled, "The copy-username-button should still be disabled after clicking the password button when the username is empty");

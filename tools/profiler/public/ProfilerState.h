@@ -27,64 +27,78 @@
 // values are used internally only and so can be changed without consequence.
 // Any changes to this list should also be applied to the feature list in
 // toolkit/components/extensions/schemas/geckoProfiler.json.
-#define PROFILER_FOR_EACH_FEATURE(MACRO)                                     \
-  MACRO(0, "java", Java, "Profile Java code, Android only")                  \
-                                                                             \
-  MACRO(1, "js", JS,                                                         \
-        "Get the JS engine to expose the JS stack to the profiler")          \
-                                                                             \
-  /* The DevTools profiler doesn't want the native addresses. */             \
-  MACRO(2, "leaf", Leaf, "Include the C++ leaf node if not stackwalking")    \
-                                                                             \
-  MACRO(3, "mainthreadio", MainThreadIO, "Add main thread file I/O")         \
-                                                                             \
-  MACRO(4, "fileio", FileIO,                                                 \
-        "Add file I/O from all profiled threads, implies mainthreadio")      \
-                                                                             \
-  MACRO(5, "fileioall", FileIOAll,                                           \
-        "Add file I/O from all threads, implies fileio")                     \
-                                                                             \
-  MACRO(6, "noiostacks", NoIOStacks,                                         \
-        "File I/O markers do not capture stacks, to reduce overhead")        \
-                                                                             \
-  MACRO(7, "screenshots", Screenshots,                                       \
-        "Take a snapshot of the window on every composition")                \
-                                                                             \
-  MACRO(8, "seqstyle", SequentialStyle,                                      \
-        "Disable parallel traversal in styling")                             \
-                                                                             \
-  MACRO(9, "stackwalk", StackWalk,                                           \
-        "Walk the C++ stack, not available on all platforms")                \
-                                                                             \
-  MACRO(10, "threads", Threads, "Profile the registered secondary threads")  \
-                                                                             \
-  MACRO(11, "jstracer", JSTracer, "Enable tracing of the JavaScript engine") \
-                                                                             \
-  MACRO(12, "jsallocations", JSAllocations,                                  \
-        "Have the JavaScript engine track allocations")                      \
-                                                                             \
-  MACRO(13, "nostacksampling", NoStackSampling,                              \
-        "Disable all stack sampling: Cancels \"js\", \"leaf\", "             \
-        "\"stackwalk\" and labels")                                          \
-                                                                             \
-  MACRO(14, "preferencereads", PreferenceReads,                              \
-        "Track when preferences are read")                                   \
-                                                                             \
-  MACRO(15, "nativeallocations", NativeAllocations,                          \
-        "Collect the stacks from a smaller subset of all native "            \
-        "allocations, biasing towards collecting larger allocations")        \
-                                                                             \
-  MACRO(16, "ipcmessages", IPCMessages,                                      \
-        "Have the IPC layer track cross-process messages")                   \
-                                                                             \
-  MACRO(17, "audiocallbacktracing", AudioCallbackTracing,                    \
-        "Audio callback tracing")                                            \
-                                                                             \
-  MACRO(18, "cpu", CPUUtilization, "CPU utilization")                        \
-                                                                             \
-  MACRO(19, "notimerresolutionchange", NoTimerResolutionChange,              \
-        "Do not adjust the timer resolution for sampling, so that other "    \
-        "Firefox timers do not get affected")
+// *** Synchronize with lists in BaseProfilerState.h and geckoProfiler.json ***
+#define PROFILER_FOR_EACH_FEATURE(MACRO)                                   \
+  MACRO(0, "java", Java, "Profile Java code, Android only")                \
+                                                                           \
+  MACRO(1, "js", JS,                                                       \
+        "Get the JS engine to expose the JS stack to the profiler")        \
+                                                                           \
+  MACRO(2, "mainthreadio", MainThreadIO, "Add main thread file I/O")       \
+                                                                           \
+  MACRO(3, "fileio", FileIO,                                               \
+        "Add file I/O from all profiled threads, implies mainthreadio")    \
+                                                                           \
+  MACRO(4, "fileioall", FileIOAll,                                         \
+        "Add file I/O from all threads, implies fileio")                   \
+                                                                           \
+  MACRO(5, "noiostacks", NoIOStacks,                                       \
+        "File I/O markers do not capture stacks, to reduce overhead")      \
+                                                                           \
+  MACRO(6, "screenshots", Screenshots,                                     \
+        "Take a snapshot of the window on every composition")              \
+                                                                           \
+  MACRO(7, "seqstyle", SequentialStyle,                                    \
+        "Disable parallel traversal in styling")                           \
+                                                                           \
+  MACRO(8, "stackwalk", StackWalk,                                         \
+        "Walk the C++ stack, not available on all platforms")              \
+                                                                           \
+  MACRO(9, "jsallocations", JSAllocations,                                 \
+        "Have the JavaScript engine track allocations")                    \
+                                                                           \
+  MACRO(10, "nostacksampling", NoStackSampling,                            \
+        "Disable all stack sampling: Cancels \"js\", \"stackwalk\" and "   \
+        "labels")                                                          \
+                                                                           \
+  MACRO(11, "preferencereads", PreferenceReads,                            \
+        "Track when preferences are read")                                 \
+                                                                           \
+  MACRO(12, "nativeallocations", NativeAllocations,                        \
+        "Collect the stacks from a smaller subset of all native "          \
+        "allocations, biasing towards collecting larger allocations")      \
+                                                                           \
+  MACRO(13, "ipcmessages", IPCMessages,                                    \
+        "Have the IPC layer track cross-process messages")                 \
+                                                                           \
+  MACRO(14, "audiocallbacktracing", AudioCallbackTracing,                  \
+        "Audio callback tracing")                                          \
+                                                                           \
+  MACRO(15, "cpu", CPUUtilization, "CPU utilization")                      \
+                                                                           \
+  MACRO(16, "notimerresolutionchange", NoTimerResolutionChange,            \
+        "Do not adjust the timer resolution for sampling, so that other "  \
+        "Firefox timers do not get affected")                              \
+                                                                           \
+  MACRO(17, "cpuallthreads", CPUAllThreads,                                \
+        "Sample the CPU utilization of all registered threads")            \
+                                                                           \
+  MACRO(18, "samplingallthreads", SamplingAllThreads,                      \
+        "Sample the stacks of all registered threads")                     \
+                                                                           \
+  MACRO(19, "markersallthreads", MarkersAllThreads,                        \
+        "Record markers from all registered threads")                      \
+                                                                           \
+  MACRO(20, "unregisteredthreads", UnregisteredThreads,                    \
+        "Discover and profile unregistered threads -- beware: expensive!") \
+                                                                           \
+  MACRO(21, "processcpu", ProcessCPU,                                      \
+        "Sample the CPU utilization of each process")                      \
+                                                                           \
+  MACRO(22, "power", Power,                                                \
+        "Sample energy meters on Windows 11 and per process power use on " \
+        "Apple Silicon")
+// *** Synchronize with lists in BaseProfilerState.h and geckoProfiler.json ***
 
 struct ProfilerFeature {
 #define DECLARE(n_, str_, Name_, desc_)                                \
@@ -163,7 +177,7 @@ using ProfilingStateChangeCallback = std::function<void(ProfilingState)>;
 #ifndef MOZ_GECKO_PROFILER
 
 [[nodiscard]] inline bool profiler_is_active() { return false; }
-[[nodiscard]] inline bool profiler_can_accept_markers() { return false; }
+[[nodiscard]] inline bool profiler_is_active_and_unpaused() { return false; }
 [[nodiscard]] inline bool profiler_feature_active(uint32_t aFeature) {
   return false;
 }
@@ -301,15 +315,8 @@ class RacyFeatures {
   return mozilla::profiler::detail::RacyFeatures::IsActive();
 }
 
-// Same as profiler_is_active(), but with the same extra checks that determine
-// if the profiler would currently store markers. So this should be used before
-// doing some potentially-expensive work that's used in a marker. E.g.:
-//
-//   if (profiler_can_accept_markers()) {
-//     ExpensiveMarkerPayload expensivePayload = CreateExpensivePayload();
-//     BASE_PROFILER_ADD_MARKER_WITH_PAYLOAD(name, OTHER, expensivePayload);
-//   }
-[[nodiscard]] inline bool profiler_can_accept_markers() {
+// Same as profiler_is_active(), but also checks if the profiler is not paused.
+[[nodiscard]] inline bool profiler_is_active_and_unpaused() {
   return mozilla::profiler::detail::RacyFeatures::IsActiveAndUnpaused();
 }
 

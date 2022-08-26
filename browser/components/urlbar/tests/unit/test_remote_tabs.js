@@ -63,6 +63,7 @@ add_task(async function setup() {
     Services.prefs.clearUserPref("services.sync.username");
     Services.prefs.clearUserPref("services.sync.registerEngines");
     Services.prefs.clearUserPref("browser.urlbar.suggest.searches");
+    Services.prefs.clearUserPref("browser.urlbar.suggest.quickactions");
     await cleanupPlaces();
   });
 
@@ -71,6 +72,7 @@ add_task(async function setup() {
   Services.prefs.setCharPref("services.sync.registerEngines", "");
   // Avoid hitting the network.
   Services.prefs.setBoolPref("browser.urlbar.suggest.searches", false);
+  Services.prefs.setBoolPref("browser.urlbar.suggest.quickactions", false);
 });
 
 add_task(async function test_minimal() {
@@ -200,6 +202,35 @@ add_task(async function test_dontMatchSyncedTabs() {
   });
 
   Services.prefs.clearUserPref("services.sync.syncedTabs.showRemoteTabs");
+});
+
+add_task(async function test_tabsDisabledInUrlbar() {
+  Services.prefs.setBoolPref("browser.urlbar.suggest.remotetab", false);
+  configureEngine({
+    guid_mobile: {
+      id: "mobile",
+      tabs: [
+        {
+          urlHistory: ["http://example.com/"],
+          title: "An Example",
+          icon: "http://favicon",
+        },
+      ],
+    },
+  });
+
+  let context = createContext("ex", { isPrivate: false });
+  await check_results({
+    context,
+    matches: [
+      makeSearchResult(context, {
+        engineName: SUGGESTIONS_ENGINE_NAME,
+        heuristic: true,
+      }),
+    ],
+  });
+
+  Services.prefs.clearUserPref("browser.urlbar.suggest.remotetab");
 });
 
 add_task(async function test_matches_title() {

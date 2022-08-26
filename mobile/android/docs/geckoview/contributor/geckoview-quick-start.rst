@@ -1,8 +1,8 @@
 .. -*- Mode: rst; fill-column: 80; -*-
 
-===========================
-GeckoView Contributor Guide
-===========================
+=================
+Contributor Guide
+=================
 
 Table of contents
 =================
@@ -25,8 +25,10 @@ in ``mozilla-central``. You will need to get set up as a contributor to
 Firefox in order to contribute to GeckoView. To get set up with
 ``mozilla-central``, follow the `Quick Start Guide for Git
 Users <mc-quick-start.html>`_, or the `Contributing to the Mozilla code
-base <https://developer.mozilla.org/docs/Mozilla/Developer_guide/Introduction>`_
-guide on `MDN <https://developer.mozilla.org/>`_ for Mercurial users.
+base <https://firefox-source-docs.mozilla.org/setup/contributing_code.html>`_
+guide and `Firefox Contributors’ Quick Reference
+<https://firefox-source-docs.mozilla.org/contributing/contribution_quickref.html>`_
+for Mercurial users.
 
 Once you have a copy of ``mozilla-central``, you will need to build
 GeckoView.
@@ -50,22 +52,31 @@ If you are on a mac, you will need to have the Xcode build tools
 installed. You can do this by either `installing
 Xcode <https://developer.apple.com/xcode/>`__ or installing only the
 tools from the command line by running ``xcode-select --install`` and
-following the on screen instructions. Use the ``--no-interactive``
-argument to automatically accept any license agreements.
+following the on screen instructions.
+
+You will need to ``bootstrap`` for GeckoView/Firefox for Android. The easiest way is to run the following command:
 
 .. code:: bash
 
-   ./mach [--no-interactive] bootstrap
+   ./mach --no-interactive bootstrap --application-choice="GeckoView/Firefox for Android"
 
--  Choose option \`4. Firefox for Android\` for GeckoView development.
-   This will give you a version of Gecko configured for Android that has
-   not bundled the native code into embedded libraries so you can amend
-   the code.
--  Say Y to all configuration options
--  Once ``mach bootstrap`` is complete, it will automatically write
-   the configuration into a new ``mozconfig`` file. If you already
-   have a ``mozconfig``, ``mach`` will instead output new configuration
-   that you should append to your existing file.
+.. note::
+
+    - The ``--no-interactive`` argument will make ``bootstrap`` run start to finish without requiring any input from you. It will automatically accept any license agreements.
+    - The ``--application-choice="GeckoView/Firefox for Android"`` argument is needed when using ``--no-interactive`` so that "bootstrapping" is done for the correct application (instead of the default).
+
+    If you want to make all the selections yourself and/or read through the license agreements, you can simply run:
+
+    .. code:: bash
+
+         ./mach bootstrap
+
+    Select ``4. GeckoView/Firefox for Android`` when prompted and respond to any subsequent prompts as they appear.
+
+Once ``./mach bootstrap`` is complete, it will automatically write
+the configuration into a new ``mozconfig`` file. If you already
+have a ``mozconfig``, ``mach`` will instead output new configuration
+that you should append to your existing file.
 
 Build from the command line
 ---------------------------
@@ -83,15 +94,6 @@ Build Using Android Studio
 
 -  Install `Android
    Studio <https://developer.android.com/studio/install>`_.
--  Disable Instant Run. This is because Fennec and the Geckoview Example
-   app cannot deploy with Instant Run on.
-
-   -  Select Android Studio > Preferences from the menu bar
-   -  Navigate to Build, Execution, Deployment > Instant Run.
-   -  Uncheck the box that reads
-      ``Enable Instant Run to hot swap code/resource changes on deploy``.
-
-   |alt text|
 -  Choose File->Open from the toolbar
 -  Navigate to the root of your ``mozilla-central`` source directory and
    click “Open”
@@ -103,17 +105,12 @@ Build Using Android Studio
 -  Wait for the project to index and gradle to sync. Once synced, the
    workspace will reconfigure to display the different projects.
 
-   -  annotations contains custom annotations used inside GeckoView and
-      Fennec.
-   -  app is Fennec - Firefox for Android. Here is where you will find
-      code specific to that app.
+   -  annotations contains custom Java annotations used inside GeckoView
+   -  app contains geckoview build settings and omnijar. omnijar contains
+      the parts of Gecko and GeckoView that are not written in Java or Kotlin
    -  geckoview is the GeckoView project. Here is all the Java files
       related to GeckoView
    -  geckoview_example is an example browser built using GeckoView.
-   -  omnijar contains the parts of Gecko and GeckoView that are not
-      written in Java or Kotlin
-   -  thirdparty contains third party code that Fennec and GeckoView
-      use.
 
    |alt text 1|
 
@@ -217,7 +214,7 @@ number e.g.
      not `about:config` should be available.
      ([bug 1540065]({{bugzilla}}1540065))
 
-   [71.12]: {{javadoc_uri}}/GeckoRuntimeSettings.Builder.html#aboutConfigEnabled-boolean-
+   [71.12]: {{javadoc_uri}}/GeckoRuntimeSettings.Builder.html#aboutConfigEnabled(boolean)
 
 Submitting to the ``try`` server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -228,10 +225,10 @@ do this using Mozilla’s ``try`` server. To submit a GeckoView patch to
 
 .. code:: bash
 
-   ./mach try fuzzy -q "android"
+   ./mach try auto
 
-This will run all of the Android test suite. If your patch passes on
-``try`` you can be (fairly) confident that it will land successfully
+This will automatically select tests to run from our suite. If your patch
+passes on ``try`` you can be (fairly) confident that it will land successfully
 after review.
 
 Tagging a reviewer
@@ -244,9 +241,9 @@ review your patch, put their Phabricator handle against the
 If you don’t know who to tag for a review in the Phabricator submission
 message, leave the field blank and, after submission, follow the link to
 the patch in Phabricator and scroll to the bottom of the screen until
-you see the comment box. 
+you see the comment box.
 
-- Select the ``Add Action`` drop down and pick the ``Change Reviewers`` option. 
+- Select the ``Add Action`` drop down and pick the ``Change Reviewers`` option.
 - In the presented box, add ``geckoview-reviewers``. Selecting this group as the reviewer will notify all the members of the GeckoView team there is a patch to review.
 - Click ``Submit`` to submit the reviewer change request.
 
@@ -282,9 +279,9 @@ Dependency substiting your local GeckoView into a Mozilla project
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Most GeckoView-consuming projects produced by Mozilla support dependency
-substitution via ``local.properties``. These projects include: 
+substitution via ``local.properties``. These projects include:
 
-- `Fenix <https://github.com/mozilla-mobile/fenix>`_ 
+- `Fenix <https://github.com/mozilla-mobile/fenix>`_
 - `reference-browser <https://github.com/mozilla-mobile/reference-browser>`_
 - `android-components <https://github.com/mozilla-mobile/android-components>`_
 - `Firefox Reality <https://github.com/MozillaReality/FirefoxReality>`_

@@ -219,7 +219,7 @@ uint32_t ARIAGridAccessible::SelectedRowCount() {
   return count;
 }
 
-void ARIAGridAccessible::SelectedCells(nsTArray<LocalAccessible*>* aCells) {
+void ARIAGridAccessible::SelectedCells(nsTArray<Accessible*>* aCells) {
   if (IsARIARole(nsGkAtoms::table)) return;
 
   AccIterator rowIter(this, filters::GetRow);
@@ -613,17 +613,4 @@ already_AddRefed<AccAttributes> ARIAGridCellAccessible::NativeAttributes() {
 #endif
 
   return attributes.forget();
-}
-
-GroupPos ARIAGridCellAccessible::GroupPosition() {
-  int32_t count = 0, index = 0;
-  TableAccessible* table = Table();
-  if (table &&
-      nsCoreUtils::GetUIntAttr(table->AsAccessible()->GetContent(),
-                               nsGkAtoms::aria_colcount, &count) &&
-      nsCoreUtils::GetUIntAttr(mContent, nsGkAtoms::aria_colindex, &index)) {
-    return GroupPos(0, index, count);
-  }
-
-  return GroupPos();
 }

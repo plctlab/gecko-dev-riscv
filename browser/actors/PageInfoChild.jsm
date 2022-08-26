@@ -4,12 +4,13 @@
 
 var EXPORTED_SYMBOLS = ["PageInfoChild"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
@@ -91,7 +92,7 @@ class PageInfoChild extends JSWindowActorChild {
     docInfo.characterSet = document.characterSet;
     docInfo.lastModified = document.lastModified;
     docInfo.principal = document.nodePrincipal;
-    docInfo.cookieJarSettings = E10SUtils.serializeCookieJarSettings(
+    docInfo.cookieJarSettings = lazy.E10SUtils.serializeCookieJarSettings(
       document.cookieJarSettings
     );
 
@@ -99,7 +100,7 @@ class PageInfoChild extends JSWindowActorChild {
     documentURIObject.spec = document.documentURIObject.spec;
     docInfo.documentURIObject = documentURIObject;
 
-    docInfo.isContentWindowPrivate = PrivateBrowsingUtils.isContentWindowPrivate(
+    docInfo.isContentWindowPrivate = lazy.PrivateBrowsingUtils.isContentWindowPrivate(
       document.ownerGlobal
     );
 
@@ -126,7 +127,7 @@ class PageInfoChild extends JSWindowActorChild {
 
       if (++nodeCount % 500 == 0) {
         // setTimeout every 500 elements so we don't keep blocking the content process.
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise(resolve => lazy.setTimeout(resolve, 10));
       }
       totalMediaItems.push(...mediaItems);
     }
@@ -175,7 +176,7 @@ class PageInfoChild extends JSWindowActorChild {
     }
 
     // One swi^H^H^Hif-else to rule them all.
-    if (elem instanceof content.HTMLImageElement) {
+    if (content.HTMLImageElement.isInstance(elem)) {
       addMedia(
         elem.src,
         "img",
@@ -184,7 +185,7 @@ class PageInfoChild extends JSWindowActorChild {
         false,
         !elem.hasAttribute("alt")
       );
-    } else if (elem instanceof content.SVGImageElement) {
+    } else if (content.SVGImageElement.isInstance(elem)) {
       try {
         // Note: makeURLAbsolute will throw if either the baseURI is not a valid URI
         //       or the URI formed from the baseURI and the URL is not a valid URI.
@@ -197,17 +198,17 @@ class PageInfoChild extends JSWindowActorChild {
           addMedia(href, "img", "", elem, false);
         }
       } catch (e) {}
-    } else if (elem instanceof content.HTMLVideoElement) {
+    } else if (content.HTMLVideoElement.isInstance(elem)) {
       addMedia(elem.currentSrc, "video", "", elem, false);
-    } else if (elem instanceof content.HTMLAudioElement) {
+    } else if (content.HTMLAudioElement.isInstance(elem)) {
       addMedia(elem.currentSrc, "audio", "", elem, false);
-    } else if (elem instanceof content.HTMLLinkElement) {
+    } else if (content.HTMLLinkElement.isInstance(elem)) {
       if (elem.rel && /\bicon\b/i.test(elem.rel)) {
         addMedia(elem.href, "link", "", elem, false);
       }
     } else if (
-      elem instanceof content.HTMLInputElement ||
-      elem instanceof content.HTMLButtonElement
+      content.HTMLInputElement.isInstance(elem) ||
+      content.HTMLButtonElement.isInstance(elem)
     ) {
       if (elem.type.toLowerCase() == "image") {
         addMedia(
@@ -219,9 +220,9 @@ class PageInfoChild extends JSWindowActorChild {
           !elem.hasAttribute("alt")
         );
       }
-    } else if (elem instanceof content.HTMLObjectElement) {
+    } else if (content.HTMLObjectElement.isInstance(elem)) {
       addMedia(elem.data, "object", this.getValueText(elem), elem, false);
-    } else if (elem instanceof content.HTMLEmbedElement) {
+    } else if (content.HTMLEmbedElement.isInstance(elem)) {
       addMedia(elem.src, "embed", "", elem, false);
     }
 
@@ -240,12 +241,12 @@ class PageInfoChild extends JSWindowActorChild {
     let imageText;
     if (
       !isBG &&
-      !(item instanceof content.SVGImageElement) &&
-      !(document instanceof content.ImageDocument)
+      !content.SVGImageElement.isInstance(item) &&
+      !content.ImageDocument.isInstance(document)
     ) {
       imageText = item.title || item.alt;
 
-      if (!imageText && !(item instanceof content.HTMLImageElement)) {
+      if (!imageText && !content.HTMLImageElement.isInstance(item)) {
         imageText = this.getValueText(item);
       }
     }
@@ -255,9 +256,9 @@ class PageInfoChild extends JSWindowActorChild {
     result.numFrames = 1;
 
     if (
-      item instanceof content.HTMLObjectElement ||
-      item instanceof content.HTMLEmbedElement ||
-      item instanceof content.HTMLLinkElement
+      content.HTMLObjectElement.isInstance(item) ||
+      content.HTMLEmbedElement.isInstance(item) ||
+      content.HTMLLinkElement.isInstance(item)
     ) {
       result.mimeType = item.type;
     }
@@ -290,13 +291,13 @@ class PageInfoChild extends JSWindowActorChild {
       }
     }
 
-    result.HTMLLinkElement = item instanceof content.HTMLLinkElement;
-    result.HTMLInputElement = item instanceof content.HTMLInputElement;
-    result.HTMLImageElement = item instanceof content.HTMLImageElement;
-    result.HTMLObjectElement = item instanceof content.HTMLObjectElement;
-    result.SVGImageElement = item instanceof content.SVGImageElement;
-    result.HTMLVideoElement = item instanceof content.HTMLVideoElement;
-    result.HTMLAudioElement = item instanceof content.HTMLAudioElement;
+    result.HTMLLinkElement = content.HTMLLinkElement.isInstance(item);
+    result.HTMLInputElement = content.HTMLInputElement.isInstance(item);
+    result.HTMLImageElement = content.HTMLImageElement.isInstance(item);
+    result.HTMLObjectElement = content.HTMLObjectElement.isInstance(item);
+    result.SVGImageElement = content.SVGImageElement.isInstance(item);
+    result.HTMLVideoElement = content.HTMLVideoElement.isInstance(item);
+    result.HTMLAudioElement = content.HTMLAudioElement.isInstance(item);
 
     if (isBG) {
       // Items that are showing this image as a background
@@ -307,7 +308,7 @@ class PageInfoChild extends JSWindowActorChild {
       img.src = url;
       result.naturalWidth = img.naturalWidth;
       result.naturalHeight = img.naturalHeight;
-    } else if (!(item instanceof content.SVGImageElement)) {
+    } else if (!content.SVGImageElement.isInstance(item)) {
       // SVG items do not have integer values for height or width,
       // so we must handle them differently in order to correctly
       // serialize
@@ -318,7 +319,7 @@ class PageInfoChild extends JSWindowActorChild {
       result.height = item.height;
     }
 
-    if (item instanceof content.SVGImageElement) {
+    if (content.SVGImageElement.isInstance(item)) {
       result.SVGImageElementWidth = item.width.baseVal.value;
       result.SVGImageElementHeight = item.height.baseVal.value;
     }
@@ -337,9 +338,9 @@ class PageInfoChild extends JSWindowActorChild {
 
     // Form input elements don't generally contain information that is useful to our callers, so return nothing.
     if (
-      node instanceof content.HTMLInputElement ||
-      node instanceof content.HTMLSelectElement ||
-      node instanceof content.HTMLTextAreaElement
+      content.HTMLInputElement.isInstance(node) ||
+      content.HTMLSelectElement.isInstance(node) ||
+      content.HTMLTextAreaElement.isInstance(node)
     ) {
       return valueText;
     }
@@ -357,7 +358,7 @@ class PageInfoChild extends JSWindowActorChild {
       } else if (nodeType == content.Node.ELEMENT_NODE) {
         // And elements can have more text inside them.
         // Images are special, we want to capture the alt text as if the image weren't there.
-        if (childNode instanceof content.HTMLImageElement) {
+        if (content.HTMLImageElement.isInstance(childNode)) {
           valueText += " " + this.getAltText(childNode);
         } else {
           valueText += " " + this.getValueText(childNode);

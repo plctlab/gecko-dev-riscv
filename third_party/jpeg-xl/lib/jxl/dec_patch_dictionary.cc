@@ -10,7 +10,6 @@
 #include <sys/types.h>
 
 #include <algorithm>
-#include <random>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -19,6 +18,7 @@
 #include "lib/jxl/ans_params.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/override.h"
+#include "lib/jxl/base/printf_macros.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/blending.h"
 #include "lib/jxl/chroma_from_luma.h"
@@ -35,8 +35,6 @@
 
 namespace jxl {
 
-constexpr size_t kMaxPatches = 1 << 24;
-
 Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
                                bool* uses_extra_channels) {
   positions_.clear();
@@ -52,10 +50,16 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
   };
 
   size_t num_ref_patch = read_num(kNumRefPatchContext);
-  // TODO(veluca): does this make sense?
-  if (num_ref_patch > kMaxPatches) {
+  // Limit max memory usage of patches to about 66 bytes per pixel (assuming 8
+  // bytes per size_t)
+  const size_t num_pixels = xsize * ysize;
+  const size_t max_ref_patches = 1024 + num_pixels / 4;
+  const size_t max_patches = max_ref_patches * 4;
+  const size_t max_blending_infos = max_patches * 4;
+  if (num_ref_patch > max_ref_patches) {
     return JXL_FAILURE("Too many patches in dictionary");
   }
+  size_t num_ec = shared_->metadata->m.num_extra_channels;
 
   size_t total_patches = 0;
   size_t next_size = 1;
@@ -84,17 +88,21 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
     }
     size_t id_count = read_num(kPatchCountContext) + 1;
     total_patches += id_count;
-    if (total_patches > kMaxPatches) {
+    if (total_patches > max_patches) {
       return JXL_FAILURE("Too many patches in dictionary");
     }
     if (next_size < total_patches) {
       next_size *= 2;
-      next_size = std::min<size_t>(next_size, kMaxPatches);
+      next_size = std::min<size_t>(next_size, max_patches);
+    }
+    if (next_size * (num_ec + 1) > max_blending_infos) {
+      return JXL_FAILURE("Too many patches in dictionary");
     }
     positions_.reserve(next_size);
+    blendings_.reserve(next_size * (num_ec + 1));
     for (size_t i = 0; i < id_count; i++) {
       PatchPosition pos;
-      pos.ref_pos = ref_pos;
+      pos.ref_pos_idx = ref_positions_.size();
       if (i == 0) {
         pos.x = read_num(kPatchPositionContext);
         pos.y = read_num(kPatchPositionContext);
@@ -105,15 +113,16 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
             positions_.back().y + UnpackSigned(read_num(kPatchOffsetContext));
       }
       if (pos.x + ref_pos.xsize > xsize) {
-        return JXL_FAILURE("Invalid patch x: at %zu + %zu > %zu", pos.x,
-                           ref_pos.xsize, xsize);
+        return JXL_FAILURE("Invalid patch x: at %" PRIuS " + %" PRIuS
+                           " > %" PRIuS,
+                           pos.x, ref_pos.xsize, xsize);
       }
       if (pos.y + ref_pos.ysize > ysize) {
-        return JXL_FAILURE("Invalid patch y: at %zu + %zu > %zu", pos.y,
-                           ref_pos.ysize, ysize);
+        return JXL_FAILURE("Invalid patch y: at %" PRIuS " + %" PRIuS
+                           " > %" PRIuS,
+                           pos.y, ref_pos.ysize, ysize);
       }
-      for (size_t i = 0; i < shared_->metadata->m.extra_channel_info.size() + 1;
-           i++) {
+      for (size_t j = 0; j < num_ec + 1; j++) {
         uint32_t blend_mode = read_num(kPatchBlendModeContext);
         if (blend_mode >= uint32_t(PatchBlendMode::kNumBlendModes)) {
           return JXL_FAILURE("Invalid patch blend mode: %u", blend_mode);
@@ -123,7 +132,7 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
         if (UsesAlpha(info.mode)) {
           *uses_extra_channels = true;
         }
-        if (info.mode != PatchBlendMode::kNone && i > 0) {
+        if (info.mode != PatchBlendMode::kNone && j > 0) {
           *uses_extra_channels = true;
         }
         if (UsesAlpha(info.mode) &&
@@ -144,18 +153,16 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
         } else {
           info.clamp = false;
         }
-        pos.blending.push_back(info);
+        blendings_.push_back(info);
       }
       positions_.push_back(std::move(pos));
     }
+    ref_positions_.emplace_back(std::move(ref_pos));
   }
   positions_.shrink_to_fit();
 
   if (!decoder.CheckANSFinalState()) {
     return JXL_FAILURE("ANS checksum failure.");
-  }
-  if (!HasAny()) {
-    return JXL_FAILURE("Decoded patch dictionary but got none");
   }
 
   ComputePatchCache();
@@ -164,8 +171,8 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
 
 int PatchDictionary::GetReferences() const {
   int result = 0;
-  for (size_t i = 0; i < positions_.size(); ++i) {
-    result |= (1 << static_cast<int>(positions_[i].ref_pos.ref));
+  for (size_t i = 0; i < ref_positions_.size(); ++i) {
+    result |= (1 << static_cast<int>(ref_positions_[i].ref));
   }
   return result;
 }
@@ -177,7 +184,8 @@ void PatchDictionary::ComputePatchCache() {
   std::vector<std::pair<size_t, size_t>> sorted_patches_y;
   for (size_t i = 0; i < positions_.size(); i++) {
     const PatchPosition& pos = positions_[i];
-    for (size_t y = pos.y; y < pos.y + pos.ref_pos.ysize; y++) {
+    const PatchReferencePosition& ref_pos = ref_positions_[pos.ref_pos_idx];
+    for (size_t y = pos.y; y < pos.y + ref_pos.ysize; y++) {
       sorted_patches_y.emplace_back(y, i);
     }
   }
@@ -197,52 +205,45 @@ void PatchDictionary::ComputePatchCache() {
   }
 }
 
-Status PatchDictionary::AddTo(Image3F* opsin, const Rect& opsin_rect,
-                              float* const* extra_channels,
-                              const Rect& image_rect) const {
-  JXL_CHECK(SameSize(opsin_rect, image_rect));
-  if (patch_starts_.empty()) return true;
+// Adds patches to a segment of `xsize` pixels, starting at `inout`, assumed
+// to be located at position (x0, y) in the frame.
+void PatchDictionary::AddOneRow(float* const* inout, size_t y, size_t x0,
+                                size_t xsize) const {
+  if (patch_starts_.empty()) return;
   size_t num_ec = shared_->metadata->m.num_extra_channels;
   std::vector<const float*> fg_ptrs(3 + num_ec);
-  std::vector<float*> bg_ptrs(3 + num_ec);
-  for (size_t y = image_rect.y0(); y < image_rect.y0() + image_rect.ysize();
-       y++) {
-    if (y + 1 >= patch_starts_.size()) continue;
-    for (size_t id = patch_starts_[y]; id < patch_starts_[y + 1]; id++) {
-      const PatchPosition& pos = positions_[sorted_patches_[id]];
-      size_t by = pos.y;
-      size_t bx = pos.x;
-      size_t xsize = pos.ref_pos.xsize;
-      JXL_DASSERT(y >= by);
-      JXL_DASSERT(y < by + pos.ref_pos.ysize);
-      size_t iy = y - by;
-      size_t ref = pos.ref_pos.ref;
-      if (bx >= image_rect.x0() + image_rect.xsize()) continue;
-      if (bx + xsize < image_rect.x0()) continue;
-      size_t x0 = std::max(bx, image_rect.x0());
-      size_t x1 = std::min(bx + xsize, image_rect.x0() + image_rect.xsize());
-      for (size_t c = 0; c < 3; c++) {
-        fg_ptrs[c] =
-            shared_->reference_frames[ref].frame->color()->ConstPlaneRow(
-                c, pos.ref_pos.y0 + iy) +
-            pos.ref_pos.x0 + x0 - bx;
-        bg_ptrs[c] = opsin_rect.PlaneRow(opsin, c, y - image_rect.y0()) + x0 -
-                     image_rect.x0();
-      }
-      for (size_t i = 0; i < num_ec; i++) {
-        fg_ptrs[3 + i] =
-            shared_->reference_frames[ref].frame->extra_channels()[i].ConstRow(
-                pos.ref_pos.y0 + iy) +
-            pos.ref_pos.x0 + x0 - bx;
-        bg_ptrs[3 + i] = extra_channels[i] + x0 - image_rect.x0();
-      }
-      JXL_RETURN_IF_ERROR(
-          PerformBlending(bg_ptrs.data(), fg_ptrs.data(), bg_ptrs.data(),
-                          x1 - x0, pos.blending[0], pos.blending.data() + 1,
-                          shared_->metadata->m.extra_channel_info));
+  if (y + 1 >= patch_starts_.size()) return;
+  for (size_t id = patch_starts_[y]; id < patch_starts_[y + 1]; id++) {
+    const size_t pos_idx = sorted_patches_[id];
+    const size_t blending_idx = pos_idx * (num_ec + 1);
+    const PatchPosition& pos = positions_[pos_idx];
+    const PatchReferencePosition& ref_pos = ref_positions_[pos.ref_pos_idx];
+    size_t by = pos.y;
+    size_t bx = pos.x;
+    size_t patch_xsize = ref_pos.xsize;
+    JXL_DASSERT(y >= by);
+    JXL_DASSERT(y < by + ref_pos.ysize);
+    size_t iy = y - by;
+    size_t ref = ref_pos.ref;
+    if (bx >= x0 + xsize) continue;
+    if (bx + patch_xsize < x0) continue;
+    size_t patch_x0 = std::max(bx, x0);
+    size_t patch_x1 = std::min(bx + patch_xsize, x0 + xsize);
+    for (size_t c = 0; c < 3; c++) {
+      fg_ptrs[c] = shared_->reference_frames[ref].frame->color()->ConstPlaneRow(
+                       c, ref_pos.y0 + iy) +
+                   ref_pos.x0 + x0 - bx;
     }
+    for (size_t i = 0; i < num_ec; i++) {
+      fg_ptrs[3 + i] =
+          shared_->reference_frames[ref].frame->extra_channels()[i].ConstRow(
+              ref_pos.y0 + iy) +
+          ref_pos.x0 + x0 - bx;
+    }
+    PerformBlending(inout, fg_ptrs.data(), inout, patch_x0 - x0,
+                    patch_x1 - patch_x0, blendings_[blending_idx],
+                    &blendings_[blending_idx + 1],
+                    shared_->metadata->m.extra_channel_info);
   }
-  return true;
 }
-
 }  // namespace jxl

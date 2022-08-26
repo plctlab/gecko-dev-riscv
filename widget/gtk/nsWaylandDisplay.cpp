@@ -29,7 +29,7 @@ namespace widget {
 // where is wayland interface used as we need to dispatch waylands events
 // there.
 static RefPtr<nsWaylandDisplay> gWaylandDisplays[MAX_DISPLAY_CONNECTIONS];
-static StaticMutex gWaylandDisplayArrayWriteMutex;
+static StaticMutex gWaylandDisplayArrayWriteMutex MOZ_UNANNOTATED;
 
 // Dispatch events to Compositor/Render queues
 void WaylandDispatchDisplays() {
@@ -158,6 +158,10 @@ void nsWaylandDisplay::SetDmabuf(zwp_linux_dmabuf_v1* aDmabuf) {
   mDmabuf = aDmabuf;
 }
 
+void nsWaylandDisplay::SetXdgActivation(xdg_activation_v1* aXdgActivation) {
+  mXdgActivation = aXdgActivation;
+}
+
 static void global_registry_handler(void* data, wl_registry* registry,
                                     uint32_t id, const char* interface,
                                     uint32_t version) {
@@ -236,6 +240,10 @@ static void global_registry_handler(void* data, wl_registry* registry,
         registry, id, &zwp_linux_dmabuf_v1_interface, 3);
     wl_proxy_set_queue((struct wl_proxy*)dmabuf, display->GetEventQueue());
     display->SetDmabuf(dmabuf);
+  } else if (strcmp(interface, "xdg_activation_v1") == 0) {
+    auto* activation = WaylandRegistryBind<xdg_activation_v1>(
+        registry, id, &xdg_activation_v1_interface, 1);
+    display->SetXdgActivation(activation);
   }
 }
 
@@ -329,22 +337,7 @@ static void WlCrashHandler(const char* format, va_list args) {
 }
 
 nsWaylandDisplay::nsWaylandDisplay(wl_display* aDisplay)
-    : mThreadId(PR_GetCurrentThread()),
-      mDisplay(aDisplay),
-      mEventQueue(nullptr),
-      mDataDeviceManager(nullptr),
-      mCompositor(nullptr),
-      mSubcompositor(nullptr),
-      mShm(nullptr),
-      mSyncCallback(nullptr),
-      mPrimarySelectionDeviceManagerGtk(nullptr),
-      mPrimarySelectionDeviceManagerZwpV1(nullptr),
-      mIdleInhibitManager(nullptr),
-      mRelativePointerManager(nullptr),
-      mPointerConstraints(nullptr),
-      mViewporter(nullptr),
-      mDmabuf(nullptr),
-      mExplicitSync(false) {
+    : mThreadId(PR_GetCurrentThread()), mDisplay(aDisplay) {
   // GTK sets the log handler on display creation, thus we overwrite it here
   // in a similar fashion
   wl_log_set_handler_client(WlCrashHandler);

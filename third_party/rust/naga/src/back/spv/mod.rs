@@ -1,5 +1,8 @@
-/*! Standard Portable Intermediate Representation (SPIR-V) backend
-!*/
+/*!
+Backend for [SPIR-V][spv] (Standard Portable Intermediate Representation).
+
+[spv]: https://www.khronos.org/registry/SPIR-V/
+*/
 
 mod block;
 mod helpers;
@@ -13,7 +16,8 @@ mod writer;
 
 pub use spirv::Capability;
 
-use crate::{arena::Handle, back::BoundsCheckPolicies, proc::TypeResolution};
+use crate::arena::Handle;
+use crate::proc::{BoundsCheckPolicies, TypeResolution};
 
 use spirv::Word;
 use std::ops;
@@ -65,8 +69,6 @@ pub enum Error {
     FeatureNotImplemented(&'static str),
     #[error("module is not validated properly: {0}")]
     Validation(&'static str),
-    #[error(transparent)]
-    Proc(#[from] crate::proc::ProcError),
 }
 
 #[derive(Default)]
@@ -102,7 +104,7 @@ struct TerminatedBlock {
 }
 
 impl Block {
-    fn new(label_id: Word) -> Self {
+    const fn new(label_id: Word) -> Self {
         Block {
             label_id,
             body: Vec::new(),
@@ -218,19 +220,47 @@ impl LocalImageType {
 
 /// A SPIR-V type constructed during code generation.
 ///
-/// In the process of writing SPIR-V, we need to synthesize various types for
-/// intermediate results and such. However, it's inconvenient to use
-/// `crate::Type` or `crate::TypeInner` for these, as the IR module is immutable
-/// so we can't ever create a `Handle<Type>` to refer to them. So for local use
-/// in the SPIR-V writer, we have this home-grown type enum that covers only the
-/// cases we need (for example, it doesn't cover structs).
+/// This is the variant of [`LookupType`] used to represent types that might not
+/// be available in the arena. Variants are present here for one of two reasons:
 ///
-/// As explained in §2.8 of the SPIR-V spec, some classes of type instructions
-/// must be unique; for example, you can't have two `OpTypeInt 32 1`
-/// instructions in the same module. `Writer::lookup_type` maps each `LocalType`
-/// value for which we've written instructions to its id, so we can avoid
-/// writing out duplicates. `LocalType` also includes variants like `Pointer`
-/// that do not need to be unique - but it is harmless to avoid the duplication.
+/// -   They represent types synthesized during code generation, as explained
+///     in the documentation for [`LookupType`].
+///
+/// -   They represent types for which SPIR-V forbids duplicate `OpType...`
+///     instructions, requiring deduplication.
+///
+/// This is not a complete copy of [`TypeInner`]: for example, SPIR-V generation
+/// never synthesizes new struct types, so `LocalType` has nothing for that.
+///
+/// Each `LocalType` variant should be handled identically to its analogous
+/// `TypeInner` variant. You can use the [`make_local`] function to help with
+/// this, by converting everything possible to a `LocalType` before inspecting
+/// it.
+///
+/// ## `Localtype` equality and SPIR-V `OpType` uniqueness
+///
+/// The definition of `Eq` on `LocalType` is carefully chosen to help us follow
+/// certain SPIR-V rules. SPIR-V §2.8 requires some classes of `OpType...`
+/// instructions to be unique; for example, you can't have two `OpTypeInt 32 1`
+/// instructions in the same module. All 32-bit signed integers must use the
+/// same type id.
+///
+/// All SPIR-V types that must be unique can be represented as a `LocalType`,
+/// and two `LocalType`s are always `Eq` if SPIR-V would require them to use the
+/// same `OpType...` instruction. This lets us avoid duplicates by recording the
+/// ids of the type instructions we've already generated in a hash table,
+/// [`Writer::lookup_type`], keyed by `LocalType`.
+///
+/// As another example, [`LocalImageType`], stored in the `LocalType::Image`
+/// variant, is designed to help us deduplicate `OpTypeImage` instructions. See
+/// its documentation for details.
+///
+/// `LocalType` also includes variants like `Pointer` that do not need to be
+/// unique - but it is harmless to avoid the duplication.
+///
+/// As it always must, the `Hash` implementation respects the `Eq` relation.
+///
+/// [`TypeInner`]: crate::TypeInner
 #[derive(Debug, PartialEq, Hash, Eq, Copy, Clone)]
 enum LocalType {
     /// A scalar, vector, or pointer to one of those.
@@ -240,7 +270,7 @@ enum LocalType {
         vector_size: Option<crate::VectorSize>,
         kind: crate::ScalarKind,
         width: crate::Bytes,
-        pointer_class: Option<spirv::StorageClass>,
+        pointer_space: Option<spirv::StorageClass>,
     },
     /// A matrix of floating-point values.
     Matrix {
@@ -257,8 +287,38 @@ enum LocalType {
         image_type_id: Word,
     },
     Sampler,
+    PointerToBindingArray {
+        base: Handle<crate::Type>,
+        size: u64,
+    },
+    BindingArray {
+        base: Handle<crate::Type>,
+        size: u64,
+    },
 }
 
+/// A type encountered during SPIR-V generation.
+///
+/// In the process of writing SPIR-V, we need to synthesize various types for
+/// intermediate results and such: pointer types, vector/matrix component types,
+/// or even booleans, which usually appear in SPIR-V code even when they're not
+/// used by the module source.
+///
+/// However, we can't use `crate::Type` or `crate::TypeInner` for these, as the
+/// type arena may not contain what we need (it only contains types used
+/// directly by other parts of the IR), and the IR module is immutable, so we
+/// can't add anything to it.
+///
+/// So for local use in the SPIR-V writer, we use this type, which holds either
+/// a handle into the arena, or a [`LocalType`] containing something synthesized
+/// locally.
+///
+/// This is very similar to the [`proc::TypeResolution`] enum, with `LocalType`
+/// playing the role of `TypeInner`. However, `LocalType` also has other
+/// properties needed for SPIR-V generation; see the description of
+/// [`LocalType`] for details.
+///
+/// [`proc::TypeResolution`]: crate::proc::TypeResolution
 #[derive(Debug, PartialEq, Hash, Eq, Copy, Clone)]
 enum LookupType {
     Handle(Handle<crate::Type>),
@@ -284,14 +344,14 @@ fn make_local(inner: &crate::TypeInner) -> Option<LocalType> {
                 vector_size: None,
                 kind,
                 width,
-                pointer_class: None,
+                pointer_space: None,
             }
         }
         crate::TypeInner::Vector { size, kind, width } => LocalType::Value {
             vector_size: Some(size),
             kind,
             width,
-            pointer_class: None,
+            pointer_space: None,
         },
         crate::TypeInner::Matrix {
             columns,
@@ -302,20 +362,20 @@ fn make_local(inner: &crate::TypeInner) -> Option<LocalType> {
             rows,
             width,
         },
-        crate::TypeInner::Pointer { base, class } => LocalType::Pointer {
+        crate::TypeInner::Pointer { base, space } => LocalType::Pointer {
             base,
-            class: helpers::map_storage_class(class),
+            class: helpers::map_storage_class(space),
         },
         crate::TypeInner::ValuePointer {
             size,
             kind,
             width,
-            class,
+            space,
         } => LocalType::Value {
             vector_size: size,
             kind,
             width,
-            pointer_class: Some(helpers::map_storage_class(class)),
+            pointer_space: Some(helpers::map_storage_class(space)),
         },
         crate::TypeInner::Image {
             dim,
@@ -379,30 +439,62 @@ impl recyclable::Recyclable for CachedExpressions {
     }
 }
 
+#[derive(Clone)]
 struct GlobalVariable {
-    /// Actual ID of the variable.
-    id: Word,
-    /// For `StorageClass::Handle` variables, this ID is recorded in the function
+    /// ID of the OpVariable that declares the global.
+    ///
+    /// If you need the variable's value, use [`access_id`] instead of this
+    /// field. If we wrapped the Naga IR `GlobalVariable`'s type in a struct to
+    /// comply with Vulkan's requirements, then this points to the `OpVariable`
+    /// with the synthesized struct type, whereas `access_id` points to the
+    /// field of said struct that holds the variable's actual value.
+    ///
+    /// This is used to compute the `access_id` pointer in function prologues,
+    /// and used for `ArrayLength` expressions, which do need the struct.
+    ///
+    /// [`access_id`]: GlobalVariable::access_id
+    var_id: Word,
+
+    /// For `AddressSpace::Handle` variables, this ID is recorded in the function
     /// prelude block (and reset before every function) as `OpLoad` of the variable.
     /// It is then used for all the global ops, such as `OpImageSample`.
     handle_id: Word,
+
+    /// Actual ID used to access this variable.
+    /// For wrapped buffer variables, this ID is `OpAccessChain` into the
+    /// wrapper. Otherwise, the same as `var_id`.
+    ///
+    /// Vulkan requires that globals in the `StorageBuffer` and `Uniform` storage
+    /// classes must be structs with the `Block` decoration, but WGSL and Naga IR
+    /// make no such requirement. So for such variables, we generate a wrapper struct
+    /// type with a single element of the type given by Naga, generate an
+    /// `OpAccessChain` for that member in the function prelude, and use that pointer
+    /// to refer to the global in the function body. This is the id of that access,
+    /// updated for each function in `write_function`.
+    access_id: Word,
 }
 
 impl GlobalVariable {
-    fn dummy() -> Self {
+    const fn dummy() -> Self {
         Self {
-            id: 0,
+            var_id: 0,
             handle_id: 0,
+            access_id: 0,
         }
     }
 
-    fn new(id: Word) -> Self {
-        Self { id, handle_id: 0 }
+    const fn new(id: Word) -> Self {
+        Self {
+            var_id: id,
+            handle_id: 0,
+            access_id: 0,
+        }
     }
 
     /// Prepare `self` for use within a single function.
     fn reset_for_function(&mut self) {
         self.handle_id = 0;
+        self.access_id = 0;
     }
 }
 
@@ -483,6 +575,9 @@ pub struct Writer {
     /// that.
     capabilities_used: crate::FastHashSet<Capability>,
 
+    /// The set of spirv extensions used.
+    extensions_used: crate::FastHashSet<&'static str>,
+
     debugs: Vec<Instruction>,
     annotations: Vec<Instruction>,
     flags: WriterFlags,
@@ -495,6 +590,7 @@ pub struct Writer {
     constant_ids: Vec<Word>,
     cached_constants: crate::FastHashMap<(crate::ScalarValue, crate::Bytes), Word>,
     global_variables: Vec<GlobalVariable>,
+    binding_map: BindingMap,
 
     // Cached expressions are only meaningful within a BlockContext, but we
     // retain the table here between functions to save heap allocations.
@@ -511,11 +607,28 @@ bitflags::bitflags! {
         const DEBUG = 0x1;
         /// Flip Y coordinate of `BuiltIn::Position` output.
         const ADJUST_COORDINATE_SPACE = 0x2;
-        /// Emit `OpLabel` for input/output locations.
-        /// Some drivers treat it as semantic, not allowing any conflicts.
+        /// Emit `OpName` for input/output locations.
+        /// Contrary to spec, some drivers treat it as semantic, not allowing
+        /// any conflicts.
         const LABEL_VARYINGS = 0x4;
+        /// Emit `PointSize` output builtin to vertex shaders, which is
+        /// required for drawing with `PointList` topology.
+        const FORCE_POINT_SIZE = 0x8;
+        /// Clamp `BuiltIn::FragDepth` output between 0 and 1.
+        const CLAMP_FRAG_DEPTH = 0x10;
     }
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+pub struct BindingInfo {
+    /// If the binding is an unsized binding array, this overrides the size.
+    pub binding_array_size: Option<u32>,
+}
+
+// Using `BTreeMap` instead of `HashMap` so that we can hash itself.
+pub type BindingMap = std::collections::BTreeMap<crate::ResourceBinding, BindingInfo>;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -524,6 +637,9 @@ pub struct Options {
 
     /// Configuration flags for the writer.
     pub flags: WriterFlags,
+
+    /// Map of resources to information about the binding.
+    pub binding_map: BindingMap,
 
     /// If given, the set of capabilities modules are allowed to use. Code that
     /// requires capabilities beyond these is rejected with an error.
@@ -538,30 +654,32 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        let mut flags = WriterFlags::ADJUST_COORDINATE_SPACE | WriterFlags::LABEL_VARYINGS;
+        let mut flags = WriterFlags::ADJUST_COORDINATE_SPACE
+            | WriterFlags::LABEL_VARYINGS
+            | WriterFlags::CLAMP_FRAG_DEPTH;
         if cfg!(debug_assertions) {
             flags |= WriterFlags::DEBUG;
         }
         Options {
             lang_version: (1, 0),
             flags,
+            binding_map: BindingMap::default(),
             capabilities: None,
-            bounds_check_policies: super::BoundsCheckPolicies::default(),
+            bounds_check_policies: crate::proc::BoundsCheckPolicies::default(),
         }
     }
 }
 
-// A subset of options that are meant to be changed per pipeline.
+// A subset of options meant to be changed per pipeline.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 pub struct PipelineOptions {
-    /// The stage of the entry point
+    /// The stage of the entry point.
     pub shader_stage: crate::ShaderStage,
-    /// The name of the entry point
+    /// The name of the entry point.
     ///
-    /// If no entry point that matches is found a error will be thrown while creating a new instance
-    /// of [`Writer`](struct.Writer.html)
+    /// If no entry point that matches is found while creating a [`Writer`], a error will be thrown.
     pub entry_point: String,
 }
 

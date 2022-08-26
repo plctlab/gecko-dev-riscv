@@ -19,10 +19,10 @@
   <div id="toolbar" class="toolbar-container">
     <div class="toolbar reader-toolbar">
       <div class="reader-controls">
-        <button class="close-button button " data-telemetry-id="reader-close"></button>
+        <button class="close-button toolbar-button" data-telemetry-id="reader-close"></button>
         <ul class="dropdown style-dropdown">
           <li>
-            <button class="dropdown-toggle button style-button" data-telemetry-id="reader-type-controls"></button>
+            <button class="dropdown-toggle toolbar-button style-button" data-telemetry-id="reader-type-controls"></button>
           </li>
           <li class="dropdown-popup">
             <div class="dropdown-arrow"></div>
@@ -77,9 +77,10 @@
       <div class="pocket-cta">
         <header class="pocket-cta-header">Save anything from across the web in Pocket, your personal library.</header>
         <p class="pocket-cta-subhead">As part of the Firefox family, Pocket provides a quiet, calm space that’s perfect for reading. It strips away all the distractions of the internet so you can really focus.</p>
-        <a href="https://getpocket.com/signup" class="pocket-btn pocket-sign-up"><strong>Sign Up</strong> - it's free</a>
+        <a href="https://getpocket.com/signup?utm_source=firefox_reader&utm_medium=variant_cta_only" class="pocket-btn pocket-sign-up"><strong>Sign up</strong> - it’s free</a>
+        <a href="https://getpocket.com/explore?utm_source=firefox_reader&utm_medium=variant_cta_only" class="pocket-btn pocket-discover-more"><strong>Discover more</strong></a>
       </div>
-      <button class="pocket-dismiss-cta"></button>
+      <button class="pocket-dismiss-cta" title="Dismiss"></button>
     </div>
 
     <div class="pocket-cta-inner" id="pocket-cta-and-recs">
@@ -95,8 +96,8 @@
 
       <div class="pocket-recs"></div>
 
-      <div class="pocket-sign-up">
-        <a href="https://getpocket.com/signup" class="pocket-btn pocket-sign-up"><strong>Sign Up</strong> - it's free</a>
+      <div class="pocket-sign-up-wrapper">
+        <a href="https://getpocket.com/explore?utm_source=firefox_reader&utm_medium=variant_cta_plus_recs" class="pocket-btn pocket-sign-up"><strong>Discover more</strong></a>
       </div>
     </div>
   </div>

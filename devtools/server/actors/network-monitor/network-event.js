@@ -69,9 +69,11 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
       private: this._private,
       isThirdPartyTrackingResource: this._isThirdPartyTrackingResource,
       referrerPolicy: this._referrerPolicy,
+      priority: this._priority,
       blockedReason: this._blockedReason,
       blockingExtension: this._blockingExtension,
       channelId: this._channelId,
+      chromeContext: this._isFromSystemPrincipal,
     };
   },
 
@@ -113,8 +115,9 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     this._isThirdPartyTrackingResource =
       networkEvent.isThirdPartyTrackingResource;
     this._referrerPolicy = networkEvent.referrerPolicy;
+    this._priority = networkEvent.priority;
     this._channelId = networkEvent.channelId;
-
+    this._isFromSystemPrincipal = networkEvent.isFromSystemPrincipal;
     // Stack trace info isn't sent automatically. The client
     // needs to request it explicitly using getStackTrace
     // packet. NetmonitorActor may pass just a boolean instead of the stack
@@ -212,7 +215,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
    * @return object
    *         The cache packet - network cache information.
    */
-  getResponseCache: function() {
+  getResponseCache() {
     return {
       cache: this._response.responseCache,
     };
@@ -434,7 +437,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     this._securityInfo = info;
     this.emit("network-event-update:security-info", "securityInfo", {
       state: info.state,
-      isRacing: isRacing,
+      isRacing,
     });
   },
 
@@ -518,7 +521,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     });
   },
 
-  addResponseCache: function(content) {
+  addResponseCache(content) {
     // Ignore calls when this actor is already destroyed
     if (this.isDestroyed()) {
       return;

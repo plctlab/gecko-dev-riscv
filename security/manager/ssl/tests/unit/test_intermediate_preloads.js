@@ -6,9 +6,6 @@
 "use strict";
 do_get_profile(); // must be called before getting nsIX509CertDB
 
-const { RemoteSettings } = ChromeUtils.import(
-  "resource://services-settings/remote-settings.js"
-);
 const { RemoteSecuritySettings } = ChromeUtils.import(
   "resource://gre/modules/psm/RemoteSecuritySettings.jsm"
 );
@@ -18,9 +15,6 @@ const { TestUtils } = ChromeUtils.import(
 const { IntermediatePreloadsClient } = RemoteSecuritySettings.init();
 
 let server;
-
-let intermediate1Data;
-let intermediate2Data;
 
 const INTERMEDIATES_DL_PER_POLL_PREF =
   "security.remote_settings.intermediates.downloads_per_poll";
@@ -290,24 +284,12 @@ add_task(async function test_preload_basic() {
     certificateUsageSSLServer
   );
 
-  let certStorage = Cc["@mozilla.org/security/certstorage;1"].getService(
-    Ci.nsICertStorage
-  );
   let intermediateBytes = readFile(
     do_get_file("test_intermediate_preloads/int.pem")
   );
   let intermediateDERBytes = atob(pemToBase64(intermediateBytes));
   let intermediateCert = new X509.Certificate();
   intermediateCert.parse(stringToArray(intermediateDERBytes));
-  let crliteStateBefore = certStorage.getCRLiteState(
-    intermediateCert.tbsCertificate.subject._der._bytes,
-    intermediateCert.tbsCertificate.subjectPublicKeyInfo._der._bytes
-  );
-  equal(
-    crliteStateBefore,
-    Ci.nsICertStorage.STATE_UNSET,
-    "crlite state should be unset before"
-  );
 
   const result = await syncAndDownload(["int.pem", "int2.pem"]);
   equal(result, "success", "Preloading update should have run");
@@ -365,16 +347,6 @@ add_task(async function test_preload_basic() {
       updated: [],
     },
   });
-
-  let crliteStateAfter = certStorage.getCRLiteState(
-    intermediateCert.tbsCertificate.subject._der._bytes,
-    intermediateCert.tbsCertificate.subjectPublicKeyInfo._der._bytes
-  );
-  equal(
-    crliteStateAfter,
-    Ci.nsICertStorage.STATE_ENFORCE,
-    "crlite state should be set after"
-  );
 
   // check that ee cert 2 does not verify - since we don't know the issuer of
   // this certificate

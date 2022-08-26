@@ -30,32 +30,26 @@
 
 SECTION_RODATA 32
 
+pb_mask: dd 1, 1, 2, 2, 4, 4, 8, 8
 pb_4x1_4x5_4x9_4x13: times 4 db 0, 1
                      times 4 db 8, 9
                      times 4 db 0, 1
                      times 4 db 8, 9
 
-pw_1: times 16 dw 1
-pw_2: times 16 dw 2
-pw_3: times 16 dw 3
-; 4 and 16 need to be next to each other since they are used as alternates
-; depending on whether bitdepth is 10 or 12
-pw_4: times 16 dw 4
-pw_16: times 16 dw 16
-pw_8: times 16 dw 8
-pw_4096: times 16 dw 4096
+pw_1:     times 16 dw 1
+pw_2:     times 16 dw 2
+pw_3:     times 16 dw 3
+pw_4096:  times 2 dw 4096
 
-pb_mask: dd 1, 1, 2, 2, 4, 4, 8, 8
+; 10bpc/12bpc:
+pw_4:     times 2 dw 4
+          times 2 dw 16
+clip_max: times 2 dw 511
+          times 2 dw 2047
+clip_min: times 2 dw -512
+          times 2 dw -2048
 
 SECTION .text
-
-%macro REPX 2-*
-    %xdefine %%f(x) %1
-%rep %0 - 1
-    %rotate 1
-    %%f(%1)
-%endrep
-%endmacro
 
 ;        in:            out:
 ; mm%1   a b c d        a e i m
@@ -406,9 +400,10 @@ SECTION .text
     pmaxuw        m2, [pw_1]                    ; I
     psrlw         m1, m0, 4                     ; H
     paddw         m0, [pw_2]
+    vpbroadcastd  m8, [r11]
     paddw         m0, m0
     paddw         m0, m2                        ; E
-    REPX {pmullw x, [r11]}, m0, m1, m2
+    REPX {pmullw x, m8}, m0, m1, m2
 
     psubw         m8, m3, m4                    ; p1-p0
     psubw         m9, m5, m6                    ; q1-q0
@@ -438,7 +433,8 @@ SECTION .text
     pabsw        m10, m10
     pmaxuw        m9, m10
 %endif
-    pcmpgtw       m9, [r11]                     ; !flat8in
+    vpbroadcastd m10, [r11]
+    pcmpgtw       m9, m10                       ; !flat8in
 
     psubw        m10, m13, m3                   ; p2-p1
     pabsw        m10, m10
@@ -511,7 +507,8 @@ SECTION .text
     pmaxuw        m0, m2
     pmaxuw        m1, m10
     pmaxuw        m1, m0
-    pcmpgtw       m1, [r11]                     ; !flat8out
+    vpbroadcastd  m0, [r11]
+    pcmpgtw       m1, m0                        ; !flat8out
     por           m1, m9                        ; !flat8in | !flat8out
     vpbroadcastd  m2, [maskq+8]
     pand         m10, m2, m12
@@ -552,12 +549,8 @@ SECTION .text
 %endif
 
     ; short filter
-
-    vpbroadcastw  m0, r7m
-    pcmpeqw       m2, m2
-    psrlw         m0, 1                         ; 511 or 2047
-    pxor          m2, m0                        ; -512 or -2048
-
+    vpbroadcastd  m0, [r11+8*1]                 ; 511 or 2047
+    vpbroadcastd  m2, [r11+8*2]                 ; -512 or -2048
     psubw        m10, m5, m4
     paddw        m11, m10, m10
     paddw        m11, m10
@@ -569,17 +562,18 @@ SECTION .text
     pminsw       m10, m0
     pmaxsw       m10, m2
     pand          m8, m10                       ; f&=fm
-    paddw        m10, m8, [pw_3]
-    paddw         m8, [pw_4]
+    vpbroadcastd m10, [pw_4]
+    paddw        m10, m8
+    paddw         m8, [pw_3]
     REPX {pminsw x, m0}, m10, m8
     psraw        m10, 3                         ; f2
     psraw         m8, 3                         ; f1
-    paddw         m4, m10
-    psubw         m5, m8
+    psubw         m5, m10
+    paddw         m4, m8
 
-    paddw         m8, [pw_1]
-    psraw         m8, 1                         ; f=(f1+1)>>1
-    pandn         m8, m7, m8                    ; f&=!hev
+    paddw        m10, [pw_1]
+    psraw        m10, 1                         ; f=(f1+1)>>1
+    pandn         m8, m7, m10                   ; f&=!hev
     paddw         m3, m8
     psubw         m6, m8
     pxor          m8, m8
@@ -611,8 +605,8 @@ SECTION .text
     mova [rsp+ 0*32], m9
 
     ; p6*7+p5*2+p4*2+p3+p2+p1+p0+q0
-    psllw         m8, m0, 3                     ; p6*8
-    paddw         m8, [pw_8]
+    paddw         m8, m0, [pw_1]
+    psllw         m8, 3                         ; p6*8+8
     paddw        m10, m2, m7                    ; p5+p4
     psubw         m8, m0
     paddw        m10, m10                       ; (p5+p4)*2
@@ -623,9 +617,7 @@ SECTION .text
     paddw         m8, m5                        ; p6*7+p3+p1+q0
     paddw         m8, m10                       ; p6*7+p5*2+p4*2+p3+p2+p1+p0+q0
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m2
-    por          m10, m9
+    vpblendvb    m10, m2, m10, m1
 %ifidn %2, v
     mova [tmpq+strideq*2], m10                  ; p5
 %else
@@ -638,9 +630,7 @@ SECTION .text
     paddw         m8, m6
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m7
-    por          m10, m9
+    vpblendvb    m10, m7, m10, m1
 %ifidn %2, v
     mova [tmpq+stride3q], m10                   ; p4
 %else
@@ -653,9 +643,7 @@ SECTION .text
     psubw         m8, m2
     paddw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m11
-    por          m10, m9
+    vpblendvb    m10, m11, m10, m1
 %ifidn %2, v
     mova [tmpq+strideq*4], m10                  ; p3
     lea         tmpq, [dstq+strideq*4]
@@ -669,9 +657,7 @@ SECTION .text
     paddw         m8, m15
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m13
-    por          m10, m9
+    vpblendvb    m10, m13, m10, m1
     mova  [rsp+1*32], m10                       ; don't clobber p2/m13
 
     ; sub p6/p3, add p0/q4
@@ -684,9 +670,7 @@ SECTION .text
 %endif
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m3
-    por          m10, m9
+    vpblendvb    m10, m3, m10, m1
     mova  [rsp+2*32], m10                       ; don't clobber p1/m3
 
     ; sub p6/p2, add q0/q5
@@ -699,9 +683,7 @@ SECTION .text
 %endif
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m4
-    por          m10, m9
+    vpblendvb    m10, m4, m10, m1
     mova  [rsp+3*32], m10                       ; don't clobber p0/m4
 
     ; sub p6/p1, add q1/q6
@@ -715,9 +697,7 @@ SECTION .text
     paddw         m8, m0
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m5
-    por          m10, m9
+    vpblendvb    m10, m5, m10, m1
     mova  [rsp+4*32], m10                       ; don't clobber q0/m5
 
     ; sub p5/p0, add q2/q6
@@ -726,9 +706,7 @@ SECTION .text
     paddw         m8, m0
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m6
-    por           m2, m10, m9                   ; don't clobber q1/m6
+    vpblendvb     m2, m6, m10, m1               ; don't clobber q1/m6
 
     ; sub p4/q0, add q3/q6
     paddw         m8, m15
@@ -736,9 +714,7 @@ SECTION .text
     paddw         m8, m0
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m14
-    por           m7, m10, m9                   ; don't clobber q2/m14
+    vpblendvb     m7, m14, m10, m1              ; don't clobber q2/m14
 
     ; sub p3/q1, add q4/q6
 %ifidn %2, v
@@ -750,9 +726,7 @@ SECTION .text
     paddw         m8, m0
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
-    pandn         m9, m1, m15
-    por          m10, m9
+    vpblendvb    m10, m15, m10, m1
 %ifidn %2, v
     mova [tmpq+mstrideq], m10                   ; q3
 %else
@@ -769,13 +743,12 @@ SECTION .text
     paddw         m8, m0
     psubw         m8, m10
     psrlw        m10, m8, 4
-    pand         m10, m1
 %ifidn %2, v
-    pandn         m9, m1, [tmpq+strideq*0]
+    mova          m9, [tmpq+strideq*0]
 %else
-    pandn         m9, m1, [rsp+10*32]
+    mova          m9, [rsp+10*32]
 %endif
-    por          m10, m9
+    vpblendvb    m10, m9, m10, m1
 %ifidn %2, v
     mova [tmpq+strideq*0], m10                   ; q4
 %else
@@ -788,13 +761,12 @@ SECTION .text
     psubw         m8, m15
     paddw         m8, m0
     psrlw        m10, m8, 4
-    pand         m10, m1
 %ifidn %2, v
-    pandn         m9, m1, [tmpq+strideq*1]
+    mova          m9, [tmpq+strideq*1]
 %else
-    pandn         m9, m1, [rsp+11*32]
+    mova          m9, [rsp+11*32]
 %endif
-    por          m10, m9
+    vpblendvb    m10, m9, m10, m1
 %ifidn %2, v
     mova [tmpq+strideq*1], m10                  ; q5
 %else
@@ -817,6 +789,7 @@ SECTION .text
 
 %if %1 >= 8
     ; flat8 filter
+    vpbroadcastd  m7, [pw_4096]
 %ifidn %2, v
     mova          m0, [tmpq+strideq*0]          ; p3
 %else
@@ -828,45 +801,43 @@ SECTION .text
     paddw         m2, m0                        ; p1+p0+p3
     paddw         m8, m5                        ; 2*(p3+p2)+q0
     paddw         m2, m8                        ; 3*p3+2*p2+p1+p0+q0
-    pmulhrsw      m7, m2, [pw_4096]
+    pmulhrsw     m10, m2, m7
 
     paddw         m8, m3, m6
     psubw         m2, m1
     paddw         m2, m8
-    pmulhrsw      m8, m2, [pw_4096]
+    pmulhrsw      m8, m2, m7
 
-    paddw        m10, m0, m3
-    paddw        m11, m4, m14
-    psubw         m2, m10
-    paddw         m2, m11
-    pmulhrsw     m10, m2, [pw_4096]
+    paddw        m11, m0, m3
+    paddw         m1, m4, m14
+    psubw         m2, m11
+    paddw         m2, m1
+    pmulhrsw      m1, m2, m7
 
     paddw        m11, m0, m4
+    pblendvb      m4, m1, m9
     paddw         m1, m5, m15
     psubw         m2, m11
     paddw         m2, m1
-    pmulhrsw     m11, m2, [pw_4096]
+    pmulhrsw     m11, m2, m7
 
     paddw         m2, m6
     paddw         m2, m15
     paddw         m1, m13, m5
+    pblendvb      m5, m11, m9
+    pblendvb     m13, m10, m9
     psubw         m2, m1
-    pmulhrsw      m1, m2, [pw_4096]
+    pmulhrsw      m1, m2, m7
 
     psubw         m2, m3
+    pblendvb      m3, m8, m9
     psubw         m2, m6
-    paddw         m0, m15, m14
-    paddw         m2, m0
-    pmulhrsw      m2, [pw_4096]
+    pblendvb      m6, m1, m9
+    paddw         m1, m15, m14
+    paddw         m2, m1
+    pmulhrsw      m2, m7
 
-    REPX {pand x, m9}, m7, m8, m10, m11, m1, m2
-    REPX {pandn x, m9, x}, m13, m3, m4, m5, m6, m14
-    por          m13, m7
-    por           m3, m8
-    por           m4, m10
-    por           m5, m11
-    por           m6, m1
-    por          m14, m2
+    pblendvb     m14, m2, m9
 
 %ifidn %2, v
     mova [tmpq+strideq*1], m13                  ; p2
@@ -875,9 +846,7 @@ SECTION .text
     mova [dstq+strideq*0], m5                   ; q0
     mova [dstq+strideq*1], m6                   ; q1
     mova [dstq+strideq*2], m14                  ; q2
-%else
-    mova          m0, [rsp+5*32]
-%if %1 == 8
+%elif %1 == 8
     TRANSPOSE8X8W  0, 13, 3, 4, 5, 6, 14, 15, 1
 
     ; write 8x16
@@ -902,29 +871,28 @@ SECTION .text
     vextracti128 [dstq+stride3q -8], m15, 1
     lea         dstq, [dstq+strideq*4]
 %else
-    mova          m0, [rsp+6*32]
+    mova          m8, [rsp+6*32]
     mova          m1, [rsp+7*32]
     mova          m2, [rsp+8*32]
     mova          m7, [rsp+9*32]
-    mova          m8, [rsp+5*32]
-    TRANSPOSE8X8W  0, 1, 2, 7, 8, 13, 3, 4, 9
+    TRANSPOSE8X8W  8, 1, 2, 7, 0, 13, 3, 4, 9
 
-    mova [dstq+strideq*0-16], xm0
+    mova [dstq+strideq*0-16], xm8
     mova [dstq+strideq*1-16], xm1
     mova [dstq+strideq*2-16], xm2
     mova [dstq+stride3q -16], xm7
     lea         tmpq, [dstq+strideq*4]
-    mova [tmpq+strideq*0-16], xm8
+    mova [tmpq+strideq*0-16], xm0
     mova [tmpq+strideq*1-16], xm13
     mova [tmpq+strideq*2-16], xm3
     mova [tmpq+stride3q -16], xm4
     lea         tmpq, [tmpq+strideq*4]
-    vextracti128 [tmpq+strideq*0-16], m0, 1
+    vextracti128 [tmpq+strideq*0-16], m8, 1
     vextracti128 [tmpq+strideq*1-16], m1, 1
     vextracti128 [tmpq+strideq*2-16], m2, 1
     vextracti128 [tmpq+stride3q -16], m7, 1
     lea         tmpq, [tmpq+strideq*4]
-    vextracti128 [tmpq+strideq*0-16], m8, 1
+    vextracti128 [tmpq+strideq*0-16], m0, 1
     vextracti128 [tmpq+strideq*1-16], m13, 1
     vextracti128 [tmpq+strideq*2-16], m3, 1
     vextracti128 [tmpq+stride3q -16], m4, 1
@@ -955,41 +923,38 @@ SECTION .text
     vextracti128 [dstq+stride3q ], m3, 1
     lea         dstq, [dstq+strideq*4]
 %endif
-%endif
 %elif %1 == 6
     ; flat6 filter
-
+    vpbroadcastd  m7, [pw_4096]
     paddw         m8, m3, m4
     paddw         m8, m13                       ; p2+p1+p0
     paddw        m11, m13, m5
     paddw         m8, m8
     paddw         m8, m11                       ; p2+2*(p2+p1+p0)+q0
-    pmulhrsw      m2, m8, [pw_4096]
+    pmulhrsw      m2, m8, m7
 
     paddw         m8, m5
     paddw        m11, m13, m13
     paddw         m8, m6
     psubw         m8, m11
-    pmulhrsw     m10, m8, [pw_4096]
+    pmulhrsw     m10, m8, m7
 
     paddw         m8, m6
     paddw        m11, m13, m3
     paddw         m8, m14
     psubw         m8, m11
-    pmulhrsw     m11, m8, [pw_4096]
+    pmulhrsw     m11, m8, m7
 
     psubw         m8, m3
     paddw        m14, m14
     psubw         m8, m4
     paddw         m8, m14
-    pmulhrsw      m8, [pw_4096]
+    pmulhrsw      m8, m7
 
-    REPX {pand x, m9}, m2, m10, m11, m8
-    REPX {pandn x, m9, x}, m3, m4, m5, m6
-    por           m3, m2
-    por           m4, m10
-    por           m5, m11
-    por           m6, m8
+    pblendvb      m3, m2, m9
+    pblendvb      m4, m10, m9
+    pblendvb      m5, m11, m9
+    pblendvb      m6, m8, m9
 
 %ifidn %2, v
     mova [tmpq+strideq*2], m3                   ; p1
@@ -1015,10 +980,10 @@ INIT_YMM avx2
 cglobal lpf_v_sb_y_16bpc, 6, 12, 16, 32 * 5, \
                           dst, stride, mask, l, l_stride, lut, \
                           w, stride3, mstride, tmp, mask_bits
-    rorx         r6d, r7m, 6
-    and          r6d, 32                      ; 0 for 10bpc, 32 for 12bpc
+    mov          r6d, r7m
     lea          r11, [pw_4]
-    add          r11, r6
+    shr          r6d, 11                      ; is_12bpc
+    lea          r11, [r11+r6*4]
     mov           wd, wm
     shl    l_strideq, 2
     sub           lq, l_strideq
@@ -1046,7 +1011,7 @@ cglobal lpf_v_sb_y_16bpc, 6, 12, 16, 32 * 5, \
     test   [maskq+0], mask_bitsd              ; vmask[0]
     jz .end
 
-    FILTER         4, v
+    call .v4
 
 .end:
     pslld        m12, 4
@@ -1056,15 +1021,19 @@ cglobal lpf_v_sb_y_16bpc, 6, 12, 16, 32 * 5, \
     sub           wd, 4
     jg .loop
     RET
+ALIGN function_align
+.v4:
+    FILTER         4, v
+    ret
 
 INIT_YMM avx2
 cglobal lpf_h_sb_y_16bpc, 6, 12, 16, 32 * 15, \
                           dst, stride, mask, l, l_stride, lut, \
                           h, stride3, l_stride3, tmp, mask_bits
-    rorx         r6d, r7m, 6
-    and          r6d, 32                      ; 0 for 10bpc, 32 for 12bpc
+    mov          r6d, r7m
     lea          r11, [pw_4]
-    add          r11, r6
+    shr          r6d, 11                      ; is_12bpc
+    lea          r11, [r11+r6*4]
     mov           hd, hm
     shl    l_strideq, 2
     sub           lq, 4
@@ -1091,7 +1060,7 @@ cglobal lpf_h_sb_y_16bpc, 6, 12, 16, 32 * 15, \
     test   [maskq+0], mask_bitsd            ; vmask[0]
     jz .no_filter
 
-    FILTER         4, h
+    call .h4
     jmp .end
 
 .no_filter:
@@ -1104,15 +1073,19 @@ cglobal lpf_h_sb_y_16bpc, 6, 12, 16, 32 * 15, \
     sub           hd, 4
     jg .loop
     RET
+ALIGN function_align
+.h4:
+    FILTER         4, h
+    ret
 
 INIT_YMM avx2
 cglobal lpf_v_sb_uv_16bpc, 6, 12, 16, \
                            dst, stride, mask, l, l_stride, lut, \
                            w, stride3, mstride, tmp, mask_bits
-    rorx         r6d, r7m, 6
-    and          r6d, 32                      ; 0 for 10bpc, 32 for 12bpc
+    mov          r6d, r7m
     lea          r11, [pw_4]
-    add          r11, r6
+    shr          r6d, 11                      ; is_12bpc
+    lea          r11, [r11+r6*4]
     mov           wd, wm
     shl    l_strideq, 2
     sub           lq, l_strideq
@@ -1133,7 +1106,7 @@ cglobal lpf_v_sb_uv_16bpc, 6, 12, 16, \
     test   [maskq+0], mask_bitsd            ; vmask[0]
     jz .end
 
-    FILTER         4, v
+    call mangle(private_prefix %+ _lpf_v_sb_y_16bpc_avx2).v4
 
 .end:
     pslld        m12, 4
@@ -1148,10 +1121,10 @@ INIT_YMM avx2
 cglobal lpf_h_sb_uv_16bpc, 6, 12, 16, \
                            dst, stride, mask, l, l_stride, lut, \
                            h, stride3, l_stride3, tmp, mask_bits
-    rorx         r6d, r7m, 6
-    and          r6d, 32                      ; 0 for 10bpc, 32 for 12bpc
+    mov          r6d, r7m
     lea          r11, [pw_4]
-    add          r11, r6
+    shr          r6d, 11                      ; is_12bpc
+    lea          r11, [r11+r6*4]
     mov           hd, hm
     shl    l_strideq, 2
     sub           lq, 4
@@ -1171,7 +1144,7 @@ cglobal lpf_h_sb_uv_16bpc, 6, 12, 16, \
     test   [maskq+0], mask_bitsd            ; vmask[0]
     jz .no_filter
 
-    FILTER         4, h
+    call mangle(private_prefix %+ _lpf_h_sb_y_16bpc_avx2).h4
     jmp .end
 
 .no_filter:

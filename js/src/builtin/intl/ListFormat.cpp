@@ -8,22 +8,17 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/intl/ListFormat.h"
-#include "mozilla/PodOperations.h"
 
 #include <stddef.h>
 
 #include "builtin/Array.h"
 #include "builtin/intl/CommonFunctions.h"
 #include "builtin/intl/FormatBuffer.h"
-#include "builtin/intl/ScopedICUObject.h"
-#include "gc/FreeOp.h"
+#include "gc/GCContext.h"
 #include "js/Utility.h"
 #include "js/Vector.h"
 #include "vm/JSContext.h"
 #include "vm/PlainObject.h"  // js::PlainObject
-#include "vm/Runtime.h"      // js::ReportAllocationOverflow
-#include "vm/SelfHosting.h"
-#include "vm/Stack.h"
 #include "vm/StringType.h"
 #include "vm/WellKnownAtom.h"  // js_*_str
 
@@ -32,11 +27,6 @@
 #include "vm/ObjectOperations-inl.h"
 
 using namespace js;
-
-using mozilla::CheckedInt;
-
-using js::intl::CallICU;
-using js::intl::IcuLocale;
 
 const JSClassOps ListFormatObject::classOps_ = {
     nullptr,                     // addProperty
@@ -47,7 +37,6 @@ const JSClassOps ListFormatObject::classOps_ = {
     nullptr,                     // mayResolve
     ListFormatObject::finalize,  // finalize
     nullptr,                     // call
-    nullptr,                     // hasInstance
     nullptr,                     // construct
     nullptr,                     // trace
 };
@@ -131,13 +120,13 @@ static bool ListFormat(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-void js::ListFormatObject::finalize(JSFreeOp* fop, JSObject* obj) {
-  MOZ_ASSERT(fop->onMainThread());
+void js::ListFormatObject::finalize(JS::GCContext* gcx, JSObject* obj) {
+  MOZ_ASSERT(gcx->onMainThread());
 
   mozilla::intl::ListFormat* lf =
       obj->as<ListFormatObject>().getListFormatSlot();
   if (lf) {
-    intl::RemoveICUCellMemory(fop, obj, ListFormatObject::EstimatedMemoryUse);
+    intl::RemoveICUCellMemory(gcx, obj, ListFormatObject::EstimatedMemoryUse);
     delete lf;
   }
 }
@@ -206,7 +195,7 @@ static mozilla::intl::ListFormat* NewListFormat(
   }
 
   auto result = mozilla::intl::ListFormat::TryCreate(
-      mozilla::MakeStringSpan(IcuLocale(locale.get())), options);
+      mozilla::MakeStringSpan(locale.get()), options);
 
   if (result.isOk()) {
     return result.unwrap().release();
@@ -214,6 +203,24 @@ static mozilla::intl::ListFormat* NewListFormat(
 
   js::intl::ReportInternalError(cx, result.unwrapErr());
   return nullptr;
+}
+
+static mozilla::intl::ListFormat* GetOrCreateListFormat(
+    JSContext* cx, Handle<ListFormatObject*> listFormat) {
+  // Obtain a cached mozilla::intl::ListFormat object.
+  mozilla::intl::ListFormat* lf = listFormat->getListFormatSlot();
+  if (lf) {
+    return lf;
+  }
+
+  lf = NewListFormat(cx, listFormat);
+  if (!lf) {
+    return nullptr;
+  }
+  listFormat->setListFormatSlot(lf);
+
+  intl::AddICUCellMemory(listFormat, ListFormatObject::EstimatedMemoryUse);
+  return lf;
 }
 
 /**
@@ -243,56 +250,67 @@ static bool FormatList(JSContext* cx, mozilla::intl::ListFormat* lf,
 static bool FormatListToParts(JSContext* cx, mozilla::intl::ListFormat* lf,
                               const mozilla::intl::ListFormat::StringList& list,
                               MutableHandleValue result) {
-  auto formatResult = lf->FormatToParts(
-      list,
-      [cx,
-       &result](const mozilla::intl::ListFormat::PartVector& parts) -> bool {
-        RootedArrayObject partsArray(
-            cx, NewDenseFullyAllocatedArray(cx, parts.length()));
-        if (!partsArray) {
-          return false;
-        }
-        partsArray->ensureDenseInitializedLength(0, parts.length());
-
-        RootedObject singlePart(cx);
-        RootedValue val(cx);
-
-        size_t index = 0;
-        for (const mozilla::intl::ListFormat::Part& part : parts) {
-          singlePart = NewPlainObject(cx);
-          if (!singlePart) {
-            return false;
-          }
-
-          if (part.first == mozilla::intl::ListFormat::PartType::Element) {
-            val = StringValue(cx->names().element);
-          } else {
-            val = StringValue(cx->names().literal);
-          }
-
-          if (!DefineDataProperty(cx, singlePart, cx->names().type, val)) {
-            return false;
-          }
-
-          JSString* partStr = NewStringCopy<CanGC>(cx, part.second);
-          if (!partStr) {
-            return false;
-          }
-          val = StringValue(partStr);
-          if (!DefineDataProperty(cx, singlePart, cx->names().value, val)) {
-            return false;
-          }
-
-          partsArray->initDenseElement(index++, ObjectValue(*singlePart));
-        }
-        MOZ_ASSERT(index == parts.length());
-        result.setObject(*partsArray);
-        return true;
-      });
+  intl::FormatBuffer<char16_t, intl::INITIAL_CHAR_BUFFER_SIZE> buffer(cx);
+  mozilla::intl::ListFormat::PartVector parts;
+  auto formatResult = lf->FormatToParts(list, buffer, parts);
   if (formatResult.isErr()) {
-    js::intl::ReportInternalError(cx, formatResult.unwrapErr());
+    intl::ReportInternalError(cx, formatResult.unwrapErr());
     return false;
   }
+
+  RootedString overallResult(cx, buffer.toString(cx));
+  if (!overallResult) {
+    return false;
+  }
+
+  Rooted<ArrayObject*> partsArray(
+      cx, NewDenseFullyAllocatedArray(cx, parts.length()));
+  if (!partsArray) {
+    return false;
+  }
+  partsArray->ensureDenseInitializedLength(0, parts.length());
+
+  RootedObject singlePart(cx);
+  RootedValue val(cx);
+
+  size_t index = 0;
+  size_t beginIndex = 0;
+  for (const mozilla::intl::ListFormat::Part& part : parts) {
+    singlePart = NewPlainObject(cx);
+    if (!singlePart) {
+      return false;
+    }
+
+    if (part.first == mozilla::intl::ListFormat::PartType::Element) {
+      val = StringValue(cx->names().element);
+    } else {
+      val = StringValue(cx->names().literal);
+    }
+
+    if (!DefineDataProperty(cx, singlePart, cx->names().type, val)) {
+      return false;
+    }
+
+    // There could be an empty string so the endIndex coule be equal to
+    // beginIndex.
+    MOZ_ASSERT(part.second >= beginIndex);
+    JSLinearString* partStr = NewDependentString(cx, overallResult, beginIndex,
+                                                 part.second - beginIndex);
+    if (!partStr) {
+      return false;
+    }
+    val = StringValue(partStr);
+    if (!DefineDataProperty(cx, singlePart, cx->names().value, val)) {
+      return false;
+    }
+
+    beginIndex = part.second;
+    partsArray->initDenseElement(index++, ObjectValue(*singlePart));
+  }
+
+  MOZ_ASSERT(index == parts.length());
+  MOZ_ASSERT(beginIndex == buffer.length());
+  result.setObject(*partsArray);
 
   return true;
 }
@@ -306,16 +324,9 @@ bool js::intl_FormatList(JSContext* cx, unsigned argc, Value* vp) {
 
   bool formatToParts = args[2].toBoolean();
 
-  // Obtain a cached mozilla::intl::ListFormat object.
-  mozilla::intl::ListFormat* lf = listFormat->getListFormatSlot();
+  mozilla::intl::ListFormat* lf = GetOrCreateListFormat(cx, listFormat);
   if (!lf) {
-    lf = NewListFormat(cx, listFormat);
-    if (!lf) {
-      return false;
-    }
-    listFormat->setListFormatSlot(lf);
-
-    intl::AddICUCellMemory(listFormat, ListFormatObject::EstimatedMemoryUse);
+    return false;
   }
 
   // Collect all strings and their lengths.
@@ -325,7 +336,7 @@ bool js::intl_FormatList(JSContext* cx, unsigned argc, Value* vp) {
   Vector<UniqueTwoByteChars, mozilla::intl::DEFAULT_LIST_LENGTH> strings(cx);
   mozilla::intl::ListFormat::StringList list;
 
-  RootedArrayObject listObj(cx, &args[1].toObject().as<ArrayObject>());
+  Rooted<ArrayObject*> listObj(cx, &args[1].toObject().as<ArrayObject>());
   RootedValue value(cx);
   uint32_t listLen = listObj->length();
   for (uint32_t i = 0; i < listLen; i++) {

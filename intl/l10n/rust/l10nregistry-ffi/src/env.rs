@@ -11,11 +11,8 @@ use l10nregistry::{
 };
 use log::warn;
 use nserror::{nsresult, NS_ERROR_NOT_AVAILABLE};
-use nsstring::nsString;
-use std::{
-    ffi::CStr,
-    fmt::{self, Write},
-};
+use nsstring::{nsCStr, nsString};
+use std::fmt::{self, Write};
 use unic_langid::LanguageIdentifier;
 use xpcom::interfaces;
 
@@ -33,7 +30,6 @@ impl GeckoEnvironment {
         warn!("L10nRegistry setup error: {}", error);
         let result = log_simple_console_error(
             &error.to_string(),
-            cstr!("l10n"),
             false,
             true,
             None,
@@ -51,18 +47,20 @@ impl ErrorReporter for GeckoEnvironment {
         for error in errors {
             warn!("L10nRegistry error: {}", error);
             let result = match error {
-                L10nRegistryError::FluentError { path, loc, error } => log_simple_console_error(
+                L10nRegistryError::FluentError {
+                    resource_id,
+                    loc,
+                    error,
+                } => log_simple_console_error(
                     &error.to_string(),
-                    cstr!("l10n"),
                     false,
                     true,
-                    Some(nsString::from(&path)),
+                    Some(nsString::from(&resource_id.value)),
                     loc.map_or((0, 0), |(l, c)| (l as u32, c as u32)),
                     interfaces::nsIScriptError::errorFlag as u32,
                 ),
                 L10nRegistryError::MissingResource { .. } => log_simple_console_error(
                     &error.to_string(),
-                    cstr!("l10n"),
                     false,
                     true,
                     None,
@@ -95,7 +93,6 @@ impl LocalesProvider for GeckoEnvironment {
 
 fn log_simple_console_error(
     error: &impl fmt::Display,
-    category: &CStr,
     from_private_window: bool,
     from_chrome_context: bool,
     path: Option<nsString>,
@@ -113,6 +110,7 @@ fn log_simple_console_error(
     let script_error =
         xpcom::create_instance::<interfaces::nsIScriptError>(cstr!("@mozilla.org/scripterror;1"))
             .ok_or(NS_ERROR_NOT_AVAILABLE)?;
+    let category = nsCStr::from("l10n");
     unsafe {
         script_error
             .Init(
@@ -122,7 +120,7 @@ fn log_simple_console_error(
                 pos.0,                             /* aLineNumber */
                 pos.1,                             /* aColNumber */
                 error_flags,
-                category.as_ptr(),
+                &*category,
                 from_private_window,
                 from_chrome_context,
             )

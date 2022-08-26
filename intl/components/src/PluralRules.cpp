@@ -48,8 +48,8 @@ Result<UniquePtr<PluralRules>, ICUError> PluralRules::TryCreate(
   auto pluralType = aOptions.mPluralType == PluralRules::Type::Cardinal
                         ? UPLURAL_TYPE_CARDINAL
                         : UPLURAL_TYPE_ORDINAL;
-  UPluralRules* pluralRules =
-      uplrules_openForType(aLocale.data(), pluralType, &status);
+  UPluralRules* pluralRules = uplrules_openForType(
+      AssertNullTerminatedString(aLocale), pluralType, &status);
 
   if (U_FAILURE(status)) {
     return Err(ToICUError(status));
@@ -73,7 +73,6 @@ Result<PluralRules::Keyword, ICUError> PluralRules::Select(
   return KeywordFromUtf16(Span(keyword, lengthResult.unwrap()));
 }
 
-#ifdef MOZ_INTL_PLURAL_RULES_HAS_SELECT_RANGE
 Result<PluralRules::Keyword, ICUError> PluralRules::SelectRange(
     double aStart, double aEnd) const {
   char16_t keyword[MAX_KEYWORD_LENGTH];
@@ -87,7 +86,6 @@ Result<PluralRules::Keyword, ICUError> PluralRules::SelectRange(
 
   return KeywordFromUtf16(Span(keyword, lengthResult.unwrap()));
 }
-#endif
 
 Result<EnumSet<PluralRules::Keyword>, ICUError> PluralRules::Categories()
     const {

@@ -148,13 +148,14 @@ void nsView::DestroyWidget() {
   }
 }
 
-nsView* nsView::GetViewFor(nsIWidget* aWidget) {
-  MOZ_ASSERT(nullptr != aWidget, "null widget ptr");
+nsView* nsView::GetViewFor(const nsIWidget* aWidget) {
+  MOZ_ASSERT(aWidget, "null widget ptr");
 
   nsIWidgetListener* listener = aWidget->GetWidgetListener();
   if (listener) {
-    nsView* view = listener->GetView();
-    if (view) return view;
+    if (nsView* view = listener->GetView()) {
+      return view;
+    }
   }
 
   listener = aWidget->GetAttachedWidgetListener();
@@ -516,8 +517,8 @@ static int32_t FindNonAutoZIndex(nsView* aView) {
 struct DefaultWidgetInitData : public nsWidgetInitData {
   DefaultWidgetInitData() : nsWidgetInitData() {
     mWindowType = eWindowType_child;
-    clipChildren = true;
-    clipSiblings = true;
+    mClipChildren = true;
+    mClipSiblings = true;
   }
 };
 
@@ -529,12 +530,7 @@ nsresult nsView::CreateWidget(nsWidgetInitData* aWidgetInitData,
       "Use CreateWidgetForPopup");
 
   DefaultWidgetInitData defaultInitData;
-  bool initDataPassedIn = !!aWidgetInitData;
   aWidgetInitData = aWidgetInitData ? aWidgetInitData : &defaultInitData;
-  defaultInitData.mListenForResizes =
-      (!initDataPassedIn && GetParent() &&
-       GetParent()->GetViewManager() != mViewManager);
-
   LayoutDeviceIntRect trect = CalcWidgetBounds(aWidgetInitData->mWindowType);
 
   nsIWidget* parentWidget =
@@ -1087,13 +1083,12 @@ void nsView::DidCompositeWindow(mozilla::layers::TransactionId aTransactionId,
   }
 
   nsIDocShell* docShell = context->GetDocShell();
-  RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
 
-  if (timelines && timelines->HasConsumer(docShell)) {
-    timelines->AddMarkerForDocShell(
+  if (TimelineConsumers::HasConsumer(docShell)) {
+    TimelineConsumers::AddMarkerForDocShell(
         docShell, MakeUnique<CompositeTimelineMarker>(
                       aCompositeStart, MarkerTracingType::START));
-    timelines->AddMarkerForDocShell(
+    TimelineConsumers::AddMarkerForDocShell(
         docShell, MakeUnique<CompositeTimelineMarker>(aCompositeEnd,
                                                       MarkerTracingType::END));
   }

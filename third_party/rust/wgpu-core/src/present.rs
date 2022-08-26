@@ -1,13 +1,15 @@
 /*! Presentation.
 
-    ## Lifecycle
+## Lifecycle
 
-    Whenever a submission detects the use of any surface texture, it adds it to the device
-    tracker for the duration of the submission (temporarily, while recording).
-    It's added with `UNINITIALIZED` state and transitioned into `empty()` state.
-    When this texture is presented, we remove it from the device tracker as well as
-    extract it from the hub.
+Whenever a submission detects the use of any surface texture, it adds it to the device
+tracker for the duration of the submission (temporarily, while recording).
+It's added with `UNINITIALIZED` state and transitioned into `empty()` state.
+When this texture is presented, we remove it from the device tracker as well as
+extract it from the hub.
 !*/
+
+use std::borrow::Borrow;
 
 #[cfg(feature = "trace")]
 use crate::device::trace::Action;
@@ -16,9 +18,8 @@ use crate::{
     device::DeviceError,
     hub::{Global, GlobalIdentityHandlerFactory, HalApi, Input, Token},
     id::{DeviceId, SurfaceId, TextureId, Valid},
-    resource,
-    track::TextureSelector,
-    LifeGuard, Stored,
+    init_tracker::TextureInitTracker,
+    resource, track, LifeGuard, Stored,
 };
 
 use hal::{Queue as _, Surface as _};
@@ -32,6 +33,7 @@ pub const DESIRED_NUM_FRAMES: u32 = 3;
 pub(crate) struct Presentation {
     pub(crate) device_id: Stored<DeviceId>,
     pub(crate) config: wgt::SurfaceConfiguration,
+    #[allow(unused)]
     pub(crate) num_frames: u32,
     pub(crate) acquired_texture: Option<Stored<TextureId>>,
 }
@@ -121,8 +123,32 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         let _ = device;
 
         let suf = A::get_surface_mut(surface);
-        let (texture_id, status) = match unsafe { suf.raw.acquire_texture(FRAME_TIMEOUT_MS) } {
+        let (texture_id, status) = match unsafe {
+            suf.raw
+                .acquire_texture(Some(std::time::Duration::from_millis(
+                    FRAME_TIMEOUT_MS as u64,
+                )))
+        } {
             Ok(Some(ast)) => {
+                let clear_view_desc = hal::TextureViewDescriptor {
+                    label: Some("(wgpu internal) clear surface texture view"),
+                    format: config.format,
+                    dimension: wgt::TextureViewDimension::D2,
+                    usage: hal::TextureUses::COLOR_TARGET,
+                    range: wgt::ImageSubresourceRange::default(),
+                };
+                let mut clear_views = smallvec::SmallVec::new();
+                clear_views.push(
+                    unsafe {
+                        hal::Device::create_texture_view(
+                            &device.raw,
+                            ast.texture.borrow(),
+                            &clear_view_desc,
+                        )
+                    }
+                    .map_err(DeviceError::from)?,
+                );
+
                 let present = surface.presentation.as_mut().unwrap();
                 let texture = resource::Texture {
                     inner: resource::TextureInner::Surface {
@@ -147,20 +173,33 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
                     hal_usage: conv::map_texture_usage(config.usage, config.format.into()),
                     format_features: wgt::TextureFormatFeatures {
                         allowed_usages: wgt::TextureUsages::RENDER_ATTACHMENT,
-                        flags: wgt::TextureFormatFeatureFlags::empty(),
-                        filterable: false,
+                        flags: wgt::TextureFormatFeatureFlags::MULTISAMPLE
+                            | wgt::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE,
                     },
-                    full_range: TextureSelector {
+                    initialization_status: TextureInitTracker::new(1, 1),
+                    full_range: track::TextureSelector {
                         layers: 0..1,
-                        levels: 0..1,
+                        mips: 0..1,
                     },
                     life_guard: LifeGuard::new("<Surface>"),
+                    clear_mode: resource::TextureClearMode::RenderPass {
+                        clear_views,
+                        is_color: true,
+                    },
                 };
 
                 let ref_count = texture.life_guard.add_ref();
                 let id = fid.assign(texture, &mut token);
 
-                //suf.acquired_texture = Some(suf_texture);
+                {
+                    // register it in the device tracker as uninitialized
+                    let mut trackers = device.trackers.lock();
+                    trackers.textures.insert_single(
+                        id.0,
+                        ref_count.clone(),
+                        hal::TextureUses::UNINITIALIZED,
+                    );
+                }
 
                 if present.acquired_texture.is_some() {
                     return Err(SurfaceError::AlreadyAcquired);
@@ -232,10 +271,24 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
 
             // The texture ID got added to the device tracker by `submit()`,
             // and now we are moving it away.
+            log::debug!(
+                "Removing swapchain texture {:?} from the device tracker",
+                texture_id.value
+            );
             device.trackers.lock().textures.remove(texture_id.value);
 
             let (texture, _) = hub.textures.unregister(texture_id.value.0, &mut token);
             if let Some(texture) = texture {
+                if let resource::TextureClearMode::RenderPass { clear_views, .. } =
+                    texture.clear_mode
+                {
+                    for clear_view in clear_views {
+                        unsafe {
+                            hal::Device::destroy_texture_view(&device.raw, clear_view);
+                        }
+                    }
+                }
+
                 let suf = A::get_surface_mut(surface);
                 match texture.inner {
                     resource::TextureInner::Surface {
@@ -275,5 +328,65 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
                 }
             },
         }
+    }
+
+    pub fn surface_texture_discard<A: HalApi>(
+        &self,
+        surface_id: SurfaceId,
+    ) -> Result<(), SurfaceError> {
+        profiling::scope!("discard", "SwapChain");
+
+        let hub = A::hub(self);
+        let mut token = Token::root();
+
+        let (mut surface_guard, mut token) = self.surfaces.write(&mut token);
+        let surface = surface_guard
+            .get_mut(surface_id)
+            .map_err(|_| SurfaceError::Invalid)?;
+        let (mut device_guard, mut token) = hub.devices.write(&mut token);
+
+        let present = match surface.presentation {
+            Some(ref mut present) => present,
+            None => return Err(SurfaceError::NotConfigured),
+        };
+
+        let device = &mut device_guard[present.device_id.value];
+
+        #[cfg(feature = "trace")]
+        if let Some(ref trace) = device.trace {
+            trace.lock().add(Action::DiscardSurfaceTexture(surface_id));
+        }
+
+        {
+            let texture_id = present
+                .acquired_texture
+                .take()
+                .ok_or(SurfaceError::AlreadyAcquired)?;
+
+            // The texture ID got added to the device tracker by `submit()`,
+            // and now we are moving it away.
+            device.trackers.lock().textures.remove(texture_id.value);
+
+            let (texture, _) = hub.textures.unregister(texture_id.value.0, &mut token);
+            if let Some(texture) = texture {
+                let suf = A::get_surface_mut(surface);
+                match texture.inner {
+                    resource::TextureInner::Surface {
+                        raw,
+                        parent_id,
+                        has_work: _,
+                    } => {
+                        if surface_id == parent_id.0 {
+                            unsafe { suf.raw.discard_texture(raw) };
+                        } else {
+                            log::warn!("Surface texture is outdated");
+                        }
+                    }
+                    resource::TextureInner::Native { .. } => unreachable!(),
+                }
+            }
+        }
+
+        Ok(())
     }
 }

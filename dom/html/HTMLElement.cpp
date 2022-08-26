@@ -15,7 +15,7 @@ namespace mozilla::dom {
 HTMLElement::HTMLElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsGenericHTMLFormElement(std::move(aNodeInfo)) {
   if (NodeInfo()->Equals(nsGkAtoms::bdi)) {
-    AddStatesSilently(NS_EVENT_STATE_DIR_ATTR_LIKE_AUTO);
+    AddStatesSilently(ElementState::HAS_DIR_ATTR_LIKE_AUTO);
   }
 }
 
@@ -25,6 +25,7 @@ NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLElement, nsGenericHTMLFormElement)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(HTMLElement)
   NS_INTERFACE_MAP_ENTRY_TEAROFF(nsIFormControl, GetElementInternals())
+  NS_INTERFACE_MAP_ENTRY_TEAROFF(nsIConstraintValidation, GetElementInternals())
 NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLFormElement)
 
 NS_IMPL_ADDREF_INHERITED(HTMLElement, nsGenericHTMLFormElement)
@@ -37,8 +38,23 @@ JSObject* HTMLElement::WrapNode(JSContext* aCx,
   return dom::HTMLElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
+nsresult HTMLElement::BindToTree(BindContext& aContext, nsINode& aParent) {
+  nsresult rv = nsGenericHTMLFormElement::BindToTree(aContext, aParent);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  UpdateBarredFromConstraintValidation();
+  return rv;
+}
+
+void HTMLElement::UnbindFromTree(bool aNullParent) {
+  nsGenericHTMLFormElement::UnbindFromTree(aNullParent);
+
+  UpdateBarredFromConstraintValidation();
+}
+
 void HTMLElement::SetCustomElementDefinition(
     CustomElementDefinition* aDefinition) {
+  nsGenericHTMLFormElement::SetCustomElementDefinition(aDefinition);
   // Always create an ElementInternal for form-associated custom element as the
   // Form related implementation lives in ElementInternal which implements
   // nsIFormControl. It is okay for the attachElementInternal API as there is a
@@ -48,8 +64,14 @@ void HTMLElement::SetCustomElementDefinition(
     CustomElementData* data = GetCustomElementData();
     MOZ_ASSERT(data);
     data->GetOrCreateElementInternals(this);
+
+    // This is for the case that script constructs a custom element directly,
+    // e.g. via new MyCustomElement(), where the upgrade steps won't be ran to
+    // update the disabled state in UpdateFormOwner().
+    if (data->mState == CustomElementData::State::eCustom) {
+      UpdateDisabledState(true);
+    }
   }
-  nsGenericHTMLFormElement::SetCustomElementDefinition(aDefinition);
 }
 
 // https://html.spec.whatwg.org/commit-snapshots/53bc3803433e1c817918b83e8a84f3db900031dd/#dom-attachinternals
@@ -130,6 +152,16 @@ already_AddRefed<ElementInternals> HTMLElement::AttachInternals(
   return do_AddRef(ceData->GetOrCreateElementInternals(this));
 }
 
+void HTMLElement::AfterClearForm(bool aUnbindOrDelete) {
+  // No need to enqueue formAssociated callback if we aren't releasing or
+  // unbinding from tree, UpdateFormOwner() will handle it.
+  if (aUnbindOrDelete) {
+    MOZ_ASSERT(IsFormAssociatedElement());
+    nsContentUtils::EnqueueLifecycleCallback(
+        ElementCallbackType::eFormAssociated, this, {});
+  }
+}
+
 void HTMLElement::UpdateFormOwner() {
   MOZ_ASSERT(IsFormAssociatedElement());
 
@@ -140,9 +172,44 @@ void HTMLElement::UpdateFormOwner() {
   // call UpdateFormOwner if none of these conditions are fulfilled.
   if (HasAttr(kNameSpaceID_None, nsGkAtoms::form) ? IsInComposedDoc()
                                                   : !!GetParent()) {
-    nsGenericHTMLFormElement::UpdateFormOwner(true, nullptr);
+    UpdateFormOwner(true, nullptr);
   }
   UpdateFieldSet(true);
+  UpdateDisabledState(true);
+  UpdateBarredFromConstraintValidation();
+}
+
+nsresult HTMLElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                                   const nsAttrValue* aValue,
+                                   const nsAttrValue* aOldValue,
+                                   nsIPrincipal* aMaybeScriptedPrincipal,
+                                   bool aNotify) {
+  if (aNameSpaceID == kNameSpaceID_None &&
+      (aName == nsGkAtoms::disabled || aName == nsGkAtoms::readonly)) {
+    if (aName == nsGkAtoms::disabled) {
+      // This *has* to be called *before* validity state check because
+      // UpdateBarredFromConstraintValidation depend on our disabled state.
+      UpdateDisabledState(aNotify);
+    }
+    UpdateBarredFromConstraintValidation();
+  }
+
+  return nsGenericHTMLFormElement::AfterSetAttr(
+      aNameSpaceID, aName, aValue, aOldValue, aMaybeScriptedPrincipal, aNotify);
+}
+
+ElementState HTMLElement::IntrinsicState() const {
+  ElementState state = nsGenericHTMLFormElement::IntrinsicState();
+  if (ElementInternals* internals = GetElementInternals()) {
+    if (internals->IsCandidateForConstraintValidation()) {
+      if (internals->IsValid()) {
+        state |= ElementState::VALID | ElementState::USER_VALID;
+      } else {
+        state |= ElementState::INVALID | ElementState::USER_INVALID;
+      }
+    }
+  }
+  return state;
 }
 
 void HTMLElement::SetFormInternal(HTMLFormElement* aForm, bool aBindToTree) {
@@ -175,13 +242,41 @@ bool HTMLElement::DoesReadOnlyApply() const {
   return IsFormAssociatedElement();
 }
 
+void HTMLElement::UpdateDisabledState(bool aNotify) {
+  bool oldState = IsDisabled();
+  nsGenericHTMLFormElement::UpdateDisabledState(aNotify);
+  if (oldState != IsDisabled()) {
+    MOZ_ASSERT(IsFormAssociatedElement());
+    LifecycleCallbackArgs args;
+    args.mDisabled = !oldState;
+    nsContentUtils::EnqueueLifecycleCallback(ElementCallbackType::eFormDisabled,
+                                             this, args);
+  }
+}
+
+void HTMLElement::UpdateFormOwner(bool aBindToTree, Element* aFormIdElement) {
+  HTMLFormElement* oldForm = GetFormInternal();
+  nsGenericHTMLFormElement::UpdateFormOwner(aBindToTree, aFormIdElement);
+  HTMLFormElement* newForm = GetFormInternal();
+  if (newForm != oldForm) {
+    LifecycleCallbackArgs args;
+    args.mForm = newForm;
+    nsContentUtils::EnqueueLifecycleCallback(
+        ElementCallbackType::eFormAssociated, this, args);
+  }
+}
+
 bool HTMLElement::IsFormAssociatedElement() const {
   CustomElementData* data = GetCustomElementData();
-  bool isFormAssociatedCustomElement = data && data->IsFormAssociated();
-  MOZ_ASSERT_IF(
-      isFormAssociatedCustomElement,
-      StaticPrefs::dom_webcomponents_formAssociatedCustomElement_enabled());
-  return isFormAssociatedCustomElement;
+  return data && data->IsFormAssociated();
+}
+
+void HTMLElement::FieldSetDisabledChanged(bool aNotify) {
+  // This *has* to be called *before* UpdateBarredFromConstraintValidation
+  // because this function depend on our disabled state.
+  nsGenericHTMLFormElement::FieldSetDisabledChanged(aNotify);
+
+  UpdateBarredFromConstraintValidation();
 }
 
 ElementInternals* HTMLElement::GetElementInternals() const {
@@ -194,6 +289,15 @@ ElementInternals* HTMLElement::GetElementInternals() const {
   }
 
   return data->GetElementInternals();
+}
+
+void HTMLElement::UpdateBarredFromConstraintValidation() {
+  CustomElementData* data = GetCustomElementData();
+  if (data && data->IsFormAssociated()) {
+    ElementInternals* internals = data->GetElementInternals();
+    MOZ_ASSERT(internals);
+    internals->UpdateBarredFromConstraintValidation();
+  }
 }
 
 }  // namespace mozilla::dom

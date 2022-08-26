@@ -10,6 +10,7 @@
 #include "nsAccessibilityService.h"
 #include "nsAccUtils.h"
 #include "AccAttributes.h"
+#include "CacheConstants.h"
 #include "DocAccessible.h"
 #include "LocalAccessible-inl.h"
 #include "nsTextEquivUtils.h"
@@ -125,19 +126,6 @@ already_AddRefed<AccAttributes> HTMLTableCellAccessible::NativeAttributes() {
   return attributes.forget();
 }
 
-GroupPos HTMLTableCellAccessible::GroupPosition() {
-  int32_t count = 0, index = 0;
-  TableAccessible* table = Table();
-  if (table &&
-      nsCoreUtils::GetUIntAttr(table->AsAccessible()->GetContent(),
-                               nsGkAtoms::aria_colcount, &count) &&
-      nsCoreUtils::GetUIntAttr(mContent, nsGkAtoms::aria_colindex, &index)) {
-    return GroupPos(0, index, count);
-  }
-
-  return HyperTextAccessibleWrap::GroupPosition();
-}
-
 void HTMLTableCellAccessible::DOMAttributeChanged(int32_t aNameSpaceID,
                                                   nsAtom* aAttribute,
                                                   int32_t aModType,
@@ -150,6 +138,10 @@ void HTMLTableCellAccessible::DOMAttributeChanged(int32_t aNameSpaceID,
       aAttribute == nsGkAtoms::scope) {
     mDoc->FireDelayedEvent(nsIAccessibleEvent::EVENT_OBJECT_ATTRIBUTE_CHANGED,
                            this);
+    mDoc->QueueCacheUpdate(this, CacheDomain::Table);
+  } else if (aAttribute == nsGkAtoms::rowspan ||
+             aAttribute == nsGkAtoms::colspan) {
+    mDoc->QueueCacheUpdate(this, CacheDomain::Table);
   }
 }
 
@@ -199,8 +191,7 @@ uint32_t HTMLTableCellAccessible::RowExtent() const {
   return table->RowExtentAt(rowIdx, colIdx);
 }
 
-void HTMLTableCellAccessible::ColHeaderCells(
-    nsTArray<LocalAccessible*>* aCells) {
+void HTMLTableCellAccessible::ColHeaderCells(nsTArray<Accessible*>* aCells) {
   IDRefsIterator itr(mDoc, mContent, nsGkAtoms::headers);
   while (LocalAccessible* cell = itr.Next()) {
     a11y::role cellRole = cell->Role();
@@ -219,8 +210,7 @@ void HTMLTableCellAccessible::ColHeaderCells(
   if (aCells->IsEmpty()) TableCellAccessible::ColHeaderCells(aCells);
 }
 
-void HTMLTableCellAccessible::RowHeaderCells(
-    nsTArray<LocalAccessible*>* aCells) {
+void HTMLTableCellAccessible::RowHeaderCells(nsTArray<Accessible*>* aCells) {
   IDRefsIterator itr(mDoc, mContent, nsGkAtoms::headers);
   while (LocalAccessible* cell = itr.Next()) {
     a11y::role cellRole = cell->Role();
@@ -334,19 +324,6 @@ role HTMLTableRowAccessible::NativeRole() const {
   return roles::ROW;
 }
 
-GroupPos HTMLTableRowAccessible::GroupPosition() {
-  int32_t count = 0, index = 0;
-  LocalAccessible* table = nsAccUtils::TableFor(this);
-  if (table &&
-      nsCoreUtils::GetUIntAttr(table->GetContent(), nsGkAtoms::aria_rowcount,
-                               &count) &&
-      nsCoreUtils::GetUIntAttr(mContent, nsGkAtoms::aria_rowindex, &index)) {
-    return GroupPos(0, index, count);
-  }
-
-  return AccessibleWrap::GroupPosition();
-}
-
 // LocalAccessible protected
 ENameValueFlag HTMLTableRowAccessible::NativeName(nsString& aName) const {
   // For table row accessibles, we only want to calculate the name from the
@@ -371,8 +348,8 @@ bool HTMLTableAccessible::InsertChildAt(uint32_t aIndex,
   // caption only, because nsAccessibilityService ensures we don't create
   // accessibles for the other captions, since only the first is actually
   // visible.
-  return LocalAccessible::InsertChildAt(aChild->IsHTMLCaption() ? 0 : aIndex,
-                                        aChild);
+  return HyperTextAccessible::InsertChildAt(
+      aChild->IsHTMLCaption() ? 0 : aIndex, aChild);
 }
 
 role HTMLTableAccessible::NativeRole() const {
@@ -433,7 +410,7 @@ already_AddRefed<AccAttributes> HTMLTableAccessible::NativeAttributes() {
   RefPtr<AccAttributes> attributes = AccessibleWrap::NativeAttributes();
 
   if (mContent->IsMathMLElement(nsGkAtoms::mtable_)) {
-    GetAccService()->MarkupAttributes(mContent, attributes);
+    GetAccService()->MarkupAttributes(this, attributes);
   }
 
   if (IsProbablyLayoutTable()) {
@@ -525,7 +502,7 @@ uint32_t HTMLTableAccessible::SelectedRowCount() {
   return count;
 }
 
-void HTMLTableAccessible::SelectedCells(nsTArray<LocalAccessible*>* aCells) {
+void HTMLTableAccessible::SelectedCells(nsTArray<Accessible*>* aCells) {
   nsTableWrapperFrame* tableFrame = GetTableWrapperFrame();
   if (!tableFrame) return;
 

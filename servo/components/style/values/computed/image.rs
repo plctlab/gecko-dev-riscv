@@ -31,6 +31,9 @@ pub use specified::ImageRendering;
 pub type Image =
     generic::GenericImage<Gradient, MozImageRect, ComputedImageUrl, Color, Percentage, Resolution>;
 
+// Images should remain small, see https://github.com/servo/servo/pull/18430
+size_of_test!(Image, 16);
+
 /// Computed values for a CSS gradient.
 /// <https://drafts.csswg.org/css-images/#gradients>
 pub type Gradient = generic::GenericGradient<
@@ -47,8 +50,6 @@ pub type Gradient = generic::GenericGradient<
 /// Computed values for CSS cross-fade
 /// <https://drafts.csswg.org/css-images-4/#cross-fade-function>
 pub type CrossFade = generic::CrossFade<Image, Color, Percentage>;
-/// A computed percentage or nothing.
-pub type PercentOrNone = generic::PercentOrNone<Percentage>;
 
 /// A computed radial gradient ending shape.
 pub type EndingShape = generic::GenericEndingShape<NonNegativeLength, NonNegativeLengthPercentage>;
@@ -84,7 +85,6 @@ impl ToComputedValue for specified::ImageSet {
         let mut selected_resolution = items[0].resolution.dppx();
 
         for (i, item) in items.iter().enumerate() {
-
             // If the MIME type is not supported, we discard the ImageSetItem
             if item.has_mime_type && !context.device().is_supported_mime_type(&item.mime_type) {
                 continue;

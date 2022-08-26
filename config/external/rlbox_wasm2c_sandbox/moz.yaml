@@ -9,14 +9,14 @@ origin:
   description: rlbox integration for the wasm2c sandboxed code
   url: https://github.com/PLSysSec/rlbox_wasm2c_sandbox
 
-  release: commit a7b7233cf1845bc2548ffc7ea06f27e8a024b851 (2021-08-24T08:37:28Z).
-  revision: a7b7233cf1845bc2548ffc7ea06f27e8a024b851
+  release: commit 54e8469095e7929c66aeecdc26f23f502b986218 (2021-12-08T08:12:13Z).
+  revision: 54e8469095e7929c66aeecdc26f23f502b986218
 
   license: MIT
   license-file: LICENSE
 
 vendoring:
-  url: https://github.com/PLSysSec/rlbox_wasm2c_sandbox.git
+  url: https://github.com/PLSysSec/rlbox_wasm2c_sandbox
   source-hosting: github
   vendor-directory: third_party/rlbox_wasm2c_sandbox
 
@@ -33,3 +33,5 @@ vendoring:
     - CMakeLists.txt
     - LibrarySandbox.md
     - README.md
+
+

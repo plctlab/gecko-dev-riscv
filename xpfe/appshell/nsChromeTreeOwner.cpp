@@ -131,6 +131,13 @@ nsChromeTreeOwner::GetPrimaryRemoteTab(nsIRemoteTab** aTab) {
 }
 
 NS_IMETHODIMP
+nsChromeTreeOwner::GetPrimaryContentBrowsingContext(
+    mozilla::dom::BrowsingContext** aBc) {
+  NS_ENSURE_STATE(mAppWindow);
+  return mAppWindow->GetPrimaryContentBrowsingContext(aBc);
+}
+
+NS_IMETHODIMP
 nsChromeTreeOwner::GetPrimaryContentSize(int32_t* aWidth, int32_t* aHeight) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetPrimaryContentSize(aWidth, aHeight);
@@ -255,10 +262,8 @@ NS_IMETHODIMP nsChromeTreeOwner::Destroy() {
   return mAppWindow->Destroy();
 }
 
-NS_IMETHODIMP nsChromeTreeOwner::GetUnscaledDevicePixelsPerCSSPixel(
-    double* aScale) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->GetUnscaledDevicePixelsPerCSSPixel(aScale);
+double nsChromeTreeOwner::GetWidgetCSSToDeviceScale() {
+  return mAppWindow ? mAppWindow->GetWidgetCSSToDeviceScale() : 1.0;
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::GetDevicePixelsPerDesktopPixel(

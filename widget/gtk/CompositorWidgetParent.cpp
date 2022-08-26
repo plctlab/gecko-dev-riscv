@@ -6,9 +6,9 @@
 #include "CompositorWidgetParent.h"
 #include "mozilla/Unused.h"
 #include "mozilla/widget/PlatformWidgetTypes.h"
+#include "nsWindow.h"
 
-namespace mozilla {
-namespace widget {
+namespace mozilla::widget {
 
 CompositorWidgetParent::CompositorWidgetParent(
     const CompositorWidgetInitData& aInitData,
@@ -40,5 +40,15 @@ mozilla::ipc::IPCResult CompositorWidgetParent::RecvNotifyClientSizeChanged(
   return IPC_OK();
 }
 
-}  // namespace widget
-}  // namespace mozilla
+mozilla::ipc::IPCResult CompositorWidgetParent::RecvDisableRendering() {
+  DisableRendering();
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult CompositorWidgetParent::RecvEnableRendering(
+    const uintptr_t& aXWindow, const bool& aShaped) {
+  EnableRendering(aXWindow, aShaped);
+  return IPC_OK();
+}
+
+}  // namespace mozilla::widget

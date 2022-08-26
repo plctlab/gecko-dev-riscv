@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScaledFontDWrite.h"
+#include "gfxDWriteCommon.h"
 #include "UnscaledFontDWrite.h"
 #include "PathD2D.h"
 #include "gfxFont.h"
@@ -73,7 +74,7 @@ static bool DoGrayscale(IDWriteFontFace* aDWFace, Float ppem) {
     }
     gaspRange* ranges = (gaspRange*)(tableData + 4);
     for (int i = 0; i < numRanges; i++) {
-      if (readShort((char*)&ranges[i].maxPPEM) > ppem) {
+      if (readShort((char*)&ranges[i].maxPPEM) >= ppem) {
         if (!(readShort((char*)&ranges[i].behavior) & GASP_DOGRAY)) {
           aDWFace->ReleaseFontTable(tableContext);
           return false;
@@ -86,51 +87,21 @@ static bool DoGrayscale(IDWriteFontFace* aDWFace, Float ppem) {
   return true;
 }
 
-static inline DWRITE_FONT_STRETCH DWriteFontStretchFromStretch(
-    FontStretch aStretch) {
-  if (aStretch == FontStretch::UltraCondensed()) {
-    return DWRITE_FONT_STRETCH_ULTRA_CONDENSED;
-  }
-  if (aStretch == FontStretch::ExtraCondensed()) {
-    return DWRITE_FONT_STRETCH_EXTRA_CONDENSED;
-  }
-  if (aStretch == FontStretch::Condensed()) {
-    return DWRITE_FONT_STRETCH_CONDENSED;
-  }
-  if (aStretch == FontStretch::SemiCondensed()) {
-    return DWRITE_FONT_STRETCH_SEMI_CONDENSED;
-  }
-  if (aStretch == FontStretch::Normal()) {
-    return DWRITE_FONT_STRETCH_NORMAL;
-  }
-  if (aStretch == FontStretch::SemiExpanded()) {
-    return DWRITE_FONT_STRETCH_SEMI_EXPANDED;
-  }
-  if (aStretch == FontStretch::Expanded()) {
-    return DWRITE_FONT_STRETCH_EXPANDED;
-  }
-  if (aStretch == FontStretch::ExtraExpanded()) {
-    return DWRITE_FONT_STRETCH_EXTRA_EXPANDED;
-  }
-  if (aStretch == FontStretch::UltraExpanded()) {
-    return DWRITE_FONT_STRETCH_ULTRA_EXPANDED;
-  }
-  return DWRITE_FONT_STRETCH_UNDEFINED;
-}
-
 ScaledFontDWrite::ScaledFontDWrite(IDWriteFontFace* aFontFace,
                                    const RefPtr<UnscaledFont>& aUnscaledFont,
                                    Float aSize, bool aUseEmbeddedBitmap,
-                                   bool aGDIForced, const gfxFontStyle* aStyle)
+                                   bool aUseMultistrikeBold, bool aGDIForced,
+                                   const gfxFontStyle* aStyle)
     : ScaledFontBase(aUnscaledFont, aSize),
       mFontFace(aFontFace),
       mUseEmbeddedBitmap(aUseEmbeddedBitmap),
+      mUseMultistrikeBold(aUseMultistrikeBold),
       mGDIForced(aGDIForced) {
   if (aStyle) {
     mStyle = SkFontStyle(aStyle->weight.ToIntRounded(),
                          DWriteFontStretchFromStretch(aStyle->stretch),
                          // FIXME(jwatt): also use kOblique_Slant
-                         aStyle->style == FontSlantStyle::Normal()
+                         aStyle->style == FontSlantStyle::NORMAL
                              ? SkFontStyle::kUpright_Slant
                              : SkFontStyle::kItalic_Slant);
   }
@@ -190,6 +161,10 @@ void ScaledFontDWrite::SetupSkFontDrawOptions(SkFont& aFont) {
     aFont.setEmbeddedBitmaps(UseEmbeddedBitmaps());
     aFont.setSubpixel(true);
   }
+}
+
+bool ScaledFontDWrite::MayUseBitmaps() {
+  return ForceGDIMode() || UseEmbeddedBitmaps();
 }
 
 void ScaledFontDWrite::CopyGlyphsToBuilder(const GlyphBuffer& aBuffer,
@@ -391,14 +366,16 @@ bool UnscaledFontDWrite::GetFontDescriptor(FontDescriptorOutput aCb,
 
 ScaledFontDWrite::InstanceData::InstanceData(
     const wr::FontInstanceOptions* aOptions,
-    const wr::FontInstancePlatformOptions* aPlatformOptions)
-    : mUseEmbeddedBitmap(false), mApplySyntheticBold(false) {
+    const wr::FontInstancePlatformOptions* aPlatformOptions) {
   if (aOptions) {
     if (aOptions->flags & wr::FontInstanceFlags::EMBEDDED_BITMAPS) {
       mUseEmbeddedBitmap = true;
     }
     if (aOptions->flags & wr::FontInstanceFlags::SYNTHETIC_BOLD) {
-      mApplySyntheticBold = true;
+      mUseBoldSimulation = true;
+    }
+    if (aOptions->flags & wr::FontInstanceFlags::MULTISTRIKE_BOLD) {
+      mUseMultistrikeBold = true;
     }
     if (aOptions->flags & wr::FontInstanceFlags::FORCE_GDI) {
       mGDIForced = true;
@@ -466,8 +443,11 @@ bool ScaledFontDWrite::GetWRFontInstanceOptions(
   wr::FontInstanceOptions options;
   options.render_mode = wr::ToFontRenderMode(GetDefaultAAMode());
   options.flags = wr::FontInstanceFlags{0};
-  if (HasSyntheticBold()) {
+  if (HasBoldSimulation()) {
     options.flags |= wr::FontInstanceFlags::SYNTHETIC_BOLD;
+  }
+  if (UseMultistrikeBold()) {
+    options.flags |= wr::FontInstanceFlags::MULTISTRIKE_BOLD;
   }
   if (UseEmbeddedBitmaps()) {
     options.flags |= wr::FontInstanceFlags::EMBEDDED_BITMAPS;
@@ -614,7 +594,7 @@ already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFont(
       *reinterpret_cast<const ScaledFontDWrite::InstanceData*>(aInstanceData);
 
   IDWriteFontFace* face = mFontFace;
-  if (instanceData.mApplySyntheticBold) {
+  if (instanceData.mUseBoldSimulation) {
     if (!InitBold()) {
       gfxWarning() << "Failed creating bold IDWriteFontFace.";
       return nullptr;
@@ -636,9 +616,9 @@ already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFont(
     }
   }
 
-  return MakeAndAddRef<ScaledFontDWrite>(face, this, aGlyphSize,
-                                         instanceData.mUseEmbeddedBitmap,
-                                         instanceData.mGDIForced);
+  return MakeAndAddRef<ScaledFontDWrite>(
+      face, this, aGlyphSize, instanceData.mUseEmbeddedBitmap,
+      instanceData.mUseMultistrikeBold, instanceData.mGDIForced, nullptr);
 }
 
 already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFontFromWRFont(

@@ -22,7 +22,11 @@ from enum import Enum
 from mozdevice import ADBHost, ADBDeviceFactory
 from six.moves import input, urllib
 
-EMULATOR_HOME_DIR = os.path.join(os.path.expanduser("~"), ".mozbuild", "android-device")
+MOZBUILD_PATH = os.environ.get(
+    "MOZBUILD_STATE_PATH", os.path.expanduser(os.path.join("~", ".mozbuild"))
+)
+
+EMULATOR_HOME_DIR = os.path.join(MOZBUILD_PATH, "android-device")
 
 EMULATOR_AUTH_FILE = os.path.join(
     os.path.expanduser("~"), ".emulator_console_auth_token"
@@ -100,6 +104,31 @@ AVD_DICT = {
     "arm": AvdInfo(
         "Android arm",
         "mozemulator-armeabi-v7a",
+        [
+            "-skip-adb-auth",
+            "-verbose",
+            "-show-kernel",
+            "-ranchu",
+            "-selinux",
+            "permissive",
+            "-memory",
+            "3072",
+            "-cores",
+            "4",
+            "-skin",
+            "800x1280",
+            "-gpu",
+            "on",
+            "-no-snapstorage",
+            "-no-snapshot",
+            "-prop",
+            "ro.test_harness=true",
+        ],
+        False,
+    ),
+    "arm64": AvdInfo(
+        "Android arm64",
+        "mozemulator-arm64",
         [
             "-skip-adb-auth",
             "-verbose",
@@ -233,7 +262,9 @@ def _maybe_update_host_utils(build_obj):
 
     # Compare, prompt, update
     if existing_version and manifest_version:
-        manifest_version = manifest_version[: len(existing_version)]
+        hu_version_regex = "host-utils-([\d\.]*)"
+        manifest_version = float(re.search(hu_version_regex, manifest_version).group(1))
+        existing_version = float(re.search(hu_version_regex, existing_version).group(1))
         if existing_version < manifest_version:
             _log_info("Your host utilities are out of date!")
             _log_info(
@@ -258,6 +289,7 @@ def verify_android_device(
     verbose=False,
     app=None,
     device_serial=None,
+    aab=False,
 ):
     """
     Determine if any Android device is connected via adb.
@@ -326,7 +358,7 @@ def verify_android_device(
         #  - it prevents testing against other builds (downloaded apk)
         #  - installation may take a couple of minutes.
         if not app:
-            app = "org.mozilla.geckoview.test"
+            app = "org.mozilla.geckoview.test_runner"
         device = _get_device(build_obj.substs, device_serial)
         response = ""
         installed = device.is_app_installed(app)
@@ -342,15 +374,31 @@ def verify_android_device(
             if installed:
                 device.uninstall_app(app)
             _log_info("Installing geckoview AndroidTest...")
-            sub = "geckoview:installWithGeckoBinariesDebugAndroidTest"
             build_obj._mach_context.commands.dispatch(
-                "gradle", build_obj._mach_context, args=[sub]
+                "android",
+                build_obj._mach_context,
+                subcommand="install-geckoview-test",
+                args=[],
+            )
+        elif app == "org.mozilla.geckoview.test_runner":
+            if installed:
+                device.uninstall_app(app)
+            _log_info("Installing geckoview test_runner...")
+            sub = (
+                "install-geckoview-test_runner-aab"
+                if aab
+                else "install-geckoview-test_runner"
+            )
+            build_obj._mach_context.commands.dispatch(
+                "android", build_obj._mach_context, subcommand=sub, args=[]
             )
         elif app == "org.mozilla.geckoview_example":
             if installed:
                 device.uninstall_app(app)
             _log_info("Installing geckoview_example...")
-            sub = "install-geckoview_example"
+            sub = (
+                "install-geckoview_example-aab" if aab else "install-geckoview_example"
+            )
             build_obj._mach_context.commands.dispatch(
                 "android", build_obj._mach_context, subcommand=sub, args=[]
             )
@@ -528,7 +576,7 @@ def get_adb_path(build_obj):
 def grant_runtime_permissions(build_obj, app, device_serial=None):
     """
     Grant required runtime permissions to the specified app
-    (eg. org.mozilla.geckoview.test).
+    (eg. org.mozilla.geckoview.test_runner).
     """
     device = _get_device(build_obj.substs, device_serial)
     device.run_as_package = app
@@ -606,6 +654,7 @@ class AndroidEmulator(object):
         if os.path.exists(self.avd_path):
             _log_debug("AVD found at %s" % self.avd_path)
             return True
+        _log_warning("Could not find AVD at %s" % self.avd_path)
         return False
 
     def start(self, gpu_arg=None):
@@ -827,9 +876,10 @@ class AndroidEmulator(object):
         if requested in AVD_DICT.keys():
             return requested
         if self.substs:
-            if not self.substs["TARGET_CPU"].startswith("arm"):
-                return "x86_64"
-            else:
+            target_cpu = self.substs["TARGET_CPU"]
+            if target_cpu == "aarch64":
+                return "arm64"
+            elif target_cpu.startswith("arm"):
                 return "arm"
         return "x86_64"
 
@@ -874,11 +924,8 @@ def _find_sdk_exe(substs, exe, tools):
 
     if not found:
         # Can exe be found in the default bootstrap location?
-        mozbuild_path = os.environ.get(
-            "MOZBUILD_STATE_PATH", os.path.expanduser(os.path.join("~", ".mozbuild"))
-        )
         for subdir in subdirs:
-            exe_path = os.path.join(mozbuild_path, "android-sdk-linux", subdir, exe)
+            exe_path = os.path.join(MOZBUILD_PATH, "android-sdk-linux", subdir, exe)
             if os.path.exists(exe_path):
                 found = True
                 break

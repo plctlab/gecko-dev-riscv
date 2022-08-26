@@ -111,9 +111,7 @@ fi
 
 cd /builds/worker
 
-$GECKO_PATH/mach python \
-  --requirements $GECKO_PATH/build/psutil_requirements.txt \
-  -- \
+$GECKO_PATH/mach python -- \
   $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
   ${config_path_cmds} \
   ${config_cmds} \

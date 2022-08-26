@@ -70,16 +70,19 @@ lints:
             ./mach --log-no-times build pre-export export &&
             ./mach --log-no-times lint -f treeherder -f json:/builds/worker/mozlint.json
             --linter android-api-lint
+            --linter android-format
             --linter android-javadoc
             --linter android-checkstyle
             --linter android-lint
             --linter android-test
+            *
         tooltool-downloads: internal  # For internal toolchains.
     fetches:
         toolchain:
             # Aliases aren't allowed for toolchains installed by fetch.
             - linux64-android-gradle-dependencies
             - linux64-android-sdk-linux-repack
+            - linux64-jdk-repack
             - linux64-node
     when:
         files-changed:

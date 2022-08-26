@@ -3,19 +3,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* import-globals-from editBookmark.js */
-/* import-globals-from ../../../../toolkit/content/contentAreaUtils.js */
-/* import-globals-from ../../downloads/content/allDownloadsView.js */
+/* import-globals-from instantEditBookmark.js */
+/* import-globals-from /toolkit/content/contentAreaUtils.js */
+/* import-globals-from /browser/components/downloads/content/allDownloadsView.js */
 
 /* Shared Places Import - change other consumers if you change this: */
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  PlacesUIUtils: "resource:///modules/PlacesUIUtils.jsm",
-  PlacesTransactions: "resource://gre/modules/PlacesTransactions.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
 });
 XPCOMUtils.defineLazyScriptGetter(
@@ -38,16 +34,10 @@ ChromeUtils.defineModuleGetter(
   "MigrationUtils",
   "resource:///modules/MigrationUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "BookmarkJSONUtils",
-  "resource://gre/modules/BookmarkJSONUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesBackups",
-  "resource://gre/modules/PlacesBackups.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  BookmarkJSONUtils: "resource://gre/modules/BookmarkJSONUtils.sys.mjs",
+  PlacesBackups: "resource://gre/modules/PlacesBackups.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   this,
   "DownloadUtils",
@@ -171,7 +161,7 @@ var PlacesOrganizer = {
       DOWNLOADS_QUERY,
       () =>
         new DownloadsPlacesView(
-          document.getElementById("downloadsRichListBox"),
+          document.getElementById("downloadsListBox"),
           false
         ),
       {
@@ -447,6 +437,16 @@ var PlacesOrganizer = {
         ? [view.selectedNode]
         : view.selectedNodes;
       this._fillDetailsPane(selectedNodes);
+      window
+        .promiseDocumentFlushed(() => {})
+        .then(() => {
+          if (view.selectedNode && ContentArea.currentView.view) {
+            let row = ContentArea.currentView.view.treeIndexForNode(
+              view.selectedNode
+            );
+            ContentTree.view.ensureRowIsVisible(row);
+          }
+        });
     }
   },
 
@@ -492,8 +492,8 @@ var PlacesOrganizer = {
     let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
     let fpCallback = function fpCallback_done(aResult) {
       if (aResult != Ci.nsIFilePicker.returnCancel && fp.fileURL) {
-        var { BookmarkHTMLUtils } = ChromeUtils.import(
-          "resource://gre/modules/BookmarkHTMLUtils.jsm"
+        var { BookmarkHTMLUtils } = ChromeUtils.importESModule(
+          "resource://gre/modules/BookmarkHTMLUtils.sys.mjs"
         );
         BookmarkHTMLUtils.importFromURL(fp.fileURL.spec).catch(Cu.reportError);
       }
@@ -515,8 +515,8 @@ var PlacesOrganizer = {
     let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
     let fpCallback = function fpCallback_done(aResult) {
       if (aResult != Ci.nsIFilePicker.returnCancel) {
-        var { BookmarkHTMLUtils } = ChromeUtils.import(
-          "resource://gre/modules/BookmarkHTMLUtils.jsm"
+        var { BookmarkHTMLUtils } = ChromeUtils.importESModule(
+          "resource://gre/modules/BookmarkHTMLUtils.sys.mjs"
         );
         BookmarkHTMLUtils.exportToFile(fp.file.path).catch(Cu.reportError);
       }
@@ -587,7 +587,7 @@ var PlacesOrganizer = {
           document.getElementById("restoreFromFile")
         );
         m.setAttribute("label", dateFormatter.format(backupDate) + sizeInfo);
-        m.setAttribute("value", OS.Path.basename(backupFiles[i]));
+        m.setAttribute("value", PathUtils.filename(backupFiles[i]));
         m.setAttribute(
           "oncommand",
           "PlacesOrganizer.onRestoreMenuItemClick(this);"
@@ -611,7 +611,7 @@ var PlacesOrganizer = {
     let backupName = aMenuItem.getAttribute("value");
     let backupFilePaths = await PlacesBackups.getBackupFiles();
     for (let backupFilePath of backupFilePaths) {
-      if (OS.Path.basename(backupFilePath) == backupName) {
+      if (PathUtils.filename(backupFilePath) == backupName) {
         PlacesOrganizer.restoreBookmarksFromFile(backupFilePath);
         break;
       }
@@ -743,8 +743,8 @@ var PlacesOrganizer = {
     if (gEditItemOverlay.itemId != -1) {
       var focusedElement = document.commandDispatcher.focusedElement;
       if (
-        (focusedElement instanceof HTMLInputElement ||
-          focusedElement instanceof HTMLTextAreaElement) &&
+        (HTMLInputElement.isInstance(focusedElement) ||
+          HTMLTextAreaElement.isInstance(focusedElement)) &&
         /^editBMPanel.*/.test(focusedElement.parentNode.parentNode.id)
       ) {
         focusedElement.blur();
@@ -770,17 +770,21 @@ var PlacesOrganizer = {
     gEditItemOverlay.uninitPanel(false);
 
     if (selectedNode && !PlacesUtils.nodeIsSeparator(selectedNode)) {
-      gEditItemOverlay.initPanel({
-        node: selectedNode,
-        hiddenRows: ["folderPicker"],
-      });
+      gEditItemOverlay
+        .initPanel({
+          node: selectedNode,
+          hiddenRows: ["folderPicker"],
+        })
+        .catch(ex => Cu.reportError(ex));
     } else if (!selectedNode && aNodeList[0]) {
       if (aNodeList.every(PlacesUtils.nodeIsURI)) {
         let uris = aNodeList.map(node => Services.io.newURI(node.uri));
-        gEditItemOverlay.initPanel({
-          uris,
-          hiddenRows: ["folderPicker", "location", "keyword", "name"],
-        });
+        gEditItemOverlay
+          .initPanel({
+            uris,
+            hiddenRows: ["folderPicker", "location", "keyword", "name"],
+          })
+          .catch(ex => Cu.reportError(ex));
       } else {
         let selectItemDesc = document.getElementById("selectItemDescription");
         let itemsCountLabel = document.getElementById("itemsCountText");

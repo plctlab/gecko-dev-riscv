@@ -8,8 +8,8 @@ const EXPORTED_SYMBOLS = ["WebRequestUpload"];
 
 /* exported WebRequestUpload */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const { ExtensionUtils } = ChromeUtils.import(
@@ -18,10 +18,10 @@ const { ExtensionUtils } = ChromeUtils.import(
 
 const { DefaultMap } = ExtensionUtils;
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["TextEncoder"]);
+const lazy = {};
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "mimeHeader",
   "@mozilla.org/network/mime-hdrparam;1",
   "nsIMIMEHeaderParam"
@@ -114,7 +114,13 @@ class Headers extends Map {
       let bytes = new TextEncoder().encode(header);
       let binHeader = String.fromCharCode(...bytes);
 
-      return mimeHeader.getParameterHTTP(binHeader, paramName, null, false, {});
+      return lazy.mimeHeader.getParameterHTTP(
+        binHeader,
+        paramName,
+        null,
+        false,
+        {}
+      );
     }
 
     return null;

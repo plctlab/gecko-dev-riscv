@@ -39,6 +39,12 @@ function TargetMixin(parentClass) {
     constructor(client, targetFront, parentFront) {
       super(client, targetFront, parentFront);
 
+      // TargetCommand._onTargetAvailable will set this public attribute.
+      // This is a reference to the related `commands` object and helps all fronts
+      // easily call any command method. Without this bit of magic, Fronts wouldn't
+      // be able to interact with any commands while it is frequently useful.
+      this.commands = null;
+
       this._forceChrome = false;
 
       this.destroy = this.destroy.bind(this);
@@ -72,6 +78,12 @@ function TargetMixin(parentClass) {
         ["resource-available-form", offResourceAvailable],
         ["resource-updated-form", offResourceUpdated],
       ]);
+
+      // Expose a promise that is resolved once the target front is usable
+      // i.e. once attachAndInitThread has been called and resolved.
+      this.initialized = new Promise(resolve => {
+        this._onInitialized = resolve;
+      });
     }
 
     on(eventName, listener) {
@@ -200,28 +212,27 @@ function TargetMixin(parentClass) {
      * @return {TargetMixin} the parent target.
      */
     async getParentTarget() {
-      // We now support frames watching via watchTargets for Tab and Process descriptors.
-      const watcherFront = await this.getWatcherFront();
-      if (watcherFront) {
-        // Safety check, in theory all watcher should support frames. We should be able
-        // to remove this as part of Bug 1680280.
-        if (watcherFront.traits.frame) {
-          // Retrieve the Watcher, which manage all the targets and should already have a reference to
-          // to the parent target.
-          return watcherFront.getParentWindowGlobalTarget(
-            this.browsingContextID
-          );
-        }
-        return null;
+      return this.commands.targetCommand.getParentTarget(this);
+    }
+
+    /**
+     * Returns a Promise that resolves to a boolean indicating if the provided target is
+     * an ancestor of this instance.
+     *
+     * @param {TargetFront} target: The possible ancestor target.
+     * @returns Promise<Boolean>
+     */
+    async isTargetAnAncestor(target) {
+      const parentTargetFront = await this.getParentTarget();
+      if (!parentTargetFront) {
+        return false;
       }
 
-      if (this.parentFront.getParentTarget) {
-        return this.parentFront.getParentTarget();
+      if (parentTargetFront == target) {
+        return true;
       }
 
-      // Other targets, like WebExtensions, don't have a Watcher yet, nor do expose `getParentTarget`.
-      // We can't fetch parent target yet for these targets.
-      return null;
+      return parentTargetFront.isTargetAnAncestor(target);
     }
 
     /**
@@ -272,12 +283,6 @@ function TargetMixin(parentClass) {
      * @return {Mixed}
      */
     getTrait(traitName) {
-      // @backward-compat { version 93 } All traits should be on the `targetForm`, remove
-      // this backward compatibility code.
-      if (this.traits && this.traits[traitName]) {
-        return this.traits[traitName];
-      }
-
       // If the targeted actor exposes traits and has a defined value for this
       // traits, override the root actor traits
       if (this.targetForm.traits && traitName in this.targetForm.traits) {
@@ -373,11 +378,7 @@ function TargetMixin(parentClass) {
     // interface and requires to call `attach` request before being used and
     // `detach` during cleanup.
     get isBrowsingContext() {
-      // @backward-compat { version 94 } Fx 94 renamed typeName from browsingContextTarget to windowGlobalTarget
-      return (
-        this.typeName === "windowGlobalTarget" ||
-        this.typeName == "browsingContextTarget"
-      );
+      return this.typeName === "windowGlobalTarget";
     }
 
     get name() {
@@ -468,25 +469,6 @@ function TargetMixin(parentClass) {
       }
     }
 
-    // Attach the console actor
-    async attachConsole() {
-      const consoleFront = await this.getFront("console");
-
-      if (this.isDestroyedOrBeingDestroyed()) {
-        return;
-      }
-
-      // Calling startListeners will populate the traits as it's the first request we
-      // make to the front.
-      await consoleFront.startListeners([]);
-
-      this._onInspectObject = packet => this.emit("inspect-object", packet);
-      this.removeOnInspectObjectListener = consoleFront.on(
-        "inspectObject",
-        this._onInspectObject
-      );
-    }
-
     /**
      * This method attaches the target and then attaches its related thread, sending it
      * the options it needs (e.g. breakpoints, pause on exception setting, …).
@@ -503,6 +485,9 @@ function TargetMixin(parentClass) {
       }
 
       this._onThreadInitialized = this._attachAndInitThread(targetCommand);
+      // Resolve the `initialized` promise, while ignoring errors
+      // The empty function passed to catch will avoid spawning a new possibly rejected promise
+      this._onThreadInitialized.catch(() => {}).then(this._onInitialized);
       return this._onThreadInitialized;
     }
 
@@ -520,14 +505,17 @@ function TargetMixin(parentClass) {
         return;
       }
 
-      // WorkerTargetFront don't have an attach function as the related console and thread
-      // actors are created right away (from devtools/server/startup/worker.js)
-      if (this.attach) {
-        await this.attach();
+      // The current class we have is actually the WorkerDescriptorFront,
+      // which will morph into a target by fetching the underlying target's form.
+      // Ideally, worker targets would be spawn by the server, and we would no longer
+      // have the hybrid descriptor/target class which brings lots of complexity and confusion.
+      // To be removed in bug 1651522.
+      if (this.morphWorkerDescriptorIntoWorkerTarget) {
+        await this.morphWorkerDescriptorIntoWorkerTarget();
       }
 
       const isBrowserToolbox =
-        targetCommand.descriptorFront.isParentProcessDescriptor;
+        targetCommand.descriptorFront.isBrowserProcessDescriptor;
       const isNonTopLevelFrameTarget =
         !this.isTopLevel && this.targetType === targetCommand.TYPES.FRAME;
 
@@ -539,9 +527,10 @@ function TargetMixin(parentClass) {
         return;
       }
 
-      // Avoid attaching any thread actor in the browser console
-      // in order to avoid trigerring any type of breakpoint.
-      if (targetCommand.descriptorFront.createdForBrowserConsole) {
+      // Avoid attaching any thread actor in the browser console or in
+      // webextension commands in order to avoid triggering any type of
+      // breakpoint.
+      if (targetCommand.descriptorFront.doNotAttachThreadActor) {
         return;
       }
 
@@ -550,26 +539,7 @@ function TargetMixin(parentClass) {
       if (this.isDestroyedOrBeingDestroyed()) {
         return;
       }
-      const threadFront = await this.attachThread(options);
-
-      // @backward-compat { version 86 } ThreadActor.attach no longer pause the thread,
-      //                                 so that we no longer have to resume.
-      // Once 86 is in release, we can remove the rest of this method.
-      if (this.getTrait("noPauseOnThreadActorAttach")) {
-        return;
-      }
-      try {
-        if (this.isDestroyedOrBeingDestroyed() || threadFront.isDestroyed()) {
-          return;
-        }
-        await threadFront.resume();
-      } catch (ex) {
-        if (ex.error === "wrongOrder") {
-          targetCommand.emit("target-thread-wrong-order-on-resume");
-        } else {
-          throw ex;
-        }
-      }
+      await this.attachThread(options);
     }
 
     async attachThread(options = {}) {
@@ -649,12 +619,6 @@ function TargetMixin(parentClass) {
       }
       this.fronts.clear();
 
-      // Remove listeners set in attachConsole
-      if (this.removeOnInspectObjectListener) {
-        this.removeOnInspectObjectListener();
-        this.removeOnInspectObjectListener = null;
-      }
-
       this.threadFront = null;
       this._offResourceEvent = null;
 
@@ -718,10 +682,6 @@ function TargetMixin(parentClass) {
     _cleanup() {
       this.threadFront = null;
       this._client = null;
-
-      // All target front subclasses set this variable in their `attach` method.
-      // None of them overload destroy, so clean this up from here.
-      this._attach = null;
 
       this._title = null;
       this._url = null;

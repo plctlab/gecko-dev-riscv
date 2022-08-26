@@ -9,12 +9,13 @@ var EXPORTED_SYMBOLS = ["SpecialPowersParent"];
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ExtensionData: "resource://gre/modules/Extension.jsm",
   ExtensionTestCommon: "resource://testing-common/ExtensionTestCommon.jsm",
   PerTestCoverageUtils: "resource://testing-common/PerTestCoverageUtils.jsm",
@@ -410,8 +411,10 @@ class SpecialPowersParent extends JSWindowActorParent {
   _applyPrefs(actions) {
     let requiresRefresh = false;
     for (let pref of actions) {
+      // This logic should match PrefRequiresRefresh in reftest.jsm
       requiresRefresh =
         requiresRefresh ||
+        pref.name == "layout.css.prefers-color-scheme.content-override" ||
         pref.name.startsWith("ui.") ||
         pref.name.startsWith("browser.display.") ||
         pref.name.startsWith("font.");
@@ -671,7 +674,7 @@ class SpecialPowersParent extends JSWindowActorParent {
   }
 
   _spawnChrome(task, args, caller, imports) {
-    let sb = new SpecialPowersSandbox(
+    let sb = new lazy.SpecialPowersSandbox(
       null,
       data => {
         this.sendAsyncMessage("Assert", data);
@@ -722,6 +725,15 @@ class SpecialPowersParent extends JSWindowActorParent {
             !AppConstants.ASAN &&
             !AppConstants.TSAN
           ) {
+            if (Services.profiler.IsActive()) {
+              let filename = Cc["@mozilla.org/process/environment;1"]
+                .getService(Ci.nsIEnvironment)
+                .get("MOZ_PROFILER_SHUTDOWN");
+              if (filename) {
+                await Services.profiler.dumpProfileToFileAsync(filename);
+                await Services.profiler.StopProfiler();
+              }
+            }
             Cu.exitIfInAutomation();
           } else {
             Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
@@ -971,7 +983,7 @@ class SpecialPowersParent extends JSWindowActorParent {
           // Setup a chrome sandbox that has access to sendAsyncMessage
           // and {add,remove}MessageListener in order to communicate with
           // the mochitest.
-          let sb = new SpecialPowersSandbox(
+          let sb = new lazy.SpecialPowersSandbox(
             scriptName,
             data => {
               this.sendAsyncMessage("Assert", data);
@@ -1048,21 +1060,20 @@ class SpecialPowersParent extends JSWindowActorParent {
 
         case "SPCleanUpSTSData": {
           let origin = aMessage.data.origin;
-          let flags = aMessage.data.flags;
           let uri = Services.io.newURI(origin);
           let sss = Cc["@mozilla.org/ssservice;1"].getService(
             Ci.nsISiteSecurityService
           );
-          sss.resetState(uri, flags);
+          sss.resetState(uri);
           return undefined;
         }
 
         case "SPRequestDumpCoverageCounters": {
-          return PerTestCoverageUtils.afterTest();
+          return lazy.PerTestCoverageUtils.afterTest();
         }
 
         case "SPRequestResetCoverageCounters": {
-          return PerTestCoverageUtils.beforeTest();
+          return lazy.PerTestCoverageUtils.beforeTest();
         }
 
         case "SPCheckServiceWorkers": {
@@ -1096,7 +1107,14 @@ class SpecialPowersParent extends JSWindowActorParent {
               ext.useAddonManager = "android-only";
             }
           }
-          let extension = ExtensionTestCommon.generate(ext);
+          // delayedStartup is only supported in xpcshell
+          if (ext.delayedStartup !== undefined) {
+            throw new Error(
+              `delayedStartup is only supported in xpcshell, use "useAddonManager".`
+            );
+          }
+
+          let extension = lazy.ExtensionTestCommon.generate(ext);
 
           let resultListener = (...args) => {
             this.sendAsyncMessage("SPExtensionMessage", {
@@ -1149,7 +1167,7 @@ class SpecialPowersParent extends JSWindowActorParent {
           // Make sure the extension passes the packaging checks when
           // they're run on a bare archive rather than a running instance,
           // as the add-on manager runs them.
-          let extensionData = new ExtensionData(extension.rootURI);
+          let extensionData = new lazy.ExtensionData(extension.rootURI);
           return extensionData
             .loadManifest()
             .then(
@@ -1173,7 +1191,7 @@ class SpecialPowersParent extends JSWindowActorParent {
               // browser tests do not call startup in ExtensionXPCShellUtils or MockExtension,
               // in that case we have an ID here and we need to set the override.
               if (extension.id) {
-                await ExtensionTestCommon.setIncognitoOverride(extension);
+                await lazy.ExtensionTestCommon.setIncognitoOverride(extension);
               }
               return extension.startup().then(
                 () => {},
@@ -1206,6 +1224,18 @@ class SpecialPowersParent extends JSWindowActorParent {
           return extension.shutdown().then(() => {
             return extension._uninstallPromise;
           });
+        }
+
+        case "SPExtensionTerminateBackground": {
+          let id = aMessage.data.id;
+          let extension = this._extensions.get(id);
+          return extension.terminateBackground();
+        }
+
+        case "SPExtensionWakeupBackground": {
+          let id = aMessage.data.id;
+          let extension = this._extensions.get(id);
+          return extension.wakeupBackground();
         }
 
         case "SetAsDefaultAssertHandler": {
@@ -1266,7 +1296,7 @@ class SpecialPowersParent extends JSWindowActorParent {
           return browsingContext.currentWindowGlobal
             .drawSnapshot(rect, 1.0, background, resetScrollPosition)
             .then(async image => {
-              let hiddenFrame = new HiddenFrame();
+              let hiddenFrame = new lazy.HiddenFrame();
               let win = await hiddenFrame.get();
 
               let canvas = win.document.createElement("canvas");
@@ -1297,11 +1327,11 @@ class SpecialPowersParent extends JSWindowActorParent {
         }
 
         case "SPRemoveAllServiceWorkers": {
-          return ServiceWorkerCleanUp.removeAll();
+          return lazy.ServiceWorkerCleanUp.removeAll();
         }
 
         case "SPRemoveServiceWorkerDataForExampleDomain": {
-          return ServiceWorkerCleanUp.removeFromHost("example.com");
+          return lazy.ServiceWorkerCleanUp.removeFromHost("example.com");
         }
 
         case "SPGenerateMediaControlKeyTestEvent": {

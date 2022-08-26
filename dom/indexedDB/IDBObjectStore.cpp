@@ -544,7 +544,7 @@ void IDBObjectStore::AppendIndexUpdateInfo(
     }
 
     for (uint32_t arrayIndex = 0; arrayIndex < arrayLength; arrayIndex++) {
-      JS::RootedId indexId(aCx);
+      JS::Rooted<JS::PropertyKey> indexId(aCx);
       if (NS_WARN_IF(!JS_IndexToId(aCx, arrayIndex, &indexId))) {
         IDB_REPORT_INTERNAL_ERR();
         aRv->Throw(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
@@ -563,7 +563,7 @@ void IDBObjectStore::AppendIndexUpdateInfo(
         continue;
       }
 
-      JS::RootedValue arrayItem(aCx);
+      JS::Rooted<JS::Value> arrayItem(aCx);
       if (NS_WARN_IF(!JS_GetPropertyById(aCx, array, indexId, &arrayItem))) {
         IDB_REPORT_INTERNAL_ERR();
         aRv->Throw(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
@@ -774,18 +774,29 @@ RefPtr<IDBRequest> IDBObjectStore::AddOrPut(JSContext* aCx,
   StructuredCloneWriteInfo cloneWriteInfo(mTransaction->Database());
   nsTArray<IndexUpdateInfo> updateInfos;
 
-  {
-    const auto autoStateRestore =
-        mTransaction->TemporarilyTransitionToInactive();
-    GetAddInfo(aCx, aValueWrapper, aKey, cloneWriteInfo, key, updateInfos, aRv);
+  // According to spec https://w3c.github.io/IndexedDB/#clone-value,
+  // the transaction must be in inactive state during clone
+  mTransaction->TransitionToInactive();
+
+#ifdef DEBUG
+  const uint32_t previousPendingRequestCount{
+      mTransaction->GetPendingRequestCount()};
+#endif
+  GetAddInfo(aCx, aValueWrapper, aKey, cloneWriteInfo, key, updateInfos, aRv);
+  // Check that new requests were rejected in the Inactive state
+  // and possibly in the Finished state, if the transaction has been aborted,
+  // during the structured cloning.
+  MOZ_ASSERT(mTransaction->GetPendingRequestCount() ==
+             previousPendingRequestCount);
+
+  if (!mTransaction->IsAborted()) {
+    mTransaction->TransitionToActive();
+  } else if (!aRv.Failed()) {
+    aRv.Throw(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
+    return nullptr;  // It is mandatory to return right after throw
   }
 
   if (aRv.Failed()) {
-    return nullptr;
-  }
-
-  if (!mTransaction->IsActive()) {
-    aRv.Throw(NS_ERROR_DOM_INDEXEDDB_TRANSACTION_INACTIVE_ERR);
     return nullptr;
   }
 

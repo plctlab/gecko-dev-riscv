@@ -297,9 +297,9 @@ partial interface Document {
   [BinaryName="fullscreenEnabled", NeedsCallerType]
   readonly attribute boolean mozFullScreenEnabled;
 
-  [Throws]
+  [NewObject]
   Promise<void> exitFullscreen();
-  [Throws, BinaryName="exitFullscreen"]
+  [NewObject, BinaryName="exitFullscreen"]
   Promise<void> mozCancelFullScreen();
 
   // Events handlers
@@ -319,7 +319,7 @@ partial interface Document {
 
 // Mozilla-internal document extensions specific to error pages.
 partial interface Document {
-  [Func="Document::CallerIsTrustedAboutCertError"]
+  [Func="Document::CallerIsTrustedAboutCertError", NewObject]
   Promise<any> addCertException(boolean isTemporary);
 
   [Func="Document::CallerIsTrustedAboutHttpsOnlyError"]
@@ -448,7 +448,7 @@ partial interface Document {
   [ChromeOnly] readonly attribute nsILoadGroup? documentLoadGroup;
 
   // Blocks the initial document parser until the given promise is settled.
-  [ChromeOnly, Throws]
+  [ChromeOnly, NewObject]
   Promise<any> blockParsing(Promise<any> promise,
                             optional BlockParsingOptions options = {});
 
@@ -459,11 +459,11 @@ partial interface Document {
   // trying to load when we hit an error, rather than the error page's own URI.
   [ChromeOnly] readonly attribute URI? mozDocumentURIIfNotForErrorPages;
 
-  // A promise that is resolved, with this document itself, when we have both
-  // fired DOMContentLoaded and are ready to start layout.  This is used for the
-  // "document_idle" webextension script injection point.
+  // A promise that is resolved when we have both fired DOMContentLoaded and
+  // are ready to start layout.
+  // This is used for the  "document_idle" webextension script injection point.
   [ChromeOnly, Throws]
-  readonly attribute Promise<Document> documentReadyForIdle;
+  readonly attribute Promise<void> documentReadyForIdle;
 
   // Lazily created command dispatcher, returns null if the document is not
   // chrome privileged.
@@ -517,9 +517,12 @@ partial interface Document {
    * Deep-clones the provided element and inserts it into the CanvasFrame.
    * Returns an AnonymousContent instance that can be used to manipulate the
    * inserted element.
+   *
+   * If aForce is true, tries to update layout to be able to insert the element
+   * synchronously.
    */
   [ChromeOnly, NewObject, Throws]
-  AnonymousContent insertAnonymousContent(Element aElement);
+  AnonymousContent insertAnonymousContent(Element aElement, optional boolean aForce = false);
 
   /**
    * Removes the element inserted into the CanvasFrame given an AnonymousContent
@@ -537,10 +540,23 @@ partial interface Document {
 
 // https://github.com/whatwg/html/issues/3338
 partial interface Document {
-  [Pref="dom.storage_access.enabled", Throws]
+  [Pref="dom.storage_access.enabled", NewObject]
   Promise<boolean> hasStorageAccess();
-  [Pref="dom.storage_access.enabled", Throws]
+  [Pref="dom.storage_access.enabled", NewObject]
   Promise<void> requestStorageAccess();
+  // https://github.com/privacycg/storage-access/pull/100
+  [Pref="dom.storage_access.forward_declared.enabled", NewObject]
+  Promise<void> requestStorageAccessUnderSite(DOMString serializedSite);
+  [Pref="dom.storage_access.forward_declared.enabled", NewObject]
+  Promise<void> completeStorageAccessRequestFromSite(DOMString serializedSite);
+};
+
+// A privileged API to give chrome privileged code and the content script of the
+// webcompat extension the ability to request the storage access for a given
+// third party.
+partial interface Document {
+  [Func="Document::CallerCanAccessPrivilegeSSA", NewObject]
+  Promise<void> requestStorageAccessForOrigin(DOMString thirdPartyOrigin, optional boolean requireUserInteraction = true);
 };
 
 enum DocumentAutoplayPolicy {
@@ -574,6 +590,8 @@ partial interface Document {
   [ChromeOnly]
   readonly attribute boolean hasValidTransientUserGestureActivation;
   [ChromeOnly]
+  readonly attribute DOMHighResTimeStamp lastUserGestureTimeStamp;
+  [ChromeOnly]
   boolean consumeTransientUserGestureActivation();
 };
 
@@ -591,18 +609,6 @@ partial interface Document {
 partial interface Document {
   [ChromeOnly] readonly attribute ContentSecurityPolicy? csp;
   [ChromeOnly] readonly attribute DOMString cspJSON;
-};
-
-// For more information on Flash classification, see
-// toolkit/components/url-classifier/flash-block-lists.rst
-enum FlashClassification {
-  "unknown",        // Site is not on the whitelist or blacklist
-  "allowed",        // Site is on the Flash whitelist
-  "denied"          // Site is on the Flash blacklist
-};
-partial interface Document {
-  [ChromeOnly]
-  readonly attribute FlashClassification documentFlashClassification;
 };
 
 partial interface Document {
@@ -707,4 +713,38 @@ partial interface Document {
 partial interface Document {
   [ChromeOnly]
   readonly attribute boolean isInitialDocument;
+};
+
+// Extension to allow chrome code to get some wireframe-like structure.
+enum WireframeRectType {
+  "image",
+  "background",
+  "text",
+  "unknown",
+};
+dictionary WireframeTaggedRect {
+  unrestricted double x = 0;
+  unrestricted double y = 0;
+  unrestricted double width = 0;
+  unrestricted double height = 0;
+  unsigned long color = 0; // in nscolor format
+  WireframeRectType type;
+  Node? node;
+};
+[GenerateInit]
+dictionary Wireframe {
+  unsigned long canvasBackground = 0; // in nscolor format
+  sequence<WireframeTaggedRect> rects;
+  unsigned long version = 1; // Increment when the wireframe structure changes in backwards-incompatible ways
+};
+partial interface Document {
+  [ChromeOnly]
+  Wireframe? getWireframe(optional boolean aIncludeNodes = false);
+};
+
+partial interface Document {
+  // Returns true if the document is the current active document in a browsing
+  // context which isn't in bfcache.
+  [ChromeOnly]
+  boolean isActive();
 };

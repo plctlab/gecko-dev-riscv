@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/EventStates.h"
 #include "mozilla/dom/BindContext.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLObjectElement.h"
 #include "mozilla/dom/HTMLObjectElementBinding.h"
 #include "mozilla/dom/ElementInlines.h"
@@ -13,7 +13,7 @@
 #include "nsAttrValueInlines.h"
 #include "nsGkAtoms.h"
 #include "nsError.h"
-#include "mozilla/dom/Document.h"
+#include "nsIContentInlines.h"
 #include "nsIWidget.h"
 #include "nsContentUtils.h"
 #ifdef XP_MACOSX
@@ -37,7 +37,7 @@ HTMLObjectElement::HTMLObjectElement(
   SetBarredFromConstraintValidation(true);
 
   // By default we're in the loading state
-  AddStatesSilently(NS_EVENT_STATE_LOADING);
+  AddStatesSilently(ElementState::LOADING);
 }
 
 HTMLObjectElement::~HTMLObjectElement() {
@@ -164,7 +164,7 @@ bool HTMLObjectElement::IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
   // TODO: this should probably be managed directly by IsHTMLFocusable.
   // See bug 597242.
   Document* doc = GetComposedDoc();
-  if (!doc || doc->HasFlag(NODE_IS_EDITABLE)) {
+  if (!doc || IsInDesignMode()) {
     if (aTabIndex) {
       *aTabIndex = -1;
     }
@@ -283,7 +283,7 @@ void HTMLObjectElement::StartObjectLoad(bool aNotify, bool aForce) {
   SetIsNetworkCreated(false);
 }
 
-EventStates HTMLObjectElement::IntrinsicState() const {
+ElementState HTMLObjectElement::IntrinsicState() const {
   return nsGenericHTMLFormControlElement::IntrinsicState() | ObjectState();
 }
 

@@ -27,6 +27,7 @@
 #include "Relation.h"
 #include "sdnAccessible.h"
 #include "sdnTextAccessible.h"
+#include "HyperTextAccessible-inl.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -51,33 +52,34 @@ MsaaAccessible* MsaaAccessible::Create(Accessible* aAcc) {
   // The order of some of these is important! For example, when isRoot is true,
   // IsDoc will also be true, so we must check IsRoot first. IsTable/Cell and
   // IsHyperText are a similar case.
-  if (aAcc->IsLocal() && aAcc->IsRoot()) {
+  LocalAccessible* localAcc = aAcc->AsLocal();
+  if (localAcc && aAcc->IsRoot()) {
     return new MsaaRootAccessible(aAcc);
   }
   if (aAcc->IsDoc()) {
     return new MsaaDocAccessible(aAcc);
   }
-  if (aAcc->IsLocal()) {
+  if (aAcc->IsTable()) {
+    return new ia2AccessibleTable(aAcc);
+  }
+  if (aAcc->IsTableCell()) {
+    return new ia2AccessibleTableCell(aAcc);
+  }
+  if (localAcc) {
     // XXX These classes don't support RemoteAccessible yet.
-    if (aAcc->IsTable()) {
-      return new ia2AccessibleTable(aAcc);
-    }
-    if (aAcc->IsTableCell()) {
-      return new ia2AccessibleTableCell(aAcc);
-    }
     if (aAcc->IsApplication()) {
       return new ia2AccessibleApplication(aAcc);
-    }
-    if (aAcc->IsHyperText()) {
-      return new ia2AccessibleHypertext(aAcc);
     }
     if (aAcc->IsImage()) {
       return new ia2AccessibleImage(aAcc);
     }
-    if (aAcc->AsLocal()->GetContent() &&
-        aAcc->AsLocal()->GetContent()->IsXULElement(nsGkAtoms::menuitem)) {
+    if (localAcc->GetContent() &&
+        localAcc->GetContent()->IsXULElement(nsGkAtoms::menuitem)) {
       return new MsaaXULMenuitemAccessible(aAcc);
     }
+  }
+  if (aAcc->IsHyperText()) {
+    return new ia2AccessibleHypertext(aAcc);
   }
   return new MsaaAccessible(aAcc);
 }
@@ -331,6 +333,28 @@ AccessibleWrap* MsaaAccessible::LocalAcc() {
 }
 
 /**
+ * If this is an OOP iframe in a content process, return the COM proxy for the
+ * child document.
+ * This will only ever return something when the cache is disabled. When the
+ * cache is enabled, traversing to OOP iframe documents is handled in the
+ * parent process via the RemoteAccessible hierarchy.
+ */
+static already_AddRefed<IDispatch> MaybeGetOOPIframeDocCOMProxy(
+    Accessible* aAcc) {
+  if (!XRE_IsContentProcess() || !aAcc->IsOuterDoc()) {
+    return nullptr;
+  }
+  MOZ_ASSERT(!StaticPrefs::accessibility_cache_enabled_AtStartup());
+  LocalAccessible* outerDoc = aAcc->AsLocal();
+  auto bridge = dom::BrowserBridgeChild::GetFrom(outerDoc->GetContent());
+  if (!bridge) {
+    // This isn't an OOP iframe.
+    return nullptr;
+  }
+  return bridge->GetEmbeddedDocAccessible();
+}
+
+/**
  * This function is a helper for implementing IAccessible methods that accept
  * a Child ID as a parameter. If the child ID is CHILDID_SELF, the function
  * returns S_OK but a null *aOutInterface. Otherwise, *aOutInterface points
@@ -370,6 +394,11 @@ MsaaAccessible::ResolveChild(const VARIANT& aVarChild,
 
   if (aVarChild.lVal == CHILDID_SELF) {
     return S_OK;
+  }
+
+  if (aVarChild.lVal == 1 && RefPtr{MaybeGetOOPIframeDocCOMProxy(mAcc)}) {
+    // We can't access an OOP iframe document.
+    return E_FAIL;
   }
 
   bool isDefunct = false;
@@ -460,26 +489,14 @@ static already_AddRefed<IDispatch> GetProxiedAccessibleInSubtree(
   return disp.forget();
 }
 
-/**
- * If this is an OOP iframe in a content process, return the COM proxy for the
- * child document.
- * This will only ever return something when the cache is disabled. When the
- * cache is enabled, traversing to OOP iframe documents is handled in the
- * parent process via the RemoteAccessible hierarchy.
- */
-static already_AddRefed<IDispatch> MaybeGetOOPIframeDocCOMProxy(
-    Accessible* aAcc) {
-  if (!XRE_IsContentProcess() || !aAcc->IsOuterDoc()) {
-    return nullptr;
+static bool IsInclusiveDescendantOf(DocAccessible* aAncestor,
+                                    DocAccessible* aDescendant) {
+  for (DocAccessible* doc = aDescendant; doc; doc = doc->ParentDocument()) {
+    if (doc == aAncestor) {
+      return true;
+    }
   }
-  MOZ_ASSERT(!StaticPrefs::accessibility_cache_enabled_AtStartup());
-  LocalAccessible* outerDoc = aAcc->AsLocal();
-  auto bridge = dom::BrowserBridgeChild::GetFrom(outerDoc->GetContent());
-  if (!bridge) {
-    // This isn't an OOP iframe.
-    return nullptr;
-  }
-  return bridge->GetEmbeddedDocAccessible();
+  return false;
 }
 
 already_AddRefed<IAccessible> MsaaAccessible::GetIAccessibleFor(
@@ -595,9 +612,8 @@ already_AddRefed<IAccessible> MsaaAccessible::GetIAccessibleFor(
       }
       for (DocAccessibleParent* remoteDoc : *remoteDocs) {
         LocalAccessible* outerDoc = remoteDoc->OuterDocOfRemoteBrowser();
-        if (!outerDoc || outerDoc->Document() != localDoc) {
-          // The OuterDoc isn't inside our document, so this isn't a
-          // descendant.
+        if (!outerDoc ||
+            !IsInclusiveDescendantOf(localDoc, outerDoc->Document())) {
           continue;
         }
         child = GetAccessibleInSubtree(remoteDoc, id);
@@ -679,20 +695,22 @@ static bool VisitDocAccessibleParentDescendantsAtTopLevelInContentProcess(
 already_AddRefed<IAccessible> MsaaAccessible::GetRemoteIAccessibleFor(
     const VARIANT& aVarChild) {
   a11y::RootAccessible* root = LocalAcc()->RootAccessible();
-  const nsTArray<DocAccessibleParent*>* remoteDocs =
+  const nsTArray<DocAccessibleParent*>* rawRemoteDocs =
       DocManager::TopLevelRemoteDocs();
-  if (!remoteDocs) {
+  if (!rawRemoteDocs) {
     return nullptr;
+  }
+  nsTArray<RefPtr<DocAccessibleParent>> remoteDocs(rawRemoteDocs->Length());
+  for (auto rawRemoteDoc : *rawRemoteDocs) {
+    remoteDocs.AppendElement(rawRemoteDoc);
   }
 
   RefPtr<IAccessible> result;
 
-  // We intentionally leave the call to remoteDocs->Length() inside the loop
-  // condition because it is possible for reentry to occur in the call to
-  // GetProxiedAccessibleInSubtree() such that remoteDocs->Length() is mutated.
-  for (size_t i = 0; i < remoteDocs->Length(); i++) {
-    DocAccessibleParent* topRemoteDoc = remoteDocs->ElementAt(i);
-
+  for (auto topRemoteDoc : remoteDocs) {
+    if (topRemoteDoc->IsShutdown()) {
+      continue;
+    }
     LocalAccessible* outerDoc = topRemoteDoc->OuterDocOfRemoteBrowser();
     if (!outerDoc) {
       continue;
@@ -777,6 +795,10 @@ ITypeInfo* MsaaAccessible::GetTI(LCID lcid) {
 
 /* static */
 MsaaAccessible* MsaaAccessible::GetFrom(Accessible* aAcc) {
+  if (!aAcc) {
+    return nullptr;
+  }
+
   if (RemoteAccessible* remoteAcc = aAcc->AsRemote()) {
     return reinterpret_cast<MsaaAccessible*>(remoteAcc->GetWrapper());
   }
@@ -858,12 +880,12 @@ MsaaAccessible::QueryInterface(REFIID iid, void** ppv) {
     if (SUCCEEDED(hr)) return hr;
   }
 
-  if (!*ppv && localAcc) {
+  if (!*ppv) {
     HRESULT hr = ia2AccessibleHyperlink::QueryInterface(iid, ppv);
     if (SUCCEEDED(hr)) return hr;
   }
 
-  if (!*ppv && localAcc) {
+  if (!*ppv) {
     HRESULT hr = ia2AccessibleValue::QueryInterface(iid, ppv);
     if (SUCCEEDED(hr)) return hr;
   }
@@ -996,12 +1018,9 @@ MsaaAccessible::get_accValue(
   if (accessible) {
     return accessible->get_accValue(kVarChildIdSelf, pszValue);
   }
-  if (mAcc->IsRemote()) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
   nsAutoString value;
-  LocalAcc()->Value(value);
+  Acc()->Value(value);
 
   // See bug 438784: need to expose URL on doc's value attribute. For this,
   // reverting part of fix for bug 425693 to make this MSAA method behave
@@ -1159,9 +1178,6 @@ MsaaAccessible::get_accState(
   if (accessible) {
     return accessible->get_accState(kVarChildIdSelf, pvarState);
   }
-  if (mAcc->IsRemote()) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
   // MSAA only has 31 states and the lowest 31 bits of our state bit mask
   // are the same states as MSAA.
@@ -1171,7 +1187,7 @@ MsaaAccessible::get_accState(
   //   INVALID -> ALERT_HIGH
   //   CHECKABLE -> MARQUEED
 
-  uint64_t state = LocalAcc()->State();
+  uint64_t state = Acc()->State();
 
   uint32_t msaaState = 0;
   nsAccUtils::To32States(state, &msaaState, nullptr);
@@ -1219,12 +1235,12 @@ MsaaAccessible::get_accKeyboardShortcut(
                                                pszKeyboardShortcut);
   }
 
-  LocalAccessible* localAcc = LocalAcc();
-  if (!localAcc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
+  KeyBinding keyBinding = mAcc->AccessKey();
+  if (keyBinding.IsEmpty()) {
+    if (LocalAccessible* localAcc = mAcc->AsLocal()) {
+      keyBinding = localAcc->KeyboardShortcut();
+    }
   }
-  KeyBinding keyBinding = localAcc->AccessKey();
-  if (keyBinding.IsEmpty()) keyBinding = localAcc->KeyboardShortcut();
 
   nsAutoString shortcut;
   keyBinding.ToString(shortcut);
@@ -1251,15 +1267,9 @@ MsaaAccessible::get_accFocus(
   if (!mAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
-  LocalAccessible* localAcc = LocalAcc();
-  if (!localAcc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
-
   // Return the current IAccessible child that has focus
-  LocalAccessible* focusedAccessible = localAcc->FocusedChild();
-
-  if (focusedAccessible == localAcc) {
+  Accessible* focusedAccessible = mAcc->FocusedChild();
+  if (focusedAccessible == mAcc) {
     pvarChild->vt = VT_I4;
     pvarChild->lVal = CHILDID_SELF;
   } else if (focusedAccessible) {
@@ -1278,7 +1288,7 @@ MsaaAccessible::get_accFocus(
  */
 class AccessibleEnumerator final : public IEnumVARIANT {
  public:
-  explicit AccessibleEnumerator(const nsTArray<LocalAccessible*>& aArray)
+  explicit AccessibleEnumerator(const nsTArray<Accessible*>& aArray)
       : mArray(aArray.Clone()), mCurIndex(0) {}
   AccessibleEnumerator(const AccessibleEnumerator& toCopy)
       : mArray(toCopy.mArray.Clone()), mCurIndex(toCopy.mCurIndex) {}
@@ -1298,7 +1308,7 @@ class AccessibleEnumerator final : public IEnumVARIANT {
   STDMETHODIMP Clone(IEnumVARIANT FAR* FAR* ppenum);
 
  private:
-  nsTArray<LocalAccessible*> mArray;
+  nsTArray<Accessible*> mArray;
   uint32_t mCurIndex;
 };
 
@@ -1388,17 +1398,14 @@ MsaaAccessible::get_accSelection(VARIANT __RPC_FAR* pvarChildren) {
   if (!mAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
-  LocalAccessible* localAcc = LocalAcc();
-  if (!localAcc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
+  Accessible* acc = Acc();
 
-  if (!localAcc->IsSelect()) {
+  if (!acc->IsSelect()) {
     return S_OK;
   }
 
-  AutoTArray<LocalAccessible*, 10> selectedItems;
-  localAcc->SelectedItems(&selectedItems);
+  AutoTArray<Accessible*, 10> selectedItems;
+  acc->SelectedItems(&selectedItems);
   uint32_t count = selectedItems.Length();
   if (count == 1) {
     pvarChildren->vt = VT_DISPATCH;
@@ -1433,12 +1440,9 @@ MsaaAccessible::get_accDefaultAction(
   if (accessible) {
     return accessible->get_accDefaultAction(kVarChildIdSelf, pszDefaultAction);
   }
-  if (mAcc->IsRemote()) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
   nsAutoString defaultAction;
-  LocalAcc()->ActionNameAt(0, defaultAction);
+  mAcc->ActionNameAt(0, defaultAction);
 
   *pszDefaultAction =
       ::SysAllocStringLen(defaultAction.get(), defaultAction.Length());
@@ -1458,38 +1462,37 @@ MsaaAccessible::accSelect(
   if (accessible) {
     return accessible->accSelect(flagsSelect, kVarChildIdSelf);
   }
-  if (mAcc->IsRemote()) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
-  LocalAccessible* localAcc = LocalAcc();
   if (flagsSelect & SELFLAG_TAKEFOCUS) {
     if (XRE_IsContentProcess()) {
       // In this case we might have been invoked while the IPC MessageChannel is
       // waiting on a sync reply. We cannot dispatch additional IPC while that
       // is happening, so we dispatch TakeFocus from the main thread to
       // guarantee that we are outside any IPC.
+      MOZ_ASSERT(mAcc->IsLocal(),
+                 "Content process should only have local accessibles");
       nsCOMPtr<nsIRunnable> runnable = mozilla::NewRunnableMethod(
-          "LocalAccessible::TakeFocus", localAcc, &LocalAccessible::TakeFocus);
+          "LocalAccessible::TakeFocus", mAcc->AsLocal(),
+          &LocalAccessible::TakeFocus);
       NS_DispatchToMainThread(runnable, NS_DISPATCH_NORMAL);
       return S_OK;
     }
-    localAcc->TakeFocus();
+    mAcc->TakeFocus();
     return S_OK;
   }
 
   if (flagsSelect & SELFLAG_TAKESELECTION) {
-    localAcc->TakeSelection();
+    mAcc->TakeSelection();
     return S_OK;
   }
 
   if (flagsSelect & SELFLAG_ADDSELECTION) {
-    localAcc->SetSelected(true);
+    mAcc->SetSelected(true);
     return S_OK;
   }
 
   if (flagsSelect & SELFLAG_REMOVESELECTION) {
-    localAcc->SetSelected(false);
+    mAcc->SetSelected(false);
     return S_OK;
   }
 
@@ -1521,13 +1524,7 @@ MsaaAccessible::accLocation(
                                    kVarChildIdSelf);
   }
 
-  LocalAccessible* localAcc = LocalAcc();
-  if (!localAcc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
-
-  nsIntRect rect = localAcc->Bounds();
-
+  LayoutDeviceIntRect rect = Acc()->Bounds();
   *pxLeft = rect.X();
   *pyTop = rect.Y();
   *pcxWidth = rect.Width();
@@ -1608,10 +1605,7 @@ MsaaAccessible::accNavigate(
   pvarEndUpAt->vt = VT_EMPTY;
 
   if (xpRelation) {
-    if (mAcc->IsRemote()) {
-      return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-    }
-    Relation rel = mAcc->AsLocal()->RelationByType(*xpRelation);
+    Relation rel = mAcc->RelationByType(*xpRelation);
     navAccessible = rel.Next();
   }
 
@@ -1634,21 +1628,24 @@ MsaaAccessible::accHitTest(
   if (!mAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
-  LocalAccessible* localAcc = LocalAcc();
-  if (!localAcc) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
   Accessible* accessible = mAcc->ChildAtPoint(
-      xLeft, yTop, Accessible::EWhichChildAtPoint::DirectChild);
+      xLeft, yTop,
+      // The MSAA documentation says accHitTest should return a child. However,
+      // clients call AccessibleObjectFromPoint, which ends up walking the
+      // descendants calling accHitTest on each one. Since clients want the
+      // deepest descendant anyway, it's faster and probably more accurate to
+      // just do this ourselves. For now, we keep this behind the cache pref.
+      StaticPrefs::accessibility_cache_enabled_AtStartup()
+          ? Accessible::EWhichChildAtPoint::DeepestChild
+          : Accessible::EWhichChildAtPoint::DirectChild);
 
   // if we got a child
   if (accessible) {
-    // if the child is us
     if (accessible == mAcc) {
       pvarChild->vt = VT_I4;
       pvarChild->lVal = CHILDID_SELF;
-    } else {  // its not create a LocalAccessible for it.
+    } else {
       pvarChild->vt = VT_DISPATCH;
       pvarChild->pdispVal = NativeAccessible(accessible);
     }
@@ -1658,7 +1655,7 @@ MsaaAccessible::accHitTest(
       // This is an OOP iframe. ChildAtPoint can't traverse inside it. If the
       // coordinates are inside this iframe, return the COM proxy for the
       // OOP document.
-      nsIntRect docRect = mAcc->AsLocal()->Bounds();
+      LayoutDeviceIntRect docRect = mAcc->AsLocal()->Bounds();
       if (docRect.Contains(xLeft, yTop)) {
         pvarChild->vt = VT_DISPATCH;
         disp.forget(&pvarChild->pdispVal);
@@ -1683,11 +1680,8 @@ MsaaAccessible::accDoDefaultAction(
   if (accessible) {
     return accessible->accDoDefaultAction(kVarChildIdSelf);
   }
-  if (mAcc->IsRemote()) {
-    return E_NOTIMPL;  // XXX Not supported for RemoteAccessible yet.
-  }
 
-  return LocalAcc()->DoAction(0) ? S_OK : E_INVALIDARG;
+  return mAcc->DoAction(0) ? S_OK : E_INVALIDARG;
 }
 
 STDMETHODIMP

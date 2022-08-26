@@ -1,8 +1,7 @@
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const BASE_HOST = "example.org";
@@ -193,8 +192,7 @@ function setCookie(name, domain, path, maxAge, url) {
     contentPolicyType: Ci.nsIContentPolicy.TYPE_DOCUMENT,
   });
 
-  const cs = Cc["@mozilla.org/cookieService;1"].getService(Ci.nsICookieService);
-  cs.setCookieStringFromHttp(url, value, channel);
+  Services.cookies.setCookieStringFromHttp(url, value, channel);
 
   return new Promise(function(resolve) {
     // Windows XP has low precision timestamps that cause our cookie eviction

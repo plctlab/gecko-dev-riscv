@@ -24,8 +24,9 @@ using media::TimeIntervals;
 using media::TimeUnit;
 
 MediaSourceDemuxer::MediaSourceDemuxer(AbstractThread* aAbstractMainThread)
-    : mTaskQueue(new TaskQueue(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
-                               "MediaSourceDemuxer::mTaskQueue")),
+    : mTaskQueue(
+          TaskQueue::Create(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
+                            "MediaSourceDemuxer::mTaskQueue")),
       mMonitor("MediaSourceDemuxer") {
   MOZ_ASSERT(NS_IsMainThread());
 }
@@ -230,20 +231,30 @@ MediaSourceDemuxer::~MediaSourceDemuxer() {
   mInitPromise.RejectIfExists(NS_ERROR_DOM_MEDIA_CANCELED, __func__);
 }
 
-void MediaSourceDemuxer::GetDebugInfo(dom::MediaSourceDemuxerDebugInfo& aInfo) {
+RefPtr<GenericPromise> MediaSourceDemuxer::GetDebugInfo(
+    dom::MediaSourceDemuxerDebugInfo& aInfo) const {
   MonitorAutoLock mon(mMonitor);
+  nsTArray<RefPtr<GenericPromise>> promises;
   if (mAudioTrack) {
-    mAudioTrack->GetDebugInfo(aInfo.mAudioTrack);
+    promises.AppendElement(mAudioTrack->RequestDebugInfo(aInfo.mAudioTrack));
   }
   if (mVideoTrack) {
-    mVideoTrack->GetDebugInfo(aInfo.mVideoTrack);
+    promises.AppendElement(mVideoTrack->RequestDebugInfo(aInfo.mVideoTrack));
   }
+  return GenericPromise::All(GetCurrentSerialEventTarget(), promises)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          []() { return GenericPromise::CreateAndResolve(true, __func__); },
+          [] {
+            return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
+          });
 }
 
 MediaSourceTrackDemuxer::MediaSourceTrackDemuxer(MediaSourceDemuxer* aParent,
                                                  TrackInfo::TrackType aType,
                                                  TrackBuffersManager* aManager)
     : mParent(aParent),
+      mTaskQueue(mParent->GetTaskQueue()),
       mType(aType),
       mMonitor("MediaSourceTrackDemuxer"),
       mManager(aManager),
@@ -261,7 +272,10 @@ MediaSourceTrackDemuxer::MediaSourceTrackDemuxer(MediaSourceDemuxer* aParent,
               // So we always seek 2112 frames
               ? (2112 * 1000000ULL /
                  mParent->GetTrackInfo(mType)->GetAsAudioInfo()->mRate)
-              : 0)) {}
+              : 0)) {
+  MOZ_ASSERT(mParent);
+  MOZ_ASSERT(mTaskQueue);
+}
 
 UniquePtr<TrackInfo> MediaSourceTrackDemuxer::GetInfo() const {
   return mParent->GetTrackInfo(mType)->Clone();
@@ -438,10 +452,12 @@ MediaSourceTrackDemuxer::DoGetSamples(int32_t aNumSamples) {
   }
   RefPtr<SamplesHolder> samples = new SamplesHolder;
   samples->AppendSample(sample);
-  if (mNextRandomAccessPoint <= sample->mTime) {
-    MonitorAutoLock mon(mMonitor);
-    mNextRandomAccessPoint =
-        mManager->GetNextRandomAccessPoint(mType, MediaSourceDemuxer::EOS_FUZZ);
+  {
+    MonitorAutoLock mon(mMonitor);  // spurious warning will be given
+    if (mNextRandomAccessPoint <= sample->mTime) {
+      mNextRandomAccessPoint = mManager->GetNextRandomAccessPoint(
+          mType, MediaSourceDemuxer::EOS_FUZZ);
+    }
   }
   return SamplesPromise::CreateAndResolve(samples, __func__);
 }

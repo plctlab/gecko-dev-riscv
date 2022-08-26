@@ -6,13 +6,13 @@
 
 const EXPORTED_SYMBOLS = ["WebDriverSession"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
 
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   accessibility: "chrome://remote/content/marionette/accessibility.js",
   allowAllCerts: "chrome://remote/content/marionette/cert.js",
   Capabilities: "chrome://remote/content/shared/webdriver/Capabilities.jsm",
@@ -27,7 +27,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   WebSocketHandshake: "chrome://remote/content/server/WebSocketHandshake.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "logger", () => Log.get());
+XPCOMUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
 
 /**
  * Representation of WebDriver session.
@@ -169,25 +169,29 @@ class WebDriverSession {
     this.path = `/session/${this.id}`;
 
     try {
-      this.capabilities = Capabilities.fromJSON(capabilities, this.path);
+      this.capabilities = lazy.Capabilities.fromJSON(capabilities, this.path);
     } catch (e) {
-      throw new error.SessionNotCreatedError(e);
+      throw new lazy.error.SessionNotCreatedError(e);
     }
 
     if (this.capabilities.get("acceptInsecureCerts")) {
-      logger.warn("TLS certificate errors will be ignored for this session");
-      allowAllCerts.enable();
+      lazy.logger.warn(
+        "TLS certificate errors will be ignored for this session"
+      );
+      lazy.allowAllCerts.enable();
     }
 
     if (this.proxy.init()) {
-      logger.info(`Proxy settings initialised: ${JSON.stringify(this.proxy)}`);
+      lazy.logger.info(
+        `Proxy settings initialised: ${JSON.stringify(this.proxy)}`
+      );
     }
 
     // If we are testing accessibility with marionette, start a11y service in
     // chrome first. This will ensure that we do not have any content-only
     // services hanging around.
-    if (this.a11yChecks && accessibility.service) {
-      logger.info("Preemptively starting accessibility service in Chrome");
+    if (this.a11yChecks && lazy.accessibility.service) {
+      lazy.logger.info("Preemptively starting accessibility service in Chrome");
     }
 
     // If a connection without an associated session has been specified
@@ -199,11 +203,15 @@ class WebDriverSession {
   }
 
   destroy() {
-    allowAllCerts.disable();
+    lazy.allowAllCerts.disable();
 
-    // Close all open connections
+    // Close all open connections which unregister themselves.
     this._connections.forEach(connection => connection.close());
-    this._connections.clear();
+    if (this._connections.size > 0) {
+      lazy.logger.warn(
+        `Failed to close ${this._connections.size} WebSocket connections`
+      );
+    }
 
     // Destroy the dedicated MessageHandler instance if we created one.
     if (this._messageHandler) {
@@ -215,22 +223,26 @@ class WebDriverSession {
     }
   }
 
-  execute(module, command, params) {
+  async execute(module, command, params) {
+    // XXX: At the moment, commands do not describe consistently their destination,
+    // so we will need a translation step based on a specific command and its params
+    // in order to extract a destination that can be understood by the MessageHandler.
+    //
+    // For now, an option is to send all commands to ROOT, and all BiDi MessageHandler
+    // modules will therefore need to implement this translation step in the root
+    // implementation of their module.
+    const destination = {
+      type: lazy.RootMessageHandler.type,
+    };
+    if (!this.messageHandler.supportsCommand(module, command, destination)) {
+      throw new lazy.error.UnknownCommandError(`${module}.${command}`);
+    }
+
     return this.messageHandler.handleCommand({
       moduleName: module,
       commandName: command,
       params,
-
-      // XXX: At the moment, commands do not describe consistently their destination,
-      // so we will need a translation step based on a specific command and its params
-      // in order to extract a destination that can be understood by the MessageHandler.
-      //
-      // For now, an option is to send all commands to ROOT, and all BiDi MessageHandler
-      // modules will therefore need to implement this translation step in the root
-      // implementation of their module.
-      destination: {
-        type: RootMessageHandler.type,
-      },
+      destination,
     });
   }
 
@@ -240,7 +252,7 @@ class WebDriverSession {
 
   get messageHandler() {
     if (!this._messageHandler) {
-      this._messageHandler = RootMessageHandlerRegistry.getOrCreateMessageHandler(
+      this._messageHandler = lazy.RootMessageHandlerRegistry.getOrCreateMessageHandler(
         this.id
       );
       this._onMessageHandlerEvent = this._onMessageHandlerEvent.bind(this);
@@ -277,6 +289,19 @@ class WebDriverSession {
     return this.capabilities.get("unhandledPromptBehavior");
   }
 
+  /**
+   * Remove the specified WebDriver BiDi connection.
+   *
+   * @param {WebDriverBiDiConnection} connection
+   */
+  removeConnection(connection) {
+    if (this._connections.has(connection)) {
+      this._connections.delete(connection);
+    } else {
+      lazy.logger.warn("Trying to remove a connection that doesn't exist.");
+    }
+  }
+
   toString() {
     return `[object ${this.constructor.name} ${this.id}]`;
   }
@@ -296,17 +321,24 @@ class WebDriverSession {
    *     Response to an HTTP request (httpd.js)
    */
   async handle(request, response) {
-    const webSocket = await WebSocketHandshake.upgrade(request, response);
-    const conn = new WebDriverBiDiConnection(webSocket, response._connection);
+    const webSocket = await lazy.WebSocketHandshake.upgrade(request, response);
+    const conn = new lazy.WebDriverBiDiConnection(
+      webSocket,
+      response._connection
+    );
     conn.registerSession(this);
     this._connections.add(conn);
   }
 
   _onMessageHandlerEvent(eventName, messageHandlerEvent) {
-    const { method, params } = messageHandlerEvent;
-    this._connections.forEach(connection =>
-      connection.sendEvent(method, params)
-    );
+    const { name, data, isProtocolEvent } = messageHandlerEvent;
+
+    // Do not send any internal event to the clients.
+    if (!isProtocolEvent) {
+      return;
+    }
+
+    this._connections.forEach(connection => connection.sendEvent(name, data));
   }
 
   // XPCOM

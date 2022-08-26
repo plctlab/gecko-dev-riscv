@@ -3,15 +3,22 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const PROVIDER_PREF_BRANCH =
   "browser.newtabpage.activity-stream.asrouter.providers.";
 const DEVTOOLS_PREF =
   "browser.newtabpage.activity-stream.asrouter.devtoolsEnabled";
+
+/**
+ * Use `ASRouterPreferences.console.debug()` and friends from ASRouter files to
+ * log messages during development.  See LOG_LEVELS in ConsoleAPI.jsm for the
+ * available methods as well as the available values for this pref.
+ */
+const DEBUG_PREF = "browser.newtabpage.activity-stream.asrouter.debugLogLevel";
+
 const FXA_USERNAME_PREF = "services.sync.username";
 
 const DEFAULT_STATE = {
@@ -52,12 +59,18 @@ class _ASRouterPreferences {
   constructor() {
     Object.assign(this, DEFAULT_STATE);
     this._callbacks = new Set();
-    XPCOMUtils.defineLazyPreferenceGetter(
-      this,
-      "disableCaptivePortalVPNPromo",
-      "browser.newtabpage.activity-stream.asrouter.disable-captive-portal-vpn-promo",
-      false
-    );
+
+    XPCOMUtils.defineLazyGetter(this, "console", () => {
+      let { ConsoleAPI } = ChromeUtils.import(
+        "resource://gre/modules/Console.jsm"
+      );
+      let consoleOptions = {
+        maxLogLevel: "error",
+        maxLogLevelPref: DEBUG_PREF,
+        prefix: "ASRouter",
+      };
+      return new ConsoleAPI(consoleOptions);
+    });
   }
 
   _transformPersonalizedCfrScores(value) {
@@ -204,11 +217,8 @@ class _ASRouterPreferences {
     this._callbacks.clear();
   }
 }
-this._ASRouterPreferences = _ASRouterPreferences;
 
-this.ASRouterPreferences = new _ASRouterPreferences();
-this.TEST_PROVIDERS = TEST_PROVIDERS;
-this.TARGETING_PREFERENCES = TARGETING_PREFERENCES;
+const ASRouterPreferences = new _ASRouterPreferences();
 
 const EXPORTED_SYMBOLS = [
   "_ASRouterPreferences",

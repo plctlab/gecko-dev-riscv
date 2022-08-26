@@ -15,6 +15,7 @@
 #include "mozilla/TouchEvents.h"
 #include "nsContentUtils.h"
 #include "nsIDocShell.h"
+#include "nsExceptionHandler.h"
 
 namespace mozilla::dom {
 
@@ -151,9 +152,10 @@ TouchList* TouchEvent::TargetTouches() {
         if (!equalTarget) {
           // Need to still check if we're inside native anonymous content
           // and the non-NAC target would be the same.
-          nsCOMPtr<nsIContent> touchTarget =
-              do_QueryInterface(touches[i]->mTarget);
-          nsCOMPtr<nsIContent> eventTarget = do_QueryInterface(mEvent->mTarget);
+          nsIContent* touchTarget =
+              nsIContent::FromEventTargetOrNull(touches[i]->mTarget);
+          nsIContent* eventTarget =
+              nsIContent::FromEventTargetOrNull(mEvent->mTarget);
           equalTarget = touchTarget && eventTarget &&
                         touchTarget->FindFirstNonChromeOnlyAccessContent() ==
                             eventTarget->FindFirstNonChromeOnlyAccessContent();

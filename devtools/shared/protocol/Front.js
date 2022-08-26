@@ -4,6 +4,7 @@
 
 "use strict";
 
+const ChromeUtils = require("ChromeUtils");
 var { settleAll } = require("devtools/shared/DevToolsUtils");
 var EventEmitter = require("devtools/shared/event-emitter");
 
@@ -45,8 +46,8 @@ class Front extends Pool {
     this._requests = [];
 
     // Front listener functions registered via `watchFronts`
-    this._frontCreationListeners = new EventEmitter();
-    this._frontDestructionListeners = new EventEmitter();
+    this._frontCreationListeners = null;
+    this._frontDestructionListeners = null;
 
     // List of optional listener for each event, that is processed immediatly on packet
     // receival, before emitting event via EventEmitter on the Front.
@@ -167,7 +168,9 @@ class Front extends Pool {
     super.unmanage(front);
 
     // Call listeners registered via `watchFronts` method
-    this._frontDestructionListeners.emit(front.typeName, front);
+    if (this._frontDestructionListeners) {
+      this._frontDestructionListeners.emit(front.typeName, front);
+    }
   }
 
   /*
@@ -202,11 +205,17 @@ class Front extends Pool {
         }
       }
 
+      if (!this._frontCreationListeners) {
+        this._frontCreationListeners = new EventEmitter();
+      }
       // Then register the callback for fronts instantiated in the future
       this._frontCreationListeners.on(typeName, onAvailable);
     }
 
     if (onDestroy) {
+      if (!this._frontDestructionListeners) {
+        this._frontDestructionListeners = new EventEmitter();
+      }
       this._frontDestructionListeners.on(typeName, onDestroy);
     }
   }
@@ -225,10 +234,10 @@ class Front extends Pool {
       return;
     }
 
-    if (onAvailable) {
+    if (onAvailable && this._frontCreationListeners) {
       this._frontCreationListeners.off(typeName, onAvailable);
     }
-    if (onDestroy) {
+    if (onDestroy && this._frontDestructionListeners) {
       this._frontDestructionListeners.off(typeName, onDestroy);
     }
   }
@@ -328,12 +337,22 @@ class Front extends Pool {
         if (result && typeof result.then == "function") {
           result.then(() => {
             super.emit(event.name, ...args);
+            ChromeUtils.addProfilerMarker(
+              "DevTools:RDP Front",
+              null,
+              `${this.typeName}.${event.name}`
+            );
           });
           return;
         }
       }
 
       super.emit(event.name, ...args);
+      ChromeUtils.addProfilerMarker(
+        "DevTools:RDP Front",
+        null,
+        `${this.typeName}.${event.name}`
+      );
       return;
     }
 

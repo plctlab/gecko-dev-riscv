@@ -18,6 +18,7 @@
 #include "nsAboutProtocolUtils.h"
 #include "ThirdPartyUtil.h"
 #include "mozilla/ContentPrincipal.h"
+#include "mozilla/ExtensionPolicyService.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/ChromeUtils.h"
@@ -32,10 +33,11 @@
 #include "nsIURIMutator.h"
 #include "mozilla/StaticPrefs_permissions.h"
 #include "nsIURIMutator.h"
+#include "nsMixedContentBlocker.h"
 #include "prnetdb.h"
 #include "nsIURIFixup.h"
 #include "mozilla/dom/StorageUtils.h"
-#include "mozilla/ContentBlocking.h"
+#include "mozilla/StorageAccess.h"
 #include "nsPIDOMWindow.h"
 #include "nsIURIMutator.h"
 #include "mozilla/PermissionManager.h"
@@ -595,6 +597,8 @@ nsresult BasePrincipal::CheckMayLoadHelper(nsIURI* aURI,
     }
   }
 
+  // Web Accessible Resources in MV2 Extensions are marked with
+  // URI_FETCHABLE_BY_ANYONE
   bool fetchableByAnyone;
   rv = NS_URIChainHasFlags(aURI, nsIProtocolHandler::URI_FETCHABLE_BY_ANYONE,
                            &fetchableByAnyone);
@@ -602,14 +606,32 @@ nsresult BasePrincipal::CheckMayLoadHelper(nsIURI* aURI,
     return NS_OK;
   }
 
-  if (aReport) {
-    nsCOMPtr<nsIURI> prinURI;
-    rv = GetURI(getter_AddRefs(prinURI));
-    if (NS_SUCCEEDED(rv) && prinURI) {
-      nsScriptSecurityManager::ReportError(
-          "CheckSameOriginError", prinURI, aURI,
-          mOriginAttributes.mPrivateBrowsingId > 0, aInnerWindowID);
+  // Get the principal uri for the last flag check or error.
+  nsCOMPtr<nsIURI> prinURI;
+  rv = GetURI(getter_AddRefs(prinURI));
+  if (!(NS_SUCCEEDED(rv) && prinURI)) {
+    return NS_ERROR_DOM_BAD_URI;
+  }
+
+  // If MV3 Extension uris are web accessible by this principal it is allowed to
+  // load.
+  bool maybeWebAccessible = false;
+  NS_URIChainHasFlags(aURI, nsIProtocolHandler::WEBEXT_URI_WEB_ACCESSIBLE,
+                      &maybeWebAccessible);
+  NS_ENSURE_SUCCESS(rv, rv);
+  if (maybeWebAccessible) {
+    bool isWebAccessible = false;
+    rv = ExtensionPolicyService::GetSingleton().SourceMayLoadExtensionURI(
+        prinURI, aURI, &isWebAccessible);
+    if (NS_SUCCEEDED(rv) && isWebAccessible) {
+      return NS_OK;
     }
+  }
+
+  if (aReport) {
+    nsScriptSecurityManager::ReportError(
+        "CheckSameOriginError", prinURI, aURI,
+        mOriginAttributes.mPrivateBrowsingId > 0, aInnerWindowID);
   }
 
   return NS_ERROR_DOM_BAD_URI;
@@ -658,19 +680,23 @@ BasePrincipal::IsThirdPartyChannel(nsIChannel* aChan, bool* aRes) {
 }
 
 NS_IMETHODIMP
-BasePrincipal::IsSameOrigin(nsIURI* aURI, bool aIsPrivateWin, bool* aRes) {
+BasePrincipal::IsSameOrigin(nsIURI* aURI, bool* aRes) {
   *aRes = false;
   nsCOMPtr<nsIURI> prinURI;
   nsresult rv = GetURI(getter_AddRefs(prinURI));
   if (NS_FAILED(rv) || !prinURI) {
+    // Note that expanded and system principals return here, because they have
+    // no URI.
     return NS_OK;
   }
   nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
   if (!ssm) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_OK;
   }
+  bool reportError = false;
+  bool isPrivateWindow = false;  // Only used for error reporting.
   *aRes = NS_SUCCEEDED(
-      ssm->CheckSameOriginURI(prinURI, aURI, false, aIsPrivateWin));
+      ssm->CheckSameOriginURI(prinURI, aURI, reportError, isPrivateWindow));
   return NS_OK;
 }
 
@@ -780,8 +806,7 @@ BasePrincipal::HasFirstpartyStorageAccess(mozIDOMWindow* aCheckWindow,
   if (NS_FAILED(rv)) {
     return rv;
   }
-  *aOutAllowed =
-      ContentBlocking::ShouldAllowAccessFor(win, uri, aRejectedReason);
+  *aOutAllowed = ShouldAllowAccessFor(win, uri, aRejectedReason);
   return NS_OK;
 }
 
@@ -981,7 +1006,7 @@ BasePrincipal::SchemeIs(const char* aScheme, bool* aResult) {
   *aResult = false;
   nsCOMPtr<nsIURI> prinURI;
   nsresult rv = GetURI(getter_AddRefs(prinURI));
-  if (NS_FAILED(rv) || !prinURI) {
+  if (NS_WARN_IF(NS_FAILED(rv)) || !prinURI) {
     return NS_OK;
   }
   *aResult = prinURI->SchemeIs(aScheme);
@@ -997,6 +1022,20 @@ BasePrincipal::IsURIInPrefList(const char* aPref, bool* aResult) {
     return NS_OK;
   }
   *aResult = nsContentUtils::IsURIInPrefList(prinURI, aPref);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BasePrincipal::IsURIInList(const nsACString& aList, bool* aResult) {
+  *aResult = false;
+  nsCOMPtr<nsIURI> prinURI;
+
+  nsresult rv = GetURI(getter_AddRefs(prinURI));
+  if (NS_FAILED(rv) || !prinURI) {
+    return NS_OK;
+  }
+
+  *aResult = nsContentUtils::IsURIInList(prinURI, nsCString(aList));
   return NS_OK;
 }
 
@@ -1096,6 +1135,13 @@ nsIPrincipal* BasePrincipal::PrincipalToInherit(nsIURI* aRequestedURI) {
     return As<ExpandedPrincipal>()->PrincipalToInherit(aRequestedURI);
   }
   return this;
+}
+
+bool BasePrincipal::IsLoopbackHost() {
+  nsAutoCString host;
+  nsresult rv = GetHost(host);
+  NS_ENSURE_SUCCESS(rv, false);
+  return nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackHost(host);
 }
 
 already_AddRefed<BasePrincipal> BasePrincipal::CreateContentPrincipal(

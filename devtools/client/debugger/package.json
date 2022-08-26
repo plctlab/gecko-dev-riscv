@@ -24,9 +24,6 @@
   "dependencies": {
     "codemirror": "^5.28.0",
     "fuzzaldrin-plus": "^0.6.0",
-    "lodash": "^4.17.4",
-    "lodash-move": "^1.1.1",
-    "lodash.kebabcase": "^4.1.1",
     "parse-script-tags": "github:loganfsmyth/parse-script-tags#d771732ca47e1b3554fe67d609fd18cc785c5f26",
     "pretty-fast": "^0.2.7",
     "react": "16.8.6",
@@ -34,6 +31,7 @@
     "react-dom": "16.8.6",
     "react-redux": "^5.0.7",
     "react-transition-group": "^2.2.1",
+    "reselect": "4.1.5",
     "wasmparser": "^3.1.1"
   },
   "private": true,

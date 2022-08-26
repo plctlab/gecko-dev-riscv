@@ -243,10 +243,7 @@ def write_test_settings_json(args, test_details, oskey):
     # if Gecko profiling is enabled, write profiling settings for webext
     if test_details.get("gecko_profile", False):
         threads = ["GeckoMain", "Compositor"]
-
-        # With WebRender enabled profile some extra threads
-        if os.getenv("MOZ_WEBRENDER") == "1":
-            threads.extend(["Renderer", "WR"])
+        threads.extend(["Renderer", "WR"])
 
         if test_details.get("gecko_profile_threads"):
             # pylint --py3k: W1639
@@ -342,6 +339,9 @@ def get_raptor_test_list(args, oskey):
             if tail == _ini:
                 # subtest comes from matching test ini file name, so add it
                 tests_to_run.append(next_test)
+
+    if args.collect_perfstats:
+        next_test["perfstats"] = "true"
 
     # enable live sites if requested with --live-sites
     if args.live_sites:
@@ -543,7 +543,11 @@ def get_raptor_test_list(args, oskey):
             and next_test.get("measure") is None
             and next_test.get("type") == "pageload"
         ):
-            next_test["measure"] = "fnbpaint, fcp, dcf, loadtime"
+            next_test["measure"] = (
+                "fnbpaint, fcp, dcf, loadtime,"
+                "ContentfulSpeedIndex, PerceptualSpeedIndex,"
+                "SpeedIndex, FirstVisualChange, LastVisualChange"
+            )
 
         # convert 'measure =' test INI line to list
         if next_test.get("measure") is not None:

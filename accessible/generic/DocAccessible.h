@@ -15,8 +15,8 @@
 #include "nsTHashMap.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIDocumentObserver.h"
-#include "nsIObserver.h"
 #include "nsITimer.h"
+#include "nsTHashSet.h"
 #include "nsWeakReference.h"
 
 class nsAccessiblePivot;
@@ -43,13 +43,11 @@ class TNotification;
 
 class DocAccessible : public HyperTextAccessibleWrap,
                       public nsIDocumentObserver,
-                      public nsIObserver,
                       public nsSupportsWeakReference,
                       public nsIAccessiblePivotObserver {
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DocAccessible, LocalAccessible)
 
-  NS_DECL_NSIOBSERVER
   NS_DECL_NSIACCESSIBLEPIVOTOBSERVER
 
  protected:
@@ -70,13 +68,12 @@ class DocAccessible : public HyperTextAccessibleWrap,
 
   virtual mozilla::a11y::ENameValueFlag Name(nsString& aName) const override;
   virtual void Description(nsString& aDescription) const override;
-  virtual LocalAccessible* FocusedChild() override;
+  virtual Accessible* FocusedChild() override;
   virtual mozilla::a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
   virtual uint64_t NativeInteractiveState() const override;
   virtual bool NativelyUnavailable() const override;
   virtual void ApplyARIAState(uint64_t* aState) const override;
-  virtual already_AddRefed<AccAttributes> Attributes() override;
 
   virtual void TakeFocus() const override;
 
@@ -85,6 +82,10 @@ class DocAccessible : public HyperTextAccessibleWrap,
 #endif
 
   virtual nsRect RelativeBounds(nsIFrame** aRelativeFrame) const override;
+
+  // ActionAccessible
+  virtual bool HasPrimaryAction() const override;
+  virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
 
   // HyperTextAccessible
   virtual already_AddRefed<EditorBase> GetEditor() const override;
@@ -109,6 +110,17 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * Return DOM document type.
    */
   void DocType(nsAString& aType) const;
+
+  /**
+   * Adds an entry to mQueuedCacheUpdates indicating aAcc requires
+   * a cache update on domain aNewDomain. If we've already queued an update
+   * for aAcc, aNewDomain is or'd with the existing domain(s)
+   * and the map is updated. Otherwise, the entry is simply inserted.
+   * This function also schedules processing on the controller.
+   * Note that this CANNOT be used for anything which fires events, since events
+   * must be fired after their associated cache update.
+   */
+  void QueueCacheUpdate(LocalAccessible* aAcc, uint64_t aNewDomain);
 
   /**
    * Return virtual cursor associated with the document.
@@ -139,6 +151,9 @@ class DocAccessible : public HyperTextAccessibleWrap,
   bool IsContentLoaded() const;
 
   bool IsHidden() const;
+
+  bool IsViewportCacheDirty() { return mViewportCacheDirty; }
+  void SetViewportCacheDirty(bool aDirty) { mViewportCacheDirty = aDirty; }
 
   /**
    * Document load states.
@@ -335,6 +350,11 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void ContentInserted(nsIContent* aStartChildNode, nsIContent* aEndChildNode);
 
   /**
+   * @see nsAccessibilityService::ScheduleAccessibilitySubtreeUpdate
+   */
+  void ScheduleTreeUpdate(nsIContent* aContent);
+
+  /**
    * Update the tree on content removal.
    */
   void ContentRemoved(LocalAccessible* aAccessible);
@@ -370,9 +390,18 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Notify the document that a DOM node has been scrolled. document will
    * dispatch throttled accessibility events for scrolling, and a scroll-end
-   * event.
+   * event. This function also queues a cache update for ScrollPosition.
    */
   void HandleScroll(nsINode* aTarget);
+
+  /**
+   * Retrieves the scroll frame (if it exists) for the given accessible
+   * and returns its scroll position and scroll range. If the given
+   * accessible is `this`, return the scroll position and range of
+   * the root scroll frame. Return values have been scaled by the
+   * PresShell's resolution.
+   */
+  std::pair<nsPoint, nsRect> ComputeScrollData(LocalAccessible* aAcc);
 
  protected:
   virtual ~DocAccessible();
@@ -483,6 +512,41 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void ProcessInvalidationList();
 
   /**
+   * Process mPendingUpdates
+   */
+  void ProcessPendingUpdates();
+
+  /**
+   * Called from NotificationController to process this doc's
+   * mQueuedCacheUpdates list. For each acc in the map, this function
+   * sends a cache update with its corresponding CacheDomain.
+   */
+  void ProcessQueuedCacheUpdates();
+
+  /**
+   * Only works in content process documents.
+   */
+  bool IsAccessibleBeingMoved(LocalAccessible* aAcc) {
+    return mMovedAccessibles.Contains(aAcc);
+  }
+
+  /**
+   * Called from NotificationController before mutation events are processed to
+   * notify the parent process which Accessibles are being moved (if any).
+   */
+  void SendAccessiblesWillMove();
+
+  /**
+   * Called from NotificationController after all mutation events have been
+   * processed to clear our data about Accessibles that were moved during this
+   * tick.
+   */
+  void ClearMovedAccessibles() {
+    mMovedAccessibles.Clear();
+    mInsertedAccessibles.Clear();
+  }
+
+  /**
    * Steals or puts back accessible subtrees.
    */
   void DoARIAOwnsRelocation(LocalAccessible* aOwner);
@@ -557,7 +621,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * previous active descendant, thus making this element the new active
    * descendant. In that case, accessible focus must be changed accordingly.
    */
-  void ARIAActiveDescendantIDMaybeMoved(dom::Element* aElm);
+  void ARIAActiveDescendantIDMaybeMoved(LocalAccessible* aAccessible);
 
   /**
    * Traverse content subtree and for each node do one of 3 things:
@@ -600,7 +664,15 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Bit mask of other states and props.
    */
-  uint32_t mDocFlags : 28;
+  uint32_t mDocFlags : 27;
+
+  /**
+   * Tracks whether we have seen changes to this document's content that
+   * indicate we should re-send the viewport cache we use for hittesting.
+   * This value is set in `BundleFieldsForCache` and processed in
+   * `ProcessQueuedCacheUpdates`.
+   */
+  bool mViewportCacheDirty : 1;
 
   /**
    * Type of document load event fired after the document is loaded completely.
@@ -684,6 +756,11 @@ class DocAccessible : public HyperTextAccessibleWrap,
       mARIAOwnsHash;
 
   /**
+   * Keeps a list of pending subtrees to update post-refresh.
+   */
+  nsTArray<RefPtr<nsIContent>> mPendingUpdates;
+
+  /**
    * Used to process notification from core and accessible events.
    */
   RefPtr<NotificationController> mNotificationController;
@@ -693,10 +770,39 @@ class DocAccessible : public HyperTextAccessibleWrap,
  private:
   void SetRoleMapEntryForDoc(dom::Element* aElement);
 
+  /**
+   * This must be called whenever an Accessible is moved in a content process.
+   * It keeps track of Accessibles moved during this tick.
+   */
+  void TrackMovedAccessible(LocalAccessible* aAcc);
+
+  /**
+   * For hidden subtrees, fire a name/description change event if the subtree
+   * is a target of aria-labelledby/describedby.
+   * This does nothing if it is called on a node which is not part of a hidden
+   * aria-labelledby/describedby target.
+   */
+  void MaybeHandleChangeToHiddenNameOrDescription(nsIContent* aChild);
+
   PresShell* mPresShell;
 
   // Exclusively owned by IPDL so don't manually delete it!
   DocAccessibleChild* mIPCDoc;
+
+  // A hash map between LocalAccessibles and CacheDomains, tracking
+  // cache updates that have been queued during the current tick
+  // but not yet sent. It is possible for this map to contain a reference
+  // to the document it lives on. We clear the list in Shutdown() to
+  // avoid cyclical references.
+  nsTHashMap<RefPtr<LocalAccessible>, uint64_t> mQueuedCacheUpdates;
+
+  // A set of Accessibles moved during this tick. Only used in content
+  // processes.
+  nsTHashSet<RefPtr<LocalAccessible>> mMovedAccessibles;
+  // A set of Accessibles inserted during this tick. Only used in content
+  // processes. This is needed to prevent insertions + moves of the same
+  // Accessible in the same tick from being tracked as moves.
+  nsTHashSet<RefPtr<LocalAccessible>> mInsertedAccessibles;
 };
 
 inline DocAccessible* LocalAccessible::AsDoc() {

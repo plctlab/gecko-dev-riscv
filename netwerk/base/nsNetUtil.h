@@ -10,6 +10,7 @@
 #include <functional>
 #include "mozilla/Maybe.h"
 #include "mozilla/ResultExtensions.h"
+#include "nsAttrValue.h"
 #include "nsCOMPtr.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -27,6 +28,7 @@
 #include "nsReadableUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
+#include "nsTArray.h"
 
 class nsIPrincipal;
 class nsIAsyncStreamCopier;
@@ -57,6 +59,7 @@ class nsIIncrementalStreamLoaderObserver;
 namespace mozilla {
 class Encoding;
 class OriginAttributes;
+class OriginTrials;
 namespace dom {
 class ClientInfo;
 class PerformanceStorage;
@@ -185,7 +188,8 @@ nsresult NS_NewChannelInternal(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannelInternal(
@@ -242,7 +246,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannel(
@@ -253,7 +258,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannel(
@@ -266,7 +272,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 nsresult NS_GetIsDocumentChannel(nsIChannel* aChannel, bool* aIsDocument);
 
@@ -825,7 +832,8 @@ nsresult NS_MaybeOpenChannelUsingAsyncOpen(nsIChannel* aChannel,
  * See: https://mikewest.github.io/corpp/#parsing
  */
 nsILoadInfo::CrossOriginEmbedderPolicy
-NS_GetCrossOriginEmbedderPolicyFromHeader(const nsACString& aHeader);
+NS_GetCrossOriginEmbedderPolicyFromHeader(
+    const nsACString& aHeader, bool aIsOriginTrialCoepCredentiallessEnabled);
 
 /** Given the first (disposition) token from a Content-Disposition header,
  * tell whether it indicates the content is inline or attachment
@@ -858,6 +866,11 @@ void net_EnsurePSMInit();
  * Test whether a URI is "about:blank".  |uri| must not be null
  */
 bool NS_IsAboutBlank(nsIURI* uri);
+
+/**
+ * Test whether a URI is "about:srcdoc".  |uri| must not be null
+ */
+bool NS_IsAboutSrcdoc(nsIURI* uri);
 
 nsresult NS_GenerateHostPort(const nsCString& host, int32_t port,
                              nsACString& hostLine);
@@ -909,9 +922,9 @@ void NS_TrimHTTPWhitespace(const nsACString& aSource, nsACString& aDest);
  */
 nsresult NS_ShouldSecureUpgrade(
     nsIURI* aURI, nsILoadInfo* aLoadInfo, nsIPrincipal* aChannelResultPrincipal,
-    bool aPrivateBrowsing, bool aAllowSTS,
-    const mozilla::OriginAttributes& aOriginAttributes, bool& aShouldUpgrade,
-    std::function<void(bool, nsresult)>&& aResultCallback, bool& aWillCallback);
+    bool aAllowSTS, const mozilla::OriginAttributes& aOriginAttributes,
+    bool& aShouldUpgrade, std::function<void(bool, nsresult)>&& aResultCallback,
+    bool& aWillCallback);
 
 /**
  * Returns an https URI for channels that need to go through secure upgrades.
@@ -988,6 +1001,59 @@ bool SchemeIsData(nsIURI* aURI);
 bool SchemeIsViewSource(nsIURI* aURI);
 bool SchemeIsResource(nsIURI* aURI);
 bool SchemeIsFTP(nsIURI* aURI);
+
+struct LinkHeader {
+  nsString mHref;
+  nsString mRel;
+  nsString mTitle;
+  nsString mIntegrity;
+  nsString mSrcset;
+  nsString mSizes;
+  nsString mType;
+  nsString mMedia;
+  nsString mAnchor;
+  nsString mCrossOrigin;
+  nsString mReferrerPolicy;
+  nsString mAs;
+
+  LinkHeader();
+  void Reset();
+
+  nsresult NewResolveHref(nsIURI** aOutURI, nsIURI* aBaseURI) const;
+
+  bool operator==(const LinkHeader& rhs) const;
+};
+
+nsTArray<LinkHeader> ParseLinkHeader(const nsAString& aLinkData);
+
+enum ASDestination : uint8_t {
+  DESTINATION_INVALID,
+  DESTINATION_AUDIO,
+  DESTINATION_DOCUMENT,
+  DESTINATION_EMBED,
+  DESTINATION_FONT,
+  DESTINATION_IMAGE,
+  DESTINATION_MANIFEST,
+  DESTINATION_OBJECT,
+  DESTINATION_REPORT,
+  DESTINATION_SCRIPT,
+  DESTINATION_SERVICEWORKER,
+  DESTINATION_SHAREDWORKER,
+  DESTINATION_STYLE,
+  DESTINATION_TRACK,
+  DESTINATION_VIDEO,
+  DESTINATION_WORKER,
+  DESTINATION_XSLT,
+  DESTINATION_FETCH
+};
+
+void ParseAsValue(const nsAString& aValue, nsAttrValue& aResult);
+nsContentPolicyType AsValueToContentPolicy(const nsAttrValue& aValue);
+
+bool CheckPreloadAttrs(const nsAttrValue& aAs, const nsAString& aType,
+                       const nsAString& aMedia,
+                       mozilla::dom::Document* aDocument);
+void WarnIgnoredPreload(const mozilla::dom::Document&, nsIURI&);
 }  // namespace net
 }  // namespace mozilla
 
@@ -1004,5 +1070,7 @@ nsresult NS_HasRootDomain(const nsACString& aInput, const nsACString& aHost,
                           bool* aResult);
 
 void CheckForBrokenChromeURL(nsILoadInfo* aLoadInfo, nsIURI* aURI);
+
+bool IsCoepCredentiallessEnabled(bool aIsOriginTrialCoepCredentiallessEnabled);
 
 #endif  // !nsNetUtil_h__

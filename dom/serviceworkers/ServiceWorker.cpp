@@ -19,29 +19,82 @@
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/ClientState.h"
 #include "mozilla/dom/MessagePortBinding.h"
+#include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ServiceWorkerGlobalScopeBinding.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StorageAccess.h"
-#include "nsGlobalWindowInner.h"
 
 #ifdef XP_WIN
 #  undef PostMessage
 #endif
 
-using mozilla::ErrorResult;
-using namespace mozilla::dom;
+namespace mozilla::dom {
 
-namespace mozilla {
-namespace dom {
+static bool IsServiceWorkersTestingEnabledInWindow(JSObject* const aGlobal) {
+  if (const nsCOMPtr<nsPIDOMWindowInner> innerWindow =
+          Navigator::GetWindowFromGlobal(aGlobal)) {
+    if (auto* bc = innerWindow->GetBrowsingContext()) {
+      return bc->Top()->ServiceWorkersTestingEnabled();
+    }
+  }
+  return false;
+}
 
-bool ServiceWorkerVisible(JSContext* aCx, JSObject* aObj) {
-  if (NS_IsMainThread()) {
-    return StaticPrefs::dom_serviceWorkers_enabled();
+bool ServiceWorkersEnabled(JSContext* aCx, JSObject* aGlobal) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!StaticPrefs::dom_serviceWorkers_enabled()) {
+    return false;
   }
 
-  return IS_INSTANCE_OF(ServiceWorkerGlobalScope, aObj);
+  // xpc::CurrentNativeGlobal below requires rooting
+  JS::Rooted<JSObject*> global(aCx, aGlobal);
+
+  if (StaticPrefs::dom_serviceWorkers_hide_in_pbmode_enabled()) {
+    if (const nsCOMPtr<nsIGlobalObject> global =
+            xpc::CurrentNativeGlobal(aCx)) {
+      if (global->GetStorageAccess() == StorageAccess::ePrivateBrowsing) {
+        return false;
+      }
+    }
+  }
+
+  // Allow a webextension principal to register a service worker script with
+  // a moz-extension url only if 'extensions.service_worker_register.allowed'
+  // is true.
+  if (!StaticPrefs::extensions_serviceWorkerRegister_allowed()) {
+    nsIPrincipal* principal = nsContentUtils::SubjectPrincipal(aCx);
+    if (principal && BasePrincipal::Cast(principal)->AddonPolicy()) {
+      return false;
+    }
+  }
+
+  if (IsSecureContextOrObjectIsFromSecureContext(aCx, global)) {
+    return true;
+  }
+
+  return StaticPrefs::dom_serviceWorkers_testing_enabled() ||
+         IsServiceWorkersTestingEnabledInWindow(global);
+}
+
+bool ServiceWorkerVisible(JSContext* aCx, JSObject* aGlobal) {
+  if (NS_IsMainThread()) {
+    // We want to expose ServiceWorker interface only when
+    // navigator.serviceWorker is available. Currently it may not be available
+    // with some reasons:
+    // 1. navigator.serviceWorker is not supported in workers. (bug 1131324)
+    // 2. `dom.serviceWorkers.hide_in_pbmode.enabled` wants to hide it in
+    // private browsing mode.
+    return ServiceWorkersEnabled(aCx, aGlobal);
+  }
+
+  // We are already in ServiceWorker and interfaces need to be exposed for e.g.
+  // globalThis.registration.serviceWorker. Note that navigator.serviceWorker
+  // is still not supported. (bug 1131324)
+  return IS_INSTANCE_OF(ServiceWorkerGlobalScope, aGlobal);
 }
 
 // static
@@ -66,7 +119,7 @@ ServiceWorker::ServiceWorker(nsIGlobalObject* aGlobal,
   MOZ_DIAGNOSTIC_ASSERT(aGlobal);
   MOZ_DIAGNOSTIC_ASSERT(mInner);
 
-  KeepAliveIfHasListenersFor(u"statechange"_ns);
+  KeepAliveIfHasListenersFor(nsGkAtoms::onstatechange);
 
   // The error event handler is required by the spec currently, but is not used
   // anywhere.  Don't keep the object alive in that case.
@@ -143,7 +196,7 @@ void ServiceWorker::MaybeDispatchStateChangeEvent() {
   // more statechange events will occur.  We can allow the DOM
   // object to GC if script is not holding it alive.
   if (mLastNotifiedState == ServiceWorkerState::Redundant) {
-    IgnoreKeepAliveIfHasListenersFor(u"statechange"_ns);
+    IgnoreKeepAliveIfHasListenersFor(nsGkAtoms::onstatechange);
   }
 }
 
@@ -166,7 +219,10 @@ void ServiceWorker::PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
   }
 
   auto storageAllowed = StorageAllowedForWindow(window);
-  if (storageAllowed != StorageAccess::eAllow) {
+  if (storageAllowed != StorageAccess::eAllow &&
+      (!StaticPrefs::privacy_partition_serviceWorkers() ||
+       !StoragePartitioningEnabled(
+           storageAllowed, window->GetExtantDoc()->CookieJarSettings()))) {
     ServiceWorkerManager::LocalizeAndReportToAllClients(
         mDescriptor.Scope(), "ServiceWorkerPostMessageStorageError",
         nsTArray<nsString>{NS_ConvertUTF8toUTF16(mDescriptor.Scope())});
@@ -252,5 +308,4 @@ void ServiceWorker::MaybeAttachToRegistration(
   mRegistration = aRegistration;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

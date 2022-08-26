@@ -30,7 +30,6 @@ module.exports = {
     "plugin:mozilla/recommended", // require("eslint-plugin-mozilla") require("eslint-plugin-fetch-options") require("eslint-plugin-html") require("eslint-plugin-no-unsanitized")
     "plugin:mozilla/browser-test",
     "plugin:mozilla/mochitest-test",
-    "plugin:mozilla/xpcshell-test",
     "plugin:prettier/recommended", // require("eslint-plugin-prettier")
     "prettier", // require("eslint-config-prettier")
   ],
@@ -71,6 +70,10 @@ module.exports = {
       rules: {
         "no-implicit-globals": 0,
       },
+    },
+    {
+      files: "test/xpcshell/**",
+      extends: ["plugin:mozilla/xpcshell-test"],
     },
   ],
   rules: {
@@ -187,7 +190,7 @@ module.exports = {
     "no-useless-constructor": 2,
     "no-useless-rename": 2,
     "no-var": 2,
-    "no-void": 2,
+    "no-void": [2, { allowAsStatement: true }],
     "no-warning-comments": 0, // TODO: Change to `1`?
     "one-var": [2, "never"],
     "operator-assignment": [2, "always"],

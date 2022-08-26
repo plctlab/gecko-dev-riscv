@@ -23,10 +23,10 @@
 #include <algorithm>
 
 #include "builtin/AtomicsObject.h"
+#include "vm/ErrorContext.h"
 #ifdef JS_HAS_INTL_API
 #  include "builtin/intl/SharedIntlData.h"
 #endif
-#include "frontend/NameCollections.h"
 #include "frontend/ScriptIndex.h"
 #include "gc/GCRuntime.h"
 #include "gc/Tracer.h"
@@ -36,6 +36,7 @@
 #include "js/Context.h"
 #include "js/Debug.h"
 #include "js/experimental/CTypes.h"      // JS::CTypesActivityCallback
+#include "js/experimental/JSStencil.h"   // mozilla::RefPtrTraits<JS::Stencil>
 #include "js/experimental/SourceHook.h"  // js::SourceHook
 #include "js/friend/StackLimits.h"       // js::ReportOverRecursed
 #include "js/friend/UsageStatistics.h"   // JSAccumulateTelemetryDataCallback
@@ -48,6 +49,7 @@
 #  include "js/Proxy.h"  // For AutoEnterPolicy
 #endif
 #include "js/ScriptPrivate.h"
+#include "js/ShadowRealmCallbacks.h"
 #include "js/Stack.h"
 #include "js/Stream.h"  // JS::AbortSignalIsAborted
 #include "js/StreamConsumer.h"
@@ -60,7 +62,7 @@
 #include "js/WrapperCallbacks.h"
 #include "js/Zone.h"
 #include "threading/Thread.h"
-#include "vm/Caches.h"
+#include "vm/Caches.h"  // js::RuntimeCaches
 #include "vm/CodeCoverage.h"
 #include "vm/CommonPropertyNames.h"
 #include "vm/GeckoProfiler.h"
@@ -82,9 +84,7 @@ namespace js {
 
 class AutoAssertNoContentJS;
 class EnterDebuggeeNoExecute;
-#ifdef JS_TRACE_LOGGING
-class TraceLoggerThread;
-#endif
+class ErrorContext;
 
 }  // namespace js
 
@@ -101,6 +101,9 @@ namespace js {
 
 extern MOZ_COLD void ReportOutOfMemory(JSContext* cx);
 extern MOZ_COLD void ReportAllocationOverflow(JSContext* maybecx);
+extern MOZ_COLD void ReportAllocationOverflow(ErrorContext* ec);
+extern MOZ_COLD void ReportOversizedAllocation(JSContext* cx,
+                                               const unsigned errorNumber);
 
 class Activation;
 class ActivationIterator;
@@ -158,18 +161,18 @@ namespace js {
  * symbol is a permanent atom.
  */
 struct WellKnownSymbols {
-#define DECLARE_SYMBOL(name) js::ImmutableSymbolPtr name;
+#define DECLARE_SYMBOL(name) ImmutableTenuredPtr<JS::Symbol*> name;
   JS_FOR_EACH_WELL_KNOWN_SYMBOL(DECLARE_SYMBOL)
 #undef DECLARE_SYMBOL
 
-  const ImmutableSymbolPtr& get(size_t u) const {
+  const ImmutableTenuredPtr<JS::Symbol*>& get(size_t u) const {
     MOZ_ASSERT(u < JS::WellKnownSymbolLimit);
-    const ImmutableSymbolPtr* symbols =
-        reinterpret_cast<const ImmutableSymbolPtr*>(this);
+    const ImmutableTenuredPtr<JS::Symbol*>* symbols =
+        reinterpret_cast<const ImmutableTenuredPtr<JS::Symbol*>*>(this);
     return symbols[u];
   }
 
-  const ImmutableSymbolPtr& get(JS::SymbolCode code) const {
+  const ImmutableTenuredPtr<JS::Symbol*>& get(JS::SymbolCode code) const {
     return get(size_t(code));
   }
 
@@ -216,9 +219,93 @@ struct SelfHostedLazyScript {
   }
 };
 
-}  // namespace js
+// An interface for reporting telemetry from within SpiderMonkey. Reporting data
+// to this interface will forward it to the embedding if a telemetry callback
+// was registered. It is the embedding's responsibility to store and/or combine
+// repeated samples for each metric.
+class Metrics {
+ private:
+  JSRuntime* rt_;
 
-struct JSTelemetrySender;
+ public:
+  explicit Metrics(JSRuntime* rt) : rt_(rt) {}
+
+  // Records a TimeDuration metric. These are converted to integers when being
+  // recorded so choose an appropriate scale. In the future these will be Glean
+  // Timing Distribution metrics.
+  struct TimeDuration_S {
+    using SourceType = mozilla::TimeDuration;
+    static uint32_t convert(SourceType td) { return uint32_t(td.ToSeconds()); }
+  };
+  struct TimeDuration_MS {
+    using SourceType = mozilla::TimeDuration;
+    static uint32_t convert(SourceType td) {
+      return uint32_t(td.ToMilliseconds());
+    }
+  };
+  struct TimeDuration_US {
+    using SourceType = mozilla::TimeDuration;
+    static uint32_t convert(SourceType td) {
+      return uint32_t(td.ToMicroseconds());
+    }
+  };
+
+  // Record a metric in bytes. In the future these will be Glean Memory
+  // Distribution metrics.
+  struct MemoryDistribution {
+    using SourceType = size_t;
+    static uint32_t convert(SourceType sz) {
+      return static_cast<uint32_t>(std::min(sz, size_t(UINT32_MAX)));
+    }
+  };
+
+  // Record a metric for a quanity of items. This doesn't currently have a Glean
+  // analogue and we avoid using MemoryDistribution directly to avoid confusion
+  // about units.
+  using QuantityDistribution = MemoryDistribution;
+
+  // Record the distribution of boolean values. In the future this will be a
+  // Glean Rate metric.
+  struct Boolean {
+    using SourceType = bool;
+    static uint32_t convert(SourceType sample) {
+      return static_cast<uint32_t>(sample);
+    }
+  };
+
+  // Record the distribution of an enumeration value. This records integer
+  // values so take care not to redefine the value of enum values. In the
+  // future, these should become Glean Labeled Counter metrics.
+  struct Enumeration {
+    using SourceType = int;
+    static uint32_t convert(SourceType sample) {
+      MOZ_ASSERT(sample <= 100);
+      return static_cast<uint32_t>(sample);
+    }
+  };
+
+  // Record a percentage distribution which is an integer in the range 0 to 100.
+  // In the future, this will be a Glean Custom Distribution unless they add a
+  // better match.
+  struct Percentage {
+    using SourceType = int;
+    static uint32_t convert(SourceType sample) {
+      MOZ_ASSERT(sample <= 100);
+      return static_cast<uint32_t>(sample);
+    }
+  };
+
+  inline void addTelemetry(JSMetric id, uint32_t sample);
+
+#define DECLARE_METRIC_HELPER(NAME, TY)                \
+  void NAME(TY::SourceType sample) {                   \
+    addTelemetry(JSMetric::NAME, TY::convert(sample)); \
+  }
+  FOR_EACH_JS_METRIC(DECLARE_METRIC_HELPER)
+#undef DECLARE_METRIC_HELPER
+};
+
+}  // namespace js
 
 struct JSRuntime {
  private:
@@ -281,6 +368,8 @@ struct JSRuntime {
 
   inline JSContext* mainContextFromOwnThread();
 
+  js::Metrics metrics() { return js::Metrics(this); }
+
   /*
    * The start of the range stored in the profiler sample buffer, as measured
    * after the most recent sample.
@@ -317,21 +406,12 @@ struct JSRuntime {
   /* Call this to accumulate use counter data. */
   js::MainThreadData<JSSetUseCounterCallback> useCounterCallback;
 
-  js::MainThreadData<JSSourceElementCallback> sourceElementCallback;
-
  public:
-  // Accumulates data for Firefox telemetry. |id| is the ID of a JS_TELEMETRY_*
-  // histogram. |key| provides an additional key to identify the histogram.
-  // |sample| is the data to add to the histogram.
-  void addTelemetry(int id, uint32_t sample, const char* key = nullptr);
-
-  JSTelemetrySender getTelemetrySender() const;
+  // Accumulates data for Firefox telemetry.
+  void addTelemetry(JSMetric id, uint32_t sample);
 
   void setTelemetryCallback(JSRuntime* rt,
                             JSAccumulateTelemetryDataCallback callback);
-
-  void setSourceElementCallback(JSRuntime* rt,
-                                JSSourceElementCallback callback);
 
   // Sets the use counter for a specific feature, measuring the presence or
   // absence of usage of a feature on a specific web page and document which
@@ -465,30 +545,6 @@ struct JSRuntime {
   void setWindowProxyClass(const JSClass* clasp) { windowProxyClass_ = clasp; }
 
  private:
-  js::WriteOnceData<const JSClass*> abortSignalClass_;
-  js::WriteOnceData<JS::AbortSignalIsAborted> abortSignalIsAborted_;
-
- public:
-  void initPipeToHandling(const JSClass* abortSignalClass,
-                          JS::AbortSignalIsAborted isAborted) {
-    MOZ_ASSERT(abortSignalClass != nullptr,
-               "doesn't make sense for an embedder to provide a null class "
-               "when specifying pipeTo handling");
-    MOZ_ASSERT(isAborted != nullptr, "must pass a valid function pointer");
-
-    abortSignalClass_ = abortSignalClass;
-    abortSignalIsAborted_ = isAborted;
-  }
-
-  const JSClass* maybeAbortSignalClass() const { return abortSignalClass_; }
-
-  bool abortSignalIsAborted(JSObject* obj) {
-    MOZ_ASSERT(abortSignalIsAborted_ != nullptr,
-               "must call initPipeToHandling first");
-    return abortSignalIsAborted_(obj);
-  }
-
- private:
   // List of non-ephemeron weak containers to sweep during
   // beginSweepingSweepGroup.
   js::MainThreadData<mozilla::LinkedList<JS::detail::WeakCacheBase>>
@@ -562,7 +618,7 @@ struct JSRuntime {
    * Locking this only occurs if there is actually a thread other than the
    * main thread which could access this.
    */
-  js::Mutex scriptDataLock;
+  js::Mutex scriptDataLock MOZ_UNANNOTATED;
 #ifdef DEBUG
   bool activeThreadHasScriptDataAccess;
 #endif
@@ -572,18 +628,10 @@ struct JSRuntime {
   // protect access to the bytecode table;
   mozilla::Atomic<size_t, mozilla::SequentiallyConsistent> numParseTasks;
 
-  // Number of zones which may be operated on by helper threads.
-  mozilla::Atomic<size_t, mozilla::SequentiallyConsistent>
-      numActiveHelperThreadZones;
-
   friend class js::AutoLockScriptData;
 
  public:
-  void setUsedByHelperThread(JS::Zone* zone);
-  void clearUsedByHelperThread(JS::Zone* zone);
-
   bool hasParseTasks() const { return numParseTasks > 0; }
-  bool hasHelperThreadZones() const { return numActiveHelperThreadZones > 0; }
 
   void addParseTaskRef() { numParseTasks++; }
   void decParseTaskRef() { numParseTasks--; }
@@ -597,11 +645,6 @@ struct JSRuntime {
     }
 
     scriptDataLock.assertOwnedByCurrentThread();
-  }
-
-  bool currentThreadHasAtomsTableAccess() const {
-    return js::CurrentThreadCanAccessRuntime(this) &&
-           atoms_->mainThreadHasAllLocks();
   }
 #endif
 
@@ -690,8 +733,9 @@ struct JSRuntime {
 
   bool hasInitializedSelfHosting() const { return hasSelfHostStencil(); }
 
-  bool initSelfHosting(JSContext* cx, JS::SelfHostedCache xdrCache = nullptr,
-                       JS::SelfHostedWriter xdrWriter = nullptr);
+  bool initSelfHostingStencil(JSContext* cx, JS::SelfHostedCache xdrCache,
+                              JS::SelfHostedWriter xdrWriter);
+  bool initSelfHostingFromStencil(JSContext* cx);
   void finishSelfHosting();
   void traceSelfHostingStencil(JSTracer* trc);
   js::GeneratorKind getSelfHostedFunctionGeneratorKind(js::PropertyName* name);
@@ -700,12 +744,19 @@ struct JSRuntime {
                                   js::Handle<JSFunction*> targetFun);
   bool getSelfHostedValue(JSContext* cx, js::Handle<js::PropertyName*> name,
                           js::MutableHandleValue vp);
-  void assertSelfHostedFunctionHasCanonicalName(js::HandlePropertyName name);
+  void assertSelfHostedFunctionHasCanonicalName(
+      JS::Handle<js::PropertyName*> name);
+
+ private:
+  void setSelfHostingStencil(
+      JS::MutableHandle<js::UniquePtr<js::frontend::CompilationInput>> input,
+      RefPtr<js::frontend::CompilationStencil>&& stencil);
 
   //-------------------------------------------------------------------------
   // Locale information
   //-------------------------------------------------------------------------
 
+ public:
   /*
    * Set the default locale for the ECMAScript Internationalization API
    * (Intl.Collator, Intl.NumberFormat, Intl.DateTimeFormat).
@@ -735,14 +786,8 @@ struct JSRuntime {
 
   js::WriteOnceData<js::PropertyName*> emptyString;
 
- private:
-  js::MainThreadOrGCTaskData<JSFreeOp*> defaultFreeOp_;
-
  public:
-  JSFreeOp* defaultFreeOp() {
-    MOZ_ASSERT(defaultFreeOp_);
-    return defaultFreeOp_;
-  }
+  JS::GCContext* gcContext() { return &gc.mainThreadContext.ref(); }
 
 #if !JS_HAS_INTL_API
   /* Number localization, used by jsnum.cpp. */
@@ -794,7 +839,6 @@ struct JSRuntime {
   // can only be done from the main thread.
   js::MainThreadOrGCTaskData<js::SymbolRegistry> symbolRegistry_;
 
-  js::WriteOnceData<js::AtomSet*> permanentAtomsDuringInit_;
   js::WriteOnceData<js::FrozenAtomSet*> permanentAtoms_;
 
  public:
@@ -802,9 +846,7 @@ struct JSRuntime {
   bool initializeParserAtoms(JSContext* cx);
   void finishAtoms();
   void finishParserAtoms();
-  bool atomsAreFinished() const {
-    return !atoms_ && !permanentAtomsDuringInit_;
-  }
+  bool atomsAreFinished() const { return !atoms_; }
 
   js::AtomsTable* atomsForSweeping() {
     MOZ_ASSERT(JS::RuntimeHeapIsCollecting());
@@ -816,10 +858,12 @@ struct JSRuntime {
     return *atoms_;
   }
 
-  const JS::Zone* atomsZone(const js::AutoAccessAtomsZone& access) const {
+  const JS::Zone* atomsZone() const {
+    MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(this));
     return gc.atomsZone;
   }
-  JS::Zone* atomsZone(const js::AutoAccessAtomsZone& access) {
+  JS::Zone* atomsZone() {
+    MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(this));
     return gc.atomsZone;
   }
   JS::Zone* unsafeAtomsZone() { return gc.atomsZone; }
@@ -855,16 +899,6 @@ struct JSRuntime {
   // The permanent atoms table is populated during initialization.
   bool permanentAtomsPopulated() const { return permanentAtoms_; }
 
-  // For internal use, return the permanent atoms table while it is being
-  // populated.
-  js::AtomSet* permanentAtomsDuringInit() const {
-    MOZ_ASSERT(!permanentAtoms_);
-    return permanentAtomsDuringInit_.ref();
-  }
-
-  bool initMainAtomsTables(JSContext* cx);
-  void tracePermanentAtomsDuringInit(JSTracer* trc);
-
   // Cached well-known symbols (ES6 rev 24 6.1.5.1). Like permanent atoms,
   // these are shared with the parentRuntime, if any.
   js::WriteOnceData<js::WellKnownSymbols*> wellKnownSymbols;
@@ -893,6 +927,7 @@ struct JSRuntime {
 
  public:
   static bool hasLiveRuntimes() { return liveRuntimesCount > 0; }
+  static bool hasSingleLiveRuntime() { return liveRuntimesCount == 1; }
 
   explicit JSRuntime(JSRuntime* parentRuntime);
   ~JSRuntime();
@@ -928,7 +963,9 @@ struct JSRuntime {
   js::MainThreadData<JS::AfterWaitCallback> afterWaitCallback;
 
  public:
-  void reportAllocationOverflow() { js::ReportAllocationOverflow(nullptr); }
+  void reportAllocationOverflow() {
+    js::ReportAllocationOverflow(static_cast<JSContext*>(nullptr));
+  }
 
   /*
    * This should be called after system malloc/calloc/realloc returns nullptr
@@ -959,11 +996,6 @@ struct JSRuntime {
   mozilla::Atomic<bool, mozilla::SequentiallyConsistent>
       parallelParsingEnabled_;
 
-#ifdef DEBUG
-  mozilla::Atomic<uint32_t> offThreadParsesRunning_;
-  mozilla::Atomic<bool> offThreadParsingBlocked_;
-#endif
-
   js::MainThreadData<bool> autoWritableJitCodeActive_;
 
  public:
@@ -979,29 +1011,6 @@ struct JSRuntime {
     parallelParsingEnabled_ = value;
   }
   bool canUseParallelParsing() const { return parallelParsingEnabled_; }
-
-#ifdef DEBUG
-
-  void incOffThreadParsesRunning() {
-    MOZ_ASSERT(!isOffThreadParsingBlocked());
-    offThreadParsesRunning_++;
-  }
-
-  void decOffThreadParsesRunning() {
-    MOZ_ASSERT(isOffThreadParseRunning());
-    offThreadParsesRunning_--;
-  }
-
-  bool isOffThreadParseRunning() const { return offThreadParsesRunning_; }
-
-  bool isOffThreadParsingBlocked() const { return offThreadParsingBlocked_; }
-  void setOffThreadParsingBlocked(bool blocked) {
-    MOZ_ASSERT(offThreadParsingBlocked_ != blocked);
-    MOZ_ASSERT(!isOffThreadParseRunning());
-    offThreadParsingBlocked_ = blocked;
-  }
-
-#endif
 
   void toggleAutoWritableJitCodeActive(bool b) {
     MOZ_ASSERT(autoWritableJitCodeActive_ != b,
@@ -1044,7 +1053,7 @@ struct JSRuntime {
   }
 
  private:
-  js::MainThreadData<js::RuntimeCaches> caches_;
+  js::MainThreadOrParseData<js::RuntimeCaches> caches_;
 
  public:
   js::RuntimeCaches& caches() { return caches_.ref(); }
@@ -1053,6 +1062,15 @@ struct JSRuntime {
   // of all instances registered in all JS::Realms. Accessed from watchdog
   // threads for purposes of wasm::InterruptRunningCode().
   js::ExclusiveData<js::wasm::InstanceVector> wasmInstances;
+
+  // A counter used when recording the order in which modules had their
+  // AsyncEvaluation field set to true. This is used to order queued
+  // evaluations. This is reset when the last module that was async evaluating
+  // is finished.
+  //
+  // See https://tc39.es/ecma262/#sec-async-module-execution-fulfilled step 10
+  // for use.
+  js::MainThreadData<uint32_t> moduleAsyncEvaluatingPostOrder;
 
   // The implementation-defined abstract operation HostResolveImportedModule.
   js::MainThreadData<JS::ModuleResolveHook> moduleResolveHook;
@@ -1065,6 +1083,11 @@ struct JSRuntime {
   // HostImportModuleDynamically. This is also used to enable/disable dynamic
   // module import and can accessed by off-thread parsing.
   mozilla::Atomic<JS::ModuleDynamicImportHook> moduleDynamicImportHook;
+
+  // A hook that implements the abstract operation
+  // HostGetSupportedImportAssertions.
+  // https://tc39.es/proposal-import-assertions/#sec-hostgetsupportedimportassertions
+  mozilla::Atomic<JS::SupportedAssertionsHook> supportedAssertionsHook;
 
   // Hooks called when script private references are created and destroyed.
   js::MainThreadData<JS::ScriptPrivateReferenceHook> scriptPrivateAddRefHook;
@@ -1102,37 +1125,28 @@ struct JSRuntime {
   };
   ErrorInterceptionSupport errorInterception;
 #endif  // defined(NIGHTLY_BUILD)
-};
-
-// Context for sending telemetry to the embedder from any thread, main or
-// helper.  Obtain a |JSTelemetrySender| by calling |getTelemetrySender()| on
-// the |JSRuntime|.
-struct JSTelemetrySender {
- private:
-  friend struct JSRuntime;
-
-  JSAccumulateTelemetryDataCallback callback_;
-
-  explicit JSTelemetrySender(JSAccumulateTelemetryDataCallback callback)
-      : callback_(callback) {}
 
  public:
-  JSTelemetrySender() : callback_(nullptr) {}
-  JSTelemetrySender(const JSTelemetrySender& other) = default;
-  explicit JSTelemetrySender(JSRuntime* runtime)
-      : JSTelemetrySender(runtime->getTelemetrySender()) {}
-
-  // Accumulates data for Firefox telemetry. |id| is the ID of a JS_TELEMETRY_*
-  // histogram. |key| provides an additional key to identify the histogram.
-  // |sample| is the data to add to the histogram.
-  void addTelemetry(int id, uint32_t sample, const char* key = nullptr) {
-    if (callback_) {
-      callback_(id, sample, key);
-    }
+  JS::GlobalInitializeCallback getShadowRealmInitializeGlobalCallback() {
+    return shadowRealmInitializeGlobalCallback;
   }
+
+  JS::GlobalCreationCallback getShadowRealmGlobalCreationCallback() {
+    return shadowRealmGlobalCreationCallback;
+  }
+
+  js::MainThreadData<JS::GlobalInitializeCallback>
+      shadowRealmInitializeGlobalCallback;
+
+  js::MainThreadData<JS::GlobalCreationCallback>
+      shadowRealmGlobalCreationCallback;
 };
 
 namespace js {
+
+void Metrics::addTelemetry(JSMetric id, uint32_t sample) {
+  rt_->addTelemetry(id, sample);
+}
 
 static MOZ_ALWAYS_INLINE void MakeRangeGCSafe(Value* vec, size_t len) {
   // Don't PodZero here because JS::Value is non-trivial.
@@ -1146,7 +1160,7 @@ static MOZ_ALWAYS_INLINE void MakeRangeGCSafe(Value* beg, Value* end) {
 }
 
 static MOZ_ALWAYS_INLINE void MakeRangeGCSafe(jsid* beg, jsid* end) {
-  std::fill(beg, end, INT_TO_JSID(0));
+  std::fill(beg, end, PropertyKey::Int(0));
 }
 
 static MOZ_ALWAYS_INLINE void MakeRangeGCSafe(jsid* vec, size_t len) {

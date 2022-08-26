@@ -6,17 +6,11 @@
 
 const EXPORTED_SYMBOLS = ["log"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { Module } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Module: "chrome://remote/content/shared/messagehandler/Module.jsm",
-  WindowGlobalMessageHandler:
-    "chrome://remote/content/shared/messagehandler/WindowGlobalMessageHandler.jsm",
-});
-
-class Log extends Module {
+class LogModule extends Module {
   destroy() {}
 
   /**
@@ -24,23 +18,16 @@ class Log extends Module {
    */
 
   _subscribeEvent(params) {
-    switch (params.event) {
-      case "log.entryAdded":
-        return this.messageHandler.handleCommand({
-          moduleName: "log",
-          commandName: "_subscribeEvent",
-          params: {
-            event: "log.entryAdded",
-          },
-          destination: {
-            broadcast: true,
-            type: WindowGlobalMessageHandler.type,
-          },
-        });
-      default:
-        throw new Error(`Unsupported event for log module ${params.event}`);
-    }
+    return this.addEventSessionData("log", params.event);
+  }
+
+  _unsubscribeEvent(params) {
+    return this.removeEventSessionData("log", params.event);
+  }
+
+  static get supportedEvents() {
+    return ["log.entryAdded"];
   }
 }
 
-const log = Log;
+const log = LogModule;

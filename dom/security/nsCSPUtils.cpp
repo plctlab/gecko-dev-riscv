@@ -123,7 +123,7 @@ bool CSP_ShouldResponseInheritCSP(nsIChannel* aChannel) {
 
 void CSP_ApplyMetaCSPToDoc(mozilla::dom::Document& aDoc,
                            const nsAString& aPolicyStr) {
-  if (!mozilla::StaticPrefs::security_csp_enable() || aDoc.IsLoadedAsData()) {
+  if (aDoc.IsLoadedAsData()) {
     return;
   }
 
@@ -230,7 +230,7 @@ void CSP_LogMessage(const nsAString& aMessage, const nsAString& aSourceName,
                                  aInnerWindowID);
   } else {
     rv = error->Init(cspMsg, aSourceName, aSourceLine, aLineNumber,
-                     aColumnNumber, aFlags, category.get(), aFromPrivateWindow,
+                     aColumnNumber, aFlags, category, aFromPrivateWindow,
                      true /* from chrome context */);
   }
   if (NS_FAILED(rv)) {
@@ -255,9 +255,11 @@ void CSP_LogLocalizedStr(const char* aName, const nsTArray<nsString>& aParams,
 }
 
 /* ===== Helpers ============================ */
+// This implements
+// https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request.
+// However the spec doesn't currently cover all request destinations, which
+// we roughly represent using nsContentPolicyType.
 CSPDirective CSP_ContentTypeToDirective(nsContentPolicyType aType) {
-  // We need to know if this is a worker so child-src  can handle that case
-  // correctly.
   switch (aType) {
     case nsIContentPolicy::TYPE_IMAGE:
     case nsIContentPolicy::TYPE_IMAGESET:
@@ -278,12 +280,16 @@ CSPDirective CSP_ContentTypeToDirective(nsContentPolicyType aType) {
     case nsIContentPolicy::TYPE_INTERNAL_PAINTWORKLET:
     case nsIContentPolicy::TYPE_INTERNAL_CHROMEUTILS_COMPILED_SCRIPT:
     case nsIContentPolicy::TYPE_INTERNAL_FRAME_MESSAGEMANAGER_SCRIPT:
-      return nsIContentSecurityPolicy::SCRIPT_SRC_DIRECTIVE;
+      // (https://github.com/w3c/webappsec-csp/issues/554)
+      // Some of these types are not explicitly defined in the spec.
+      //
+      // Chrome seems to use script-src-elem for worklet!
+      return nsIContentSecurityPolicy::SCRIPT_SRC_ELEM_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_STYLESHEET:
     case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET:
     case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET_PRELOAD:
-      return nsIContentSecurityPolicy::STYLE_SRC_DIRECTIVE;
+      return nsIContentSecurityPolicy::STYLE_SRC_ELEM_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_FONT:
     case nsIContentPolicy::TYPE_INTERNAL_FONT_PRELOAD:
@@ -880,11 +886,12 @@ bool nsCSPKeywordSrc::allows(enum CSPKeyword aKeyword,
   }
   // either the keyword allows the load or the policy contains 'strict-dynamic',
   // in which case we have to make sure the script is not parser created before
-  // allowing the load and also eval should be blocked even if 'strict-dynamic'
-  // is present. Should be allowed only if 'unsafe-eval' is present.
+  // allowing the load and also eval & wasm-eval should be blocked even if
+  // 'strict-dynamic' is present. Should be allowed only if 'unsafe-eval' is
+  // present.
   return ((mKeyword == aKeyword) ||
           ((mKeyword == CSP_STRICT_DYNAMIC) && !aParserCreated &&
-           aKeyword != CSP_UNSAFE_EVAL));
+           aKeyword != CSP_UNSAFE_EVAL && aKeyword != CSP_WASM_UNSAFE_EVAL));
 }
 
 bool nsCSPKeywordSrc::visit(nsCSPSrcVisitor* aVisitor) const {
@@ -984,12 +991,9 @@ bool nsCSPHashSrc::allows(enum CSPKeyword aKeyword,
   // Convert aHashOrNonce to UTF-8
   NS_ConvertUTF16toUTF8 utf8_hash(aHashOrNonce);
 
-  nsresult rv;
   nsCOMPtr<nsICryptoHash> hasher;
-  hasher = do_CreateInstance("@mozilla.org/security/hash;1", &rv);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  rv = hasher->InitWithString(NS_ConvertUTF16toUTF8(mAlgorithm));
+  nsresult rv = NS_NewCryptoHash(NS_ConvertUTF16toUTF8(mAlgorithm),
+                                 getter_AddRefs(hasher));
   NS_ENSURE_SUCCESS(rv, false);
 
   rv = hasher->Update((uint8_t*)utf8_hash.get(), utf8_hash.Length());
@@ -1212,6 +1216,16 @@ void nsCSPDirective::toDomCSPStruct(mozilla::dom::CSP& outCSP) const {
       outCSP.mWorker_src.Value() = std::move(srcs);
       return;
 
+    case nsIContentSecurityPolicy::SCRIPT_SRC_ELEM_DIRECTIVE:
+      outCSP.mScript_src_elem.Construct();
+      outCSP.mScript_src_elem.Value() = std::move(srcs);
+      return;
+
+    case nsIContentSecurityPolicy::SCRIPT_SRC_ATTR_DIRECTIVE:
+      outCSP.mScript_src_attr.Construct();
+      outCSP.mScript_src_attr.Value() = std::move(srcs);
+      return;
+
     default:
       NS_ASSERTION(false, "cannot find directive to convert CSP to JSON");
   }
@@ -1279,7 +1293,7 @@ bool nsCSPChildSrcDirective::equals(CSPDirective aDirective) const {
 /* =============== nsCSPScriptSrcDirective ============= */
 
 nsCSPScriptSrcDirective::nsCSPScriptSrcDirective(CSPDirective aDirective)
-    : nsCSPDirective(aDirective), mRestrictWorkers(false) {}
+    : nsCSPDirective(aDirective) {}
 
 nsCSPScriptSrcDirective::~nsCSPScriptSrcDirective() = default;
 
@@ -1287,7 +1301,30 @@ bool nsCSPScriptSrcDirective::equals(CSPDirective aDirective) const {
   if (aDirective == nsIContentSecurityPolicy::WORKER_SRC_DIRECTIVE) {
     return mRestrictWorkers;
   }
-  return (mDirective == aDirective);
+  if (aDirective == nsIContentSecurityPolicy::SCRIPT_SRC_ELEM_DIRECTIVE) {
+    return mRestrictScriptElem;
+  }
+  if (aDirective == nsIContentSecurityPolicy::SCRIPT_SRC_ATTR_DIRECTIVE) {
+    return mRestrictScriptAttr;
+  }
+  return mDirective == aDirective;
+}
+
+/* =============== nsCSPStyleSrcDirective ============= */
+
+nsCSPStyleSrcDirective::nsCSPStyleSrcDirective(CSPDirective aDirective)
+    : nsCSPDirective(aDirective) {}
+
+nsCSPStyleSrcDirective::~nsCSPStyleSrcDirective() = default;
+
+bool nsCSPStyleSrcDirective::equals(CSPDirective aDirective) const {
+  if (aDirective == nsIContentSecurityPolicy::STYLE_SRC_ELEM_DIRECTIVE) {
+    return mRestrictStyleElem;
+  }
+  if (aDirective == nsIContentSecurityPolicy::STYLE_SRC_ATTR_DIRECTIVE) {
+    return mRestrictStyleAttr;
+  }
+  return mDirective == aDirective;
 }
 
 /* =============== nsBlockAllMixedContentDirective ============= */

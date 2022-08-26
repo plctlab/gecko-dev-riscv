@@ -10,10 +10,6 @@ const Preferences = (window.Preferences = (function() {
   const { EventEmitter } = ChromeUtils.import(
     "resource://gre/modules/EventEmitter.jsm"
   );
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-  ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
 
   const lazy = {};
   ChromeUtils.defineModuleGetter(
@@ -80,21 +76,14 @@ const Preferences = (window.Preferences = (function() {
 
     get instantApply() {
       // The about:preferences page forces instantApply.
+      // TODO: Remove forceEnableInstantApply in favor of always applying in a
+      // parent and never applying in a child (bug 1775386).
       if (this._instantApplyForceEnabled) {
         return true;
       }
 
       // Dialogs of type="child" are never instantApply.
-      if (this.type === "child") {
-        return false;
-      }
-
-      // All other pref windows observe the value of the instantApply
-      // preference.  Note that, as of this writing, the only such windows
-      // are in tests, so it should be possible to remove the pref
-      // (and forceEnableInstantApply) in favor of always applying in a parent
-      // and never applying in a child.
-      return Services.prefs.getBoolPref("browser.preferences.instantApply");
+      return this.type !== "child";
     },
 
     _instantApplyForceEnabled: false,

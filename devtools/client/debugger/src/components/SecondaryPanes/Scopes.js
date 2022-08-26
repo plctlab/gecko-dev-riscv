@@ -3,6 +3,7 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import React, { PureComponent } from "react";
+import PropTypes from "prop-types";
 import { showMenu } from "../../context-menu/menu";
 import { connect } from "../../utils/connect";
 import actions from "../../actions";
@@ -45,7 +46,30 @@ class Scopes extends PureComponent {
     };
   }
 
-  componentWillReceiveProps(nextProps) {
+  static get propTypes() {
+    return {
+      addWatchpoint: PropTypes.func.isRequired,
+      cx: PropTypes.object.isRequired,
+      expandedScopes: PropTypes.array.isRequired,
+      generatedFrameScopes: PropTypes.object,
+      highlightDomElement: PropTypes.func.isRequired,
+      isLoading: PropTypes.bool.isRequired,
+      isPaused: PropTypes.bool.isRequired,
+      mapScopesEnabled: PropTypes.bool.isRequired,
+      openElementInInspector: PropTypes.func.isRequired,
+      openLink: PropTypes.func.isRequired,
+      originalFrameScopes: PropTypes.object,
+      removeWatchpoint: PropTypes.func.isRequired,
+      selectedFrame: PropTypes.object.isRequired,
+      setExpandedScope: PropTypes.func.isRequired,
+      toggleMapScopes: PropTypes.func.isRequired,
+      unHighlightDomElement: PropTypes.func.isRequired,
+      why: PropTypes.object.isRequired,
+    };
+  }
+
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     const {
       selectedFrame,
       originalFrameScopes,

@@ -136,10 +136,10 @@ enum class ScrollFlags {
   ScrollNoParentFrames = 1 << 2,
   ScrollSmooth = 1 << 3,
   ScrollSmoothAuto = 1 << 4,
-  ScrollSnap = 1 << 5,
+  TriggeredByScript = 1 << 5,
   // ScrollOverflowHidden | ScrollNoParentFrames
   AnchorScrollFlags = (1 << 1) | (1 << 2),
-  ALL_BITS = (1 << 7) - 1,
+  ALL_BITS = (1 << 6) - 1,
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(ScrollFlags)
@@ -180,8 +180,6 @@ enum class ResolutionChangeOrigin : uint8_t {
 enum class AddCanvasBackgroundColorFlags {
   None = 0,
   ForceDraw = 1 << 0,
-  AddForSubDocument = 1 << 1,
-  AppendUnscrolledOnly = 1 << 2,
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(AddCanvasBackgroundColorFlags)

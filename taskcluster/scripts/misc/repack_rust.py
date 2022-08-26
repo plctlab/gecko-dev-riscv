@@ -20,7 +20,6 @@ import shutil
 import subprocess
 from contextlib import contextmanager
 import tarfile
-import tempfile
 import textwrap
 
 import requests
@@ -509,14 +508,15 @@ def repack(
         for std in stds:
             install(os.path.basename(std["url"]), install_dir)
             pass
-    # Workaround for https://github.com/rust-lang/rust/issues/74657:
-    # Remove the .llvmbc and .llvmcmd sections (sections for the LLVM bitcode)
-    # from the compiler_builtins rlib.
+    # Workaround for https://github.com/rust-lang/rust/issues/98746:
+    # Remove debug symbols from the compiler_builtins rlib.
     hack_targets = ()
     if compiler_builtins_hack:
         hack_targets = (
             "x86_64-unknown-linux-gnu",
             "i686-unknown-linux-gnu",
+            "x86_64-linux-android",
+            "i686-linux-android",
             "thumbv7neon-linux-androideabi",
             "aarch64-linux-android",
         )
@@ -529,38 +529,10 @@ def repack(
                 install_dir, "lib", "rustlib", t, "lib", "libcompiler_builtins*"
             )
         ):
-            log("Postprocessing %s" % lib)
-            with tempfile.TemporaryDirectory() as d:
-                # Extract all the files from the .rlib
-                subprocess.check_call(
-                    [os.path.join(llvm_bin, "llvm-ar"), "x", os.path.abspath(lib)],
-                    cwd=d,
-                )
-                files = os.listdir(d)
-                for f in files:
-                    if not f.endswith(".o"):
-                        continue
-                    # For each .o file, remove the aforementioned sections.
-                    subprocess.check_call(
-                        [
-                            os.path.join(llvm_bin, "llvm-objcopy"),
-                            "-R",
-                            ".llvmbc",
-                            "-R",
-                            ".llvmcmd",
-                            f,
-                        ],
-                        cwd=d,
-                    )
-                # Create a new .rlib with the updated object files.
-                subprocess.check_call(
-                    [os.path.join(llvm_bin, "llvm-ar"), "crv", os.path.abspath(lib)]
-                    + files,
-                    cwd=d,
-                )
-                subprocess.check_call(
-                    [os.path.join(llvm_bin, "llvm-ranlib"), os.path.abspath(lib)], cwd=d
-                )
+            log("Strip debuginfo from %s" % lib)
+            subprocess.check_call(
+                [os.path.join(llvm_bin, "llvm-strip"), "-d", os.path.abspath(lib)],
+            )
 
     log("Creating archive...")
     tar_file = install_dir + ".tar.zst"
@@ -580,48 +552,6 @@ def repack(
         # Move the tarball to the output directory for upload.
         log("Moving %s to the upload directory..." % tar_file)
         shutil.move(tar_file, upload_dir)
-
-
-def repack_cargo(host, channel="nightly"):
-    log("Repacking cargo for %s..." % host)
-    # Cargo doesn't seem to have a .toml manifest.
-    base_url = "https://static.rust-lang.org/cargo-dist/"
-    req = requests.get(os.path.join(base_url, "channel-cargo-" + channel))
-    req.raise_for_status()
-    file = ""
-    for line in req.iter_lines():
-        if line.find(host) != -1:
-            file = line.strip()
-    if not file:
-        log("No manifest entry for %s!" % host)
-        return
-    manifest = {
-        "date": req.headers["Last-Modified"],
-        "pkg": {
-            "cargo": {
-                "version": channel,
-                "target": {
-                    host: {
-                        "url": os.path.join(base_url, file),
-                        "hash": None,
-                        "available": True,
-                    },
-                },
-            },
-        },
-    }
-    log("Using manifest for cargo %s." % channel)
-    log("Fetching packages...")
-    cargo = fetch_package(manifest, "cargo", host)
-    log("Installing packages...")
-    install_dir = "cargo"
-    shutil.rmtree(install_dir)
-    install(os.path.basename(cargo["url"]), install_dir)
-    tar_basename = "cargo-%s-repack" % host
-    log("Tarring %s..." % tar_basename)
-    tar_file = tar_basename + ".tar.zst"
-    build_tar_package(tar_file, ".", install_dir)
-    shutil.rmtree(install_dir)
 
 
 def expand_platform(name):
@@ -691,7 +621,7 @@ def args():
     parser.add_argument(
         "--compiler-builtins-hack",
         action="store_true",
-        help="Enable workaround for " "https://github.com/rust-lang/rust/issues/74657.",
+        help="Enable workaround for " "https://github.com/rust-lang/rust/issues/98746.",
     )
     parser.add_argument(
         "--host",

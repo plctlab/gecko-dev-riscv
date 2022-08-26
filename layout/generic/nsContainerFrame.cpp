@@ -439,9 +439,9 @@ DeviceColor nsDisplaySelectionOverlay::ComputeColor() const {
   if (mSelectionValue == nsISelectionController::SELECTION_ON) {
     colorID = LookAndFeel::ColorID::Highlight;
   } else if (mSelectionValue == nsISelectionController::SELECTION_ATTENTION) {
-    colorID = LookAndFeel::ColorID::TextSelectBackgroundAttention;
+    colorID = LookAndFeel::ColorID::TextSelectAttentionBackground;
   } else {
-    colorID = LookAndFeel::ColorID::TextSelectBackgroundDisabled;
+    colorID = LookAndFeel::ColorID::TextSelectDisabledBackground;
   }
 
   return ApplyTransparencyIfNecessary(
@@ -471,7 +471,7 @@ bool nsDisplaySelectionOverlay::CreateWebRenderCommands(
   wr::LayoutRect bounds = wr::ToLayoutRect(LayoutDeviceRect::FromAppUnits(
       nsRect(ToReferenceFrame(), Frame()->GetSize()),
       mFrame->PresContext()->AppUnitsPerDevPixel()));
-  aBuilder.PushRect(bounds, bounds, !BackfaceIsHidden(),
+  aBuilder.PushRect(bounds, bounds, !BackfaceIsHidden(), false, false,
                     wr::ToColorF(ComputeColor()));
   return true;
 }
@@ -498,11 +498,9 @@ void nsContainerFrame::DisplaySelectionOverlay(nsDisplayListBuilder* aBuilder,
   nsIContent* newContent = mContent->GetParent();
 
   // check to see if we are anonymous content
-  int32_t offset = 0;
-  if (newContent) {
-    // XXXbz there has GOT to be a better way of determining this!
-    offset = newContent->ComputeIndexOf(mContent);
-  }
+  // XXXbz there has GOT to be a better way of determining this!
+  int32_t offset =
+      newContent ? newContent->ComputeIndexOf_Deprecated(mContent) : 0;
 
   // look up to see what selection(s) are on this frame
   UniquePtr<SelectionDetails> details =
@@ -733,7 +731,6 @@ static bool IsTopLevelWidget(nsIWidget* aWidget) {
 void nsContainerFrame::SyncWindowProperties(nsPresContext* aPresContext,
                                             nsIFrame* aFrame, nsView* aView,
                                             gfxContext* aRC, uint32_t aFlags) {
-#ifdef MOZ_XUL
   if (!aView || !nsCSSRendering::IsCanvasFrame(aFrame) || !aView->HasWidget())
     return;
 
@@ -780,6 +777,11 @@ void nsContainerFrame::SyncWindowProperties(nsPresContext* aPresContext,
     nsCOMPtr<nsIWidget> viewWidget = aView->GetWidget();
     viewWidget->SetTransparencyMode(mode);
     windowWidget->SetWindowShadowStyle(shadow);
+
+    // For macOS, apply color scheme overrides to the top level window widget.
+    if (auto scheme = aPresContext->GetOverriddenOrEmbedderColorScheme()) {
+      windowWidget->SetColorScheme(scheme);
+    }
   }
 
   if (!aRC) return;
@@ -810,7 +812,6 @@ void nsContainerFrame::SyncWindowProperties(nsPresContext* aPresContext,
     }
   }
   SetSizeConstraints(aPresContext, windowWidget, minSize, maxSize);
-#endif
 }
 
 void nsContainerFrame::SetSizeConstraints(nsPresContext* aPresContext,
@@ -2717,6 +2718,9 @@ bool nsContainerFrame::IsFrameTreeTooDeep(const ReflowInput& aReflowInput,
 
 bool nsContainerFrame::ShouldAvoidBreakInside(
     const ReflowInput& aReflowInput) const {
+  MOZ_ASSERT(this == aReflowInput.mFrame,
+             "Caller should pass a ReflowInput for this frame!");
+
   const auto* disp = StyleDisplay();
   const bool mayAvoidBreak = [&] {
     switch (disp->mBreakInside) {
@@ -2753,16 +2757,17 @@ void nsContainerFrame::ConsiderChildOverflow(OverflowAreas& aOverflowAreas,
   if (StyleDisplay()->IsContainLayout() &&
       IsFrameOfType(eSupportsContainLayoutAndPaint)) {
     // If we have layout containment and are not a non-atomic, inline-level
-    // principal box, we should only consider our child's visual (ink) overflow,
+    // principal box, we should only consider our child's ink overflow,
     // leaving the scrollable regions of the parent unaffected.
     // Note: scrollable overflow is a subset of ink overflow,
-    // so this has the same affect as unioning the child's visual and
+    // so this has the same affect as unioning the child's ink and
     // scrollable overflow with the parent's ink overflow.
-    nsRect childVisual = aChildFrame->InkOverflowRect();
-    OverflowAreas combined = OverflowAreas(childVisual, nsRect());
-    aOverflowAreas.UnionWith(combined + aChildFrame->GetPosition());
+    const OverflowAreas childOverflows(aChildFrame->InkOverflowRect(),
+                                       nsRect());
+    aOverflowAreas.UnionWith(childOverflows + aChildFrame->GetPosition());
   } else {
-    aOverflowAreas.UnionWith(aChildFrame->GetOverflowAreasRelativeToParent());
+    aOverflowAreas.UnionWith(
+        aChildFrame->GetActualAndNormalOverflowAreasRelativeToParent());
   }
 }
 

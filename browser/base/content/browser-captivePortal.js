@@ -44,7 +44,6 @@ var CaptivePortalWatcher = {
   },
 
   init() {
-    Services.obs.addObserver(this, "ensure-captive-portal-tab");
     Services.obs.addObserver(this, "captive-portal-login");
     Services.obs.addObserver(this, "captive-portal-login-abort");
     Services.obs.addObserver(this, "captive-portal-login-success");
@@ -79,7 +78,6 @@ var CaptivePortalWatcher = {
   },
 
   uninit() {
-    Services.obs.removeObserver(this, "ensure-captive-portal-tab");
     Services.obs.removeObserver(this, "captive-portal-login");
     Services.obs.removeObserver(this, "captive-portal-login-abort");
     Services.obs.removeObserver(this, "captive-portal-login-success");
@@ -96,9 +94,6 @@ var CaptivePortalWatcher = {
 
   observe(aSubject, aTopic, aData) {
     switch (aTopic) {
-      case "ensure-captive-portal-tab":
-        this.ensureCaptivePortalTab();
-        break;
       case "captive-portal-login":
         this._captivePortalDetected();
         break;
@@ -158,8 +153,26 @@ var CaptivePortalWatcher = {
       return;
     }
 
+    // Add an explicit permission for the last detected URI such that https-only / https-first do not
+    // attempt to upgrade the URI to https when following the "open network login page" button.
+    // We set explicit permissions for regular and private browsing windows to keep permissions
+    // separate.
+    let canonicalURI = Services.io.newURI(this.canonicalURL);
+    let isPrivate = PrivateBrowsingUtils.isWindowPrivate(window);
+    let principal = Services.scriptSecurityManager.createContentPrincipal(
+      canonicalURI,
+      {
+        userContextId: gBrowser.contentPrincipal.userContextId,
+        privateBrowsingId: isPrivate ? 1 : 0,
+      }
+    );
+    Services.perms.addFromPrincipal(
+      principal,
+      "https-only-load-insecure",
+      Ci.nsIPermissionManager.ALLOW_ACTION,
+      Ci.nsIPermissionManager.EXPIRE_SESSION
+    );
     let win = BrowserWindowTracker.getTopWindow();
-
     // Used by tests: ignore the main test window in order to enable testing of
     // the case where we have no open windows.
     if (win.document.documentElement.getAttribute("ignorecaptiveportal")) {

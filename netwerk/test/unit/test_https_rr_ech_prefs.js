@@ -5,7 +5,6 @@
 "use strict";
 
 ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-var { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
 
 let trrServer;
 
@@ -28,8 +27,8 @@ registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("network.dns.use_https_rr_as_altsvc");
   Services.prefs.clearUserPref("network.dns.echconfig.enabled");
   Services.prefs.clearUserPref("network.dns.http3_echconfig.enabled");
-  Services.prefs.clearUserPref("network.http.http3.enabled");
-  Services.prefs.clearUserPref("network.http.spdy.enabled");
+  Services.prefs.clearUserPref("network.http.http3.enable");
+  Services.prefs.clearUserPref("network.http.http2.enabled");
   if (trrServer) {
     await trrServer.stop();
   }
@@ -101,7 +100,7 @@ add_task(async function testEchConfigEnabled() {
     ],
   });
 
-  let [, inRecord] = await new TRRDNSListener("test.bar.com", {
+  let { inRecord } = await new TRRDNSListener("test.bar.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
   });
 
@@ -125,9 +124,9 @@ add_task(async function testEchConfigEnabled() {
   Services.prefs.setBoolPref("network.dns.echconfig.enabled", true);
   dns.clearCache(true);
 
-  [, inRecord] = await new TRRDNSListener("test.bar.com", {
+  ({ inRecord } = await new TRRDNSListener("test.bar.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
-  });
+  }));
 
   checkResult(inRecord, false, false, {
     expectedPriority: 2,
@@ -203,7 +202,7 @@ add_task(async function testTwoRecordsHaveEchConfig() {
     ],
   });
 
-  let [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  let { inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
   });
 
@@ -226,9 +225,9 @@ add_task(async function testTwoRecordsHaveEchConfig() {
 
   Services.prefs.setBoolPref("network.dns.http3_echconfig.enabled", true);
   dns.clearCache(true);
-  [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  ({ inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
-  });
+  }));
 
   checkResult(inRecord, false, false, {
     expectedPriority: 1,
@@ -302,7 +301,7 @@ add_task(async function testTwoRecordsHaveEchConfig1() {
     ],
   });
 
-  let [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  let { inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
   });
 
@@ -329,9 +328,9 @@ add_task(async function testTwoRecordsHaveEchConfig1() {
 
   Services.prefs.setBoolPref("network.dns.http3_echconfig.enabled", true);
   dns.clearCache(true);
-  [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  ({ inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
-  });
+  }));
 
   checkResult(inRecord, false, false, {
     expectedPriority: 1,
@@ -405,7 +404,7 @@ add_task(async function testOneRecordsHasEchConfig() {
     ],
   });
 
-  let [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  let { inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
   });
 
@@ -428,9 +427,9 @@ add_task(async function testOneRecordsHasEchConfig() {
 
   Services.prefs.setBoolPref("network.dns.http3_echconfig.enabled", true);
   dns.clearCache(true);
-  [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  ({ inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
-  });
+  }));
 
   checkResult(inRecord, false, false, {
     expectedPriority: 1,
@@ -453,15 +452,15 @@ add_task(async function testOneRecordsHasEchConfig() {
   trrServer = null;
 });
 
-// Test the case that "network.http.http3.enabled" and
-// "network.http.spdy.enabled" are true/false.
+// Test the case that "network.http.http3.enable" and
+// "network.http.http2.enabled" are true/false.
 add_task(async function testHttp3AndHttp2Pref() {
   dns.clearCache(true);
 
   let trrServer = new TRRServer();
   await trrServer.start();
 
-  Services.prefs.setBoolPref("network.http.http3.enabled", false);
+  Services.prefs.setBoolPref("network.http.http3.enable", false);
   Services.prefs.setBoolPref("network.dns.echconfig.enabled", false);
   Services.prefs.setBoolPref("network.dns.http3_echconfig.enabled", false);
   Services.prefs.setIntPref("network.trr.mode", 3);
@@ -503,7 +502,7 @@ add_task(async function testHttp3AndHttp2Pref() {
     ],
   });
 
-  let [, inRecord] = await new TRRDNSListener("test.foo.com", {
+  let { inRecord } = await new TRRDNSListener("test.foo.com", {
     type: dns.RESOLVE_TYPE_HTTPSSVC,
   });
 
@@ -520,10 +519,10 @@ add_task(async function testHttp3AndHttp2Pref() {
   checkResult(inRecord, true, false);
   checkResult(inRecord, true, true);
 
-  Services.prefs.setBoolPref("network.http.spdy.enabled", false);
+  Services.prefs.setBoolPref("network.http.http2.enabled", false);
   checkResult(inRecord, false, false);
 
-  Services.prefs.setBoolPref("network.http.http3.enabled", true);
+  Services.prefs.setBoolPref("network.http.http3.enable", true);
   checkResult(inRecord, false, false, {
     expectedPriority: 1,
     expectedName: "test.foo_h3.com",

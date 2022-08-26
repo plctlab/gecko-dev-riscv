@@ -15,11 +15,9 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 
 var readerButton = document.getElementById("reader-mode-button");
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 
 add_task(async function test_reader_button() {
   registerCleanupFunction(function() {
@@ -374,4 +372,23 @@ add_task(async function test_reader_view_element_attribute_transform() {
     "menuitem's hidden attribute should be true on a non-reader-able page"
   );
   await waitForPageshow;
+});
+
+add_task(async function test_reader_mode_lang() {
+  let url = TEST_PATH + "readerModeArticle.html";
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
+  BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+
+  await promiseTabLoadEvent(tab, url);
+  await TestUtils.waitForCondition(() => !readerButton.hidden);
+
+  // Switch page into reader mode.
+  let promiseTabLoad = promiseTabLoadEvent(tab);
+  readerButton.click();
+  await promiseTabLoad;
+
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+    let container = content.document.querySelector(".container");
+    is(container.lang, "en");
+  });
 });

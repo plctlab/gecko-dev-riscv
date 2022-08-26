@@ -101,7 +101,8 @@ class nsImageRenderer {
   enum {
     FLAG_SYNC_DECODE_IMAGES = 0x01,
     FLAG_PAINTING_TO_WINDOW = 0x02,
-    FLAG_HIGH_QUALITY_SCALING = 0x04
+    FLAG_HIGH_QUALITY_SCALING = 0x04,
+    FLAG_DRAW_PARTIAL_FRAMES = 0x08
   };
   enum FitType { CONTAIN, COVER };
 
@@ -239,7 +240,6 @@ class nsImageRenderer {
                                gfxContext& aRenderingContext);
 
   bool IsRasterImage();
-  bool IsAnimatedImage();
 
   /// Retrieves the image associated with this nsImageRenderer, if there is one.
   already_AddRefed<imgIContainer> GetImage();

@@ -69,9 +69,7 @@ add_task(async function test_NavigationBetweenTwoDomains_NoDestroy() {
   });
 
   info("Reload .org page, onAvailable and onDestroyed should not be called");
-  const reloaded = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-  gBrowser.reloadTab(gBrowser.selectedTab);
-  await reloaded;
+  await BrowserTestUtils.reloadTab(gBrowser.selectedTab);
   await checkHooks(hooks, {
     available: 2,
     destroyed: 0,
@@ -337,11 +335,11 @@ async function watchServiceWorkerTargets({
     hooks.targets.splice(hooks.targets.indexOf(targetFront), 1);
   };
 
-  await targetCommand.watchTargets(
-    [targetCommand.TYPES.SERVICE_WORKER],
+  await targetCommand.watchTargets({
+    types: [targetCommand.TYPES.SERVICE_WORKER],
     onAvailable,
-    onDestroyed
-  );
+    onDestroyed,
+  });
 
   return { hooks, commands, targetCommand };
 }

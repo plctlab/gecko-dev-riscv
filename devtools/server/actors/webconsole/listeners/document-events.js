@@ -7,6 +7,8 @@
 "use strict";
 
 const EventEmitter = require("devtools/shared/event-emitter");
+const { Ci } = require("chrome");
+const ChromeUtils = require("ChromeUtils");
 
 /**
  * About "navigationStart - ${WILL_NAVIGATE_TIME_SHIFT}ms":
@@ -54,28 +56,38 @@ exports.DocumentEventsListener = DocumentEventsListener;
 
 DocumentEventsListener.prototype = {
   listen() {
-    // Listen to will-navigate and do not emit a fake one as we only care about upcoming navigation
-    EventEmitter.on(this.targetActor, "will-navigate", this.onWillNavigate);
-
-    // Listen to window-ready and then fake one in order to notify about dom-loading for the existing document
-    EventEmitter.on(this.targetActor, "window-ready", this.onWindowReady);
-    // If the target actor isn't attached yet, attach it so that it starts emitting window-ready event
-    // Only do that if this isn't a JSWindowActor based target as this won't emit window-ready anyway.
-    if (
-      !this.targetActor.attached &&
-      !this.targetActor.followWindowGlobalLifeCycle
-    ) {
-      // The target actor will emit a window-ready in the next event loop
-      // for the top level document (and any existing iframe document)
-      this.targetActor.attach();
+    // When EFT is enabled, the Target Actor won't dispatch any will-navigate/window-ready event
+    // Instead listen to WebProgressListener interface directly, so that we can later drop the whole
+    // DebuggerProgressListener interface in favor of this class.
+    // Also, do not wait for "load" event as it can be blocked in case of error during the load
+    // or when calling window.stop(). We still want to emit "dom-complete" in these scenarios.
+    if (this.targetActor.ignoreSubFrames) {
+      // Ignore listening to anything if the page is already fully loaded.
+      // This can be the case when opening DevTools against an already loaded page
+      // or when doing bfcache navigations.
+      if (this.targetActor.window.document.readyState != "complete") {
+        this.webProgress = this.targetActor.docShell
+          .QueryInterface(Ci.nsIInterfaceRequestor)
+          .getInterface(Ci.nsIWebProgress);
+        this.webProgress.addProgressListener(
+          this,
+          Ci.nsIWebProgress.NOTIFY_STATE_WINDOW |
+            Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT
+        );
+      }
     } else {
-      // If the target is already attached, it already emitted in the past a window-ready for the top document.
-      // So fake one for the top document right away.
-      this.onWindowReady({
-        window: this.targetActor.window,
-        isTopLevel: true,
-      });
+      // Listen to will-navigate and do not emit a fake one as we only care about upcoming navigation
+      this.targetActor.on("will-navigate", this.onWillNavigate);
+
+      // Listen to window-ready and then fake one in order to notify about dom-loading for the existing document
+      this.targetActor.on("window-ready", this.onWindowReady);
     }
+    // The target actor already emitted a window-ready for the top document when instantiating.
+    // So fake one for the top document right away.
+    this.onWindowReady({
+      window: this.targetActor.window,
+      isTopLevel: true,
+    });
   },
 
   onWillNavigate({
@@ -112,26 +124,35 @@ DocumentEventsListener.prototype = {
 
     const { readyState } = window.document;
     if (readyState != "interactive" && readyState != "complete") {
-      window.addEventListener(
-        "DOMContentLoaded",
-        e => this.onContentLoaded(e, isFrameSwitching),
-        {
-          once: true,
-        }
-      );
+      // When EFT is enabled, we track this event via the WebProgressListener interface.
+      if (!this.targetActor.ignoreSubFrames) {
+        window.addEventListener(
+          "DOMContentLoaded",
+          e => this.onContentLoaded(e, isFrameSwitching),
+          {
+            once: true,
+          }
+        );
+      }
     } else {
       this.onContentLoaded({ target: window.document }, isFrameSwitching);
     }
     if (readyState != "complete") {
-      window.addEventListener("load", e => this.onLoad(e, isFrameSwitching), {
-        once: true,
-      });
+      // When EFT is enabled, we track the load event via the WebProgressListener interface.
+      if (!this.targetActor.ignoreSubFrames) {
+        window.addEventListener("load", e => this.onLoad(e, isFrameSwitching), {
+          once: true,
+        });
+      }
     } else {
       this.onLoad({ target: window.document }, isFrameSwitching);
     }
   },
 
   onContentLoaded(event, isFrameSwitching) {
+    if (this.destroyed) {
+      return;
+    }
     // milliseconds since the UNIX epoch, when the parser finished its work
     // on the main document, that is when its Document.readyState changes to
     // 'interactive' and the corresponding readystatechange event is thrown
@@ -141,6 +162,9 @@ DocumentEventsListener.prototype = {
   },
 
   onLoad(event, isFrameSwitching) {
+    if (this.destroyed) {
+      return;
+    }
     // milliseconds since the UNIX epoch, when the parser finished its work
     // on the main document, that is when its Document.readyState changes to
     // 'complete' and the corresponding readystatechange event is thrown
@@ -151,6 +175,29 @@ DocumentEventsListener.prototype = {
       isFrameSwitching,
       hasNativeConsoleAPI: this.hasNativeConsoleAPI(window),
     });
+  },
+
+  onStateChange(progress, request, flag, status) {
+    progress.QueryInterface(Ci.nsIDocShell);
+    // Ignore destroyed, or progress for same-process iframes
+    if (progress.isBeingDestroyed() || progress != this.webProgress) {
+      return;
+    }
+
+    const isStop = flag & Ci.nsIWebProgressListener.STATE_STOP;
+    const isDocument = flag & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT;
+    const isWindow = flag & Ci.nsIWebProgressListener.STATE_IS_WINDOW;
+    const window = progress.DOMWindow;
+    if (isDocument && isStop) {
+      const time = window.performance.timing.domInteractive;
+      this.emit("dom-interactive", { time });
+    } else if (isWindow && isStop) {
+      const time = window.performance.timing.domComplete;
+      this.emit("dom-complete", {
+        time,
+        hasNativeConsoleAPI: this.hasNativeConsoleAPI(window),
+      });
+    }
   },
 
   /**
@@ -180,6 +227,21 @@ DocumentEventsListener.prototype = {
   },
 
   destroy() {
-    this.listener = null;
+    // Also use a flag to silent onContentLoad and onLoad events
+    this.destroyed = true;
+    this.targetActor.off("will-navigate", this.onWillNavigate);
+    this.targetActor.off("window-ready", this.onWindowReady);
+    if (this.webProgress) {
+      this.webProgress.removeProgressListener(
+        this,
+        Ci.nsIWebProgress.NOTIFY_STATE_WINDOW |
+          Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT
+      );
+    }
   },
+
+  QueryInterface: ChromeUtils.generateQI([
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
+  ]),
 };

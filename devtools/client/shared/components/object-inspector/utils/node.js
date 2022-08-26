@@ -23,6 +23,7 @@ const NODE_TYPES = {
   ENTRIES: Symbol("<entries>"),
   GET: Symbol("<get>"),
   GRIP: Symbol("GRIP"),
+  JSONML: Symbol("JsonML"),
   MAP_ENTRY_KEY: Symbol("<key>"),
   MAP_ENTRY_VALUE: Symbol("<value>"),
   PROMISE_REASON: Symbol("<reason>"),
@@ -98,6 +99,14 @@ function nodeIsMapEntry(item) {
 
 function nodeHasChildren(item) {
   return Array.isArray(item.contents);
+}
+
+function nodeHasCustomFormatter(item) {
+  return item?.contents?.value?.useCustomFormatter === true && Array.isArray(item?.contents?.value?.header);
+}
+
+function nodeHasCustomFormattedBody(item) {
+  return item?.contents?.value?.hasBody === true;
 }
 
 function nodeHasValue(item) {
@@ -269,12 +278,21 @@ function nodeHasEntries(item) {
     return false;
   }
 
+  const className = value.class;
   return (
-    value.class === "Map" ||
-    value.class === "Set" ||
-    value.class === "WeakMap" ||
-    value.class === "WeakSet" ||
-    value.class === "Storage"
+    className === "Map" ||
+    className === "Set" ||
+    className === "WeakMap" ||
+    className === "WeakSet" ||
+    className === "Storage" ||
+    // @backward-compat { version 104 } Support for enumerate URLSearchParams entries was
+    // added in 104. When connecting to older server, we don't want to show the <entries>
+    // node for them. The extra check can be removed once 104 hits release.
+    (className === "URLSearchParams" && Array.isArray(value.preview?.entries)) ||
+    // @backward-compat { version 105 } Support for enumerate Headers entries was
+    // added in 105. When connecting to older server, we don't want to show the <entries>
+    // node for them. The extra check can be removed once 105 hits release.
+    (className === "Headers" && Array.isArray(value.preview?.entries))
   );
 }
 
@@ -358,6 +376,22 @@ function makeNodesForProxyProperties(loadedProps, item) {
       name: "<handler>",
       contents: { value: proxyHandlerGrip, front: proxyHandlerFront },
       type: NODE_TYPES.PROXY_HANDLER,
+    }),
+  ];
+}
+
+function makeJsonMlNode(loadedProps, item) {
+  return [
+    createNode({
+      parent: item,
+      path: "body",
+      contents: {
+        value: {
+          header: loadedProps.customFormatterBody,
+          useCustomFormatter: true,
+        },
+      },
+      type: NODE_TYPES.JSONML,
     }),
   ];
 }
@@ -601,6 +635,10 @@ function makeNodesForProperties(objProps, parent) {
     }, this);
   }
 
+  if (nodeIsPromise(parent)) {
+    nodes.push(...makeNodesForPromiseProperties(objProps, parent));
+  }
+
   if (nodeHasEntries(parent)) {
     nodes.push(makeNodesForEntries(parent));
   }
@@ -815,6 +853,10 @@ function getChildren(options) {
     return children;
   };
 
+  if (nodeHasCustomFormattedBody(item) && hasLoadedProps) {
+    return addToCache(makeJsonMlNode(loadedProps, item));
+  }
+
   // Nodes can either have children already, or be an object with
   // properties that we need to go and fetch.
   if (nodeHasChildren(item)) {
@@ -823,10 +865,6 @@ function getChildren(options) {
 
   if (nodeIsMapEntry(item)) {
     return addToCache(makeNodesForMapEntry(item));
-  }
-
-  if (nodeIsPromise(item) && hasLoadedProps) {
-    return addToCache(makeNodesForPromiseProperties(loadedProps, item));
   }
 
   if (nodeIsProxy(item) && hasLoadedProps) {
@@ -993,12 +1031,15 @@ module.exports = {
   getNonPrototypeParentGripValue,
   getNumericalPropertiesCount,
   getValue,
+  makeJsonMlNode,
   makeNodesForEntries,
   makeNodesForPromiseProperties,
   makeNodesForProperties,
   makeNumericalBuckets,
   nodeHasAccessors,
   nodeHasChildren,
+  nodeHasCustomFormattedBody,
+  nodeHasCustomFormatter,
   nodeHasEntries,
   nodeHasProperties,
   nodeHasGetter,

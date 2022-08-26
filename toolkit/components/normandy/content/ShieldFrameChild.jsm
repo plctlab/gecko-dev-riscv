@@ -12,9 +12,8 @@ var EXPORTED_SYMBOLS = ["ShieldFrameChild"];
  * to the parent process and handle it there.
  */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const frameGlobal = {};
@@ -24,17 +23,21 @@ ChromeUtils.defineModuleGetter(
   "resource://normandy-content/AboutPages.jsm"
 );
 
-XPCOMUtils.defineLazyGetter(this, "gBrandBundle", function() {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "gBrandBundle", function() {
   return Services.strings.createBundle(
     "chrome://branding/locale/brand.properties"
   );
 });
 
-XPCOMUtils.defineLazyGetter(this, "gStringBundle", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gStringBundle", function() {
   return Services.strings.createBundle(
     "chrome://global/locale/aboutStudies.properties"
   );
 });
+
+const NIMBUS_DEBUG_PREF = "nimbus.debug";
 
 /**
  * Listen for DOM events bubbling up from the about:studies page, and perform
@@ -100,6 +103,12 @@ class ShieldFrameChild extends JSWindowActorChild {
           studiesEnabled
         );
         break;
+      case "GetRemoteValue:DebugModeOn":
+        this.triggerPageCallback(
+          "ReceiveRemoteValue:DebugModeOn",
+          Services.prefs.getBoolPref(NIMBUS_DEBUG_PREF)
+        );
+        break;
       case "NavigateToDataPreferences":
         this.sendAsyncMessage("Shield:OpenDataPreferences");
         break;
@@ -112,11 +121,11 @@ class ShieldFrameChild extends JSWindowActorChild {
         break;
       case "GetRemoteValue:ShieldTranslations":
         const strings = {};
-        for (let str of gStringBundle.getSimpleEnumeration()) {
+        for (let str of lazy.gStringBundle.getSimpleEnumeration()) {
           strings[str.key] = str.value;
         }
-        const brandName = gBrandBundle.GetStringFromName("brandShortName");
-        strings.enabledList = gStringBundle.formatStringFromName(
+        const brandName = lazy.gBrandBundle.GetStringFromName("brandShortName");
+        strings.enabledList = lazy.gStringBundle.formatStringFromName(
           "enabledList",
           [brandName]
         );

@@ -204,6 +204,13 @@ fn handle_mdns_socket(
     hosts: &mut HashMap<String, Vec<u8>>,
     pending_queries: &mut HashMap<String, Query>,
 ) -> bool {
+    // Record a simple marker to see how often this is called.
+    gecko_profiler::add_untyped_marker(
+        "handle_mdns_socket",
+        gecko_profiler::gecko_profiler_category!(Network),
+        Default::default(),
+    );
+
     match socket.recv_from(&mut buffer) {
         Ok((amt, _)) => {
             if amt > 0 {
@@ -405,7 +412,7 @@ impl MDNSService {
         let mdns_addr = std::net::Ipv4Addr::new(224, 0, 0, 251);
         let port = 5353;
 
-        let socket = Socket::new(Domain::ipv4(), Type::dgram(), None)?;
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_reuse_address(true)?;
 
         #[cfg(not(target_os = "windows"))]
@@ -415,7 +422,7 @@ impl MDNSService {
             port,
         ))))?;
 
-        let socket = socket.into_udp_socket();
+        let socket = std::net::UdpSocket::from(socket);
         socket.set_multicast_loop_v4(true)?;
         socket.set_read_timeout(Some(time::Duration::from_millis(1)))?;
         socket.set_write_timeout(Some(time::Duration::from_millis(1)))?;
@@ -428,8 +435,10 @@ impl MDNSService {
             }
         }
 
-        let builder = thread::Builder::new().name("mdns_service".to_string());
+        let thread_name = "mdns_service";
+        let builder = thread::Builder::new().name(thread_name.into());
         self.handle = Some(builder.spawn(move || {
+            gecko_profiler::register_thread(thread_name);
             let mdns_addr = std::net::SocketAddr::from(([224, 0, 0, 251], port));
             let mut buffer: [u8; 1024] = [0; 1024];
             let mut hosts = HashMap::new();
@@ -503,6 +512,7 @@ impl MDNSService {
                     break;
                 }
             }
+            gecko_profiler::unregister_thread();
         })?);
 
         Ok(())
@@ -648,7 +658,7 @@ mod tests {
     fn listen_until(addr: &std::net::Ipv4Addr, stop: u64) -> thread::JoinHandle<Vec<String>> {
         let port = 5353;
 
-        let socket = Socket::new(Domain::ipv4(), Type::dgram(), None).unwrap();
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
         socket.set_reuse_address(true).unwrap();
 
         #[cfg(not(target_os = "windows"))]
@@ -660,7 +670,7 @@ mod tests {
             ))))
             .unwrap();
 
-        let socket = socket.into_udp_socket();
+        let socket = std::net::UdpSocket::from(socket);
         socket.set_multicast_loop_v4(true).unwrap();
         socket
             .set_read_timeout(Some(time::Duration::from_millis(10)))

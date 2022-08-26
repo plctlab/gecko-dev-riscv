@@ -42,7 +42,7 @@ extern bool gUserCancelledDrag;
 
 // This global makes the transferable array available to Cocoa's promised
 // file destination callback.
-nsIArray* gDraggedTransferables = nullptr;
+mozilla::StaticRefPtr<nsIArray> gDraggedTransferables;
 
 NSString* const kPublicUrlPboardType = @"public.url";
 NSString* const kPublicUrlNamePboardType = @"public.url-name";
@@ -247,6 +247,10 @@ nsresult nsDragService::InvokeDragSessionImpl(nsIArray* aTransferableArray,
                                               const Maybe<CSSIntRegion>& aRegion,
                                               uint32_t aActionType) {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+#ifdef NIGHTLY_BUILD
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+#endif
 
   if (!gLastDragView) {
     // gLastDragView is non-null between -[ChildView mouseDown:] and -[ChildView mouseUp:].
@@ -607,8 +611,8 @@ void nsDragService::DragMovedWithView(NSDraggingSession* aSession, NSPoint aPoin
               return;
             }
 
-            nsPoint pt = LayoutDevicePixel::ToAppUnits(
-                devPoint, pc->DeviceContext()->AppUnitsPerDevPixelAtUnitFullZoom());
+            nsPoint pt =
+                LayoutDevicePixel::ToAppUnits(devPoint, pc->DeviceContext()->AppUnitsPerDevPixel());
             CSSIntPoint screenPoint = CSSIntPoint(nsPresContext::AppUnitsToIntCSSPixels(pt.x),
                                                   nsPresContext::AppUnitsToIntCSSPixels(pt.y));
 

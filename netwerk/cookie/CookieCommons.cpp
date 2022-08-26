@@ -7,10 +7,11 @@
 #include "CookieCommons.h"
 #include "CookieLogging.h"
 #include "CookieService.h"
-#include "mozilla/ContentBlocking.h"
 #include "mozilla/ConsoleReportCollector.h"
 #include "mozilla/ContentBlockingNotifier.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/StorageAccess.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/net/CookieJarSettings.h"
@@ -24,8 +25,6 @@
 #include "nsNetUtil.h"
 #include "nsScriptSecurityManager.h"
 #include "ThirdPartyUtil.h"
-
-constexpr auto CONSOLE_SCHEMEFUL_CATEGORY = "cookieSchemeful"_ns;
 
 namespace mozilla {
 
@@ -284,29 +283,6 @@ bool CookieCommons::CheckCookiePermission(
     return false;
   }
 
-  // Here we can have any legacy permission value.
-
-  // now we need to figure out what type of accept policy we're dealing with
-  // if we accept cookies normally, just bail and return
-  if (StaticPrefs::network_cookie_lifetimePolicy() ==
-      nsICookieService::ACCEPT_NORMALLY) {
-    return true;
-  }
-
-  // declare this here since it'll be used in all of the remaining cases
-  int64_t currentTime = PR_Now() / PR_USEC_PER_SEC;
-  int64_t delta = aCookieData.expiry() - currentTime;
-
-  // We are accepting the cookie, but,
-  // if it's not a session cookie, we may have to limit its lifetime.
-  if (!aCookieData.isSession() && delta > 0) {
-    if (StaticPrefs::network_cookie_lifetimePolicy() ==
-        nsICookieService::ACCEPT_SESSION) {
-      // limit lifetime to session
-      aCookieData.isSession() = true;
-    }
-  }
-
   return true;
 }
 
@@ -353,7 +329,7 @@ already_AddRefed<Cookie> CookieCommons::CreateCookieFromDocument(
         aHasExistingCookiesLambda,
     nsIURI** aDocumentURI, nsACString& aBaseDomain, OriginAttributes& aAttrs) {
   nsCOMPtr<nsIPrincipal> storagePrincipal =
-      aDocument->EffectiveStoragePrincipal();
+      aDocument->EffectiveCookiePrincipal();
   MOZ_ASSERT(storagePrincipal);
 
   nsCOMPtr<nsIURI> principalURI;
@@ -387,8 +363,7 @@ already_AddRefed<Cookie> CookieCommons::CreateCookieFromDocument(
   if (aDocument->CookieJarSettings()->GetLimitForeignContexts() &&
       !aHasExistingCookiesLambda(baseDomain,
                                  storagePrincipal->OriginAttributesRef()) &&
-      !ContentBlocking::ShouldAllowAccessFor(innerWindow, principalURI,
-                                             &dummyRejectedReason)) {
+      !ShouldAllowAccessFor(innerWindow, principalURI, &dummyRejectedReason)) {
     return nullptr;
   }
 
@@ -454,15 +429,19 @@ already_AddRefed<Cookie> CookieCommons::CreateCookieFromDocument(
 already_AddRefed<nsICookieJarSettings> CookieCommons::GetCookieJarSettings(
     nsIChannel* aChannel) {
   nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
+  bool shouldResistFingerprinting =
+      nsContentUtils::ShouldResistFingerprinting(aChannel);
   if (aChannel) {
     nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
     nsresult rv =
         loadInfo->GetCookieJarSettings(getter_AddRefs(cookieJarSettings));
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      cookieJarSettings = CookieJarSettings::GetBlockingAll();
+      cookieJarSettings =
+          CookieJarSettings::GetBlockingAll(shouldResistFingerprinting);
     }
   } else {
-    cookieJarSettings = CookieJarSettings::Create(CookieJarSettings::eRegular);
+    cookieJarSettings = CookieJarSettings::Create(CookieJarSettings::eRegular,
+                                                  shouldResistFingerprinting);
   }
 
   MOZ_ASSERT(cookieJarSettings);
@@ -493,7 +472,37 @@ bool CookieCommons::IsSafeTopLevelNav(nsIChannel* aChannel) {
   return NS_IsSafeMethodNav(aChannel);
 }
 
-bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
+// This function determines if two schemes are equal in the context of
+// "Schemeful SameSite cookies".
+//
+// Two schemes are considered equal:
+//   - if the "network.cookie.sameSite.schemeful" pref is set to false.
+// OR
+//   - if one of the schemes is not http or https.
+// OR
+//   - if both schemes are equal AND both are either http or https.
+bool IsSameSiteSchemeEqual(const nsACString& aFirstScheme,
+                           const nsACString& aSecondScheme) {
+  if (!StaticPrefs::network_cookie_sameSite_schemeful()) {
+    return true;
+  }
+
+  auto isSchemeHttpOrHttps = [](const nsACString& scheme) -> bool {
+    return scheme.EqualsLiteral("http") || scheme.EqualsLiteral("https");
+  };
+
+  if (!isSchemeHttpOrHttps(aFirstScheme) ||
+      !isSchemeHttpOrHttps(aSecondScheme)) {
+    return true;
+  }
+
+  return aFirstScheme.Equals(aSecondScheme);
+}
+
+bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI,
+                                      bool* aHadCrossSiteRedirects) {
+  *aHadCrossSiteRedirects = false;
+
   if (!aChannel) {
     return false;
   }
@@ -508,6 +517,9 @@ bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
     return false;
   }
 
+  nsAutoCString hostScheme, otherScheme;
+  aHostURI->GetScheme(hostScheme);
+
   bool isForeign = true;
   nsresult rv;
   if (loadInfo->GetExternalContentPolicyType() ==
@@ -518,6 +530,8 @@ bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
     // triggeringPrincipal which returns the URI of the document that caused the
     // navigation.
     rv = triggeringPrincipal->IsThirdPartyChannel(aChannel, &isForeign);
+
+    triggeringPrincipal->GetScheme(otherScheme);
   } else {
     nsCOMPtr<mozIThirdPartyUtil> thirdPartyUtil =
         do_GetService(THIRDPARTYUTIL_CONTRACTID);
@@ -525,10 +539,18 @@ bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
       return true;
     }
     rv = thirdPartyUtil->IsThirdPartyChannel(aChannel, aHostURI, &isForeign);
+
+    channelURI->GetScheme(otherScheme);
   }
   // if we are dealing with a cross origin request, we can return here
   // because we already know the request is 'foreign'.
   if (NS_FAILED(rv) || isForeign) {
+    return true;
+  }
+
+  if (!IsSameSiteSchemeEqual(otherScheme, hostScheme)) {
+    // If the two schemes are not of the same http(s) scheme then we
+    // consider the request as foreign.
     return true;
   }
 
@@ -557,73 +579,21 @@ bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
       rv = redirectPrincipal->IsThirdPartyChannel(aChannel, &isForeign);
       // if at any point we encounter a cross-origin redirect we can return.
       if (NS_FAILED(rv) || isForeign) {
+        *aHadCrossSiteRedirects = true;
+        return true;
+      }
+
+      nsAutoCString redirectScheme;
+      redirectPrincipal->GetScheme(redirectScheme);
+      if (!IsSameSiteSchemeEqual(redirectScheme, hostScheme)) {
+        // If the two schemes are not of the same http(s) scheme then we
+        // consider the request as foreign.
+        *aHadCrossSiteRedirects = true;
         return true;
       }
     }
   }
   return isForeign;
-}
-
-namespace {
-
-bool MaybeCompareSchemeInternal(Cookie* aCookie,
-                                nsICookie::schemeType aSchemeType) {
-  MOZ_ASSERT(aCookie);
-
-  // This is an old cookie without a scheme yet. Let's consider it valid.
-  if (aCookie->SchemeMap() == nsICookie::SCHEME_UNSET) {
-    return true;
-  }
-
-  return !!(aCookie->SchemeMap() & aSchemeType);
-}
-
-}  // namespace
-
-// static
-bool CookieCommons::MaybeCompareSchemeWithLogging(
-    nsIConsoleReportCollector* aCRC, nsIURI* aHostURI, Cookie* aCookie,
-    nsICookie::schemeType aSchemeType) {
-  MOZ_ASSERT(aCookie);
-  MOZ_ASSERT(aHostURI);
-
-  if (MaybeCompareSchemeInternal(aCookie, aSchemeType)) {
-    return true;
-  }
-
-  nsAutoCString uri;
-  nsresult rv = aHostURI->GetSpec(uri);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return !StaticPrefs::network_cookie_sameSite_schemeful();
-  }
-
-  if (!StaticPrefs::network_cookie_sameSite_schemeful()) {
-    CookieLogging::LogMessageToConsole(
-        aCRC, aHostURI, nsIScriptError::warningFlag, CONSOLE_SCHEMEFUL_CATEGORY,
-        "CookieSchemefulRejectForBeta"_ns,
-        AutoTArray<nsString, 2>{NS_ConvertUTF8toUTF16(aCookie->Name()),
-                                NS_ConvertUTF8toUTF16(uri)});
-    return true;
-  }
-
-  CookieLogging::LogMessageToConsole(
-      aCRC, aHostURI, nsIScriptError::warningFlag, CONSOLE_SCHEMEFUL_CATEGORY,
-      "CookieSchemefulReject"_ns,
-      AutoTArray<nsString, 2>{NS_ConvertUTF8toUTF16(aCookie->Name()),
-                              NS_ConvertUTF8toUTF16(uri)});
-  return false;
-}
-
-// static
-bool CookieCommons::MaybeCompareScheme(Cookie* aCookie,
-                                       nsICookie::schemeType aSchemeType) {
-  MOZ_ASSERT(aCookie);
-
-  if (!StaticPrefs::network_cookie_sameSite_schemeful()) {
-    return true;
-  }
-
-  return MaybeCompareSchemeInternal(aCookie, aSchemeType);
 }
 
 // static

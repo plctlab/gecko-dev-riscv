@@ -1,6 +1,7 @@
 import {
   DSContextFooter,
   StatusMessage,
+  DSMessageFooter,
 } from "content-src/components/DiscoveryStreamComponents/DSContextFooter/DSContextFooter";
 import React from "react";
 import { mount } from "enzyme";
@@ -39,17 +40,6 @@ describe("<DSContextFooter>", () => {
 
     const engagementLabel = wrapper.find(".story-view-count");
     assert.equal(engagementLabel.length, 0);
-  });
-  it("should render an engagement status if no badge and spoc passed", () => {
-    wrapper = mount(
-      <DSContextFooter
-        display_engagement_labels={true}
-        engagement={engagement}
-      />
-    );
-
-    const engagementLabel = wrapper.find(".story-view-count");
-    assert.equal(engagementLabel.text(), engagement);
   });
   it("should render a badge if a proper badge prop is passed", () => {
     wrapper = mount(
@@ -141,5 +131,16 @@ describe("<DSContextFooter>", () => {
       `div[data-l10n-id='${removeBookmarkFluentID}']`
     );
     assert.isTrue(removedBookmarkStatusMessage.exists());
+  });
+  it("should render a story footer", () => {
+    wrapper = mount(
+      <DSMessageFooter
+        context_type={bookmarkBadge}
+        engagement={engagement}
+        display_engagement_labels={true}
+      />
+    );
+
+    assert.lengthOf(wrapper.find(".story-footer"), 1);
   });
 });

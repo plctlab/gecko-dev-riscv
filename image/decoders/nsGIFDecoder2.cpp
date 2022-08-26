@@ -91,8 +91,10 @@ nsGIFDecoder2::nsGIFDecoder2(RasterImage* aImage)
       mGIFOpen(false),
       mSawTransparency(false),
       mSwizzleFn(nullptr) {
-  // Clear out the structure, excluding the arrays.
+  // Clear out the structure, excluding the arrays. Ensure that the global
+  // colormap is initialized as opaque.
   memset(&mGIFStruct, 0, sizeof(mGIFStruct));
+  memset(mGIFStruct.global_colormap, 0xFF, sizeof(mGIFStruct.global_colormap));
 
   // Each color table will need to be unpacked.
   mSwizzleFn = SwizzleRow(SurfaceFormat::R8G8B8, SurfaceFormat::OS_RGBA);
@@ -141,7 +143,7 @@ void nsGIFDecoder2::BeginGIF() {
   PostSize(mGIFStruct.screen_width, mGIFStruct.screen_height);
 }
 
-bool nsGIFDecoder2::CheckForTransparency(const IntRect& aFrameRect) {
+bool nsGIFDecoder2::CheckForTransparency(const OrientedIntRect& aFrameRect) {
   // Check if the image has a transparent color in its palette.
   if (mGIFStruct.is_transparent) {
     PostHasTransparency();
@@ -154,7 +156,8 @@ bool nsGIFDecoder2::CheckForTransparency(const IntRect& aFrameRect) {
 
   // If we need padding on the first frame, that means we don't draw into part
   // of the image at all. Report that as transparency.
-  IntRect imageRect(0, 0, mGIFStruct.screen_width, mGIFStruct.screen_height);
+  OrientedIntRect imageRect(0, 0, mGIFStruct.screen_width,
+                            mGIFStruct.screen_height);
   if (!imageRect.IsEqualEdges(aFrameRect)) {
     PostHasTransparency();
     mSawTransparency = true;  // Make sure we don't optimize it away.
@@ -165,7 +168,7 @@ bool nsGIFDecoder2::CheckForTransparency(const IntRect& aFrameRect) {
 }
 
 //******************************************************************************
-nsresult nsGIFDecoder2::BeginImageFrame(const IntRect& aFrameRect,
+nsresult nsGIFDecoder2::BeginImageFrame(const OrientedIntRect& aFrameRect,
                                         uint16_t aDepth, bool aIsInterlaced) {
   MOZ_ASSERT(HasSize());
 
@@ -176,7 +179,7 @@ nsresult nsGIFDecoder2::BeginImageFrame(const IntRect& aFrameRect,
 
   Maybe<AnimationParams> animParams;
   if (!IsFirstFrameDecode()) {
-    animParams.emplace(aFrameRect,
+    animParams.emplace(aFrameRect.ToUnknownRect(),
                        FrameTimeout::FromRawMilliseconds(mGIFStruct.delay_time),
                        uint32_t(mGIFStruct.images_decoded), BlendMethod::OVER,
                        DisposalMethod(mGIFStruct.disposal_method));
@@ -752,7 +755,7 @@ LexerTransition<nsGIFDecoder2::State> nsGIFDecoder2::ReadImageDescriptor(
 
 LexerTransition<nsGIFDecoder2::State> nsGIFDecoder2::FinishImageDescriptor(
     const char* aData) {
-  IntRect frameRect;
+  OrientedIntRect frameRect;
 
   // Get image offsets with respect to the screen origin.
   frameRect.SetRect(
@@ -854,6 +857,8 @@ LexerTransition<nsGIFDecoder2::State> nsGIFDecoder2::FinishImageDescriptor(
         mGIFStruct.local_colormap_buffer_size = mColormapSize;
         mGIFStruct.local_colormap =
             static_cast<uint32_t*>(moz_xmalloc(mColormapSize));
+        // Ensure the local colormap is initialized as opaque.
+        memset(mGIFStruct.local_colormap, 0xFF, mColormapSize);
       } else {
         mColormapSize = mGIFStruct.local_colormap_buffer_size;
       }

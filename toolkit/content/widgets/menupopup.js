@@ -10,9 +10,6 @@
   const { AppConstants } = ChromeUtils.import(
     "resource://gre/modules/AppConstants.jsm"
   );
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
 
   // For the Windows 10 custom context menu styling, we need to know if we need
   // a gutter for checkboxes. To do this, check whether there are any
@@ -47,16 +44,18 @@
       this._draggingState = this.NOT_DRAGGING;
       this._scrollTimer = 0;
 
+      this.attachShadow({ mode: "open" });
+
       this.addEventListener("popupshowing", event => {
         if (event.target != this) {
           return;
         }
 
         // Make sure we generated shadow DOM to place menuitems into.
-        this.shadowRoot;
+        this.ensureInitialized();
       });
 
-      this.attachShadow({ mode: "open" });
+      this.addEventListener("DOMMenuItemActive", this);
     }
 
     connectedCallback() {
@@ -65,7 +64,7 @@
       }
 
       this.hasConnected = true;
-      if (this.parentNode && this.parentNode.localName == "menulist") {
+      if (this.parentNode?.localName == "menulist") {
         this._setUpMenulistPopup();
       }
     }
@@ -83,10 +82,14 @@
       );
     }
 
+    ensureInitialized() {
+      this.shadowRoot;
+    }
+
     get shadowRoot() {
-      // We generate shadow DOM lazily on popupshowing event to avoid extra load
-      // on the system during browser startup.
-      if (!super.shadowRoot.firstElementChild) {
+      if (!super.shadowRoot.firstChild) {
+        // We generate shadow DOM lazily on popupshowing event to avoid extra
+        // load on the system during browser startup.
         super.shadowRoot.appendChild(this.fragment);
         this.initShadowDOM();
       }
@@ -148,7 +151,7 @@
       // shadow DOM on popupshowing, but it doesn't work for HTML:selects,
       // which are implemented via menulist elements living in the main process.
       // So make them a special case then.
-      this.shadowRoot;
+      this.ensureInitialized();
       this.classList.add("in-menulist");
 
       this.addEventListener("popupshown", () => {
@@ -256,6 +259,31 @@
       if (this._scrollTimer) {
         this.ownerGlobal.clearInterval(this._scrollTimer);
         this._scrollTimer = 0;
+      }
+    }
+
+    on_DOMMenuItemActive(event) {
+      // Scroll buttons may overlap the active item. In that case, scroll
+      // further to stay clear of the buttons.
+      if (
+        this.parentNode?.localName == "menulist" ||
+        !this.scrollBox.hasAttribute("overflowing")
+      ) {
+        return;
+      }
+      let item = event.target;
+      if (item.parentNode != this) {
+        return;
+      }
+      let itemRect = item.getBoundingClientRect();
+      let buttonRect = this.scrollBox._scrollButtonUp.getBoundingClientRect();
+      if (buttonRect.bottom > itemRect.top) {
+        this.scrollBox.scrollByPixels(itemRect.top - buttonRect.bottom, true);
+      } else {
+        buttonRect = this.scrollBox._scrollButtonDown.getBoundingClientRect();
+        if (buttonRect.top < itemRect.bottom) {
+          this.scrollBox.scrollByPixels(itemRect.bottom - buttonRect.top, true);
+        }
       }
     }
   }

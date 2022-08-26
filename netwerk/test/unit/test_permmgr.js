@@ -33,17 +33,11 @@ var results = [
 
 function run_test() {
   Services.prefs.setCharPref("permissions.manager.defaultsUrl", "");
-  var pm = Cc["@mozilla.org/permissionmanager;1"].getService(
-    Ci.nsIPermissionManager
-  );
+  var pm = Services.perms;
 
-  var ioService = Cc["@mozilla.org/network/io-service;1"].getService(
-    Ci.nsIIOService
-  );
+  var ioService = Services.io;
 
-  var secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-    Ci.nsIScriptSecurityManager
-  );
+  var secMan = Services.scriptSecurityManager;
 
   // nsIPermissionManager implementation is an extension; don't fail if it's not there
   if (!pm) {
@@ -51,7 +45,7 @@ function run_test() {
   }
 
   // put a few hosts in
-  for (var i = 0; i < hosts.length; ++i) {
+  for (let i = 0; i < hosts.length; ++i) {
     let uri = ioService.newURI(hosts[i][0]);
     let principal = secMan.createContentPrincipal(uri, {});
 
@@ -59,7 +53,7 @@ function run_test() {
   }
 
   // test the result
-  for (var i = 0; i < results.length; ++i) {
+  for (let i = 0; i < results.length; ++i) {
     let uri = ioService.newURI(results[i][0]);
     let principal = secMan.createContentPrincipal(uri, {});
 
@@ -78,13 +72,13 @@ function run_test() {
   Assert.equal(perms.length, hosts.length);
 
   // ... remove all the hosts ...
-  for (var j = 0; j < perms.length; ++j) {
+  for (let j = 0; j < perms.length; ++j) {
     pm.removePermission(perms[j]);
   }
 
   // ... ensure each and every element is equal ...
-  for (var i = 0; i < hosts.length; ++i) {
-    for (var j = 0; j < perms.length; ++j) {
+  for (let i = 0; i < hosts.length; ++i) {
+    for (let j = 0; j < perms.length; ++j) {
       if (
         perms[j].matchesURI(ioService.newURI(hosts[i][0]), true) &&
         hosts[i][1] == perms[j].type &&

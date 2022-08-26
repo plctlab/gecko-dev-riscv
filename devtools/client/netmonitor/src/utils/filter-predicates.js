@@ -21,7 +21,9 @@ function all() {
 }
 
 function isHtml({ mimeType }) {
-  return mimeType && mimeType.includes("/html");
+  return (
+    mimeType && (mimeType.includes("/html") || mimeType.includes("/xhtml+xml"))
+  );
 }
 
 function isCss({ mimeType }) {
@@ -71,7 +73,8 @@ function isMedia({ mimeType }) {
       mimeType.includes("video/") ||
       mimeType.includes("model/") ||
       mimeType === "application/vnd.apple.mpegurl" ||
-      mimeType === "application/x-mpegurl")
+      mimeType === "application/x-mpegurl" ||
+      mimeType === "application/ogg")
   );
 }
 
@@ -119,7 +122,7 @@ function isOther(item) {
 
 module.exports = {
   Filters: {
-    all: all,
+    all,
     html: isHtml,
     css: isCss,
     js: isJs,

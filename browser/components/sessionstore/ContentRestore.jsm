@@ -6,15 +6,15 @@
 
 var EXPORTED_SYMBOLS = ["ContentRestore"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "SessionHistory",
   "resource://gre/modules/sessionstore/SessionHistory.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Utils",
   "resource://gre/modules/sessionstore/Utils.jsm"
 );
@@ -122,10 +122,10 @@ ContentRestoreInternal.prototype = {
     let activePageData = tabData.entries[activeIndex] || {};
     let uri = activePageData.url || null;
     if (uri && !loadArguments) {
-      webNavigation.setCurrentURI(Services.io.newURI(uri));
+      webNavigation.setCurrentURIForSessionStore(Services.io.newURI(uri));
     }
 
-    SessionHistory.restore(this.docShell, tabData);
+    lazy.SessionHistory.restore(this.docShell, tabData);
 
     // Add a listener to watch for reloads.
     let listener = new HistoryListener(this.docShell, () => {
@@ -178,7 +178,9 @@ ContentRestoreInternal.prototype = {
     // load happens. Don't bother doing this if we're restoring immediately
     // due to a process switch.
     if (!isRemotenessUpdate) {
-      webNavigation.setCurrentURI(Services.io.newURI("about:blank"));
+      webNavigation.setCurrentURIForSessionStore(
+        Services.io.newURI("about:blank")
+      );
     }
 
     try {
@@ -280,7 +282,7 @@ ContentRestoreInternal.prototype = {
     let window = this.docShell.domWindow;
 
     // Restore form data.
-    Utils.restoreFrameTreeData(window, formdata, (frame, data) => {
+    lazy.Utils.restoreFrameTreeData(window, formdata, (frame, data) => {
       // restore() will return false, and thus abort restoration for the
       // current |frame| and its descendants, if |data.url| is given but
       // doesn't match the loaded document's URL.
@@ -288,7 +290,7 @@ ContentRestoreInternal.prototype = {
     });
 
     // Restore scroll data.
-    Utils.restoreFrameTreeData(window, scrollPositions, (frame, data) => {
+    lazy.Utils.restoreFrameTreeData(window, scrollPositions, (frame, data) => {
       if (data.scroll) {
         SessionStoreUtils.restoreScrollPosition(frame, data);
       }
@@ -362,7 +364,9 @@ HistoryListener.prototype = {
 
     // Reset the tab's URL to what it's actually showing. Without this loadURI()
     // would use the current document and change the displayed URL only.
-    this.webNavigation.setCurrentURI(Services.io.newURI("about:blank"));
+    this.webNavigation.setCurrentURIForSessionStore(
+      Services.io.newURI("about:blank")
+    );
 
     // Kick off a new load so that we navigate away from about:blank to the
     // new URL that was passed to loadURI(). The new load will cause a

@@ -34,7 +34,7 @@ bool wasm::ToValType(JSContext* cx, HandleValue v, ValType* out) {
     return false;
   }
 
-  RootedLinearString typeLinearStr(cx, typeStr->ensureLinear(cx));
+  Rooted<JSLinearString*> typeLinearStr(cx, typeStr->ensureLinear(cx));
   if (!typeLinearStr) {
     return false;
   }
@@ -51,7 +51,25 @@ bool wasm::ToValType(JSContext* cx, HandleValue v, ValType* out) {
   } else if (SimdAvailable(cx) && StringEqualsLiteral(typeLinearStr, "v128")) {
     *out = ValType::V128;
 #endif
-  } else if (StringEqualsLiteral(typeLinearStr, "funcref")) {
+  } else {
+    RefType rt;
+    if (ToRefType(cx, typeLinearStr, &rt)) {
+      *out = ValType(rt);
+    } else {
+      // ToRefType will report an error when it fails, just return false
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool wasm::ToRefType(JSContext* cx, JSLinearString* typeLinearStr,
+                     RefType* out) {
+  if (StringEqualsLiteral(typeLinearStr, "anyfunc") ||
+      StringEqualsLiteral(typeLinearStr, "funcref")) {
+    // The JS API uses "anyfunc" uniformly as the external name of funcref.  We
+    // also allow "funcref" for compatibility with code we've already shipped.
     *out = RefType::func();
   } else if (StringEqualsLiteral(typeLinearStr, "externref")) {
     *out = RefType::extern_();
@@ -68,7 +86,44 @@ bool wasm::ToValType(JSContext* cx, HandleValue v, ValType* out) {
   return true;
 }
 
-UniqueChars wasm::ToString(RefType type) { return ToString(ValType(type)); }
+UniqueChars wasm::ToString(RefType type) {
+  // Try to emit a shorthand version first
+  if (type.isNullable() && !type.isTypeIndex()) {
+    const char* literal = nullptr;
+    switch (type.kind()) {
+      case RefType::Func:
+        literal = "funcref";
+        break;
+      case RefType::Extern:
+        literal = "externref";
+        break;
+      case RefType::Eq:
+        literal = "eqref";
+        break;
+      case RefType::TypeIndex:
+        MOZ_ASSERT_UNREACHABLE();
+    }
+    return DuplicateString(literal);
+  }
+
+  // Emit the full reference type with heap type
+  const char* heapType = nullptr;
+  switch (type.kind()) {
+    case RefType::Func:
+      heapType = "func";
+      break;
+    case RefType::Extern:
+      heapType = "extern";
+      break;
+    case RefType::Eq:
+      heapType = "eq";
+      break;
+    case RefType::TypeIndex:
+      return JS_smprintf("(ref %s%d)", type.isNullable() ? "null " : "",
+                         type.typeIndex());
+  }
+  return JS_smprintf("(ref %s%s)", type.isNullable() ? "null " : "", heapType);
+}
 
 UniqueChars wasm::ToString(ValType type) {
   const char* literal = nullptr;
@@ -89,47 +144,9 @@ UniqueChars wasm::ToString(ValType type) {
       literal = "f64";
       break;
     case ValType::Ref:
-      if (type.isNullable() && !type.isTypeIndex()) {
-        switch (type.refTypeKind()) {
-          case RefType::Func:
-            literal = "funcref";
-            break;
-          case RefType::Extern:
-            literal = "externref";
-            break;
-          case RefType::Eq:
-            literal = "eqref";
-            break;
-          case RefType::TypeIndex:
-            MOZ_ASSERT_UNREACHABLE();
-        }
-      } else {
-        const char* heapType = nullptr;
-        switch (type.refTypeKind()) {
-          case RefType::Func:
-            heapType = "func";
-            break;
-          case RefType::Extern:
-            heapType = "extern";
-            break;
-          case RefType::Eq:
-            heapType = "eq";
-            break;
-          case RefType::TypeIndex:
-            return JS_smprintf("(ref %s%d)", type.isNullable() ? "null " : "",
-                               type.refType().typeIndex());
-        }
-        return JS_smprintf("(ref %s%s)", type.isNullable() ? "null " : "",
-                           heapType);
-      }
-      break;
-    case ValType::Rtt:
-      if (!type.hasRttDepth()) {
-        return JS_smprintf("(rtt %d)", type.typeIndex());
-      }
-      return JS_smprintf("(rtt %d %d)", type.rttDepth(), type.typeIndex());
+      return ToString(type.refType());
   }
-  return JS_smprintf("%s", literal);
+  return DuplicateString(literal);
 }
 
 UniqueChars wasm::ToString(const Maybe<ValType>& type) {

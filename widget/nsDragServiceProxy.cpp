@@ -51,8 +51,8 @@ nsresult nsDragServiceProxy::InvokeDragSessionImpl(
 
   nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
   cookieJarSettings = mSourceDocument->CookieJarSettings();
-  net::CookieJarSettingsArgs csArgs;
-  net::CookieJarSettings::Cast(cookieJarSettings)->Serialize(csArgs);
+  mozilla::net::CookieJarSettingsArgs csArgs;
+  mozilla::net::CookieJarSettings::Cast(cookieJarSettings)->Serialize(csArgs);
 
   LayoutDeviceIntRect dragRect;
   if (mHasImage || mSelection) {
@@ -66,7 +66,7 @@ nsresult nsDragServiceProxy::InvokeDragSessionImpl(
         size_t length;
         int32_t stride;
         Maybe<Shmem> maybeShm = nsContentUtils::GetSurfaceData(
-            dataSurface, &length, &stride, child);
+            *dataSurface, &length, &stride, child);
         if (maybeShm.isNothing()) {
           return NS_ERROR_FAILURE;
         }

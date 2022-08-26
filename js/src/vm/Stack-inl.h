@@ -117,8 +117,8 @@ struct CopyTo {
 };
 
 struct CopyToHeap {
-  GCPtrValue* dst;
-  explicit CopyToHeap(GCPtrValue* dst) : dst(dst) {}
+  GCPtr<Value>* dst;
+  explicit CopyToHeap(GCPtr<Value>* dst) : dst(dst) {}
   void operator()(const Value& src) {
     dst->init(src);
     ++dst;
@@ -449,7 +449,7 @@ inline bool AbstractFramePtr::initFunctionEnvironmentObjects(JSContext* cx) {
 }
 
 inline bool AbstractFramePtr::pushVarEnvironment(JSContext* cx,
-                                                 HandleScope scope) {
+                                                 Handle<Scope*> scope) {
   return js::PushVarEnvironmentObject(cx, scope, *this);
 }
 
@@ -618,6 +618,19 @@ inline bool AbstractFramePtr::isConstructing() const {
     return asRematerializedFrame()->isConstructing();
   }
   MOZ_CRASH("Unexpected frame");
+}
+
+inline bool AbstractFramePtr::hasCachedSavedFrame() const {
+  if (isInterpreterFrame()) {
+    return asInterpreterFrame()->hasCachedSavedFrame();
+  }
+  if (isBaselineFrame()) {
+    return asBaselineFrame()->framePrefix()->hasCachedSavedFrame();
+  }
+  if (isWasmDebugFrame()) {
+    return asWasmDebugFrame()->hasCachedSavedFrame();
+  }
+  return asRematerializedFrame()->hasCachedSavedFrame();
 }
 
 inline bool AbstractFramePtr::hasArgs() const { return isFunctionFrame(); }
@@ -794,16 +807,6 @@ inline Value& AbstractFramePtr::thisArgument() const {
     return asBaselineFrame()->thisArgument();
   }
   return asRematerializedFrame()->thisArgument();
-}
-
-inline Value AbstractFramePtr::newTarget() const {
-  if (isInterpreterFrame()) {
-    return asInterpreterFrame()->newTarget();
-  }
-  if (isBaselineFrame()) {
-    return asBaselineFrame()->newTarget();
-  }
-  return asRematerializedFrame()->newTarget();
 }
 
 inline bool AbstractFramePtr::debuggerNeedsCheckPrimitiveReturn() const {

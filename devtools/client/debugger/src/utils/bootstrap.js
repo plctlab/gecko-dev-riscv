@@ -9,6 +9,9 @@ const { Provider } = require("react-redux");
 
 import ToolboxProvider from "devtools/client/framework/store-provider";
 import flags from "devtools/shared/flags";
+const {
+  registerStoreObserver,
+} = require("devtools/client/shared/redux/subscriber");
 
 const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
 
@@ -64,13 +67,20 @@ export function teardownWorkers() {
   search.stop();
 }
 
-export function bootstrapApp(store, panel) {
+/**
+ * Create and mount the root App component.
+ *
+ * @param {ReduxStore} store
+ * @param {ReduxStore} toolboxStore
+ * @param {Object} appComponentAttributes
+ * @param {Array} appComponentAttributes.fluentBundles
+ * @param {Document} appComponentAttributes.toolboxDoc
+ */
+export function bootstrapApp(store, toolboxStore, appComponentAttributes = {}) {
   const mount = getMountElement();
   if (!mount) {
     return;
   }
-
-  const toolboxDoc = panel.panelWin.parent.document;
 
   ReactDOM.render(
     React.createElement(
@@ -78,8 +88,8 @@ export function bootstrapApp(store, panel) {
       { store },
       React.createElement(
         ToolboxProvider,
-        { store: panel.getToolboxStore() },
-        React.createElement(App, { toolboxDoc })
+        { store: toolboxStore },
+        React.createElement(App, appComponentAttributes)
       )
     ),
     mount
@@ -93,15 +103,6 @@ function getMountElement() {
 // This is the opposite of bootstrapApp
 export function unmountRoot() {
   ReactDOM.unmountComponentAtNode(getMountElement());
-}
-
-function registerStoreObserver(store, subscriber) {
-  let oldState = store.getState();
-  store.subscribe(() => {
-    const state = store.getState();
-    subscriber(state, oldState);
-    oldState = state;
-  });
 }
 
 function updatePrefs(state, oldState) {
@@ -129,7 +130,7 @@ function updatePrefs(state, oldState) {
     asyncStore.xhrBreakpoints = selectors.getXHRBreakpoints(state);
   }
 
-  if (hasChanged(selectors.getBlackBoxList)) {
-    asyncStore.tabsBlackBoxed = selectors.getBlackBoxList(state);
+  if (hasChanged(selectors.getBlackBoxRanges)) {
+    asyncStore.blackboxedRanges = selectors.getBlackBoxRanges(state);
   }
 }

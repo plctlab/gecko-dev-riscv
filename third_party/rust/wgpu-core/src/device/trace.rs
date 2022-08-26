@@ -13,20 +13,21 @@ pub const FILE_NAME: &str = "trace.ron";
 pub(crate) fn new_render_bundle_encoder_descriptor<'a>(
     label: crate::Label<'a>,
     context: &'a super::RenderPassContext,
-    is_ds_read_only: bool,
+    depth_read_only: bool,
+    stencil_read_only: bool,
 ) -> crate::command::RenderBundleEncoderDescriptor<'a> {
     crate::command::RenderBundleEncoderDescriptor {
         label,
         color_formats: Cow::Borrowed(&context.attachments.colors),
         depth_stencil: context.attachments.depth_stencil.map(|format| {
-            let aspects = hal::FormatAspects::from(format);
             wgt::RenderBundleDepthStencil {
                 format,
-                depth_read_only: is_ds_read_only && aspects.contains(hal::FormatAspects::DEPTH),
-                stencil_read_only: is_ds_read_only && aspects.contains(hal::FormatAspects::STENCIL),
+                depth_read_only,
+                stencil_read_only,
             }
         }),
         sample_count: context.sample_count,
+        multiview: context.multiview,
     }
 }
 
@@ -59,6 +60,7 @@ pub enum Action<'a> {
         parent_id: id::SurfaceId,
     },
     Present(id::SurfaceId),
+    DiscardSurfaceTexture(id::SurfaceId),
     CreateBindGroupLayout(
         id::BindGroupLayoutId,
         crate::binding_model::BindGroupLayoutDescriptor<'a>,
@@ -166,12 +168,15 @@ pub enum Command {
         destination: id::BufferId,
         destination_offset: wgt::BufferAddress,
     },
+    PushDebugGroup(String),
+    PopDebugGroup,
+    InsertDebugMarker(String),
     RunComputePass {
         base: crate::command::BasePass<crate::command::ComputeCommand>,
     },
     RunRenderPass {
         base: crate::command::BasePass<crate::command::RenderCommand>,
-        target_colors: Vec<crate::command::RenderPassColorAttachment>,
+        target_colors: Vec<Option<crate::command::RenderPassColorAttachment>>,
         target_depth_stencil: Option<crate::command::RenderPassDepthStencilAttachment>,
     },
 }

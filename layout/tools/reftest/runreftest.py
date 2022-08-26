@@ -455,7 +455,6 @@ class RefTest(object):
         # Run the "deferred" font-loader immediately, because if it finishes
         # mid-test, the extra reflow that is triggered can disrupt the test.
         prefs["gfx.font_loader.delay"] = 0
-        prefs["gfx.font_loader.interval"] = 0
         # Ensure bundled fonts are activated, even if not enabled by default
         # on the platform, so that tests can rely on them.
         prefs["gfx.bundled-fonts.activate"] = 1
@@ -475,15 +474,14 @@ class RefTest(object):
         elif manifests:
             prefs["reftest.manifests"] = json.dumps(manifests)
 
-        # Unconditionally update the e10s pref.
-        if options.e10s:
-            prefs["browser.tabs.remote.autostart"] = True
-        else:
+        # Unconditionally update the e10s pref, default True
+        prefs["browser.tabs.remote.autostart"] = True
+        if not options.e10s:
             prefs["browser.tabs.remote.autostart"] = False
 
-        if options.fission:
-            prefs["fission.autostart"] = True
-        else:
+        # default fission to True
+        prefs["fission.autostart"] = True
+        if options.disableFission:
             prefs["fission.autostart"] = False
 
         if not self.run_by_manifest:
@@ -533,6 +531,12 @@ class RefTest(object):
             options.extraProfileFiles.append(os.path.join(here, "chrome"))
 
         self.copyExtraFilesToProfile(options, profile)
+
+        self.log.info(
+            "Running with e10s: {}".format(prefs["browser.tabs.remote.autostart"])
+        )
+        self.log.info("Running with fission: {}".format(prefs["fission.autostart"]))
+
         return profile
 
     def environment(self, **kwargs):
@@ -573,11 +577,9 @@ class RefTest(object):
         self.leakLogFile = os.path.join(profileDir, "runreftest_leaks.log")
         browserEnv["XPCOM_MEM_BLOAT_LOG"] = self.leakLogFile
 
-        if options.enable_webrender:
-            browserEnv["MOZ_WEBRENDER"] = "1"
-            browserEnv["MOZ_ACCELERATED"] = "1"
-        else:
-            browserEnv["MOZ_WEBRENDER"] = "0"
+        # TODO: this is always defined (as part of --enable-webrender which is default)
+        #       can we make this default in the browser?
+        browserEnv["MOZ_ACCELERATED"] = "1"
 
         if options.headless:
             browserEnv["MOZ_HEADLESS"] = "1"
@@ -880,9 +882,6 @@ class RefTest(object):
 
         # browser environment
         env = self.buildBrowserEnv(options, profile.profile)
-
-        self.log.info("Running with e10s: {}".format(options.e10s))
-        self.log.info("Running with fission: {}".format(options.fission))
 
         def timeoutHandler():
             self.handleTimeout(timeout, proc, options.utilityPath, debuggerInfo)

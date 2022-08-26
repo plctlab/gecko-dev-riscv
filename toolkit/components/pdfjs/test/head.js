@@ -27,6 +27,20 @@ async function waitForPdfJSAnnotationLayer(browser, url) {
   return loadPromise;
 }
 
+async function waitForPdfJSCanvas(browser, url) {
+  let loadPromise = BrowserTestUtils.waitForContentEvent(
+    browser,
+    "pagerendered",
+    false,
+    null,
+    true
+  );
+  await SpecialPowers.spawn(browser, [url], contentUrl => {
+    content.location = contentUrl;
+  });
+  return loadPromise;
+}
+
 async function waitForPdfJSSandbox(browser) {
   let loadPromise = BrowserTestUtils.waitForContentEvent(
     browser,
@@ -36,6 +50,169 @@ async function waitForPdfJSSandbox(browser) {
     true
   );
   return loadPromise;
+}
+
+/**
+ * Enable an editor (Ink, FreeText, ...).
+ * @param {Object} browser
+ * @param {string} name
+ */
+async function enableEditor(browser, name) {
+  const editingModePromise = BrowserTestUtils.waitForContentEvent(
+    browser,
+    "annotationeditormodechanged",
+    false,
+    null,
+    true
+  );
+  await SpecialPowers.spawn(browser, [name], async name => {
+    const button = content.document.querySelector(`#editor${name}`);
+    button.click();
+  });
+  await editingModePromise;
+  await TestUtils.waitForTick();
+}
+
+/**
+ * The text layer contains some spans with the text of the pdf.
+ * @param {Object} browser
+ * @param {string} text
+ * @returns {Object} the bbox of the span containing the text.
+ */
+async function getSpanBox(browser, text) {
+  return SpecialPowers.spawn(browser, [text], async function(text) {
+    const { ContentTaskUtils } = ChromeUtils.import(
+      "resource://testing-common/ContentTaskUtils.jsm"
+    );
+    const { document } = content;
+
+    await ContentTaskUtils.waitForCondition(
+      () => !!document.querySelector(".textLayer .endOfContent"),
+      "The text layer must be displayed"
+    );
+
+    let targetSpan = null;
+    for (const span of document.querySelectorAll(
+      `.textLayer span[role="presentation"]`
+    )) {
+      if (span.innerText.includes(text)) {
+        targetSpan = span;
+        break;
+      }
+    }
+
+    Assert.ok(targetSpan, `document must have a span containing '${text}'`);
+
+    const { x, y, width, height } = targetSpan.getBoundingClientRect();
+    return { x, y, width, height };
+  });
+}
+
+/**
+ * Count the number of elements corresponding to the given selector.
+ * @param {Object} browser
+ * @param {string} selector
+ * @returns
+ */
+async function countElements(browser, selector) {
+  return SpecialPowers.spawn(browser, [selector], async function(selector) {
+    const { document } = content;
+    return new Promise(resolve => {
+      content.setTimeout(() => {
+        resolve(document.querySelectorAll(selector).length);
+      }, 0);
+    });
+  });
+}
+
+/**
+ * Click at the given coordinates.
+ * @param {Object} browser
+ * @param {number} x
+ * @param {number} y
+ */
+async function clickAt(browser, x, y) {
+  BrowserTestUtils.synthesizeMouseAtPoint(
+    x,
+    y,
+    {
+      type: "mousedown",
+      button: 0,
+    },
+    browser
+  );
+  BrowserTestUtils.synthesizeMouseAtPoint(
+    x,
+    y,
+    {
+      type: "mouseup",
+      button: 0,
+    },
+    browser
+  );
+}
+
+/**
+ * Click on the element corresponding to the given selector.
+ * @param {Object} browser
+ * @param {string} selector
+ */
+async function clickOn(browser, selector) {
+  const [x, y] = await SpecialPowers.spawn(
+    browser,
+    [selector],
+    async selector => {
+      const element = content.document.querySelector(selector);
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return [x + width / 2, y + height / 2];
+    }
+  );
+  await clickAt(browser, x, y);
+}
+
+/**
+ * Write some text using the keyboard.
+ * @param {Object} browser
+ * @param {string} text
+ */
+async function write(browser, text) {
+  await SpecialPowers.spawn(browser, [text], async function(text) {
+    const { ContentTaskUtils } = ChromeUtils.import(
+      "resource://testing-common/ContentTaskUtils.jsm"
+    );
+    const EventUtils = ContentTaskUtils.getEventUtils(content);
+
+    for (const char of text.split("")) {
+      await EventUtils.synthesizeKey(char, {}, content);
+    }
+  });
+}
+
+/**
+ * Hit escape key.
+ */
+async function escape(browser) {
+  await SpecialPowers.spawn(browser, [], async function() {
+    const { ContentTaskUtils } = ChromeUtils.import(
+      "resource://testing-common/ContentTaskUtils.jsm"
+    );
+    const EventUtils = ContentTaskUtils.getEventUtils(content);
+    await EventUtils.synthesizeKey("KEY_Escape", {}, content);
+  });
+}
+
+/**
+ * Add a FreeText annotation and write some text inside.
+ * @param {Object} browser
+ * @param {string} text
+ * @param {Object} box
+ */
+async function addFreeText(browser, text, box) {
+  const { x, y, width, height } = box;
+  await clickAt(browser, x + 0.1 * width, y + 0.5 * height);
+  await write(browser, text);
+  await escape(browser);
+  await TestUtils.waitForTick();
 }
 
 function changeMimeHandler(preferredAction, alwaysAskBeforeHandling) {
@@ -73,4 +250,33 @@ function changeMimeHandler(preferredAction, alwaysAskBeforeHandling) {
   );
 
   return oldAction;
+}
+
+function createTemporarySaveDirectory() {
+  var saveDir = Services.dirsvc.get("TmpD", Ci.nsIFile);
+  saveDir.append("testsavedir");
+  if (!saveDir.exists()) {
+    saveDir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
+  }
+  return saveDir;
+}
+
+async function cleanupDownloads(listId = Downloads.PUBLIC) {
+  info("cleaning up downloads");
+  let downloadList = await Downloads.getList(listId);
+  for (let download of await downloadList.getAll()) {
+    await download.finalize(true);
+    try {
+      if (Services.appinfo.OS === "WINNT") {
+        // We need to make the file writable to delete it on Windows.
+        await IOUtils.setPermissions(download.target.path, 0o600);
+      }
+      await IOUtils.remove(download.target.path);
+    } catch (error) {
+      info("The file " + download.target.path + " is not removed, " + error);
+    }
+
+    await downloadList.remove(download);
+    await download.finalize();
+  }
 }

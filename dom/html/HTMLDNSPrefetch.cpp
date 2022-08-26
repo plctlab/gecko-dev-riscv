@@ -41,8 +41,7 @@
 
 using namespace mozilla::net;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class NoOpDNSListener final : public nsIDNSListener {
   // This class exists to give a safe callback no-op DNSListener
@@ -228,9 +227,8 @@ nsresult HTMLDNSPrefetch::Prefetch(
         net_IsValidHostName(NS_ConvertUTF16toUTF8(hostname))) {
       // during shutdown gNeckoChild might be null
       if (gNeckoChild) {
-        gNeckoChild->SendHTMLDNSPrefetch(nsString(hostname), isHttps,
-                                         aPartitionedPrincipalOriginAttributes,
-                                         flags);
+        gNeckoChild->SendHTMLDNSPrefetch(
+            hostname, isHttps, aPartitionedPrincipalOriginAttributes, flags);
       }
     }
     return NS_OK;
@@ -313,8 +311,8 @@ nsresult HTMLDNSPrefetch::CancelPrefetch(
       // during shutdown gNeckoChild might be null
       if (gNeckoChild) {
         gNeckoChild->SendCancelHTMLDNSPrefetch(
-            nsString(hostname), isHttps, aPartitionedPrincipalOriginAttributes,
-            flags, aReason);
+            hostname, isHttps, aPartitionedPrincipalOriginAttributes, flags,
+            aReason);
       }
     }
     return NS_OK;
@@ -328,7 +326,7 @@ nsresult HTMLDNSPrefetch::CancelPrefetch(
   nsresult rv = sDNSService->CancelAsyncResolveNative(
       NS_ConvertUTF16toUTF8(hostname), nsIDNSService::RESOLVE_TYPE_DEFAULT,
       flags | nsIDNSService::RESOLVE_SPECULATE,
-      nullptr,  // resolverInfo
+      nullptr,  // AdditionalInfo
       sDNSListener, aReason, aPartitionedPrincipalOriginAttributes);
 
   if (StaticPrefs::network_dns_upgrade_with_https_rr() ||
@@ -336,7 +334,7 @@ nsresult HTMLDNSPrefetch::CancelPrefetch(
     Unused << sDNSService->CancelAsyncResolveNative(
         NS_ConvertUTF16toUTF8(hostname), nsIDNSService::RESOLVE_TYPE_HTTPSSVC,
         flags | nsIDNSService::RESOLVE_SPECULATE,
-        nullptr,  // resolverInfo
+        nullptr,  // AdditionalInfo
         sDNSListener, aReason, aPartitionedPrincipalOriginAttributes);
   }
   return rv;
@@ -645,5 +643,4 @@ DeferredDNSPrefetches::Observe(nsISupports* subject, const char* topic,
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

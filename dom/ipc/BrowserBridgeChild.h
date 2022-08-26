@@ -11,9 +11,7 @@
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/dom/ipc/IdType.h"
 
-namespace mozilla {
-
-namespace dom {
+namespace mozilla::dom {
 class BrowsingContext;
 class ContentChild;
 class BrowserBridgeHost;
@@ -89,12 +87,16 @@ class BrowserBridgeChild : public PBrowserBridgeChild {
   mozilla::ipc::IPCResult RecvSetEmbeddedDocAccessibleCOMProxy(
       const IDispatchHolder& aCOMProxy);
 
-  mozilla::ipc::IPCResult RecvMaybeFireEmbedderLoadEvents(
+  // TODO: Use MOZ_CAN_RUN_SCRIPT when it gains IPDL support (bug 1539864)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult
+  RecvMaybeFireEmbedderLoadEvents(
       EmbedderElementEventType aFireEventAtEmbeddingElement);
 
   mozilla::ipc::IPCResult RecvIntrinsicSizeOrRatioChanged(
       const Maybe<IntrinsicSize>& aIntrinsicSize,
       const Maybe<AspectRatio>& aIntrinsicRatio);
+
+  mozilla::ipc::IPCResult RecvImageLoadComplete(const nsresult& aResult);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvScrollRectIntoView(
@@ -126,7 +128,6 @@ class BrowserBridgeChild : public PBrowserBridgeChild {
 #endif    // defined(ACCESSIBILITY)
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // !defined(mozilla_dom_BrowserBridgeParent_h)

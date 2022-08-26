@@ -7,17 +7,17 @@
 
 "use strict";
 
-const { BrowserSearchTelemetry } = ChromeUtils.import(
-  "resource:///modules/BrowserSearchTelemetry.jsm"
+const { BrowserSearchTelemetry } = ChromeUtils.importESModule(
+  "resource:///modules/BrowserSearchTelemetry.sys.mjs"
 );
-const { SearchSERPTelemetry } = ChromeUtils.import(
-  "resource:///modules/SearchSERPTelemetry.jsm"
+const { SearchSERPTelemetry } = ChromeUtils.importESModule(
+  "resource:///modules/SearchSERPTelemetry.sys.mjs"
 );
-const { UrlbarTestUtils } = ChromeUtils.import(
-  "resource://testing-common/UrlbarTestUtils.jsm"
+const { UrlbarTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlbarTestUtils.sys.mjs"
 );
-const { SearchTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SearchTestUtils.jsm"
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
 );
 
 const TEST_PROVIDER_INFO = [
@@ -26,7 +26,7 @@ const TEST_PROVIDER_INFO = [
     searchPageRegexp: /^https:\/\/example.com\/browser\/browser\/components\/search\/test\/browser\/searchTelemetry(?:Ad)?.html/,
     queryParamName: "s",
     codeParamName: "abc",
-    codePrefixes: ["ff"],
+    taggedCodes: ["ff"],
     followOnParamNames: ["a"],
     extraAdServersRegexps: [/^https:\/\/example\.com\/ad2?/],
   },
@@ -68,11 +68,19 @@ async function waitForIdle() {
 SearchTestUtils.init(this);
 UrlbarTestUtils.init(this);
 
-add_task(async function setup() {
+add_setup(async function() {
   SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
   await waitForIdle();
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.suggest.searches", true]],
+    set: [
+      ["browser.urlbar.suggest.searches", true],
+      [
+        "browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar",
+        true,
+      ],
+      // Ensure to add search suggestion telemetry as search_suggestion not search_formhistory.
+      ["browser.urlbar.maxHistoricalSearchSuggestions", 0],
+    ],
   });
   // Enable local telemetry recording for the duration of the tests.
   let oldCanRecord = Services.telemetry.canRecordExtended;
@@ -185,6 +193,92 @@ add_task(async function test_source_urlbar() {
       return tab;
     },
     async () => {
+      BrowserTestUtils.removeTab(tab);
+    }
+  );
+});
+
+add_task(async function test_source_urlbar_handoff() {
+  let tab;
+  await track_ad_click(
+    "urlbar-handoff",
+    "urlbar_handoff",
+    async () => {
+      Services.fog.testResetFOG();
+      tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
+      BrowserTestUtils.loadURI(tab.linkedBrowser, "about:newtab");
+      await BrowserTestUtils.browserStopped(tab.linkedBrowser, "about:newtab");
+
+      info("Focus on search input in newtab content");
+      await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+        const searchInput = content.document.querySelector(".fake-editable");
+        searchInput.click();
+      });
+
+      info("Get suggestions");
+      for (const c of "searchSuggestion".split("")) {
+        EventUtils.synthesizeKey(c);
+        /* eslint-disable mozilla/no-arbitrary-setTimeout */
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await TestUtils.waitForCondition(async () => {
+        const index = await getFirstSuggestionIndex();
+        return index >= 0;
+      }, "Wait until suggestions are ready");
+
+      let idx = await getFirstSuggestionIndex();
+      Assert.greaterOrEqual(idx, 0, "there should be a first suggestion");
+      const onLoaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+      while (idx--) {
+        EventUtils.sendKey("down");
+      }
+      EventUtils.sendKey("return");
+      await onLoaded;
+
+      return tab;
+    },
+    async () => {
+      const issueRecords = Glean.newtabSearch.issued.testGetValue();
+      Assert.ok(!!issueRecords, "Must have recorded a search issuance");
+      Assert.equal(issueRecords.length, 1, "One search, one event");
+      const newtabVisitId = issueRecords[0].extra.newtab_visit_id;
+      Assert.ok(!!newtabVisitId, "Must have a visit id");
+      Assert.deepEqual(
+        {
+          // Yes, this is tautological. But I want to use deepEqual.
+          newtab_visit_id: newtabVisitId,
+          search_access_point: "urlbar_handoff",
+          telemetry_id: "other-Example",
+        },
+        issueRecords[0].extra,
+        "Must have recorded the expected information."
+      );
+      const impRecords = Glean.newtabSearchAd.impression.testGetValue();
+      Assert.equal(impRecords.length, 1, "One impression, one event.");
+      Assert.deepEqual(
+        {
+          newtab_visit_id: newtabVisitId,
+          search_access_point: "urlbar_handoff",
+          telemetry_id: "example",
+          is_tagged: "true",
+          is_follow_on: "false",
+        },
+        impRecords[0].extra,
+        "Must have recorded the expected information."
+      );
+      const clickRecords = Glean.newtabSearchAd.click.testGetValue();
+      Assert.equal(clickRecords.length, 1, "One click, one event.");
+      Assert.deepEqual(
+        {
+          newtab_visit_id: newtabVisitId,
+          search_access_point: "urlbar_handoff",
+          telemetry_id: "example",
+          is_tagged: "true",
+          is_follow_on: "false",
+        },
+        clickRecords[0].extra,
+        "Must have recorded the expected information."
+      );
       BrowserTestUtils.removeTab(tab);
     }
   );

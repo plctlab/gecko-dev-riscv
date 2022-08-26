@@ -11,33 +11,24 @@ var EXPORTED_SYMBOLS = ["SessionFile"];
  * This is a private API, meant to be used only by the session store.
  * It will change. Do not use it for any other purpose.
  *
- * Note that this module implicitly depends on one of two things:
- * 1. either the asynchronous file I/O system enqueues its requests
- *   and never attempts to simultaneously execute two I/O requests on
- *   the files used by this module from two distinct threads; or
- * 2. the clients of this API are well-behaved and do not place
- *   concurrent requests to the files used by this module.
- *
+ * Note that this module depends on SessionWriter and that it enqueues its I/O
+ * requests and never attempts to simultaneously execute two I/O requests on
+ * the files used by this module from two distinct threads.
  * Otherwise, we could encounter bugs, especially under Windows,
- *   e.g. if a request attempts to write sessionstore.js while
- *   another attempts to copy that file.
- *
- * This implementation uses OS.File, which guarantees property 1.
+ * e.g. if a request attempts to write sessionstore.js while
+ * another attempts to copy that file.
  */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { AsyncShutdown } = ChromeUtils.import(
-  "resource://gre/modules/AsyncShutdown.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   RunState: "resource:///modules/sessionstore/RunState.jsm",
   SessionStore: "resource:///modules/sessionstore/SessionStore.jsm",
-  SessionWorker: "resource:///modules/sessionstore/SessionWorker.jsm",
+  SessionWriter: "resource:///modules/sessionstore/SessionWriter.jsm",
 });
 
 const PREF_UPGRADE_BACKUP = "browser.sessionstore.upgradeBackup.latestBuildID";
@@ -46,13 +37,6 @@ const PREF_MAX_UPGRADE_BACKUPS =
 
 const PREF_MAX_SERIALIZE_BACK = "browser.sessionstore.max_serialize_back";
 const PREF_MAX_SERIALIZE_FWD = "browser.sessionstore.max_serialize_forward";
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "kMaxWriteFailures",
-  "browser.sessionstore.max_write_failures",
-  5
-);
 
 var SessionFile = {
   /**
@@ -63,6 +47,7 @@ var SessionFile = {
   },
   /**
    * Write the contents of the session file, asynchronously.
+   * @param aData - May get changed on shutdown.
    */
   write(aData) {
     return SessionFileInternal.write(aData);
@@ -81,40 +66,39 @@ var SessionFile = {
   get Paths() {
     return SessionFileInternal.Paths;
   },
-
-  get MaxWriteFailures() {
-    return kMaxWriteFailures;
-  },
 };
 
 Object.freeze(SessionFile);
 
-var Path = OS.Path;
-var profileDir = OS.Constants.Path.profileDir;
+const profileDir = PathUtils.profileDir;
 
 var SessionFileInternal = {
   Paths: Object.freeze({
     // The path to the latest version of sessionstore written during a clean
     // shutdown. After startup, it is renamed `cleanBackup`.
-    clean: Path.join(profileDir, "sessionstore.jsonlz4"),
+    clean: PathUtils.join(profileDir, "sessionstore.jsonlz4"),
 
     // The path at which we store the previous version of `clean`. Updated
     // whenever we successfully load from `clean`.
-    cleanBackup: Path.join(
+    cleanBackup: PathUtils.join(
       profileDir,
       "sessionstore-backups",
       "previous.jsonlz4"
     ),
 
     // The directory containing all sessionstore backups.
-    backups: Path.join(profileDir, "sessionstore-backups"),
+    backups: PathUtils.join(profileDir, "sessionstore-backups"),
 
     // The path to the latest version of the sessionstore written
     // during runtime. Generally, this file contains more
     // privacy-sensitive information than |clean|, and this file is
     // therefore removed during clean shutdown. This file is designed to protect
     // against crashes / sudden shutdown.
-    recovery: Path.join(profileDir, "sessionstore-backups", "recovery.jsonlz4"),
+    recovery: PathUtils.join(
+      profileDir,
+      "sessionstore-backups",
+      "recovery.jsonlz4"
+    ),
 
     // The path to the previous version of the sessionstore written
     // during runtime (e.g. 15 seconds before recovery). In case of a
@@ -123,7 +107,7 @@ var SessionFileInternal = {
     // this file is therefore removed during clean shutdown.  This
     // file is designed to protect against crashes that are nasty
     // enough to corrupt |recovery|.
-    recoveryBackup: Path.join(
+    recoveryBackup: PathUtils.join(
       profileDir,
       "sessionstore-backups",
       "recovery.baklz4"
@@ -133,7 +117,7 @@ var SessionFileInternal = {
     // Having this backup protects the user essentially from bugs in
     // Firefox or add-ons, especially for users of Nightly. This file
     // does not contain any information more sensitive than |clean|.
-    upgradeBackupPrefix: Path.join(
+    upgradeBackupPrefix: PathUtils.join(
       profileDir,
       "sessionstore-backups",
       "upgrade.jsonlz4-"
@@ -196,14 +180,8 @@ var SessionFileInternal = {
   // Used for error reporting.
   _failures: 0,
 
-  // Object that keeps statistics that should help us make informed decisions
-  // about the current status of the worker.
-  _workerHealth: {
-    failures: 0,
-  },
-
-  // `true` once we have started initialization of the worker.
-  _initializationStarted: false,
+  // `true` once we have initialized SessionWriter.
+  _initialized: false,
 
   // A string that will be set to the session file name part that was read from
   // disk. It will be available _after_ a session file read() is done.
@@ -236,16 +214,16 @@ var SessionFileInternal = {
         let path;
         let startMs = Date.now();
 
-        let options = { encoding: "utf-8" };
+        let options = {};
         if (useOldExtension) {
           path = this.Paths[key]
             .replace("jsonlz4", "js")
             .replace("baklz4", "bak");
         } else {
           path = this.Paths[key];
-          options.compression = "lz4";
+          options.decompress = true;
         }
-        let source = await OS.File.read(path, options);
+        let source = await IOUtils.readUTF8(path, options);
         let parsed = JSON.parse(source);
 
         if (parsed._cachedObjs) {
@@ -268,7 +246,7 @@ var SessionFileInternal = {
         }
 
         if (
-          !SessionStore.isFormatVersionCompatible(
+          !lazy.SessionStore.isFormatVersionCompatible(
             parsed.version || [
               "sessionrestore",
               0,
@@ -299,12 +277,15 @@ var SessionFileInternal = {
           .add(Date.now() - startMs);
         break;
       } catch (ex) {
-        if (ex instanceof OS.File.Error && ex.becauseNoSuchFile) {
+        if (DOMException.isInstance(ex) && ex.name == "NotFoundError") {
           exists = false;
-        } else if (ex instanceof OS.File.Error) {
+        } else if (
+          DOMException.isInstance(ex) &&
+          ex.name == "NotAllowedError"
+        ) {
           // The file might be inaccessible due to wrong permissions
           // or similar failures. We'll just count it as "corrupted".
-          console.error("Could not read session file ", ex, ex.stack);
+          console.error("Could not read session file ", ex);
           corrupted = true;
         } else if (ex instanceof SyntaxError) {
           console.error(
@@ -327,7 +308,7 @@ var SessionFileInternal = {
     return { result, noFilesFound };
   },
 
-  // Find the correct session file, read it and setup the worker.
+  // Find the correct session file and read it.
   async read() {
     // Load session files with lz4 compression.
     let { result, noFilesFound } = await this._readInternal(false);
@@ -357,40 +338,20 @@ var SessionFileInternal = {
 
     result.noFilesFound = noFilesFound;
 
-    // Initialize the worker (in the background) to let it handle backups and also
-    // as a workaround for bug 964531.
-    this._initWorker();
-
     return result;
   },
 
-  // Initialize the worker in the background.
-  // Since this called _before_ any other messages are posted to the worker (see
-  // `_postToWorker()`), we know that this initialization process will be completed
-  // on time.
-  // Thus, effectively, this blocks callees on its completion.
-  // In case of a worker crash/ shutdown during its initialization phase,
-  // `_checkWorkerHealth()` will detect it and flip the `_initializationStarted`
-  // property back to `false`. This means that we'll respawn the worker upon the
-  // next request, followed by the initialization sequence here. In other words;
-  // exactly the same procedure as when the worker crashed/ shut down 'regularly'.
-  //
-  // This will never throw an error.
-  _initWorker() {
-    return new Promise(resolve => {
-      if (this._initializationStarted) {
-        resolve();
-        return;
-      }
-
+  // Initialize SessionWriter and return it as a resolved promise.
+  getWriter() {
+    if (!this._initialized) {
       if (!this._readOrigin) {
-        throw new Error(
-          "_initWorker called too early! Please read the session file from disk first."
+        return Promise.reject(
+          "SessionFileInternal.getWriter() called too early! Please read the session file from disk first."
         );
       }
 
-      this._initializationStarted = true;
-      SessionWorker.post("init", [
+      this._initialized = true;
+      lazy.SessionWriter.init(
         this._readOrigin,
         this._usingOldExtension,
         this.Paths,
@@ -407,57 +368,32 @@ var SessionFileInternal = {
             PREF_MAX_SERIALIZE_FWD,
             -1
           ),
-        },
-      ])
-        .catch(err => {
-          // Ensure that we report errors but that they do not stop us.
-          Promise.reject(err);
-        })
-        .then(resolve);
-    });
-  },
-
-  // Post a message to the worker, making sure that it has been initialized first.
-  async _postToWorker(...args) {
-    await this._initWorker();
-    return SessionWorker.post(...args);
-  },
-
-  /**
-   * For good measure, terminate the worker when we've had over `kMaxWriteFailures`
-   * amount of failures to deal with. This will spawn a fresh worker upon the next
-   * write.
-   * This also resets the `_workerHealth` stats.
-   */
-  _checkWorkerHealth() {
-    if (this._workerHealth.failures >= kMaxWriteFailures) {
-      SessionWorker.terminate();
-      // Flag as not-initialized, to ensure that the worker state init is performed
-      // upon the next request.
-      this._initializationStarted = false;
-      // Reset the counter and report to telemetry.
-      this._workerHealth.failures = 0;
+        }
+      );
     }
+
+    return Promise.resolve(lazy.SessionWriter);
   },
 
   write(aData) {
-    if (RunState.isClosed) {
+    if (lazy.RunState.isClosed) {
       return Promise.reject(new Error("SessionFile is closed"));
     }
 
     let isFinalWrite = false;
-    if (RunState.isClosing) {
+    if (lazy.RunState.isClosing) {
       // If shutdown has started, we will want to stop receiving
       // write instructions.
       isFinalWrite = true;
-      RunState.setClosed();
+      lazy.RunState.setClosed();
     }
 
-    let performShutdownCleanup = isFinalWrite && !SessionStore.willAutoRestore;
+    let performShutdownCleanup =
+      isFinalWrite && !lazy.SessionStore.willAutoRestore;
 
     this._attempts++;
     let options = { isFinalWrite, performShutdownCleanup };
-    let promise = this._postToWorker("write", [aData, options]);
+    let promise = this.getWriter().then(writer => writer.write(aData, options));
 
     // Wait until the write is done.
     promise = promise.then(
@@ -478,7 +414,6 @@ var SessionFileInternal = {
         // Catch and report any errors.
         console.error("Could not write session state file ", err, err.stack);
         this._failures++;
-        this._workerHealth.failures++;
         // By not doing anything special here we ensure that |promise| cannot
         // be rejected anymore. The shutdown/cleanup code at the end of the
         // function will thus always be executed.
@@ -487,7 +422,7 @@ var SessionFileInternal = {
 
     // Ensure that we can write sessionstore.js cleanly before the profile
     // becomes unaccessible.
-    AsyncShutdown.profileBeforeChange.addBlocker(
+    IOUtils.profileBeforeChange.addBlocker(
       "SessionFile: Finish writing Session Restore data",
       promise,
       {
@@ -505,25 +440,23 @@ var SessionFileInternal = {
     // doesn't forward the rejection.
     return promise.then(() => {
       // Remove the blocker, no matter if writing failed or not.
-      AsyncShutdown.profileBeforeChange.removeBlocker(promise);
+      IOUtils.profileBeforeChange.removeBlocker(promise);
 
       if (isFinalWrite) {
         Services.obs.notifyObservers(
           null,
           "sessionstore-final-state-write-complete"
         );
-      } else {
-        this._checkWorkerHealth();
       }
     });
   },
 
-  wipe() {
-    return this._postToWorker("wipe").then(() => {
-      // After a wipe, we need to make sure to re-initialize upon the next read(),
-      // because the state variables as sent to the worker have changed.
-      this._initializationStarted = false;
-    });
+  async wipe() {
+    const writer = await this.getWriter();
+    await writer.wipe();
+    // After a wipe, we need to make sure to re-initialize upon the next read(),
+    // because the state variables as sent to the writer have changed.
+    this._initialized = false;
   },
 
   _recordTelemetry(telemetry) {

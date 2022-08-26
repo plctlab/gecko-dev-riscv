@@ -101,6 +101,10 @@ nsAppShellService::CreateHiddenWindow() {
     return NS_ERROR_FAILURE;
   }
 
+  if (mHiddenWindow) {
+    return NS_OK;
+  }
+
   nsCOMPtr<nsIFile> profileDir;
   NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                          getter_AddRefs(profileDir));
@@ -600,9 +604,6 @@ nsresult nsAppShellService::JustCreateTopWindow(
   if (aChromeMask & nsIWebBrowserChrome::CHROME_ALWAYS_ON_TOP)
     widgetInitData.mAlwaysOnTop = true;
 
-  if (aChromeMask & nsIWebBrowserChrome::CHROME_FISSION_WINDOW)
-    widgetInitData.mFissionWindow = true;
-
   if (aChromeMask & nsIWebBrowserChrome::CHROME_REMOTE_WINDOW)
     widgetInitData.mHasRemoteContent = true;
 
@@ -653,7 +654,7 @@ nsresult nsAppShellService::JustCreateTopWindow(
 #if defined(XP_WIN)
   if (widgetInitData.mWindowType == eWindowType_toplevel ||
       widgetInitData.mWindowType == eWindowType_dialog)
-    widgetInitData.clipChildren = true;
+    widgetInitData.mClipChildren = true;
 #endif
 
   // note default chrome overrides other OS chrome settings, but
@@ -705,6 +706,10 @@ nsresult nsAppShellService::JustCreateTopWindow(
   bool center = aChromeMask & nsIWebBrowserChrome::CHROME_CENTER_SCREEN;
 
   widgetInitData.mRTL = LocaleService::GetInstance()->IsAppLocaleRTL();
+
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_PRIVATE_WINDOW) {
+    widgetInitData.mIsPrivate = true;
+  }
 
   nsresult rv =
       window->Initialize(parent, center ? aParent : nullptr, aInitialWidth,

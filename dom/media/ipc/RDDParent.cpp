@@ -18,17 +18,15 @@
 #endif
 
 #include "PDMFactory.h"
-#include "chrome/common/ipc_channel.h"
 #include "gfxConfig.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/HangDetails.h"
+#include "mozilla/FOGIPC.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/RemoteDecoderManagerChild.h"
 #include "mozilla/RemoteDecoderManagerParent.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/MemoryReportRequest.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/ipc/CrashReporterClient.h"
 #include "mozilla/ipc/ProcessChild.h"
 
@@ -46,6 +44,7 @@
 
 #include "mozilla/ipc/ProcessUtils.h"
 #include "nsDebugImpl.h"
+#include "nsIXULRuntime.h"
 #include "nsThreadManager.h"
 
 #if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
@@ -69,8 +68,8 @@ RDDParent* RDDParent::GetSingleton() {
   return sRDDParent;
 }
 
-bool RDDParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
-                     mozilla::ipc::ScopedPort aPort) {
+bool RDDParent::Init(mozilla::ipc::UntypedEndpoint&& aEndpoint,
+                     const char* aParentBuildID) {
   // Initialize the thread manager before starting IPC. Otherwise, messages
   // may be posted to the main thread and we won't be able to process them.
   if (NS_WARN_IF(NS_FAILED(nsThreadManager::get().Init()))) {
@@ -78,7 +77,7 @@ bool RDDParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
   }
 
   // Now it's safe to start IPC.
-  if (NS_WARN_IF(!Open(std::move(aPort), aParentPid))) {
+  if (NS_WARN_IF(!aEndpoint.Bind(this))) {
     return false;
   }
 
@@ -105,7 +104,10 @@ bool RDDParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
   gfxVars::Initialize();
 #ifdef XP_WIN
   DeviceManagerDx::Init();
-  wmf::MFStartup();
+  auto rv = wmf::MediaFoundationInitializer::HasInitialized();
+  if (!rv) {
+    NS_WARNING("Failed to init Media Foundation in the RDD process");
+  }
 #endif
 
   mozilla::ipc::SetThisProcessName("RDD Process");
@@ -121,7 +123,8 @@ void CGSShutdownServerConnections();
 
 mozilla::ipc::IPCResult RDDParent::RecvInit(
     nsTArray<GfxVarUpdate>&& vars, const Maybe<FileDescriptor>& aBrokerFd,
-    const bool& aCanRecordReleaseTelemetry) {
+    const bool& aCanRecordReleaseTelemetry,
+    const bool& aIsReadyForBackgroundProcessing) {
   for (const auto& var : vars) {
     gfxVars::ApplyUpdate(var);
   }
@@ -148,7 +151,7 @@ mozilla::ipc::IPCResult RDDParent::RecvInit(
 #if defined(XP_WIN)
   if (aCanRecordReleaseTelemetry) {
     RefPtr<DllServices> dllSvc(DllServices::Get());
-    dllSvc->StartUntrustedModulesProcessor();
+    dllSvc->StartUntrustedModulesProcessor(aIsReadyForBackgroundProcessing);
   }
 #endif  // defined(XP_WIN)
   return IPC_OK();
@@ -199,7 +202,6 @@ mozilla::ipc::IPCResult RDDParent::RecvInitVideoBridge(
           Feature::D3D11_COMPOSITING,
           Feature::OPENGL_COMPOSITING,
           Feature::DIRECT2D,
-          Feature::WEBGPU,
       },
       aContentDeviceData.prefs());
 #ifdef XP_WIN
@@ -244,6 +246,14 @@ mozilla::ipc::IPCResult RDDParent::RecvGetUntrustedModulesData(
       [aResolver](nsresult aReason) { aResolver(Nothing()); });
   return IPC_OK();
 }
+
+mozilla::ipc::IPCResult RDDParent::RecvUnblockUntrustedModulesThread() {
+  if (nsCOMPtr<nsIObserverService> obs =
+          mozilla::services::GetObserverService()) {
+    obs->NotifyObservers(nullptr, "unblock-untrusted-modules-thread", nullptr);
+  }
+  return IPC_OK();
+}
 #endif  // defined(XP_WIN)
 
 mozilla::ipc::IPCResult RDDParent::RecvPreferenceUpdate(const Pref& aPref) {
@@ -262,16 +272,31 @@ mozilla::ipc::IPCResult RDDParent::RecvInitSandboxTesting(
 }
 #endif
 
+mozilla::ipc::IPCResult RDDParent::RecvFlushFOGData(
+    FlushFOGDataResolver&& aResolver) {
+  glean::FlushFOGData(std::move(aResolver));
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult RDDParent::RecvTestTriggerMetrics(
+    TestTriggerMetricsResolver&& aResolve) {
+  mozilla::glean::test_only_ipc::a_counter.Add(nsIXULRuntime::PROCESS_TYPE_RDD);
+  aResolve(true);
+  return IPC_OK();
+}
+
 void RDDParent::ActorDestroy(ActorDestroyReason aWhy) {
   if (AbnormalShutdown == aWhy) {
     NS_WARNING("Shutting down RDD process early due to a crash!");
+    Telemetry::Accumulate(Telemetry::SUBPROCESS_ABNORMAL_ABORT, "rdd"_ns, 1);
     ProcessChild::QuickExit();
   }
 
+  // Send the last bits of Glean data over to the main process.
+  glean::FlushFOGData(
+      [](ByteBuf&& aBuf) { glean::SendFOGData(std::move(aBuf)); });
+
 #ifndef NS_FREE_PERMANENT_DATA
-#  ifdef XP_WIN
-  wmf::MFShutdown();
-#  endif
   // No point in going through XPCOM shutdown because we don't keep persistent
   // state.
   ProcessChild::QuickExit();
@@ -280,10 +305,6 @@ void RDDParent::ActorDestroy(ActorDestroyReason aWhy) {
   // Wait until all RemoteDecoderManagerParent have closed.
   mShutdownBlockers.WaitUntilClear(10 * 1000 /* 10s timeout*/)
       ->Then(GetCurrentSerialEventTarget(), __func__, [&]() {
-
-#ifdef XP_WIN
-        wmf::MFShutdown();
-#endif
 
 #if defined(XP_WIN)
         RefPtr<DllServices> dllSvc(DllServices::Get());

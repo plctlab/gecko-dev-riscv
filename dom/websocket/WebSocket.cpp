@@ -13,7 +13,6 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/DOMEventTargetHelper.h"
-#include "mozilla/net/WebSocketChannel.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/MessageEvent.h"
 #include "mozilla/dom/MessageEventBinding.h"
@@ -77,8 +76,7 @@
 
 using namespace mozilla::net;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class WebSocketImpl;
 
@@ -178,7 +176,7 @@ class WebSocketImpl final : public nsIInterfaceRequestor,
   void PrintErrorOnConsole(const char* aBundleURI, const char* aError,
                            nsTArray<nsString>&& aFormatStrings);
 
-  nsresult DoOnMessageAvailable(const nsACString& aMsg, bool isBinary);
+  nsresult DoOnMessageAvailable(const nsACString& aMsg, bool isBinary) const;
 
   // ConnectionCloseEvents: 'error' event if needed, then 'close' event.
   nsresult ScheduleConnectionCloseEvents(nsISupports* aContext,
@@ -250,7 +248,7 @@ class WebSocketImpl final : public nsIInterfaceRequestor,
 
   // This mutex protects mWorkerShuttingDown.
   mozilla::Mutex mMutex;
-  bool mWorkerShuttingDown;
+  bool mWorkerShuttingDown MOZ_GUARDED_BY(mMutex);
 
   RefPtr<WebSocketEventService> mService;
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
@@ -399,12 +397,13 @@ void WebSocketImpl::PrintErrorOnConsole(const char* aBundleURI,
   if (mInnerWindowID) {
     rv = errorObject->InitWithWindowID(
         message, NS_ConvertUTF8toUTF16(mScriptFile), u""_ns, mScriptLine,
-        mScriptColumn, nsIScriptError::errorFlag, "Web Socket", mInnerWindowID);
+        mScriptColumn, nsIScriptError::errorFlag, "Web Socket"_ns,
+        mInnerWindowID);
   } else {
     rv =
         errorObject->Init(message, NS_ConvertUTF8toUTF16(mScriptFile), u""_ns,
                           mScriptLine, mScriptColumn, nsIScriptError::errorFlag,
-                          "Web Socket", mPrivateBrowsing, mIsChromeContext);
+                          "Web Socket"_ns, mPrivateBrowsing, mIsChromeContext);
   }
 
   NS_ENSURE_SUCCESS_VOID(rv);
@@ -701,7 +700,7 @@ WebSocketImpl::SendMessage(const nsAString& aMessage) {
 //-----------------------------------------------------------------------------
 
 nsresult WebSocketImpl::DoOnMessageAvailable(const nsACString& aMsg,
-                                             bool isBinary) {
+                                             bool isBinary) const {
   AssertIsOnTargetThread();
 
   if (mDisconnectingOrDisconnected) {
@@ -1640,22 +1639,19 @@ nsresult WebSocketImpl::Init(JSContext* aCx, nsIPrincipal* aLoadingPrincipal,
       // Disallowed by content policy
       return NS_ERROR_CONTENT_BLOCKED;
     }
-  }
 
-  // If the HTTPS-Only mode is enabled, we need to upgrade the websocket
-  // connection from ws:// to wss:// and mark it as secure.
-  if (!mIsServerSide && !mSecure && originDoc &&
-      !nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackURL(
-          originDoc->GetDocumentURI())) {
-    nsCOMPtr<nsIURI> uri;
-    nsresult rv = NS_NewURI(getter_AddRefs(uri), mURI);
-    NS_ENSURE_SUCCESS(rv, rv);
+    // If the HTTPS-Only mode is enabled, we need to upgrade the websocket
+    // connection from ws:// to wss:// and mark it as secure.
+    if (!mSecure && originDoc &&
+        !nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackURL(
+            originDoc->GetDocumentURI())) {
+      nsCOMPtr<nsIURI> uri;
+      nsresult rv = NS_NewURI(getter_AddRefs(uri), mURI);
+      NS_ENSURE_SUCCESS(rv, rv);
 
-    nsCOMPtr<nsIChannel> channel = originDoc->GetChannel();
-    if (channel) {
-      nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
-
-      if (nsHTTPSOnlyUtils::ShouldUpgradeWebSocket(uri, loadInfo)) {
+      // secCheckLoadInfo is only used for the triggering principal, so this
+      // is okay.
+      if (nsHTTPSOnlyUtils::ShouldUpgradeWebSocket(uri, secCheckLoadInfo)) {
         mURI.ReplaceSubstring("ws://", "wss://");
         if (NS_WARN_IF(mURI.Find("wss://") != 0)) {
           return NS_OK;
@@ -2761,6 +2757,16 @@ WebSocketImpl::DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t) {
 }
 
 NS_IMETHODIMP
+WebSocketImpl::RegisterShutdownTask(nsITargetShutdownTask*) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+WebSocketImpl::UnregisterShutdownTask(nsITargetShutdownTask*) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 WebSocketImpl::IsOnCurrentThread(bool* aResult) {
   *aResult = IsTargetThread();
   return NS_OK;
@@ -2841,5 +2847,4 @@ nsresult WebSocketImpl::GetLoadingPrincipal(nsIPrincipal** aPrincipal) {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

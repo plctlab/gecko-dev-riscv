@@ -7,21 +7,20 @@
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const lazy = {};
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "EventDispatcher",
   "resource://gre/modules/Messaging.jsm"
 );
 
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
@@ -145,7 +144,7 @@ PushRecord.prototype = {
     }
 
     if (AppConstants.MOZ_ANDROID_HISTORY) {
-      let result = await EventDispatcher.instance.sendRequestForResult({
+      let result = await lazy.EventDispatcher.instance.sendRequestForResult({
         type: "History:GetPrePathLastVisitedTimeMilliseconds",
         prePath: this.uri.prePath,
       });
@@ -164,7 +163,7 @@ PushRecord.prototype = {
       Ci.nsINavHistoryService.TRANSITION_REDIRECT_TEMPORARY,
     ].join(",");
 
-    let db = await PlacesUtils.promiseDBConnection();
+    let db = await lazy.PlacesUtils.promiseDBConnection();
     // We're using a custom query instead of `nsINavHistoryQueryOptions`
     // because the latter doesn't expose a way to filter by transition type:
     // `setTransitions` performs a logical "and," but we want an "or." We
@@ -196,7 +195,7 @@ PushRecord.prototype = {
 
   isTabOpen() {
     for (let window of Services.wm.getEnumerator("navigator:browser")) {
-      if (window.closed || PrivateBrowsingUtils.isWindowPrivate(window)) {
+      if (window.closed || lazy.PrivateBrowsingUtils.isWindowPrivate(window)) {
         continue;
       }
       for (let tab of window.gBrowser.tabs) {

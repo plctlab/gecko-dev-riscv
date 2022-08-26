@@ -38,6 +38,7 @@ EXPORTS.mozilla += [
     "AutoSQLiteLifetime.h",
     "Bootstrap.h",
     "CmdLineAndEnvUtils.h",
+    "GeckoArgs.h",
     "MultiInstanceLock.h",
     "SafeMode.h",
 ]
@@ -99,6 +100,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
     UNIFIED_SOURCES += [
         "nsNativeAppSupportUnix.cpp",
     ]
+    CXXFLAGS += CONFIG["MOZ_X11_SM_CFLAGS"]
 else:
     UNIFIED_SOURCES += [
         "nsNativeAppSupportDefault.cpp",
@@ -138,7 +140,6 @@ UNIFIED_SOURCES += [
     "CreateAppData.cpp",
     "nsAppStartupNotifier.cpp",
     "nsConsoleWriter.cpp",
-    "nsEmbeddingModule.cpp",
     "nsNativeAppSupportBase.cpp",
     "nsSigHandlers.cpp",
     "nsXREDirProvider.cpp",
@@ -154,9 +155,17 @@ SOURCES += [
     "ProfileReset.cpp",
 ]
 
-if CONFIG["MOZ_X11"]:
+if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
     UNIFIED_SOURCES += [
         "glxtest.cpp",
+    ]
+
+if CONFIG["MOZ_WAYLAND"]:
+    LOCAL_INCLUDES += [
+        "/media/mozva",
+    ]
+    USE_LIBS += [
+        "mozva",
     ]
 
 if CONFIG["MOZ_INSTRUMENT_EVENT_LOOP"]:
@@ -185,7 +194,7 @@ include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
 
-if CONFIG["MOZ_X11"]:
+if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
     DEFINES["USE_GLX_TEST"] = True
 
 for var in (
@@ -266,21 +275,15 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
         "/xpcom/base",
     ]
 
-CXXFLAGS += CONFIG["TK_CFLAGS"]
 CXXFLAGS += CONFIG["MOZ_DBUS_CFLAGS"]
 CXXFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
     CXXFLAGS += CONFIG["MOZ_PANGO_CFLAGS"]
 
 DEFINES["TOPOBJDIR"] = TOPOBJDIR
 FINAL_TARGET_PP_FILES += ["platform.ini"]
-
-if CONFIG["CC_TYPE"] in ("clang", "gcc"):
-    CXXFLAGS += ["-Wno-error=shadow"]
-
-if CONFIG["MOZ_IPDL_TESTS"]:
-    DEFINES["MOZ_IPDL_TESTS"] = True
 
 if CONFIG["ENABLE_TESTS"]:
     DIRS += ["test/gtest"]

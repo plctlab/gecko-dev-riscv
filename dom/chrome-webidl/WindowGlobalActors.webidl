@@ -14,11 +14,15 @@ interface nsIDOMProcessParent;
 interface WindowContext {
   readonly attribute BrowsingContext? browsingContext;
 
+  readonly attribute WindowGlobalChild? windowGlobalChild; // in-process only
+
   readonly attribute unsigned long long innerWindowId;
 
   readonly attribute WindowContext? parentWindowContext;
 
   readonly attribute WindowContext topWindowContext;
+
+  readonly attribute boolean isInProcess;
 
   // True if this WindowContext is currently frozen in the BFCache.
   readonly attribute boolean isInBFCache;
@@ -54,7 +58,6 @@ enum PermitUnloadAction {
 [Exposed=Window, ChromeOnly]
 interface WindowGlobalParent : WindowContext {
   readonly attribute boolean isClosed;
-  readonly attribute boolean isInProcess;
 
   readonly attribute boolean isCurrentGlobal;
 
@@ -87,7 +90,7 @@ interface WindowGlobalParent : WindowContext {
   // navigation before proceeding. If the user needs to be prompted, however,
   // the promise will not resolve until the user has responded, regardless of
   // the timeout.
-  [Throws]
+  [NewObject]
   Promise<boolean> permitUnload(optional PermitUnloadAction action = "prompt",
                                 optional unsigned long timeout = 0);
 
@@ -121,7 +124,7 @@ interface WindowGlobalParent : WindowContext {
    */
   [Throws]
   JSWindowActorParent getActor(UTF8String name);
-  JSWindowActorParent getExistingActor(UTF8String name);
+  JSWindowActorParent? getExistingActor(UTF8String name);
 
   /**
    * Renders a region of the frame into an image bitmap.
@@ -140,7 +143,7 @@ interface WindowGlobalParent : WindowContext {
    * cannot access the rendering of out of process iframes. This API works
    * with remote and local frames.
    */
-  [Throws]
+  [NewObject]
   Promise<ImageBitmap> drawSnapshot(DOMRect? rect,
                                     double scale,
                                     UTF8String backgroundColor,
@@ -155,8 +158,13 @@ interface WindowGlobalParent : WindowContext {
    * This returns a Promise which resolves to an nsITransportSecurity
    * object with certificate data or undefined if no security info is available.
    */
-  [Throws]
+  [NewObject]
   Promise<nsITransportSecurityInfo> getSecurityInfo();
+
+  // True if any of the windows in the subtree rooted at this window
+  // has active peer connections.  If this is called for a non-top-level
+  // context, it always returns false.
+  boolean hasActivePeerConnections();
 };
 
 [Exposed=Window, ChromeOnly]
@@ -191,5 +199,5 @@ interface WindowGlobalChild {
    */
   [Throws]
   JSWindowActorChild getActor(UTF8String name);
-  JSWindowActorChild getExistingActor(UTF8String name);
+  JSWindowActorChild? getExistingActor(UTF8String name);
 };

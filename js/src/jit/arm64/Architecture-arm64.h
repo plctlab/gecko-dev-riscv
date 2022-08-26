@@ -10,6 +10,9 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/MathAlgorithms.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include "jit/arm64/vixl/Instructions-vixl.h"
 #include "jit/shared/Architecture-shared.h"
 
@@ -157,8 +160,7 @@ class Registers {
         "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
         "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
         "x24", "x25", "x26", "x27", "x28", "x29", "lr",  "sp"};
-    static_assert(Total == sizeof(Names) / sizeof(Names[0]),
-                  "Table is the correct size");
+    static_assert(Total == std::size(Names), "Table is the correct size");
     if (code >= Total) {
       return "invalid";
     }
@@ -201,7 +203,8 @@ class Registers {
       (1 << Registers::x28) |  // PseudoStackPointer.
       (1 << Registers::ip0) |  // First scratch register.
       (1 << Registers::ip1) |  // Second scratch register.
-      (1 << Registers::tls) | (1 << Registers::lr) | (1 << Registers::sp);
+      (1 << Registers::tls) | (1 << Registers::lr) | (1 << Registers::sp) |
+      (1 << Registers::fp);
 
   static const SetType WrapperMask = VolatileMask;
 
@@ -450,8 +453,7 @@ class FloatRegisters {
         "v30", "v31",
     };
     // clang-format on
-    static_assert(Total == sizeof(Names) / sizeof(Names[0]),
-                  "Table is the correct size");
+    static_assert(Total == std::size(Names), "Table is the correct size");
     if (code >= Total) {
       return "invalid";
     }
@@ -546,6 +548,10 @@ class FloatRegisters {
     return Code((invalid << 7) | (kind << 5) | encoding);
   }
 };
+
+static const uint32_t SpillSlotSize =
+    std::max(sizeof(Registers::RegisterContent),
+             sizeof(FloatRegisters::RegisterContent));
 
 static const uint32_t ShadowStackSpace = 0;
 

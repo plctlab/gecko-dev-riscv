@@ -10,6 +10,7 @@
 
 use crate::{Arbitrary, Error, Result};
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 use std::{mem, ops};
 
 /// A source of unstructured data.
@@ -235,19 +236,20 @@ impl<'a> Unstructured<'a> {
 
             // We only consume as many bytes as necessary to cover the entire
             // range of the byte string.
-            let len = if self.data.len() <= std::u8::MAX as usize + 1 {
+            // Note: We cast to u64 so we don't overflow when checking std::u32::MAX + 4 on 32-bit archs
+            let len = if self.data.len() as u64 <= std::u8::MAX as u64 + 1 {
                 let bytes = 1;
                 let max_size = self.data.len() - bytes;
                 let (rest, for_size) = self.data.split_at(max_size);
                 self.data = rest;
                 Self::int_in_range_impl(0..=max_size as u8, for_size.iter().copied())?.0 as usize
-            } else if self.data.len() <= std::u16::MAX as usize + 1 {
+            } else if self.data.len() as u64 <= std::u16::MAX as u64 + 2 {
                 let bytes = 2;
                 let max_size = self.data.len() - bytes;
                 let (rest, for_size) = self.data.split_at(max_size);
                 self.data = rest;
                 Self::int_in_range_impl(0..=max_size as u16, for_size.iter().copied())?.0 as usize
-            } else if self.data.len() <= std::u32::MAX as usize + 1 {
+            } else if self.data.len() as u64 <= std::u32::MAX as u64 + 4 {
                 let bytes = 4;
                 let max_size = self.data.len() - bytes;
                 let (rest, for_size) = self.data.split_at(max_size);
@@ -375,11 +377,88 @@ impl<'a> Unstructured<'a> {
     /// assert!(result.is_err());
     /// ```
     pub fn choose<'b, T>(&mut self, choices: &'b [T]) -> Result<&'b T> {
-        if choices.is_empty() {
+        let idx = self.choose_index(choices.len())?;
+        Ok(&choices[idx])
+    }
+
+    /// Choose a value in `0..len`.
+    ///
+    /// Returns an error if the `len` is zero.
+    ///
+    /// # Examples
+    ///
+    /// Using Fisher–Yates shuffle shuffle to gerate an arbitrary permutation.
+    ///
+    /// [Fisher–Yates shuffle]: https://en.wikipedia.org/wiki/Fisher–Yates_shuffle
+    ///
+    /// ```
+    /// use arbitrary::Unstructured;
+    ///
+    /// let mut u = Unstructured::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 0]);
+    /// let mut permutation = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    /// let mut to_permute = &mut permutation[..];
+    /// while to_permute.len() > 1 {
+    ///     let idx = u.choose_index(to_permute.len()).unwrap();
+    ///     to_permute.swap(0, idx);
+    ///     to_permute = &mut to_permute[1..];
+    /// }
+    ///
+    /// println!("permutation: {:?}", permutation);
+    /// ```
+    ///
+    /// An error is returned if the length is zero:
+    ///
+    /// ```
+    /// use arbitrary::Unstructured;
+    ///
+    /// let mut u = Unstructured::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 0]);
+    /// let array: [i32; 0] = [];
+    ///
+    /// let result = u.choose_index(array.len());
+    ///
+    /// assert!(result.is_err());
+    /// ```
+    pub fn choose_index(&mut self, len: usize) -> Result<usize> {
+        if len == 0 {
             return Err(Error::EmptyChoose);
         }
-        let idx = self.int_in_range(0..=choices.len() - 1)?;
-        Ok(&choices[idx])
+        let idx = self.int_in_range(0..=len - 1)?;
+        Ok(idx)
+    }
+
+    /// Generate a boolean according to the given ratio.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the numerator and denominator do not meet these constraints:
+    ///
+    /// * `0 < numerator <= denominator`
+    ///
+    /// # Example
+    ///
+    /// Generate a boolean that is `true` five sevenths of the time:
+    ///
+    /// ```
+    /// # fn foo() -> arbitrary::Result<()> {
+    /// use arbitrary::Unstructured;
+    ///
+    /// # let my_data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+    /// let mut u = Unstructured::new(&my_data);
+    ///
+    /// if u.ratio(5, 7)? {
+    ///     // Take this branch 5/7 of the time.
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn ratio<T>(&mut self, numerator: T, denominator: T) -> Result<bool>
+    where
+        T: Int,
+    {
+        assert!(T::ZERO < numerator);
+        assert!(numerator <= denominator);
+        let x = self.int_in_range(T::ONE..=denominator)?;
+        Ok(x <= numerator)
     }
 
     /// Fill a `buffer` with bytes from the underlying raw data.
@@ -389,8 +468,8 @@ impl<'a> Unstructured<'a> {
     /// `Arbitrary` implementations like `<Vec<u8>>::arbitrary` and
     /// `String::arbitrary` over using this method directly.
     ///
-    /// If this `Unstructured` does not have enough data to fill the whole
-    /// `buffer`, an error is returned.
+    /// If this `Unstructured` does not have enough underlying data to fill the
+    /// whole `buffer`, it pads the buffer out with zeros.
     ///
     /// # Example
     ///
@@ -400,8 +479,15 @@ impl<'a> Unstructured<'a> {
     /// let mut u = Unstructured::new(&[1, 2, 3, 4]);
     ///
     /// let mut buf = [0; 2];
+    ///
     /// assert!(u.fill_buffer(&mut buf).is_ok());
+    /// assert_eq!(buf, [1, 2]);
+    ///
     /// assert!(u.fill_buffer(&mut buf).is_ok());
+    /// assert_eq!(buf, [3, 4]);
+    ///
+    /// assert!(u.fill_buffer(&mut buf).is_ok());
+    /// assert_eq!(buf, [0, 0]);
     /// ```
     pub fn fill_buffer(&mut self, buffer: &mut [u8]) -> Result<()> {
         let n = std::cmp::min(buffer.len(), self.data.len());
@@ -515,6 +601,100 @@ impl<'a> Unstructured<'a> {
             u: Some(self),
             _marker: PhantomData,
         })
+    }
+
+    /// Call the given function an arbitrary number of times.
+    ///
+    /// The function is given this `Unstructured` so that it can continue to
+    /// generate arbitrary data and structures.
+    ///
+    /// You may optionaly specify minimum and maximum bounds on the number of
+    /// times the function is called.
+    ///
+    /// You may break out of the loop early by returning
+    /// `Ok(std::ops::ControlFlow::Break)`. To continue the loop, return
+    /// `Ok(std::ops::ControlFlow::Continue)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min > max`.
+    ///
+    /// # Example
+    ///
+    /// Call a closure that generates an arbitrary type inside a context an
+    /// arbitrary number of times:
+    ///
+    /// ```
+    /// use arbitrary::{Result, Unstructured};
+    /// use std::ops::ControlFlow;
+    ///
+    /// enum Type {
+    ///     /// A boolean type.
+    ///     Bool,
+    ///
+    ///     /// An integer type.
+    ///     Int,
+    ///
+    ///     /// A list of the `i`th type in this type's context.
+    ///     List(usize),
+    /// }
+    ///
+    /// fn arbitrary_types_context(u: &mut Unstructured) -> Result<Vec<Type>> {
+    ///     let mut context = vec![];
+    ///
+    ///     u.arbitrary_loop(Some(10), Some(20), |u| {
+    ///         let num_choices = if context.is_empty() {
+    ///             2
+    ///         } else {
+    ///             3
+    ///         };
+    ///         let ty = match u.int_in_range::<u8>(1..=num_choices)? {
+    ///             1 => Type::Bool,
+    ///             2 => Type::Int,
+    ///             3 => Type::List(u.int_in_range(0..=context.len() - 1)?),
+    ///             _ => unreachable!(),
+    ///         };
+    ///         context.push(ty);
+    ///         Ok(ControlFlow::Continue(()))
+    ///     })?;
+    ///
+    ///     // The number of loop iterations are constrained by the min/max
+    ///     // bounds that we provided.
+    ///     assert!(context.len() >= 10);
+    ///     assert!(context.len() <= 20);
+    ///
+    ///     Ok(context)
+    /// }
+    /// ```
+    pub fn arbitrary_loop(
+        &mut self,
+        min: Option<u32>,
+        max: Option<u32>,
+        mut f: impl FnMut(&mut Self) -> Result<ControlFlow<(), ()>>,
+    ) -> Result<()> {
+        let min = min.unwrap_or(0);
+        let max = max.unwrap_or(u32::MAX);
+        assert!(min <= max);
+
+        for _ in 0..min {
+            match f(self)? {
+                ControlFlow::Continue(_) => continue,
+                ControlFlow::Break(_) => return Ok(()),
+            }
+        }
+
+        for _ in 0..(max - min) {
+            let keep_going = self.arbitrary().unwrap_or(false);
+            if !keep_going {
+                break;
+            }
+            match f(self)? {
+                ControlFlow::Continue(_) => continue,
+                ControlFlow::Break(_) => break,
+            }
+        }
+
+        Ok(())
     }
 }
 

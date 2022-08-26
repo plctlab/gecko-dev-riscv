@@ -283,15 +283,16 @@ struct nsCSSRendering {
   static bool IsCanvasFrame(const nsIFrame* aFrame);
 
   /**
-   * Fill in an aBackgroundSC to be used to paint the background
-   * for an element.  This applies the rules for propagating
-   * backgrounds between BODY, the root element, and the canvas.
-   * @return true if there is some meaningful background.
+   * Returns the ComputedStyle to be used to paint the background for the given
+   * frame, if its element has a meaningful background.  This applies the rules
+   * for propagating backgrounds between BODY, the root element, and the
+   * canvas.
+   *
+   * @return the ComputedStyle (if any) to be used for painting aForFrame's
+   *         background.
    */
-  static bool FindBackground(const nsIFrame* aForFrame,
-                             mozilla::ComputedStyle** aBackgroundSC);
-  static bool FindBackgroundFrame(const nsIFrame* aForFrame,
-                                  nsIFrame** aBackgroundFrame);
+  static mozilla::ComputedStyle* FindBackground(const nsIFrame* aForFrame);
+  static nsIFrame* FindBackgroundFrame(const nsIFrame* aForFrame);
 
   /**
    * As FindBackground, but the passed-in frame is known to be a root frame
@@ -331,24 +332,34 @@ struct nsCSSRendering {
   }
 
   /**
-   * Find a frame which draws a non-transparent background, for various contrast
-   * checks. Note that this only accounts for background-color and might stop at
-   * themed frames (depending on the argument), so it might not be what you
-   * want.
+   * Find a non-transparent background color on an ancestor, for various
+   * contrast checks. Note that this only accounts for background-color and
+   * might stop at themed frames (depending on the argument), so it might not be
+   * what you want. Note that if we stop at themed frames we might, in fact, end
+   * up returning a transparent color (but then mIsThemed will be set to true).
+   *
+   * For semi-transparent colors, right now we blend with the default
+   * background-color rather than with all ancestor backgrounds.
+   *
+   * If aPreferBodyToCanvas is true, we prefer the background color of the
+   * <body> frame, even though we found a canvas background, because the body
+   * background color is most likely what will be visible as the background
+   * color of the page, even if the html element has a different background
+   * color which prevents that of the body frame to propagate to the viewport.
    */
-  struct NonTransparentBackgroundFrame {
-    nsIFrame* mFrame = nullptr;
+  struct EffectiveBackgroundColor {
+    nscolor mColor = 0;
     bool mIsThemed = false;
-    bool mIsForCanvas = false;
   };
-  static NonTransparentBackgroundFrame FindNonTransparentBackgroundFrame(
-      nsIFrame* aFrame, bool aStopAtThemed = true);
+  static EffectiveBackgroundColor FindEffectiveBackgroundColor(
+      nsIFrame* aFrame, bool aStopAtThemed = true,
+      bool aPreferBodyToCanvas = false);
 
   /**
    * Determine the background color to draw taking into account print settings.
    */
   static nscolor DetermineBackgroundColor(nsPresContext* aPresContext,
-                                          mozilla::ComputedStyle* aStyle,
+                                          const mozilla::ComputedStyle* aStyle,
                                           nsIFrame* aFrame,
                                           bool& aDrawBackgroundImage,
                                           bool& aDrawBackgroundColor);
@@ -502,7 +513,8 @@ struct nsCSSRendering {
    */
   static ImgDrawResult PaintStyleImageLayerWithSC(
       const PaintBGParams& aParams, gfxContext& aRenderingCtx,
-      mozilla::ComputedStyle* mBackgroundSC, const nsStyleBorder& aBorder);
+      const mozilla::ComputedStyle* aBackgroundSC,
+      const nsStyleBorder& aBorder);
 
   static bool CanBuildWebRenderDisplayItemsForStyleImageLayer(
       WebRenderLayerManager* aManager, nsPresContext& aPresCtx,
@@ -684,8 +696,8 @@ struct nsCSSRendering {
   static nsRect GetTextDecorationRect(nsPresContext* aPresContext,
                                       const DecorationRectParams& aParams);
 
-  static CompositionOp GetGFXBlendMode(mozilla::StyleBlend mBlendMode) {
-    switch (mBlendMode) {
+  static CompositionOp GetGFXBlendMode(mozilla::StyleBlend aBlendMode) {
+    switch (aBlendMode) {
       case mozilla::StyleBlend::Normal:
         return CompositionOp::OP_OVER;
       case mozilla::StyleBlend::Multiply:
@@ -718,6 +730,8 @@ struct nsCSSRendering {
         return CompositionOp::OP_COLOR;
       case mozilla::StyleBlend::Luminosity:
         return CompositionOp::OP_LUMINOSITY;
+      case mozilla::StyleBlend::PlusLighter:
+        return CompositionOp::OP_ADD;
       default:
         MOZ_ASSERT(false);
         return CompositionOp::OP_OVER;

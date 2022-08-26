@@ -14,33 +14,22 @@
 #include <stddef.h>  // ptrdiff_t, size_t
 #include <stdint.h>  // uint16_t, int32_t, uint32_t
 
-#include "jstypes.h"           // JS_PUBLIC_API
-#include "NamespaceImports.h"  // ValueVector
-
 #include "frontend/AbstractScopePtr.h"  // AbstractScopePtr, ScopeIndex
 #include "frontend/BytecodeOffset.h"    // BytecodeOffset
 #include "frontend/CompilationStencil.h"  // CompilationStencil, CompilationGCOutput, CompilationAtomCache
 #include "frontend/JumpList.h"         // JumpTarget
 #include "frontend/NameCollections.h"  // AtomIndexMap, PooledMapPtr
-#include "frontend/ObjLiteral.h"       // ObjLiteralStencil
 #include "frontend/ParseNode.h"        // BigIntLiteral
 #include "frontend/ParserAtom.h"  // ParserAtomsTable, TaggedParserAtomIndex, ParserAtom
 #include "frontend/SourceNotes.h"  // SrcNote
 #include "frontend/Stencil.h"      // Stencils
-#include "gc/Rooting.h"            // JS::Rooted
-#include "js/GCVariant.h"          // GCPolicy<mozilla::Variant>
-#include "js/GCVector.h"           // GCVector
 #include "js/TypeDecls.h"          // jsbytecode, JSContext
-#include "js/Value.h"              // JS::Vector
 #include "js/Vector.h"             // Vector
 #include "vm/Opcodes.h"            // JSOpLength_JumpTarget
 #include "vm/SharedStencil.h"      // TryNote, ScopeNote, GCThingIndex
 #include "vm/StencilEnums.h"       // TryNoteKind
 
 namespace js {
-
-class Scope;
-
 namespace frontend {
 
 class FunctionBox;
@@ -218,21 +207,6 @@ class BytecodeSection {
     lastTarget_.offset = offset;
   }
 
-  // Check if the last emitted opcode is a jump target.
-  bool lastOpcodeIsJumpTarget() const {
-    return lastTarget_.offset.valid() &&
-           offset() - lastTarget_.offset ==
-               BytecodeOffsetDiff(JSOpLength_JumpTarget);
-  }
-
-  // JumpTarget should not be part of the emitted statement, as they can be
-  // aliased by multiple statements. If we included the jump target as part of
-  // the statement we might have issues where the enclosing statement might
-  // not contain all the opcodes of the enclosed statements.
-  BytecodeOffset lastNonJumpTargetOffset() const {
-    return lastOpcodeIsJumpTarget() ? lastTarget_.offset : offset();
-  }
-
   // ---- Stack ----
 
   int32_t stackDepth() const { return stackDepth_; }
@@ -349,11 +323,10 @@ class BytecodeSection {
 
   // ---- Generator ----
 
-  // Certain ops (yield, await, gosub) have an entry in the script's
-  // resumeOffsets list. This can be used to map from the op's resumeIndex to
-  // the bytecode offset of the next pc. This indirection makes it easy to
-  // resume in the JIT (because BaselineScript stores a resumeIndex => native
-  // code array).
+  // Certain ops (yield, await) have an entry in the script's resumeOffsets
+  // list. This can be used to map from the op's resumeIndex to the bytecode
+  // offset of the next pc. This indirection makes it easy to resume in the JIT
+  // (because BaselineScript stores a resumeIndex => native code array).
   CGResumeOffsetList resumeOffsetList_;
 
   // Number of yield instructions emitted. Does not include JSOp::Await.
@@ -398,7 +371,7 @@ class PerScriptData {
   explicit PerScriptData(JSContext* cx,
                          frontend::CompilationState& compilationState);
 
-  [[nodiscard]] bool init(JSContext* cx);
+  [[nodiscard]] bool init(ErrorContext* ec);
 
   GCThingList& gcThingList() { return gcThingList_; }
   const GCThingList& gcThingList() const { return gcThingList_; }

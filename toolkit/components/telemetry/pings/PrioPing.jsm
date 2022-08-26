@@ -11,11 +11,13 @@
 
 var EXPORTED_SYMBOLS = ["TelemetryPrioPing", "Policy"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   TelemetryController: "resource://gre/modules/TelemetryController.jsm",
   Log: "resource://gre/modules/Log.jsm",
 });
@@ -23,7 +25,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const Utils = TelemetryUtils;
 
@@ -37,7 +38,7 @@ const PRIO_PING_VERSION = "1";
 
 var Policy = {
   sendPing: (type, payload, options) =>
-    TelemetryController.submitExternalPing(type, payload, options),
+    lazy.TelemetryController.submitExternalPing(type, payload, options),
   getEncodedOriginSnapshot: async aClear =>
     Services.telemetry.getEncodedOriginSnapshot(aClear),
 };
@@ -143,7 +144,7 @@ var TelemetryPrioPing = {
 
   get _log() {
     if (!this._logger) {
-      this._logger = Log.repository.getLoggerWithMessagePrefix(
+      this._logger = lazy.Log.repository.getLoggerWithMessagePrefix(
         LOGGER_NAME,
         LOGGER_PREFIX + "::"
       );

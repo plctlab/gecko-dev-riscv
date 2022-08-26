@@ -14,14 +14,20 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.RectF;
+import android.os.Build
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.filters.MediumTest
+import androidx.test.filters.SdkSuppress
 
 import org.hamcrest.Matcher
 import org.hamcrest.Matchers.*
 import org.json.JSONArray
 import org.junit.Assume.assumeThat
+import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 import org.junit.runners.Parameterized.Parameter
@@ -30,8 +36,13 @@ import org.mozilla.geckoview.GeckoSession
 
 @MediumTest
 @RunWith(Parameterized::class)
-@WithDisplay(width = 100, height = 100)
+@WithDisplay(width = 400, height = 400)
 class SelectionActionDelegateTest : BaseSessionTest() {
+    val activityRule = ActivityScenarioRule(GeckoViewTestActivity::class.java)
+
+    @get:Rule
+    override val rules: RuleChain = RuleChain.outerRule(activityRule).around(sessionRule)
+
     enum class ContentType {
         DIV, EDITABLE_ELEMENT, IFRAME
     }
@@ -45,7 +56,8 @@ class SelectionActionDelegateTest : BaseSessionTest() {
                 arrayOf("#textarea", ContentType.EDITABLE_ELEMENT, "dolor", true),
                 arrayOf("#contenteditable", ContentType.DIV, "sit", true),
                 arrayOf("#iframe", ContentType.IFRAME, "amet", false),
-                arrayOf("#designmode", ContentType.IFRAME, "consectetur", true))
+                arrayOf("#designmode", ContentType.IFRAME, "consectetur", true),
+                arrayOf("#x-input", ContentType.EDITABLE_ELEMENT, "adipisci", true))
     }
 
     @field:Parameter(0) @JvmField var id: String = ""
@@ -69,6 +81,15 @@ class SelectionActionDelegateTest : BaseSessionTest() {
         }
     }
 
+    @Before
+    fun setup() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Writing clipboard requires foreground on Android 10.
+            activityRule.scenario.onActivity { activity ->
+                activity.onWindowFocusChanged(true)
+            }
+        }
+    }
 
     /** Generic tests for each content type. */
 
@@ -79,6 +100,30 @@ class SelectionActionDelegateTest : BaseSessionTest() {
                         FLAG_IS_EDITABLE, arrayOf(ACTION_COLLAPSE_TO_START, ACTION_COLLAPSE_TO_END,
                                                   ACTION_COPY, ACTION_CUT, ACTION_DELETE,
                                                   ACTION_HIDE, ACTION_PASTE)))
+            }
+        } else {
+            testThat(selectedContent, {}, hasShowActionRequest(
+                    0, arrayOf(ACTION_COPY, ACTION_HIDE, ACTION_SELECT_ALL,
+                                           ACTION_UNSELECT)))
+        }
+    }
+
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.O)
+    @Test fun request_html() {
+        if (editable) {
+            withHtmlClipboard ("text", "<bold>text</bold>") {
+                if (type != ContentType.EDITABLE_ELEMENT) {
+                    testThat(selectedContent, {}, hasShowActionRequest(
+                            FLAG_IS_EDITABLE, arrayOf(ACTION_COLLAPSE_TO_START, ACTION_COLLAPSE_TO_END,
+                                                      ACTION_COPY, ACTION_CUT, ACTION_DELETE,
+                                                      ACTION_HIDE, ACTION_PASTE,
+                                                      ACTION_PASTE_AS_PLAIN_TEXT)))
+                } else {
+                    testThat(selectedContent, {}, hasShowActionRequest(
+                            FLAG_IS_EDITABLE, arrayOf(ACTION_COLLAPSE_TO_START, ACTION_COLLAPSE_TO_END,
+                                                      ACTION_COPY, ACTION_CUT, ACTION_DELETE,
+                                                      ACTION_HIDE, ACTION_PASTE)))
+                }
             }
         } else {
             testThat(selectedContent, {}, hasShowActionRequest(
@@ -118,6 +163,15 @@ class SelectionActionDelegateTest : BaseSessionTest() {
     @Test fun paste() = assumingEditable(true) {
         withClipboard("pasted") {
             testThat(selectedContent, withResponse(ACTION_PASTE), changesContentTo("pasted"))
+        }
+    }
+
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.O)
+    @Test fun pasteAsPlainText() = assumingEditable(true) {
+        assumeThat("Paste as plain text works on content editable", type, not(equalTo(ContentType.EDITABLE_ELEMENT)));
+
+        withHtmlClipboard("pasted", "<bold>pasted</bold>") {
+            testThat(selectedContent, withResponse(ACTION_PASTE_AS_PLAIN_TEXT), changesContentTo("pasted"))
         }
     }
 
@@ -188,11 +242,13 @@ class SelectionActionDelegateTest : BaseSessionTest() {
             document.querySelector('${id}').style.display = "block";
             document.querySelector('${id}').style.border = "0";
             document.querySelector('${id}').style.padding = "0";
+            document.querySelector('${id}').offsetHeight; // flush layout
         })()"""
         val jsBorder10pxPadding10px = """(function() {
             document.querySelector('${id}').style.display = "block";
             document.querySelector('${id}').style.border = "10px solid";
             document.querySelector('${id}').style.padding = "10px";
+            document.querySelector('${id}').offsetHeight; // flush layout
         })()"""
         val expectedDiff = RectF(20f, 20f, 20f, 20f) // left, top, right, bottom
         testClientRect(selectedContent, jsCssReset, jsBorder10pxPadding10px, expectedDiff)
@@ -300,7 +356,27 @@ class SelectionActionDelegateTest : BaseSessionTest() {
     private fun withClipboard(content: String = "", lambda: () -> Unit) {
         val oldClip = clipboard.primaryClip
         try {
-            clipboard.setPrimaryClip(ClipData.newPlainText("", content))
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P && content.isEmpty()) {
+                clipboard.clearPrimaryClip()
+            } else {
+                clipboard.setPrimaryClip(ClipData.newPlainText("", content))
+            }
+
+            sessionRule.addExternalDelegateUntilTestEnd(
+                    ClipboardManager.OnPrimaryClipChangedListener::class,
+                    clipboard::addPrimaryClipChangedListener,
+                    clipboard::removePrimaryClipChangedListener,
+                    ClipboardManager.OnPrimaryClipChangedListener {})
+            lambda()
+        } finally {
+            clipboard.setPrimaryClip(oldClip ?: ClipData.newPlainText("", ""))
+        }
+    }
+
+    private fun withHtmlClipboard(plainText: String = "", html: String = "", lambda: () -> Unit) {
+        val oldClip = clipboard.primaryClip
+        try {
+            clipboard.setPrimaryClip(ClipData.newHtmlText("", plainText, html))
 
             sessionRule.addExternalDelegateUntilTestEnd(
                     ClipboardManager.OnPrimaryClipChangedListener::class,

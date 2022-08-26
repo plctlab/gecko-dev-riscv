@@ -28,13 +28,6 @@ add_task(async function testNoLoginsLockwiseCardUI() {
       return ContentTaskUtils.is_visible(lockwiseCard);
     }, "Lockwise card for user with no logins is visible.");
 
-    const lockwiseTitle = content.document.querySelector("#lockwise-title");
-    is(
-      lockwiseTitle.textContent,
-      "Never forget a password again",
-      "Correct lockwise title is shown"
-    );
-
     const lockwiseHowItWorks = content.document.querySelector(
       "#lockwise-how-it-works"
     );
@@ -43,14 +36,14 @@ add_task(async function testNoLoginsLockwiseCardUI() {
       "How it works link is hidden"
     );
 
-    const lockwiseHeaderString = content.document.querySelector(
+    const lockwiseHeaderContent = content.document.querySelector(
       "#lockwise-header-content span"
-    ).textContent;
-    ok(
-      lockwiseHeaderString.includes(
-        "Firefox Lockwise securely stores your passwords in your browser"
-      ),
-      "Correct lockwise header string is shown"
+    );
+    await content.document.l10n.translateElements([lockwiseHeaderContent]);
+    is(
+      lockwiseHeaderContent.dataset.l10nId,
+      "passwords-header-content",
+      "lockwiseHeaderContent contents should match l10n-id attribute set on the element"
     );
 
     const lockwiseScannedWrapper = content.document.querySelector(
@@ -101,7 +94,7 @@ add_task(async function testLockwiseCardUIWithLogins() {
     "Add a login and check that lockwise card content for a logged in user is displayed correctly"
   );
   Services.logins.addLogin(TEST_LOGIN1);
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
 
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     await ContentTaskUtils.waitForCondition(() => {
@@ -110,14 +103,15 @@ add_task(async function testLockwiseCardUIWithLogins() {
     }, "Lockwise card for user with logins is visible");
 
     const lockwiseTitle = content.document.querySelector("#lockwise-title");
+    await content.document.l10n.translateElements([lockwiseTitle]);
     await ContentTaskUtils.waitForCondition(
-      () => lockwiseTitle.textContent == "Password Management",
+      () => lockwiseTitle.textContent == "Manage your passwords",
       "Waiting for Fluent to provide the title translation"
     );
     is(
       lockwiseTitle.textContent,
-      "Password Management",
-      "Correct lockwise title is shown"
+      "Manage your passwords",
+      "Correct passwords title is shown"
     );
 
     const lockwiseHowItWorks = content.document.querySelector(
@@ -128,14 +122,14 @@ add_task(async function testLockwiseCardUIWithLogins() {
       "How it works link is visible"
     );
 
-    const lockwiseHeaderString = content.document.querySelector(
+    const lockwiseHeaderContent = content.document.querySelector(
       "#lockwise-header-content span"
-    ).textContent;
-    ok(
-      lockwiseHeaderString.includes(
-        "Securely store and sync your passwords to all your devices"
-      ),
-      "Correct lockwise header string is shown"
+    );
+    await content.document.l10n.translateElements([lockwiseHeaderContent]);
+    is(
+      lockwiseHeaderContent.dataset.l10nId,
+      "lockwise-header-content-logged-in",
+      "lockwiseHeaderContent contents should match l10n-id attribute set on the element"
     );
 
     const lockwiseScannedWrapper = content.document.querySelector(
@@ -183,7 +177,7 @@ add_task(async function testLockwiseCardUIWithLogins() {
     "Add another login and check that the scanned text about stored logins is updated after reload."
   );
   Services.logins.addLogin(TEST_LOGIN2);
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
 
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     const lockwiseScannedText = content.document.querySelector(
@@ -217,7 +211,7 @@ add_task(async function testLockwiseCardUIWithBreachedLogins() {
   AboutProtectionsParent.setTestOverride(
     mockGetLoginDataWithSyncedDevices(false, 1)
   );
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
 
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     const lockwiseScannedText = content.document.querySelector(
@@ -241,7 +235,7 @@ add_task(async function testLockwiseCardUIWithBreachedLogins() {
   AboutProtectionsParent.setTestOverride(
     mockGetLoginDataWithSyncedDevices(false, 2)
   );
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     const lockwiseScannedText = content.document.querySelector(
       "#lockwise-scanned-text"
@@ -274,7 +268,7 @@ add_task(async function testLockwiseCardPref() {
     "browser.contentblocking.report.lockwise.enabled",
     false
   );
-  await reloadTab(tab);
+  await BrowserTestUtils.reloadTab(tab);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     const lockwiseCard = content.document.querySelector(".lockwise-card");
     await ContentTaskUtils.waitForCondition(() => {

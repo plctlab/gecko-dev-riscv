@@ -3,78 +3,27 @@
 
 "use strict";
 
-Cu.importGlobalProperties(["Glean", "GleanPings"]);
-const { MockRegistrar } = ChromeUtils.import(
-  "resource://testing-common/MockRegistrar.jsm"
-);
-const { ObjectUtils } = ChromeUtils.import(
-  "resource://gre/modules/ObjectUtils.jsm"
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
-
-/**
- * Mock the SysInfo object used to read System data in Gecko.
- */
-var SysInfo = {
-  overrides: {},
-
-  /**
-   * Checks if overrides are present and return them.
-   *
-   * @returns the overridden value or undefined if not present.
-   */
-  _getOverridden(name) {
-    if (name in this.overrides) {
-      return this.overrides[name];
-    }
-
-    return undefined;
-  },
-
-  // To support nsIPropertyBag.
-  getProperty(name) {
-    let override = this._getOverridden(name);
-    return override !== undefined
-      ? override
-      : this._genuine.QueryInterface(Ci.nsIPropertyBag).getProperty(name);
-  },
-
-  // To support nsIPropertyBag2.
-  get(name) {
-    let override = this._getOverridden(name);
-    return override !== undefined
-      ? override
-      : this._genuine.QueryInterface(Ci.nsIPropertyBag2).get(name);
-  },
-
-  // To support nsIPropertyBag2.
-  getPropertyAsACString(name) {
-    return this.get(name);
-  },
-
-  QueryInterface: ChromeUtils.generateQI(["nsIPropertyBag2", "nsISystemInfo"]),
-};
 
 function sleep(ms) {
   /* eslint-disable mozilla/no-arbitrary-setTimeout */
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-add_task(function test_setup() {
-  // FOG needs a profile directory to put its data in.
-  do_get_profile();
+add_setup(
+  /* on Android FOG is set up through head.js */
+  { skip_if: () => AppConstants.platform == "android" },
+  function test_setup() {
+    // FOG needs a profile directory to put its data in.
+    do_get_profile();
 
-  // Mock SysInfo.
-  SysInfo.overrides = {
-    version: "1.2.3",
-    arch: "x64",
-  };
-  MockRegistrar.register("@mozilla.org/system-info;1", SysInfo);
-
-  // We need to initialize it once, otherwise operations will be stuck in the pre-init queue.
-  let FOG = Cc["@mozilla.org/toolkit/glean;1"].createInstance(Ci.nsIFOG);
-  FOG.initializeFOG();
-});
+    // We need to initialize it once, otherwise operations will be stuck in the pre-init queue.
+    Services.fog.initializeFOG();
+  }
+);
 
 add_task(function test_fog_counter_works() {
   Glean.testOnly.badCode.add(31);
@@ -178,21 +127,27 @@ add_task(async function test_fog_event_works() {
   };
   Assert.deepEqual(expectedExtra, events[0].extra);
 
-  // Invalid extra keys don't crash, the event is not recorded.
-  let extra3 = {
-    extra1_nonexistent_extra: "this does not crash",
-  };
-  Glean.testOnlyIpc.eventWithExtra.record(extra3);
-  events = Glean.testOnlyIpc.eventWithExtra.testGetValue();
-  Assert.equal(1, events.length, "Recorded one event too many.");
-
   // Quantities need to be non-negative.
+  // This does not record a Glean error.
   let extra4 = {
     extra2: -1,
   };
   Glean.testOnlyIpc.eventWithExtra.record(extra4);
   events = Glean.testOnlyIpc.eventWithExtra.testGetValue();
+  // Unchanged number of events
   Assert.equal(1, events.length, "Recorded one event too many.");
+
+  // Invalid extra keys don't crash, the event is not recorded,
+  // but an error is recorded.
+  let extra3 = {
+    extra1_nonexistent_extra: "this does not crash",
+  };
+  Glean.testOnlyIpc.eventWithExtra.record(extra3);
+  Assert.throws(
+    () => Glean.testOnlyIpc.eventWithExtra.testGetValue(),
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of a recording error."
+  );
 });
 
 add_task(async function test_fog_memory_distribution_works() {
@@ -230,17 +185,21 @@ add_task(async function test_fog_custom_distribution_works() {
   );
 });
 
-add_task(function test_fog_custom_pings() {
-  Assert.ok("onePingOnly" in GleanPings);
-  let submitted = false;
-  Glean.testOnly.onePingOneBool.set(false);
-  GleanPings.onePingOnly.testBeforeNextSubmit(reason => {
-    submitted = true;
-    Assert.equal(false, Glean.testOnly.onePingOneBool.testGetValue());
-  });
-  GleanPings.onePingOnly.submit();
-  Assert.ok(submitted, "Ping was submitted, callback was called.");
-});
+add_task(
+  /* TODO(bug 1737520): Enable custom ping support on Android */
+  { skip_if: () => AppConstants.platform == "android" },
+  function test_fog_custom_pings() {
+    Assert.ok("onePingOnly" in GleanPings);
+    let submitted = false;
+    Glean.testOnly.onePingOneBool.set(false);
+    GleanPings.onePingOnly.testBeforeNextSubmit(reason => {
+      submitted = true;
+      Assert.equal(false, Glean.testOnly.onePingOneBool.testGetValue());
+    });
+    GleanPings.onePingOnly.submit();
+    Assert.ok(submitted, "Ping was submitted, callback was called.");
+  }
+);
 
 add_task(async function test_fog_timing_distribution_works() {
   let t1 = Glean.testOnly.whatTimeIsIt.start();
@@ -276,6 +235,47 @@ add_task(async function test_fog_timing_distribution_works() {
   );
 });
 
+add_task(async function test_fog_labels_conform() {
+  Glean.testOnly.mabelsLabelMaker.singleword.set("portmanteau");
+  Assert.equal(
+    "portmanteau",
+    Glean.testOnly.mabelsLabelMaker.singleword.testGetValue()
+  );
+  Glean.testOnly.mabelsLabelMaker.snake_case.set("snek");
+  Assert.equal(
+    "snek",
+    Glean.testOnly.mabelsLabelMaker.snake_case.testGetValue()
+  );
+  Glean.testOnly.mabelsLabelMaker["dash-character"].set("Dash Rendar");
+  Assert.equal(
+    "Dash Rendar",
+    Glean.testOnly.mabelsLabelMaker["dash-character"].testGetValue()
+  );
+  Glean.testOnly.mabelsLabelMaker["dot.separated"].set("dot product");
+  Assert.equal(
+    "dot product",
+    Glean.testOnly.mabelsLabelMaker["dot.separated"].testGetValue()
+  );
+  Glean.testOnly.mabelsLabelMaker.camelCase.set("wednesday");
+  Assert.throws(
+    () => Glean.testOnly.mabelsLabelMaker.camelCase.testGetValue(),
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of an invalid label."
+  );
+  Assert.throws(
+    () => Glean.testOnly.mabelsLabelMaker.__other__.testGetValue(),
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of an invalid label."
+  );
+  // This test _should_ throw because we are calling data after an invalid label
+  // has been set.
+  Assert.throws(
+    () => Glean.testOnly.mabelsLabelMaker["dot.separated"].testGetValue(),
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of an invalid label."
+  );
+});
+
 add_task(async function test_fog_labeled_boolean_works() {
   Assert.equal(
     undefined,
@@ -298,11 +298,11 @@ add_task(async function test_fog_labeled_boolean_works() {
     Glean.testOnly.mabelsLikeBalloons.__other__.testGetValue()
   );
   Glean.testOnly.mabelsLikeBalloons.InvalidLabel.set(true);
-  Assert.equal(
-    true,
-    Glean.testOnly.mabelsLikeBalloons.__other__.testGetValue()
+  Assert.throws(
+    () => Glean.testOnly.mabelsLikeBalloons.__other__.testGetValue(),
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of a recording error."
   );
-  // TODO: Test that we have the right number and type of errors (bug 1683171)
 });
 
 add_task(async function test_fog_labeled_counter_works() {
@@ -329,7 +329,8 @@ add_task(async function test_fog_labeled_counter_works() {
   Glean.testOnly.mabelsKitchenCounters.InvalidLabel.add(1);
   Assert.throws(
     () => Glean.testOnly.mabelsKitchenCounters.__other__.testGetValue(),
-    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/
+    /NS_ERROR_LOSS_OF_SIGNIFICANT_DATA/,
+    "Should throw because of a recording error."
   );
 });
 
@@ -383,4 +384,11 @@ add_task(function test_fog_rate_works() {
     { numerator: 121, denominator: 11 },
     Glean.testOnlyIpc.rateWithExternalDenominator.testGetValue()
   );
+});
+
+add_task(async function test_fog_url_works() {
+  const value = "https://www.example.com/fog";
+  Glean.testOnlyIpc.aUrl.set(value);
+
+  Assert.equal(value, Glean.testOnlyIpc.aUrl.testGetValue("store1"));
 });

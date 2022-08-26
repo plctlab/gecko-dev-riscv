@@ -8,36 +8,21 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.jsm",
 });
 
-const BROWSER_GLUE = Cc["@mozilla.org/browser/browserglue;1"].getService()
-  .wrappedJSObject;
+// Helpers for testing telemetry events.
 
-// Helpers for mocking windows 7 check.
+// Tests can change the category to filter for different events.
+var gTelemetryCategory = "upgrade_dialog";
 
-let didMockWin7 = false;
-function mockWin7(value) {
-  if (!didMockWin7) {
-    sinon.stub(BROWSER_GLUE, "_onWindows7");
-    registerCleanupFunction(() => BROWSER_GLUE._onWindows7.restore());
-    didMockWin7 = true;
-  }
-  BROWSER_GLUE._onWindows7.returns(value);
-}
-
-// Helpers for showing the upgrade dialog.
-
-function waitForDialog(callback = win => win.close()) {
-  return BrowserTestUtils.promiseAlertDialog(
-    null,
-    "chrome://browser/content/upgradeDialog.html",
-    { callback, isSubDialog: true }
+function AssertEvents(message, ...events) {
+  info(`Checking telemetry events: ${message}`);
+  TelemetryTestUtils.assertEvents(
+    events.map(event => [gTelemetryCategory, ...event]),
+    { category: gTelemetryCategory }
   );
 }
 
-function showAndWaitForDialog(callback) {
-  const promise = waitForDialog(callback);
-  BROWSER_GLUE._showUpgradeDialog();
-  return promise;
-}
+const BROWSER_GLUE = Cc["@mozilla.org/browser/browserglue;1"].getService()
+  .wrappedJSObject;
 
 // Helpers for mocking various shell states.
 
@@ -51,13 +36,13 @@ function mockShell(overrides = {}) {
     didMockShell = true;
   }
 
-  const sharedPinStub = sinon.stub();
+  const sharedPinStub = sinon.stub().resolves(undefined);
   let mock = {
     canPin: false,
     isDefault: false,
     isPinned: false,
 
-    checkPinCurrentAppToTaskbar() {
+    async checkPinCurrentAppToTaskbarAsync(privateBrowsing = false) {
       if (!this.canPin) {
         throw Error;
       }
@@ -65,7 +50,7 @@ function mockShell(overrides = {}) {
     get isAppInDock() {
       return this.isPinned;
     },
-    isCurrentAppPinnedToTaskbarAsync() {
+    isCurrentAppPinnedToTaskbarAsync(privateBrowsing = false) {
       return Promise.resolve(this.isPinned);
     },
     isDefaultBrowser() {
@@ -83,7 +68,7 @@ function mockShell(overrides = {}) {
     },
 
     ensureAppIsPinnedToDock: sharedPinStub,
-    pinCurrentAppToTaskbar: sharedPinStub,
+    pinCurrentAppToTaskbarAsync: sharedPinStub,
     setAsDefault: sinon.stub(),
     ...overrides,
   };

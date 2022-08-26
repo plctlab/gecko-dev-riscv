@@ -55,6 +55,7 @@ class MOZ_STACK_CLASS DocInfo final {
   const URLInfo& PrincipalURL() const;
 
   bool IsTopLevel() const;
+  bool IsSameOriginWithTop() const;
   bool ShouldMatchActiveTabPermission() const;
 
   uint64_t FrameID() const;
@@ -112,14 +113,14 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
       dom::GlobalObject& aGlobal, const dom::MozDocumentMatcherInit& aInit,
       ErrorResult& aRv);
 
-  bool Matches(const DocInfo& aDoc) const;
-  bool MatchesURI(const URLInfo& aURL) const;
+  bool Matches(const DocInfo& aDoc, bool aIgnorePermissions) const;
+  bool Matches(const DocInfo& aDoc) const { return Matches(aDoc, false); }
 
-  bool MatchesLoadInfo(const URLInfo& aURL, nsILoadInfo* aLoadInfo) const {
-    return Matches({aURL, aLoadInfo});
-  }
+  bool MatchesURI(const URLInfo& aURL, bool aIgnorePermissions) const;
+  bool MatchesURI(const URLInfo& aURL) const { return MatchesURI(aURL, false); }
 
-  bool MatchesWindowGlobal(dom::WindowGlobalChild& aWindow) const;
+  bool MatchesWindowGlobal(dom::WindowGlobalChild& aWindow,
+                           bool aIgnorePermissions) const;
 
   WebExtensionPolicy* GetExtension() { return mExtension; }
 
@@ -127,6 +128,7 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   const WebExtensionPolicy* Extension() const { return mExtension; }
 
   bool AllFrames() const { return mAllFrames; }
+  bool CheckPermissions() const { return mCheckPermissions; }
   bool MatchAboutBlank() const { return mMatchAboutBlank; }
 
   MatchPatternSet* Matches() { return mMatches; }
@@ -144,9 +146,13 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
 
   Nullable<uint64_t> GetFrameID() const { return mFrameID; }
 
+  void GetOriginAttributesPatterns(JSContext* aCx,
+                                   JS::MutableHandle<JS::Value> aVal,
+                                   ErrorResult& aError) const;
+
   WebExtensionPolicy* GetParentObject() const { return mExtension; }
   virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::HandleObject aGivenProto) override;
+                               JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
   friend class WebExtensionPolicy;
@@ -169,8 +175,10 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   Nullable<MatchGlobSet> mExcludeGlobs;
 
   bool mAllFrames;
+  bool mCheckPermissions;
   Nullable<uint64_t> mFrameID;
   bool mMatchAboutBlank;
+  Nullable<dom::Sequence<OriginAttributesPattern>> mOriginAttributesPatterns;
 
  private:
   template <typename T, typename U>
@@ -210,7 +218,7 @@ class WebExtensionContentScript final : public MozDocumentMatcher {
   }
 
   virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::HandleObject aGivenProto) override;
+                               JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
   friend class WebExtensionPolicy;

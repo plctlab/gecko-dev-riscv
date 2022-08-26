@@ -202,14 +202,14 @@ bool DebuggerMemory::CallData::drainAllocationsLog() {
 
   size_t length = dbg->allocationsLog.length();
 
-  RootedArrayObject result(cx, NewDenseFullyAllocatedArray(cx, length));
+  Rooted<ArrayObject*> result(cx, NewDenseFullyAllocatedArray(cx, length));
   if (!result) {
     return false;
   }
   result->ensureDenseInitializedLength(0, length);
 
   for (size_t i = 0; i < length; i++) {
-    RootedPlainObject obj(cx, NewPlainObject(cx));
+    Rooted<PlainObject*> obj(cx, NewPlainObject(cx));
     if (!obj) {
       return false;
     }
@@ -413,14 +413,14 @@ bool DebuggerMemory::CallData::takeCensus() {
   }
 
   {
-    Maybe<JS::AutoCheckCannotGC> maybeNoGC;
-    JS::ubi::RootList rootList(cx, maybeNoGC);
-    if (!rootList.init(dbgObj)) {
+    JS::ubi::RootList rootList(cx);
+    auto [ok, nogc] = rootList.init(dbgObj);
+    if (!ok) {
       ReportOutOfMemory(cx);
       return false;
     }
 
-    JS::ubi::CensusTraversal traversal(cx, handler, maybeNoGC.ref());
+    JS::ubi::CensusTraversal traversal(cx, handler, nogc);
     traversal.wantNames = false;
 
     if (!traversal.addStart(JS::ubi::Node(&rootList)) ||

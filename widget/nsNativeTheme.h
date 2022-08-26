@@ -20,6 +20,7 @@
 #include "nsINamed.h"
 #include "nsITimer.h"
 #include "nsIContent.h"
+#include "mozilla/dom/RustTypes.h"
 
 class nsIFrame;
 class nsPresContext;
@@ -27,7 +28,6 @@ class nsPresContext;
 namespace mozilla {
 class ComputedStyle;
 enum class StyleAppearance : uint8_t;
-class EventStates;
 }  // namespace mozilla
 
 class nsNativeTheme : public nsITimerCallback, public nsINamed {
@@ -53,7 +53,7 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
     eTreeSortDirection_Ascending
   };
   // Returns the content state (hover, focus, etc), see EventStateManager.h
-  static mozilla::EventStates GetContentState(
+  static mozilla::dom::ElementState GetContentState(
       nsIFrame* aFrame, mozilla::StyleAppearance aAppearance);
 
   // Returns whether the widget is already styled by content
@@ -61,10 +61,6 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
   // for elements that are already styled.
   bool IsWidgetStyled(nsPresContext* aPresContext, nsIFrame* aFrame,
                       mozilla::StyleAppearance aAppearance);
-
-  // Accessors to widget-specific state information
-
-  bool IsDisabled(nsIFrame* aFrame, mozilla::EventStates aEventStates);
 
   // RTL chrome direction
   static bool IsFrameRTL(nsIFrame* aFrame);
@@ -77,23 +73,6 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
   }
 
   bool IsButtonTypeMenu(nsIFrame* aFrame);
-
-  // checkbox:
-  bool IsChecked(nsIFrame* aFrame) {
-    return GetCheckedOrSelected(aFrame, false);
-  }
-
-  // radiobutton:
-  bool IsSelected(nsIFrame* aFrame) {
-    return GetCheckedOrSelected(aFrame, true);
-  }
-
-  static bool IsFocused(nsIFrame* aFrame) {
-    return CheckBooleanAttr(aFrame, nsGkAtoms::focused);
-  }
-
-  // scrollbar button:
-  int32_t GetScrollbarButtonType(nsIFrame* aFrame);
 
   // tab:
   bool IsSelectedTab(nsIFrame* aFrame) {
@@ -147,8 +126,6 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
   bool IsHorizontal(nsIFrame* aFrame);
 
   // progressbar:
-  bool IsIndeterminateProgress(nsIFrame* aFrame,
-                               mozilla::EventStates aEventStates);
   bool IsVerticalProgress(nsIFrame* aFrame);
 
   // meter:
@@ -162,9 +139,6 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
   // menupopup:
   bool IsSubmenu(nsIFrame* aFrame, bool* aLeftOfParent);
 
-  // True if it's not a menubar item or menulist item
-  bool IsRegularMenuItem(nsIFrame* aFrame);
-
   static bool CheckBooleanAttr(nsIFrame* aFrame, nsAtom* aAtom);
   static int32_t CheckIntAttr(nsIFrame* aFrame, nsAtom* aAtom,
                               int32_t defaultValue);
@@ -172,9 +146,6 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
   // Helpers for progressbar.
   static double GetProgressValue(nsIFrame* aFrame);
   static double GetProgressMaxValue(nsIFrame* aFrame);
-
-  bool GetCheckedOrSelected(nsIFrame* aFrame, bool aCheckSelected);
-  bool GetIndeterminate(nsIFrame* aFrame);
 
   bool QueueAnimatedContentForRefresh(nsIContent* aContent,
                                       uint32_t aMinimumFrameRate);
@@ -184,10 +155,10 @@ class nsNativeTheme : public nsITimerCallback, public nsINamed {
 
   bool IsRangeHorizontal(nsIFrame* aFrame);
 
-  static bool IsDarkBackground(nsIFrame* aFrame);
-  static bool IsDarkColor(nscolor aColor);
+  static bool IsDarkBackgroundForScrollbar(nsIFrame*);
+  static bool IsDarkBackground(nsIFrame*);
 
-  static bool IsWidgetScrollbarPart(mozilla::StyleAppearance aAppearance);
+  static bool IsWidgetScrollbarPart(mozilla::StyleAppearance);
 
  private:
   uint32_t mAnimatedContentTimeout;

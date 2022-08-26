@@ -62,7 +62,28 @@ function* testSteps() {
   finishTest();
 }
 
-function setup() {
+async function setup(isXOrigin) {
+  // Bug 1746646: Make mochitests work with TCP enabled (cookieBehavior = 5)
+  // Acquire storage access permission here so that the iframe has
+  // first-party access to the storage estimate. Without this, it is
+  // isolated and this test will always fail
+  if (isXOrigin) {
+    await SpecialPowers.pushPrefEnv({
+      set: [
+        [
+          "privacy.partition.always_partition_third_party_non_cookie_storage",
+          false,
+        ],
+      ],
+    });
+    SpecialPowers.wrap(document).notifyUserGestureActivation();
+    await SpecialPowers.addPermission(
+      "storageAccessAPI",
+      true,
+      window.location.href
+    );
+    await SpecialPowers.wrap(document).requestStorageAccess();
+  }
   SpecialPowers.pushPrefEnv(
     {
       set: [["dom.storageManager.enabled", true]],

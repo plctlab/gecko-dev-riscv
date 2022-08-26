@@ -33,9 +33,6 @@ namespace layers {
 
 struct RepaintRequest;
 
-typedef std::function<void(uint64_t, const nsTArray<TouchBehaviorFlags>&)>
-    SetAllowedTouchBehaviorCallback;
-
 /* Refer to documentation on SendSetTargetAPZCNotification for this class */
 class DisplayportSetListener : public ManagedPostRefreshObserver {
  public:
@@ -149,14 +146,6 @@ class APZCCallbackHelper {
       const WidgetGUIEvent& aEvent, const LayersId& aLayersId,
       uint64_t aInputBlockId);
 
-  /* Figure out the allowed touch behaviors of each touch point in |aEvent|
-   * and send that information to the provided callback. Also returns the
-   * allowed touch behaviors. */
-  static nsTArray<TouchBehaviorFlags> SendSetAllowedTouchBehaviorNotification(
-      nsIWidget* aWidget, mozilla::dom::Document* aDocument,
-      const WidgetTouchEvent& aEvent, uint64_t aInputBlockId,
-      const SetAllowedTouchBehaviorCallback& aCallback);
-
   /* Notify content of a mouse scroll testing event. */
   static void NotifyMozMouseScrollEvent(
       const ScrollableLayerGuid::ViewID& aScrollId, const nsString& aEvent);
@@ -173,6 +162,8 @@ class APZCCallbackHelper {
       const ScrollableLayerGuid::ViewID& aScrollId);
 
   static void CancelAutoscroll(const ScrollableLayerGuid::ViewID& aScrollId);
+  static void NotifyScaleGestureComplete(const nsCOMPtr<nsIWidget>& aWidget,
+                                         float aScale);
 
   /*
    * Check if the scrollable frame is currently in the middle of a main thread

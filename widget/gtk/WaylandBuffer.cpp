@@ -12,8 +12,9 @@
 
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"
-#include "mozilla/WidgetUtils.h"  // For WidgetUtils
+#include "mozilla/WidgetUtilsGtk.h"
 #include "mozilla/gfx/Tools.h"
+#include "nsGtkUtils.h"
 #include "nsPrintfCString.h"
 #include "prenv.h"  // For PR_GetEnv
 
@@ -22,11 +23,13 @@
 #  include "mozilla/ScopeExit.h"
 #  include "Units.h"
 extern mozilla::LazyLogModule gWidgetWaylandLog;
-#  define LOGWAYLAND(args) \
-    MOZ_LOG(gWidgetWaylandLog, mozilla::LogLevel::Debug, args)
+#  define LOGWAYLAND(...) \
+    MOZ_LOG(gWidgetWaylandLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
 #else
-#  define LOGWAYLAND(args)
+#  define LOGWAYLAND(...)
 #endif /* MOZ_LOGGING */
+
+using namespace mozilla::gl;
 
 namespace mozilla::widget {
 
@@ -42,9 +45,8 @@ char* WaylandBufferSHM::mDumpDir = PR_GetEnv("MOZ_WAYLAND_DUMP_DIR");
 static int WaylandAllocateShmMemory(int aSize) {
   int fd = -1;
 
-  nsCString shmPrefix("/");
-  const char* snapName = mozilla::widget::WidgetUtils::GetSnapInstanceName();
-  if (snapName != nullptr) {
+  nsAutoCString shmPrefix("/");
+  if (const char* snapName = GetSnapInstanceName()) {
     shmPrefix.AppendPrintf("snap.%s.", snapName);
   }
   shmPrefix.Append("wayland.mozilla.ipc");
@@ -72,7 +74,10 @@ static int WaylandAllocateShmMemory(int aSize) {
   do {
     ret = posix_fallocate(fd, 0, aSize);
   } while (ret == EINTR);
-  if (ret != 0) {
+  if (ret == 0) {
+    return fd;
+  }
+  if (ret != ENODEV && ret != EINVAL && ret != EOPNOTSUPP) {
     NS_WARNING(
         nsPrintfCString("posix_fallocate() fails to allocate shm memory: %s",
                         strerror(ret))
@@ -80,7 +85,7 @@ static int WaylandAllocateShmMemory(int aSize) {
     close(fd);
     return -1;
   }
-#else
+#endif
   do {
     ret = ftruncate(fd, aSize);
   } while (ret < 0 && errno == EINTR);
@@ -91,7 +96,6 @@ static int WaylandAllocateShmMemory(int aSize) {
     close(fd);
     fd = -1;
   }
-#endif
 
   return fd;
 }
@@ -137,7 +141,7 @@ WaylandShmPool::~WaylandShmPool() {
     munmap(mImageData, mAllocatedSize);
     mImageData = MAP_FAILED;
   }
-  g_clear_pointer(&mShmPool, wl_shm_pool_destroy);
+  MozClearPointer(mShmPool, wl_shm_pool_destroy);
   if (mShmPoolFd >= 0) {
     close(mShmPoolFd);
     mShmPoolFd = -1;
@@ -151,12 +155,12 @@ WaylandBuffer::WaylandBuffer(const LayoutDeviceIntSize& aSize) : mSize(aSize) {}
 
 void WaylandBuffer::AttachAndCommit(wl_surface* aSurface) {
   LOGWAYLAND(
-      ("WaylandBuffer::AttachAndCommit [%p] wl_surface %p ID %d wl_buffer "
-       "%p ID %d\n",
-       (void*)this, (void*)aSurface,
-       aSurface ? wl_proxy_get_id((struct wl_proxy*)aSurface) : -1,
-       (void*)GetWlBuffer(),
-       GetWlBuffer() ? wl_proxy_get_id((struct wl_proxy*)GetWlBuffer()) : -1));
+      "WaylandBuffer::AttachAndCommit [%p] wl_surface %p ID %d wl_buffer "
+      "%p ID %d\n",
+      (void*)this, (void*)aSurface,
+      aSurface ? wl_proxy_get_id((struct wl_proxy*)aSurface) : -1,
+      (void*)GetWlBuffer(),
+      GetWlBuffer() ? wl_proxy_get_id((struct wl_proxy*)GetWlBuffer()) : -1);
 
   wl_buffer* buffer = GetWlBuffer();
   if (buffer) {
@@ -204,8 +208,8 @@ RefPtr<WaylandBufferSHM> WaylandBufferSHM::Create(
   wl_buffer_add_listener(buffer->GetWlBuffer(), &sBufferListenerWaylandBuffer,
                          buffer.get());
 
-  LOGWAYLAND(("WaylandBufferSHM Created [%p] WaylandDisplay [%p]\n",
-              buffer.get(), waylandDisplay.get()));
+  LOGWAYLAND("WaylandBufferSHM Created [%p] WaylandDisplay [%p]\n",
+             buffer.get(), waylandDisplay.get());
 
   return buffer;
 }
@@ -214,7 +218,7 @@ WaylandBufferSHM::WaylandBufferSHM(const LayoutDeviceIntSize& aSize)
     : WaylandBuffer(aSize) {}
 
 WaylandBufferSHM::~WaylandBufferSHM() {
-  g_clear_pointer(&mWLBuffer, wl_buffer_destroy);
+  MozClearPointer(mWLBuffer, wl_buffer_destroy);
 }
 
 already_AddRefed<gfx::DrawTarget> WaylandBufferSHM::Lock() {
@@ -251,7 +255,7 @@ void WaylandBufferSHM::DumpToFile(const char* aHint) {
     filename.Append(
         nsPrintfCString("firefox-wl-buffer-%.5d-%s.png", mDumpSerial++, aHint));
     cairo_surface_write_to_png(surface, filename.get());
-    LOGWAYLAND(("Dumped wl_buffer to %s\n", filename.get()));
+    LOGWAYLAND("Dumped wl_buffer to %s\n", filename.get());
   }
 }
 #endif

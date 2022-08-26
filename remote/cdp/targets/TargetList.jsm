@@ -6,14 +6,17 @@
 
 var EXPORTED_SYMBOLS = ["TargetList"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   EventEmitter: "resource://gre/modules/EventEmitter.jsm",
   MainProcessTarget:
     "chrome://remote/content/cdp/targets/MainProcessTarget.jsm",
+  TabManager: "chrome://remote/content/shared/TabManager.jsm",
   TabObserver: "chrome://remote/content/cdp/observers/TargetObserver.jsm",
   TabTarget: "chrome://remote/content/cdp/targets/TabTarget.jsm",
 });
@@ -23,7 +26,7 @@ class TargetList {
     // Target ID -> Target
     this._targets = new Map();
 
-    EventEmitter.decorate(this);
+    lazy.EventEmitter.decorate(this);
   }
 
   /**
@@ -46,18 +49,28 @@ class TargetList {
     if (this.tabObserver) {
       throw new Error("Targets is already watching for new tabs");
     }
-    this.tabObserver = new TabObserver({ registerExisting: true });
+
+    this.tabObserver = new lazy.TabObserver({ registerExisting: true });
+
+    // Handle creation of tab targets for opened tabs.
     this.tabObserver.on("open", async (eventName, tab) => {
-      const target = new TabTarget(this, tab.linkedBrowser);
+      const target = new lazy.TabTarget(this, tab.linkedBrowser);
       this.registerTarget(target);
     });
+
+    // Handle removal of tab targets when tabs are closed.
     this.tabObserver.on("close", (eventName, tab) => {
       const browser = tab.linkedBrowser;
-      // Ignore the browsers that haven't had time to initialize.
-      if (!browser.browsingContext) {
+
+      // Ignore unloaded tabs.
+      if (browser.browserId === 0) {
         return;
       }
-      const target = this.getByBrowsingContext(browser.browsingContext.id);
+
+      const id = lazy.TabManager.getIdForBrowser(browser);
+      const target = Array.from(this._targets.values()).find(
+        target => target.id == id
+      );
       if (target) {
         this.destroyTarget(target);
       }
@@ -126,31 +139,12 @@ class TargetList {
   }
 
   /**
-   * Get Target instance by browsing context id
-   *
-   * @param {number} id
-   *     browsing context id
-   *
-   * @return {Target}
-   */
-  getByBrowsingContext(id) {
-    let rv;
-    for (const target of this._targets.values()) {
-      if (target.browsingContext && target.browsingContext.id === id) {
-        rv = target;
-        break;
-      }
-    }
-    return rv;
-  }
-
-  /**
    * Get the Target instance for the main process.
    * This target is a singleton and only exposes a subset of domains.
    */
   getMainProcessTarget() {
     if (!this.mainProcessTarget) {
-      this.mainProcessTarget = new MainProcessTarget(this);
+      this.mainProcessTarget = new lazy.MainProcessTarget(this);
       this.registerTarget(this.mainProcessTarget);
     }
     return this.mainProcessTarget;

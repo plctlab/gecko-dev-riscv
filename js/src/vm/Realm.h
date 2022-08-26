@@ -7,6 +7,7 @@
 #ifndef vm_Realm_h
 #define vm_Realm_h
 
+#include "mozilla/Array.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
@@ -125,6 +126,25 @@ class NewProxyCache {
     entries_[0].shape = shape;
   }
   void purge() { entries_.reset(); }
+};
+
+// Cache for NewPlainObjectWithProperties. When the list of properties matches
+// a recently created object's shape, we can use this shape directly.
+class NewPlainObjectWithPropsCache {
+  static const size_t NumEntries = 4;
+  mozilla::Array<Shape*, NumEntries> entries_;
+
+ public:
+  NewPlainObjectWithPropsCache() { purge(); }
+
+  Shape* lookup(IdValuePair* properties, size_t nproperties) const;
+  void add(Shape* shape);
+
+  void purge() {
+    for (size_t i = 0; i < NumEntries; i++) {
+      entries_[i] = nullptr;
+    }
+  }
 };
 
 // [SMDOC] Object MetadataBuilder API
@@ -265,7 +285,7 @@ class ObjectRealm {
 
   void finishRoots();
   void trace(JSTracer* trc);
-  void sweepAfterMinorGC();
+  void sweepAfterMinorGC(JSTracer* trc);
   void traceWeakNativeIterators(JSTracer* trc);
 
   void addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf,
@@ -306,7 +326,7 @@ class JS::Realm : public JS::shadow::Realm {
   JS::RealmBehaviors behaviors_;
 
   friend struct ::JSContext;
-  js::WeakHeapPtrGlobalObject global_;
+  js::WeakHeapPtr<js::GlobalObject*> global_;
 
   // Note: this is private to enforce use of ObjectRealm::get(obj).
   js::ObjectRealm objects_;
@@ -387,6 +407,7 @@ class JS::Realm : public JS::shadow::Realm {
     DebuggerObservesAllExecution = 1 << 1,
     DebuggerObservesAsmJS = 1 << 2,
     DebuggerObservesCoverage = 1 << 3,
+    DebuggerObservesWasm = 1 << 4,
   };
   unsigned debugModeBits_ = 0;
   friend class js::AutoRestoreRealmDebugMode;
@@ -403,6 +424,7 @@ class JS::Realm : public JS::shadow::Realm {
 
   js::DtoaCache dtoaCache;
   js::NewProxyCache newProxyCache;
+  js::NewPlainObjectWithPropsCache newPlainObjectWithPropsCache;
   js::ArraySpeciesLookup arraySpeciesLookup;
   js::PromiseLookup promiseLookup;
 
@@ -418,6 +440,9 @@ class JS::Realm : public JS::shadow::Realm {
    */
   uint32_t globalWriteBarriered = 0;
 
+  // Counter for shouldCaptureStackForThrow.
+  uint16_t numStacksCapturedForThrow_ = 0;
+
 #ifdef DEBUG
   bool firedOnNewGlobalObject = false;
 #endif
@@ -426,6 +451,17 @@ class JS::Realm : public JS::shadow::Realm {
   // NukeCrossCompartmentWrappers is called with the NukeAllReferences option.
   // This prevents us from creating new wrappers for the compartment.
   bool nukedIncomingWrappers = false;
+
+  // Enable async stack capturing for this realm even if
+  // JS::ContextOptions::asyncStackCaptureDebuggeeOnly_ is true.
+  //
+  // No-op when JS::ContextOptions::asyncStack_ is false, or
+  // JS::ContextOptions::asyncStackCaptureDebuggeeOnly_ is false.
+  //
+  // This can be used as a lightweight alternative for making the global
+  // debuggee, if the async stack capturing is necessary but no other debugging
+  // features are used.
+  bool isAsyncStackCapturingEnabled = false;
 
  private:
   void updateDebuggerObservesFlag(unsigned flag);
@@ -438,8 +474,7 @@ class JS::Realm : public JS::shadow::Realm {
   ~Realm();
 
   [[nodiscard]] bool init(JSContext* cx, JSPrincipals* principals);
-  void destroy(JSFreeOp* fop);
-  void clearTables();
+  void destroy(JS::GCContext* gcx);
 
   void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                               size_t* realmObject, size_t* realmTables,
@@ -491,9 +526,6 @@ class JS::Realm : public JS::shadow::Realm {
     return global_.unbarrieredGet();
   }
 
-  /* True if a global object exists, but it's being collected. */
-  inline bool globalIsAboutToBeFinalized();
-
   /* True if a global exists and it's not being collected. */
   inline bool hasLiveGlobal() const;
 
@@ -503,10 +535,9 @@ class JS::Realm : public JS::shadow::Realm {
    * This method traces data that is live iff we know that this realm's
    * global is still live.
    */
-  void traceGlobal(JSTracer* trc);
+  void traceGlobalData(JSTracer* trc);
 
-  void traceWeakObjects(JSTracer* trc);
-  void fixupGlobal();
+  void traceWeakGlobalEdge(JSTracer* trc);
 
   /*
    * This method traces Realm-owned GC roots that are considered live
@@ -519,8 +550,8 @@ class JS::Realm : public JS::shadow::Realm {
    */
   void finishRoots();
 
-  void sweepAfterMinorGC();
-  void sweepDebugEnvironments();
+  void sweepAfterMinorGC(JSTracer* trc);
+  void traceWeakDebugEnvironmentEdges(JSTracer* trc);
   void traceWeakObjectRealm(JSTracer* trc);
   void traceWeakRegExps(JSTracer* trc);
 
@@ -565,11 +596,9 @@ class JS::Realm : public JS::shadow::Realm {
     return objectMetadataState_.is<js::PendingMetadata>();
   }
   void setObjectPendingMetadata(JSContext* cx, JSObject* obj) {
-    if (!cx->isHelperThreadContext()) {
-      MOZ_ASSERT(objectMetadataState_.is<js::DelayMetadata>());
-      objectMetadataState_ =
-          js::NewObjectMetadataState(js::PendingMetadata(obj));
-    }
+    MOZ_ASSERT(cx->isMainThreadContext());
+    MOZ_ASSERT(objectMetadataState_.is<js::DelayMetadata>());
+    objectMetadataState_ = js::NewObjectMetadataState(js::PendingMetadata(obj));
   }
 
   void* realmPrivate() const { return realmPrivate_; }
@@ -661,16 +690,26 @@ class JS::Realm : public JS::shadow::Realm {
 
   // True if this realm's global is a debuggee of some Debugger object
   // whose allowUnobservedAsmJS flag is false.
-  //
-  // Note that since AOT wasm functions cannot bail out, this flag really
-  // means "observe wasm from this point forward". We cannot make
-  // already-compiled wasm code observable to Debugger.
   bool debuggerObservesAsmJS() const {
     static const unsigned Mask = IsDebuggee | DebuggerObservesAsmJS;
     return (debugModeBits_ & Mask) == Mask;
   }
   void updateDebuggerObservesAsmJS() {
     updateDebuggerObservesFlag(DebuggerObservesAsmJS);
+  }
+
+  // True if this realm's global is a debuggee of some Debugger object
+  // whose allowUnobservedWasm flag is false.
+  //
+  // Note that since AOT wasm functions cannot bail out, this flag really
+  // means "observe wasm from this point forward". We cannot make
+  // already-compiled wasm code observable to Debugger.
+  bool debuggerObservesWasm() const {
+    static const unsigned Mask = IsDebuggee | DebuggerObservesWasm;
+    return (debugModeBits_ & Mask) == Mask;
+  }
+  void updateDebuggerObservesWasm() {
+    updateDebuggerObservesFlag(DebuggerObservesWasm);
   }
 
   // True if this realm's global is a debuggee of some Debugger object
@@ -687,6 +726,8 @@ class JS::Realm : public JS::shadow::Realm {
 
   // Get or allocate the associated LCovRealm.
   js::coverage::LCovRealm* lcovRealm();
+
+  bool shouldCaptureStackForThrow();
 
   // Initializes randomNumberGenerator if needed.
   mozilla::non_crypto::XorShift128PlusRNG& getOrCreateRandomNumberGenerator();

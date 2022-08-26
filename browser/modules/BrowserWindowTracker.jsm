@@ -9,13 +9,14 @@
 
 var EXPORTED_SYMBOLS = ["BrowserWindowTracker"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const lazy = {};
 
 // Lazy getters
-XPCOMUtils.defineLazyModuleGetters(this, {
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
 });
 
@@ -147,7 +148,7 @@ var WindowHelper = {
   },
 };
 
-this.BrowserWindowTracker = {
+const BrowserWindowTracker = {
   /**
    * Get the most recent browser window.
    *
@@ -163,8 +164,8 @@ this.BrowserWindowTracker = {
         !win.closed &&
         (options.allowPopups || win.toolbar.visible) &&
         (!("private" in options) ||
-          PrivateBrowsingUtils.permanentPrivateBrowsing ||
-          PrivateBrowsingUtils.isWindowPrivate(win) == options.private)
+          lazy.PrivateBrowsingUtils.permanentPrivateBrowsing ||
+          lazy.PrivateBrowsingUtils.isWindowPrivate(win) == options.private)
       ) {
         return win;
       }
@@ -211,5 +212,23 @@ this.BrowserWindowTracker = {
 
   track(window) {
     return WindowHelper.addWindow(window);
+  },
+
+  getBrowserById(browserId) {
+    for (let win of BrowserWindowTracker.orderedWindows) {
+      for (let tab of win.gBrowser.visibleTabs) {
+        if (tab.linkedPanel && tab.linkedBrowser.browserId === browserId) {
+          return tab.linkedBrowser;
+        }
+      }
+    }
+    return null;
+  },
+
+  // For tests only, this function will remove this window from the list of
+  // tracked windows. Please don't forget to add it back at the end of your
+  // tests!
+  untrackForTestsOnly(window) {
+    return WindowHelper.removeWindow(window);
   },
 };

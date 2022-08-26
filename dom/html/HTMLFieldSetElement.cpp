@@ -6,7 +6,7 @@
 
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/EventStates.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/HTMLFieldSetElement.h"
 #include "mozilla/dom/HTMLFieldSetElementBinding.h"
@@ -28,7 +28,7 @@ HTMLFieldSetElement::HTMLFieldSetElement(
   SetBarredFromConstraintValidation(true);
 
   // We start out enabled and valid.
-  AddStatesSilently(NS_EVENT_STATE_ENABLED | NS_EVENT_STATE_VALID);
+  AddStatesSilently(ElementState::ENABLED | ElementState::VALID);
 }
 
 HTMLFieldSetElement::~HTMLFieldSetElement() {
@@ -128,9 +128,13 @@ void HTMLFieldSetElement::InsertChildBefore(nsIContent* aChild,
     } else {
       // If mFirstLegend is before aIndex, we do not change it.
       // Otherwise, mFirstLegend is now aChild.
-      int32_t index =
-          aBeforeThis ? ComputeIndexOf(aBeforeThis) : GetChildCount();
-      if (index <= ComputeIndexOf(mFirstLegend)) {
+      const Maybe<uint32_t> indexOfRef =
+          aBeforeThis ? ComputeIndexOf(aBeforeThis) : Some(GetChildCount());
+      const Maybe<uint32_t> indexOfFirstLegend = ComputeIndexOf(mFirstLegend);
+      if ((indexOfRef.isSome() && indexOfFirstLegend.isSome() &&
+           *indexOfRef <= *indexOfFirstLegend) ||
+          // XXX Keep the odd traditional behavior for now.
+          indexOfRef.isNothing()) {
         mFirstLegend = aChild;
         firstLegendHasChanged = true;
       }
@@ -300,13 +304,13 @@ void HTMLFieldSetElement::UpdateValidity(bool aElementValidity) {
   }
 }
 
-EventStates HTMLFieldSetElement::IntrinsicState() const {
-  EventStates state = nsGenericHTMLFormControlElement::IntrinsicState();
+ElementState HTMLFieldSetElement::IntrinsicState() const {
+  ElementState state = nsGenericHTMLFormControlElement::IntrinsicState();
 
   if (mInvalidElementsCount) {
-    state |= NS_EVENT_STATE_INVALID;
+    state |= ElementState::INVALID;
   } else {
-    state |= NS_EVENT_STATE_VALID;
+    state |= ElementState::VALID;
   }
 
   return state;

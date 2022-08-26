@@ -4,11 +4,10 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const lazy = {};
 
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "TelemetryController",
   "resource://gre/modules/TelemetryController.jsm"
 );
@@ -115,9 +114,9 @@ BHRTelemetryService.prototype = Object.freeze({
 
   submit() {
     if (this.clearPermahangFile) {
-      OS.File.remove(
-        OS.Path.join(OS.Constants.Path.profileDir, "last_permahang.bin"),
-        { ignoreAbsent: true }
+      // NB: This is async but it is called from an Observer callback.
+      IOUtils.remove(
+        PathUtils.join(PathUtils.profileDir, "last_permahang.bin")
       );
     }
 
@@ -133,7 +132,7 @@ BHRTelemetryService.prototype = Object.freeze({
       Services.prefs.getBoolPref("toolkit.telemetry.bhrPing.enabled", false)
     ) {
       this.payload.timeSinceLastPing = new Date() - this.startTime;
-      TelemetryController.submitExternalPing("bhr", this.payload, {
+      lazy.TelemetryController.submitExternalPing("bhr", this.payload, {
         addEnvironment: true,
       });
     }

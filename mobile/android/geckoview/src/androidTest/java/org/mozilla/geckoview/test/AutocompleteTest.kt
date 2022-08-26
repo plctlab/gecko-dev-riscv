@@ -41,6 +41,37 @@ class AutocompleteTest : BaseSessionTest() {
     val acceptDelay: Long = 100
 
     @Test
+    fun loginBuilderDefaultValue() {
+        val login = LoginEntry.Builder()
+            .build()
+
+        assertThat(
+            "Guid should match",
+            login.guid,
+            equalTo(null))
+        assertThat(
+            "Origin should match",
+            login.origin,
+            equalTo(""))
+        assertThat(
+            "Form action origin should match",
+            login.formActionOrigin,
+            equalTo(null))
+        assertThat(
+            "HTTP realm should match",
+            login.httpRealm,
+            equalTo(null))
+        assertThat(
+            "Username should match",
+            login.username,
+            equalTo(""))
+        assertThat(
+            "Password should match",
+            login.password,
+            equalTo(""))
+    }
+
+    @Test
     fun fetchLogins() {
         sessionRule.setPrefsUntilTestEnd(mapOf(
                 // Enable login management since it's disabled in automation.
@@ -88,6 +119,33 @@ class AutocompleteTest : BaseSessionTest() {
 
         mainSession.evaluateJS("document.querySelector('#name').focus()")
         sessionRule.waitForResult(fetchHandled)
+    }
+
+    @Test
+    fun creditCardBuilderDefaultValue() {
+        val creditCard = CreditCard.Builder()
+            .build()
+
+        assertThat(
+            "Guid should match",
+            creditCard.guid,
+            equalTo(null))
+        assertThat(
+            "Name should match",
+            creditCard.name,
+            equalTo(""))
+        assertThat(
+            "Number should match",
+            creditCard.number,
+            equalTo(""))
+        assertThat(
+            "Expiration month should match",
+            creditCard.expirationMonth,
+            equalTo(""))
+        assertThat(
+            "Expiration year should match",
+            creditCard.expirationYear,
+            equalTo(""))
     }
 
     @Test
@@ -163,6 +221,14 @@ class AutocompleteTest : BaseSessionTest() {
                         "Number should match",
                         creditCard.number,
                         equalTo(number[i]))
+                    assertThat(
+                        "Expiration month should match",
+                        creditCard.expirationMonth,
+                        equalTo(expMonth[i]))
+                    assertThat(
+                        "Expiration year should match",
+                        creditCard.expirationYear,
+                        equalTo(expYear[i]))
                 }
                 Handler(Looper.getMainLooper()).postDelayed({
                     selectHandled.complete(null)
@@ -192,6 +258,61 @@ class AutocompleteTest : BaseSessionTest() {
             "Filled expiration year should match",
             mainSession.evaluateJS("document.querySelector('#expYear').value") as String,
             equalTo(expYear[0]))
+    }
+
+    @Test
+    fun addressBuilderDefaultValue() {
+        val address = Address.Builder()
+            .build()
+
+        assertThat(
+            "Guid should match",
+            address.guid,
+            equalTo(null))
+        assertThat(
+            "Name should match",
+            address.name,
+            equalTo(""))
+        assertThat(
+            "Given name should match",
+            address.givenName,
+            equalTo(""))
+        assertThat(
+            "Family name should match",
+            address.familyName,
+            equalTo(""))
+        assertThat(
+            "Street address should match",
+            address.streetAddress,
+            equalTo(""))
+        assertThat(
+            "Address level 1 should match",
+            address.addressLevel1,
+            equalTo(""))
+        assertThat(
+            "Address level 2 should match",
+            address.addressLevel2,
+            equalTo(""))
+        assertThat(
+            "Address level 3 should match",
+            address.addressLevel3,
+            equalTo(""))
+        assertThat(
+            "Postal code should match",
+            address.postalCode,
+            equalTo(""))
+        assertThat(
+            "Country should match",
+            address.country,
+            equalTo(""))
+        assertThat(
+            "Tel should match",
+            address.tel,
+            equalTo(""))
+        assertThat(
+            "Email should match",
+            address.email,
+            equalTo(""))
     }
 
     @Test
@@ -257,6 +378,14 @@ class AutocompleteTest : BaseSessionTest() {
 
                 assertThat("Address should not be null", address, notNullValue())
                 assertThat(
+                        "Guid should match",
+                        address?.guid,
+                        equalTo(selectedAddress.guid))
+                assertThat(
+                        "Name should match",
+                        address?.name,
+                        equalTo(selectedAddress.name))
+                assertThat(
                         "Given name should match",
                         address?.givenName,
                         equalTo(selectedAddress.givenName))
@@ -268,6 +397,34 @@ class AutocompleteTest : BaseSessionTest() {
                         "Street address should match",
                         address?.streetAddress,
                         equalTo(selectedAddress.streetAddress))
+                assertThat(
+                        "Address level 1 should match",
+                        address?.addressLevel1,
+                        equalTo(selectedAddress.addressLevel1))
+                assertThat(
+                        "Address level 2 should match",
+                        address?.addressLevel2,
+                        equalTo(selectedAddress.addressLevel2))
+                assertThat(
+                        "Address level 3 should match",
+                        address?.addressLevel3,
+                        equalTo(selectedAddress.addressLevel3))
+                assertThat(
+                        "Postal code should match",
+                        address?.postalCode,
+                        equalTo(selectedAddress.postalCode))
+                assertThat(
+                        "Country should match",
+                        address?.country,
+                        equalTo(selectedAddress.country))
+                assertThat(
+                        "Tel should match",
+                        address?.tel,
+                        equalTo(selectedAddress.tel))
+                assertThat(
+                        "Email should match",
+                        address?.email,
+                        equalTo(selectedAddress.email))
 
                 Handler(Looper.getMainLooper()).postDelayed({
                     selectHandled.complete(null)
@@ -320,6 +477,7 @@ class AutocompleteTest : BaseSessionTest() {
 
     @Test
     fun addressSelectAndFill() {
+        val name = "Peter Parker"
         val givenName = "Peter"
         val familyName = "Parker"
         val streetAddress = "20 Ingram Street, Forest Hills Gardens, Queens"
@@ -331,6 +489,7 @@ class AutocompleteTest : BaseSessionTest() {
         val guid = "test-guid"
         val savedAddress = Address.Builder()
                 .guid(guid)
+                .name(name)
                 .givenName(givenName)
                 .familyName(familyName)
                 .streetAddress(streetAddress)
@@ -347,6 +506,7 @@ class AutocompleteTest : BaseSessionTest() {
 
     @Test
     fun addressSelectAndFillMultipleAddresses() {
+        val names = arrayOf("Peter Parker", "Wade Wilson")
         val givenNames = arrayOf("Peter", "Wade")
         val familyNames = arrayOf("Parker", "Wilson")
         val streetAddresses = arrayOf("20 Ingram Street, Forest Hills Gardens, Queens", "890 Fifth Avenue, Manhattan")
@@ -358,6 +518,7 @@ class AutocompleteTest : BaseSessionTest() {
         val guids = arrayOf("test-guid-1", "test-guid-2")
         val selectedAddress = Address.Builder()
                 .guid(guids[1])
+                .name(names[1])
                 .givenName(givenNames[1])
                 .familyName(familyNames[1])
                 .streetAddress(streetAddresses[1])
@@ -370,6 +531,7 @@ class AutocompleteTest : BaseSessionTest() {
         val savedAddresses = mutableListOf<Address>(
                 Address.Builder()
                         .guid(guids[0])
+                        .name(names[0])
                         .givenName(givenNames[0])
                         .familyName(familyNames[0])
                         .streetAddress(streetAddresses[0])
@@ -696,9 +858,9 @@ class AutocompleteTest : BaseSessionTest() {
     @Test
     fun creditCardSaveAccept() {
         val ccName = "MyCard"
-        val ccNumber = "5105-1051-0510-5100"
-        val ccExpMonth = "06"
-        val ccExpYear = "24"
+        val ccNumber = "5105105105105100"
+        val ccExpMonth = "6"
+        val ccExpYear = "2024"
 
         mainSession.loadTestPath(CC_FORM_HTML_PATH)
         mainSession.waitForPageStop()
@@ -767,11 +929,84 @@ class AutocompleteTest : BaseSessionTest() {
     }
 
     @Test
+    fun creditCardSaveAcceptForm2() {
+        // TODO Bug 1764709: Right now we fill normalized credit card data to match
+        // the expected result.
+        val ccName = "MyCard"
+        val ccNumber = "5105105105105100"
+        val ccExpMonth = "6"
+        val ccExpYear = "2024"
+
+        mainSession.loadTestPath(CC_FORM_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        val saveHandled = GeckoResult<Void>()
+
+        sessionRule.delegateUntilTestEnd(object : StorageDelegate {
+            @AssertCalled
+            override fun onCreditCardSave(creditCard: CreditCard) {
+                assertThat("Credit card name should match", creditCard.name, equalTo(ccName))
+                assertThat("Credit card number should match", creditCard.number, equalTo(ccNumber))
+                assertThat("Credit card expiration month should match", creditCard.expirationMonth, equalTo(ccExpMonth))
+                assertThat("Credit card expiration year should match", creditCard.expirationYear, equalTo(ccExpYear))
+                saveHandled.complete(null)
+            }
+        })
+
+        sessionRule.delegateDuringNextWait(object : PromptDelegate {
+            @AssertCalled
+            override fun onCreditCardSave(
+                    session: GeckoSession,
+                    request: AutocompleteRequest<CreditCardSaveOption>)
+            : GeckoResult<PromptDelegate.PromptResponse> {
+                assertThat("Session should not be null", session, notNullValue())
+
+                val option = request.options[0]
+                val cc = option.value
+
+                assertThat("Credit card should not be null", cc, notNullValue())
+
+                assertThat(
+                        "Credit card name should match",
+                        cc.name,
+                        equalTo(ccName))
+                assertThat(
+                        "Credit card number should match",
+                        cc.number,
+                        equalTo(ccNumber))
+                assertThat(
+                        "Credit card expiration month should match",
+                        cc.expirationMonth,
+                        equalTo(ccExpMonth))
+                assertThat(
+                        "Credit card expiration year should match",
+                        cc.expirationYear,
+                        equalTo(ccExpYear))
+
+                return GeckoResult.fromValue(request.confirm(option))
+            }
+        })
+
+        // Enter the card values
+        mainSession.evaluateJS("document.querySelector('#form2 #name').value = '${ccName}'")
+        mainSession.evaluateJS("document.querySelector('#form2 #name').focus()")
+        mainSession.evaluateJS("document.querySelector('#form2 #number').value = '${ccNumber}'")
+        mainSession.evaluateJS("document.querySelector('#form2 #number').focus()")
+        mainSession.evaluateJS("document.querySelector('#form2 #exp').value = '${ccExpMonth}/${ccExpYear}'")
+        mainSession.evaluateJS("document.querySelector('#form2 #exp').focus()")
+
+        // Submit the form
+        mainSession.evaluateJS("document.querySelector('#form2').requestSubmit()")
+
+        sessionRule.waitForResult(saveHandled)
+    }
+
+    @Test
     fun creditCardSaveDismiss() {
         val ccName = "MyCard"
-        val ccNumber = "5105-1051-0510-5100"
-        val ccExpMonth = "06"
-        val ccExpYear = "24"
+        val ccNumber = "5105105105105100"
+        val ccExpMonth = "6"
+        val ccExpYear = "2024"
 
         mainSession.loadTestPath(CC_FORM_HTML_PATH)
         mainSession.waitForPageStop()
@@ -839,10 +1074,10 @@ class AutocompleteTest : BaseSessionTest() {
     @Test
     fun creditCardSaveModifyAccept() {
         val ccName = "MyCard"
-        val ccNumber = "5105-1051-0510-5100"
-        val ccExpMonth = "06"
-        val ccExpYearNew = "26"
-        val ccExpYear = "24"
+        val ccNumber = "5105105105105100"
+        val ccExpMonth = "6"
+        val ccExpYearNew = "2026"
+        val ccExpYear = "2024"
 
         mainSession.loadTestPath(CC_FORM_HTML_PATH)
         mainSession.waitForPageStop()
@@ -920,12 +1155,12 @@ class AutocompleteTest : BaseSessionTest() {
     @Test
     fun creditCardUpdateAccept() {
         val ccName = "MyCard"
-        val ccNumber1 = "5105-1051-0510-5100"
-        val ccExpMonth1 = "06"
-        val ccExpYear1 = "24"
-        val ccNumber2 = "4111-1111-1111-1111"
+        val ccNumber1 = "5105105105105100"
+        val ccExpMonth1 = "6"
+        val ccExpYear1 = "2024"
+        val ccNumber2 = "4111111111111111"
         val ccExpMonth2 = "11"
-        val ccExpYear2 = "21"
+        val ccExpYear2 = "2021"
         val savedCreditCards = mutableListOf<CreditCard>()
 
         mainSession.loadTestPath(CC_FORM_HTML_PATH)
@@ -1029,8 +1264,8 @@ class AutocompleteTest : BaseSessionTest() {
         val session2 = sessionRule.createOpenSession()
         session2.loadTestPath(CC_FORM_HTML_PATH)
         session2.waitForPageStop()
-        session2.evaluateJS("document.querySelector('#name').focus()")
         session2.evaluateJS("document.querySelector('#name').value = '${ccName}'")
+        session2.evaluateJS("document.querySelector('#name').focus()")
         session2.evaluateJS("document.querySelector('#number').value = '${ccNumber2}'")
         session2.evaluateJS("document.querySelector('#number').focus()")
         session2.evaluateJS("document.querySelector('#expMonth').value = '${ccExpMonth2}'")

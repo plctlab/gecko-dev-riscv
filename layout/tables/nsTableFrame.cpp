@@ -161,9 +161,7 @@ ComputedStyle* nsTableFrame::GetParentComputedStyle(
 
 nsTableFrame::nsTableFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                            ClassID aID)
-    : nsContainerFrame(aStyle, aPresContext, aID),
-      mCellMap(nullptr),
-      mTableLayoutStrategy(nullptr) {
+    : nsContainerFrame(aStyle, aPresContext, aID) {
   memset(&mBits, 0, sizeof(mBits));
 }
 
@@ -189,11 +187,11 @@ void nsTableFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   if (!aPrevInFlow) {
     // If we're the first-in-flow, we manage the cell map & layout strategy that
     // get used by our continuation chain:
-    mCellMap = new nsTableCellMap(*this, borderCollapse);
+    mCellMap = MakeUnique<nsTableCellMap>(*this, borderCollapse);
     if (IsAutoLayout()) {
-      mTableLayoutStrategy = new BasicTableLayoutStrategy(this);
+      mTableLayoutStrategy = MakeUnique<BasicTableLayoutStrategy>(this);
     } else {
-      mTableLayoutStrategy = new FixedTableLayoutStrategy(this);
+      mTableLayoutStrategy = MakeUnique<FixedTableLayoutStrategy>(this);
     }
   } else {
     // Set my isize, because all frames in a table flow are the same isize and
@@ -203,10 +201,12 @@ void nsTableFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   }
 }
 
-nsTableFrame::~nsTableFrame() {
-  delete mCellMap;
-  delete mTableLayoutStrategy;
-}
+// Define here (Rather than in the header), even if it's trival, to avoid
+// UniquePtr members causing compile errors when their destructors are
+// implicitly inserted into this destructor. Destruction requires
+// the full definition of types that these UniquePtrs are managing, and
+// the header only has forward declarations of them.
+nsTableFrame::~nsTableFrame() = default;
 
 void nsTableFrame::DestroyFrom(nsIFrame* aDestructRoot,
                                PostDestroyData& aPostDestroyData) {
@@ -648,7 +648,7 @@ void nsTableFrame::RemoveCol(nsTableColGroupFrame* aColGroupFrame,
  * Only the first-in-flow has a legit cell map.
  */
 nsTableCellMap* nsTableFrame::GetCellMap() const {
-  return static_cast<nsTableFrame*>(FirstInFlow())->mCellMap;
+  return static_cast<nsTableFrame*>(FirstInFlow())->mCellMap.get();
 }
 
 nsTableColGroupFrame* nsTableFrame::CreateSyntheticColGroupFrame() {
@@ -1861,7 +1861,6 @@ void nsTableFrame::Reflow(nsPresContext* aPresContext,
   aDesiredSize.mOverflowAreas.UnionAllWith(tableRect);
 
   FinishAndStoreOverflow(&aDesiredSize);
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsTableFrame::FixupPositionedTableParts(nsPresContext* aPresContext,
@@ -2122,16 +2121,10 @@ void nsTableFrame::DidSetComputedStyle(ComputedStyle* aOldComputedStyle) {
 
   bool isAuto = IsAutoLayout();
   if (isAuto != (LayoutStrategy()->GetType() == nsITableLayoutStrategy::Auto)) {
-    nsITableLayoutStrategy* temp;
     if (isAuto)
-      temp = new BasicTableLayoutStrategy(this);
+      mTableLayoutStrategy = MakeUnique<BasicTableLayoutStrategy>(this);
     else
-      temp = new FixedTableLayoutStrategy(this);
-
-    if (temp) {
-      delete mTableLayoutStrategy;
-      mTableLayoutStrategy = temp;
-    }
+      mTableLayoutStrategy = MakeUnique<FixedTableLayoutStrategy>(this);
   }
 }
 
@@ -2289,7 +2282,7 @@ void nsTableFrame::HomogenousInsertFrames(ChildListID aListID,
       }
       nsCOMPtr<nsIContent> container = content->GetParent();
       if (MOZ_LIKELY(container)) {  // XXX need this null-check, see bug 411823.
-        int32_t newIndex = container->ComputeIndexOf(content);
+        const Maybe<uint32_t> newIndex = container->ComputeIndexOf(content);
         nsIFrame* kidFrame;
         nsTableColGroupFrame* lastColGroup = nullptr;
         if (isColGroup) {
@@ -2299,7 +2292,7 @@ void nsTableFrame::HomogenousInsertFrames(ChildListID aListID,
           kidFrame = mFrames.FirstChild();
         }
         // Important: need to start at a value smaller than all valid indices
-        int32_t lastIndex = -1;
+        Maybe<uint32_t> lastIndex;
         while (kidFrame) {
           if (isColGroup) {
             if (kidFrame == lastColGroup) {
@@ -2313,8 +2306,13 @@ void nsTableFrame::HomogenousInsertFrames(ChildListID aListID,
                  (parentContent == (content = pseudoFrame->GetContent()))) {
             pseudoFrame = pseudoFrame->PrincipalChildList().FirstChild();
           }
-          int32_t index = container->ComputeIndexOf(content);
-          if (index > lastIndex && index < newIndex) {
+          const Maybe<uint32_t> index = container->ComputeIndexOf(content);
+          // XXX Keep the odd traditional behavior in some indices are nothing
+          //     cases for now.
+          if ((index.isSome() &&
+               (lastIndex.isNothing() || *index > *lastIndex)) &&
+              (newIndex.isSome() &&
+               (index.isNothing() || *index < *newIndex))) {
             lastIndex = index;
             aPrevFrame = kidFrame;
           }
@@ -2774,10 +2772,10 @@ void nsTableFrame::ReflowChildren(TableReflowInput& aReflowInput,
       aReflowInput.reflowInput.ComputedSizeAsContainerIfConstrained();
 
   nsPresContext* presContext = PresContext();
-  // XXXldb Should we be checking constrained height instead?
-  // tables are not able to pull back children from its next inflow, so even
-  // under paginated contexts tables are should not paginate if they are inside
-  // column set
+  // nsTableFrame is not able to pull back children from its next-in-flow, per
+  // bug 1772383.  So even under paginated contexts, tables should not fragment
+  // if they are inside of (i.e. potentially being fragmented by) a column-set
+  // frame.  (This is indicated by the "mTableIsSplittable" flag.)
   bool isPaginated = presContext->IsPaginated() &&
                      NS_UNCONSTRAINEDSIZE != aReflowInput.availSize.BSize(wm) &&
                      aReflowInput.reflowInput.mFlags.mTableIsSplittable;
@@ -3064,6 +3062,36 @@ void nsTableFrame::ReflowChildren(TableReflowInput& aReflowInput,
   // the children.
   mBits.mResizedColumns = false;
   ClearGeometryDirty();
+
+  // nsTableFrame does not pull children from its next-in-flow (bug 1772383).
+  // This is generally fine, since tables only fragment for printing
+  // (bug 888257) where incremental-reflow is impossible, and so children don't
+  // usually dynamically move back and forth between continuations. However,
+  // there are edge cases even with printing where nsTableFrame:
+  // (1) Generates a continuation and passes children to it,
+  // (2) Receives another call to Reflow, during which it
+  // (3) Successfully lays out its remaining children.
+  // If the completed status flows up as-is, the continuation will be destroyed.
+  // To avoid that, we return an incomplete status if the continuation contains
+  // any child that is not a repeated frame.
+  auto hasNextInFlowThatMustBePreserved = [this, isPaginated]() -> bool {
+    if (!isPaginated) {
+      return false;
+    }
+    auto* nextInFlow = static_cast<nsTableFrame*>(GetNextInFlow());
+    if (!nextInFlow) {
+      return false;
+    }
+    for (nsIFrame* kidFrame : nextInFlow->mFrames) {
+      if (!IsRepeatedFrame(kidFrame)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (aStatus.IsComplete() && hasNextInFlowThatMustBePreserved()) {
+    aStatus.SetIncomplete();
+  }
 }
 
 void nsTableFrame::ReflowColGroups(gfxContext* aRenderingContext) {
@@ -4790,8 +4818,6 @@ void BCCornerInfo::Update(mozilla::LogicalSide aSide, BCCellBorder aBorder) {
 struct BCCorners {
   BCCorners(int32_t aNumCorners, int32_t aStartIndex);
 
-  ~BCCorners() { delete[] corners; }
-
   BCCornerInfo& operator[](int32_t i) const {
     NS_ASSERTION((i >= startIndex) && (i <= endIndex), "program error");
     return corners[clamped(i, startIndex, endIndex) - startIndex];
@@ -4799,20 +4825,18 @@ struct BCCorners {
 
   int32_t startIndex;
   int32_t endIndex;
-  BCCornerInfo* corners;
+  UniquePtr<BCCornerInfo[]> corners;
 };
 
 BCCorners::BCCorners(int32_t aNumCorners, int32_t aStartIndex) {
   NS_ASSERTION((aNumCorners > 0) && (aStartIndex >= 0), "program error");
   startIndex = aStartIndex;
   endIndex = aStartIndex + aNumCorners - 1;
-  corners = new BCCornerInfo[aNumCorners];
+  corners = MakeUnique<BCCornerInfo[]>(aNumCorners);
 }
 
 struct BCCellBorders {
   BCCellBorders(int32_t aNumBorders, int32_t aStartIndex);
-
-  ~BCCellBorders() { delete[] borders; }
 
   BCCellBorder& operator[](int32_t i) const {
     NS_ASSERTION((i >= startIndex) && (i <= endIndex), "program error");
@@ -4821,14 +4845,14 @@ struct BCCellBorders {
 
   int32_t startIndex;
   int32_t endIndex;
-  BCCellBorder* borders;
+  UniquePtr<BCCellBorder[]> borders;
 };
 
 BCCellBorders::BCCellBorders(int32_t aNumBorders, int32_t aStartIndex) {
   NS_ASSERTION((aNumBorders > 0) && (aStartIndex >= 0), "program error");
   startIndex = aStartIndex;
   endIndex = aStartIndex + aNumBorders - 1;
-  borders = new BCCellBorder[aNumBorders];
+  borders = MakeUnique<BCCellBorder[]>(aNumBorders);
 }
 
 // this function sets the new border properties and returns true if the border
@@ -5973,11 +5997,6 @@ struct BCPaintBorderAction {
 class BCPaintBorderIterator {
  public:
   explicit BCPaintBorderIterator(nsTableFrame* aTable);
-  ~BCPaintBorderIterator() {
-    if (mBlockDirInfo) {
-      delete[] mBlockDirInfo;
-    }
-  }
   void Reset();
 
   /**
@@ -6073,24 +6092,25 @@ class BCPaintBorderIterator {
            mRowIndex != mDamageArea.StartRow();
   }
 
-  nscoord mInitialOffsetI;       // offsetI of the first border with
-                                 // respect to the table
-  nscoord mInitialOffsetB;       // offsetB of the first border with
-                                 // respect to the table
-  nscoord mNextOffsetB;          // offsetB of the next segment
-  BCBlockDirSeg* mBlockDirInfo;  // this array is used differently when
-                                 // inline-dir and block-dir borders are drawn
-                                 // When inline-dir border are drawn we cache
-                                 // the column widths and the width of the
-                                 // block-dir borders that arrive from bStart
-                                 // When we draw block-dir borders we store
-                                 // lengths and width for block-dir borders
-                                 // before they are drawn while we  move over
-                                 // the columns in the damage area
-                                 // It has one more elements than columns are
-                                 // in the table.
-  BCInlineDirSeg mInlineSeg;     // the inline-dir segment while we
-                                 // move over the colums
+  nscoord mInitialOffsetI;  // offsetI of the first border with
+                            // respect to the table
+  nscoord mInitialOffsetB;  // offsetB of the first border with
+                            // respect to the table
+  nscoord mNextOffsetB;     // offsetB of the next segment
+  // this array is used differently when
+  // inline-dir and block-dir borders are drawn
+  // When inline-dir border are drawn we cache
+  // the column widths and the width of the
+  // block-dir borders that arrive from bStart
+  // When we draw block-dir borders we store
+  // lengths and width for block-dir borders
+  // before they are drawn while we  move over
+  // the columns in the damage area
+  // It has one more elements than columns are
+  // in the table.
+  UniquePtr<BCBlockDirSeg[]> mBlockDirInfo;
+  BCInlineDirSeg mInlineSeg;        // the inline-dir segment while we
+                                    // move over the colums
   BCPixelSize mPrevInlineSegBSize;  // the bSize of the previous
                                     // inline-dir border
 
@@ -6130,7 +6150,6 @@ BCPaintBorderIterator::BCPaintBorderIterator(nsTableFrame* aTable)
       mInitialOffsetI(0),
       mNextOffsetB(0),
       mPrevInlineSegBSize(0) {
-  mBlockDirInfo = nullptr;
   LogicalMargin childAreaOffset = mTable->GetChildAreaOffset(mTableWM, nullptr);
   // y position of first row in damage area
   mInitialOffsetB =
@@ -6245,7 +6264,7 @@ bool BCPaintBorderIterator::SetDamageArea(const nsRect& aDirtyRect) {
                 1 + endRowIndex - startRowIndex);
 
   Reset();
-  mBlockDirInfo = new BCBlockDirSeg[mDamageArea.ColCount() + 1];
+  mBlockDirInfo = MakeUnique<BCBlockDirSeg[]>(mDamageArea.ColCount() + 1);
   return true;
 }
 
@@ -6358,7 +6377,7 @@ bool BCPaintBorderIterator::SetNewRowGroup() {
       mCellMap = mTableCellMap->GetMapFor(fifRg, nullptr);
       if (!mCellMap) ABORT1(false);
     }
-    if (mRg && mTable->GetPrevInFlow() && !mRg->GetPrevInFlow()) {
+    if (mTable->GetPrevInFlow() && !mRg->GetPrevInFlow()) {
       // if mRowGroup doesn't have a prev in flow, then it may be a repeated
       // header or footer
       const nsStyleDisplay* display = mRg->StyleDisplay();
@@ -6863,7 +6882,8 @@ static void CreateWRCommandsForBeveledBorder(
                        aBorderParams.mAppUnitsPerDevPixel,
                        aBorderParams.mBackfaceIsVisible, false);
 
-    aBuilder.PushRect(r, r, aBorderParams.mBackfaceIsVisible, color);
+    aBuilder.PushRect(r, r, aBorderParams.mBackfaceIsVisible, false, false,
+                      color);
   }
 }
 
@@ -7299,7 +7319,8 @@ void BCPaintBorderIterator::AccumulateOrDoActionBlockDirSegment(
  */
 void BCPaintBorderIterator::ResetVerInfo() {
   if (mBlockDirInfo) {
-    memset(mBlockDirInfo, 0, mDamageArea.ColCount() * sizeof(BCBlockDirSeg));
+    memset(mBlockDirInfo.get(), 0,
+           mDamageArea.ColCount() * sizeof(BCBlockDirSeg));
     // XXX reinitialize properly
     for (auto xIndex : IntegerRange(mDamageArea.ColCount())) {
       mBlockDirInfo[xIndex].mColWidth = -1;
@@ -7476,51 +7497,19 @@ nsRect nsDisplayTableItem::GetBounds(nsDisplayListBuilder* aBuilder,
   return mFrame->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
 }
 
-void nsDisplayTableItem::UpdateForFrameBackground(nsIFrame* aFrame) {
-  ComputedStyle* bgSC;
-  if (!nsCSSRendering::FindBackground(aFrame, &bgSC)) return;
-  if (!bgSC->StyleBackground()->HasFixedBackground(aFrame)) return;
-
-  mPartHasFixedBackground = true;
-}
-
-nsDisplayItemGeometry* nsDisplayTableItem::AllocateGeometry(
-    nsDisplayListBuilder* aBuilder) {
-  return new nsDisplayTableItemGeometry(
-      this, aBuilder, mFrame->GetOffsetTo(mFrame->PresShell()->GetRootFrame()));
-}
-
-void nsDisplayTableItem::ComputeInvalidationRegion(
-    nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
-    nsRegion* aInvalidRegion) const {
-  auto geometry = static_cast<const nsDisplayTableItemGeometry*>(aGeometry);
-
-  bool invalidateForAttachmentFixed = false;
-  if (mDrawsBackground && mPartHasFixedBackground) {
-    nsPoint frameOffsetToViewport =
-        mFrame->GetOffsetTo(mFrame->PresShell()->GetRootFrame());
-    invalidateForAttachmentFixed =
-        frameOffsetToViewport != geometry->mFrameOffsetToViewport;
-  }
-
-  if (invalidateForAttachmentFixed ||
-      (aBuilder->ShouldSyncDecodeImages() &&
-       geometry->ShouldInvalidateToSyncDecodeImages())) {
-    bool snap;
-    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
-  }
-
-  nsDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
-}
-
 nsDisplayTableBackgroundSet::nsDisplayTableBackgroundSet(
     nsDisplayListBuilder* aBuilder, nsIFrame* aTable)
-    : mBuilder(aBuilder) {
+    : mBuilder(aBuilder),
+      mColGroupBackgrounds(aBuilder),
+      mColBackgrounds(aBuilder) {
   mPrevTableBackgroundSet = mBuilder->SetTableBackgroundSet(this);
   mozilla::DebugOnly<const nsIFrame*> reference =
       mBuilder->FindReferenceFrameFor(aTable, &mToReferenceFrame);
   MOZ_ASSERT(nsLayoutUtils::FindNearestCommonAncestorFrame(reference, aTable));
   mDirtyRect = mBuilder->GetDirtyRect();
+  mCombinedTableClipChain =
+      mBuilder->ClipState().GetCurrentCombinedClipChain(aBuilder);
+  mTableASR = mBuilder->CurrentActiveScrolledRoot();
 }
 
 // A display item that draws all collapsed borders for a table.

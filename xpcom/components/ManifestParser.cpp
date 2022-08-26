@@ -71,14 +71,6 @@ static const ManifestDirective kParsingTable[] = {
     &nsComponentManagerImpl::ManifestManifest, nullptr,
   },
   {
-    "component",        2, false, false,
-    &nsComponentManagerImpl::ManifestComponent, nullptr,
-  },
-  {
-    "contract",         2, false, false,
-    &nsComponentManagerImpl::ManifestContract, nullptr,
-  },
-  {
     "category",         3, false, false,
     &nsComponentManagerImpl::ManifestCategory, nullptr,
   },
@@ -126,7 +118,7 @@ void LogMessage(const char* aMsg, ...) {
   va_end(args);
 
   nsCOMPtr<nsIConsoleMessage> error =
-      new nsConsoleMessage(NS_ConvertUTF8toUTF16(formatted.get()).get());
+      new nsConsoleMessage(NS_ConvertUTF8toUTF16(formatted.get()));
   console->LogMessage(error);
 }
 
@@ -160,11 +152,11 @@ void LogMessageWithContext(FileLocation& aFile, uint32_t aLineNumber,
     return;
   }
 
-  nsresult rv = error->Init(NS_ConvertUTF8toUTF16(formatted.get()),
-                            NS_ConvertUTF8toUTF16(file), u""_ns, aLineNumber, 0,
-                            nsIScriptError::warningFlag, "chrome registration",
-                            false /* from private window */,
-                            true /* from chrome context */);
+  nsresult rv = error->Init(
+      NS_ConvertUTF8toUTF16(formatted.get()), NS_ConvertUTF8toUTF16(file),
+      u""_ns, aLineNumber, 0, nsIScriptError::warningFlag,
+      "chrome registration"_ns, false /* from private window */,
+      true /* from chrome context */);
   if (NS_FAILED(rv)) {
     return;
   }
@@ -492,10 +484,6 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
     process = kMain;
   }
 
-  // Because contracts must be registered after CIDs, we save and process them
-  // at the end.
-  nsTArray<CachedDirective> contracts;
-
   char* token;
   char* newline = aBuf;
   uint32_t line = 0;
@@ -686,11 +674,5 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
       (nsComponentManagerImpl::gComponentManager->*(directive->mgrfunc))(
           mgrcx, line, argv);
     }
-  }
-
-  for (uint32_t i = 0; i < contracts.Length(); ++i) {
-    CachedDirective& d = contracts[i];
-    nsComponentManagerImpl::gComponentManager->ManifestContract(mgrcx, d.lineno,
-                                                                d.argv);
   }
 }

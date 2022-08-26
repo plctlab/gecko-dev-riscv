@@ -11,8 +11,7 @@
 #include "RenderPipeline.h"
 #include "mozilla/webgpu/ffi/wgpu.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 GPU_IMPL_CYCLE_COLLECTION(RenderPassEncoder, mParent, mUsedBindGroups,
                           mUsedBuffers, mUsedPipelines, mUsedTextureViews,
@@ -53,8 +52,11 @@ ffi::WGPUColor ConvertColor(const dom::GPUColorDict& aColor) {
 }
 
 ffi::WGPURenderPass* BeginRenderPass(
-    RawId aEncoderId, const dom::GPURenderPassDescriptor& aDesc) {
+    CommandEncoder* const aParent, const dom::GPURenderPassDescriptor& aDesc) {
   ffi::WGPURenderPassDescriptor desc = {};
+
+  webgpu::StringHelper label(aDesc.mLabel);
+  desc.label = label.Get();
 
   ffi::WGPURenderPassDepthStencilAttachment dsDesc = {};
   if (aDesc.mDepthStencilAttachment.WasPassed()) {
@@ -85,7 +87,13 @@ ffi::WGPURenderPass* BeginRenderPass(
     desc.depth_stencil_attachment = &dsDesc;
   }
 
-  std::array<ffi::WGPURenderPassColorAttachment, WGPUMAX_COLOR_TARGETS>
+  if (aDesc.mColorAttachments.Length() > WGPUMAX_COLOR_ATTACHMENTS) {
+    aParent->GetDevice()->GenerateError(nsLiteralCString(
+        "Too many color attachments in GPURenderPassDescriptor"));
+    return nullptr;
+  }
+
+  std::array<ffi::WGPURenderPassColorAttachment, WGPUMAX_COLOR_ATTACHMENTS>
       colorDescs = {};
   desc.color_attachments = colorDescs.data();
   desc.color_attachments_length = aDesc.mColorAttachments.Length();
@@ -125,12 +133,17 @@ ffi::WGPURenderPass* BeginRenderPass(
     }
   }
 
-  return ffi::wgpu_command_encoder_begin_render_pass(aEncoderId, &desc);
+  return ffi::wgpu_command_encoder_begin_render_pass(aParent->mId, &desc);
 }
 
 RenderPassEncoder::RenderPassEncoder(CommandEncoder* const aParent,
                                      const dom::GPURenderPassDescriptor& aDesc)
-    : ChildOf(aParent), mPass(BeginRenderPass(aParent->mId, aDesc)) {
+    : ChildOf(aParent), mPass(BeginRenderPass(aParent, aDesc)) {
+  if (!mPass) {
+    mValid = false;
+    return;
+  }
+
   for (const auto& at : aDesc.mColorAttachments) {
     mUsedTextureViews.AppendElement(at.mView);
   }
@@ -263,6 +276,24 @@ void RenderPassEncoder::ExecuteBundles(
   }
 }
 
+void RenderPassEncoder::PushDebugGroup(const nsAString& aString) {
+  if (mValid) {
+    const NS_ConvertUTF16toUTF8 utf8(aString);
+    ffi::wgpu_render_pass_push_debug_group(mPass, utf8.get(), 0);
+  }
+}
+void RenderPassEncoder::PopDebugGroup() {
+  if (mValid) {
+    ffi::wgpu_render_pass_pop_debug_group(mPass);
+  }
+}
+void RenderPassEncoder::InsertDebugMarker(const nsAString& aString) {
+  if (mValid) {
+    const NS_ConvertUTF16toUTF8 utf8(aString);
+    ffi::wgpu_render_pass_insert_debug_marker(mPass, utf8.get(), 0);
+  }
+}
+
 void RenderPassEncoder::EndPass(ErrorResult& aRv) {
   if (mValid) {
     mValid = false;
@@ -272,5 +303,4 @@ void RenderPassEncoder::EndPass(ErrorResult& aRv) {
   }
 }
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu

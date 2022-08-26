@@ -7,39 +7,38 @@ var EXPORTED_SYMBOLS = ["Troubleshoot"];
 const { AddonManager } = ChromeUtils.import(
   "resource://gre/modules/AddonManager.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 const { E10SUtils } = ChromeUtils.import(
   "resource://gre/modules/E10SUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 
 const { FeatureGate } = ChromeUtils.import(
   "resource://featuregates/FeatureGate.jsm"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser"]);
-
-// We use a preferences whitelist to make sure we only show preferences that
+// We use a list of prefs for display to make sure we only show prefs that
 // are useful for support and won't compromise the user's privacy.  Note that
 // entries are *prefixes*: for example, "accessibility." applies to all prefs
 // under the "accessibility.*" branch.
-const PREFS_WHITELIST = [
+const PREFS_FOR_DISPLAY = [
   "accessibility.",
   "apz.",
   "browser.cache.",
   "browser.contentblocking.category",
   "browser.display.",
+  "browser.download.always_ask_before_handling_new_types",
+  "browser.download.enable_spam_prevention",
   "browser.download.folderList",
+  "browser.download.improvements_to_download_panel",
   "browser.download.lastDir.savePerSite",
   "browser.download.manager.addToRecentDocs",
   "browser.download.manager.resumeOnWakeDelay",
+  "browser.download.open_pdf_attachments_inline",
   "browser.download.preferred.",
   "browser.download.skipConfirmLaunchExecutable",
+  "browser.download.start_downloads_in_tmp_dir",
   "browser.download.useDownloadDir",
   "browser.fixup.",
   "browser.history_expire_",
@@ -63,8 +62,12 @@ const PREFS_WHITELIST = [
   "doh-rollout.",
   "dom.",
   "extensions.checkCompatibility",
+  "extensions.eventPages.enabled",
   "extensions.formautofill.",
   "extensions.lastAppVersion",
+  "extensions.manifestV3.enabled",
+  "extensions.InstallTrigger.enabled",
+  "extensions.InstallTriggerImpl.enabled",
   "fission.autostart",
   "font.",
   "general.autoScroll",
@@ -105,12 +108,17 @@ const PREFS_WHITELIST = [
   "webgl.",
   "widget.dmabuf",
   "widget.use-xdg-desktop-portal",
+  "widget.use-xdg-desktop-portal.file-picker",
+  "widget.use-xdg-desktop-portal.mime-handler",
+  "widget.gtk.overlay-scrollbars.enabled",
   "widget.wayland",
 ];
 
-// The blacklist, unlike the whitelist, is a list of regular expressions.
-const PREFS_BLACKLIST = [
+// The list of prefs we don't display, unlike the list of prefs for display,
+// is a list of regular expressions.
+const PREF_REGEXES_NOT_TO_DISPLAY = [
   /^browser[.]fixup[.]domainwhitelist[.]/,
+  /^dom[.]push[.]userAgentID/,
   /^media[.]webrtc[.]debug[.]aec_log_dir/,
   /^media[.]webrtc[.]debug[.]log_file/,
   /^print[.].*print_to_filename$/,
@@ -142,12 +150,15 @@ function getPref(name) {
   return PREFS_GETTERS[type](Services.prefs, name);
 }
 
-// Return the preferences filtered by PREFS_BLACKLIST and whitelist lists
+// Return the preferences filtered by PREF_REGEXES_NOT_TO_DISPLAY and PREFS_FOR_DISPLAY
 // and also by the custom 'filter'-ing function.
-function getPrefList(filter, whitelist = PREFS_WHITELIST) {
-  return whitelist.reduce(function(prefs, branch) {
+function getPrefList(filter, allowlist = PREFS_FOR_DISPLAY) {
+  return allowlist.reduce(function(prefs, branch) {
     Services.prefs.getChildList(branch).forEach(function(name) {
-      if (filter(name) && !PREFS_BLACKLIST.some(re => re.test(name))) {
+      if (
+        filter(name) &&
+        !PREF_REGEXES_NOT_TO_DISPLAY.some(re => re.test(name))
+      ) {
         prefs[name] = getPref(name);
       }
     });
@@ -193,7 +204,7 @@ var Troubleshoot = {
 // when done, it must pass its data to the callback.  The resulting snapshot
 // object will contain a name => data entry for each provider.
 var dataProviders = {
-  application: function application(done) {
+  application: async function application(done) {
     let data = {
       name: Services.appinfo.name,
       osVersion:
@@ -211,12 +222,20 @@ var dataProviders = {
         Ci.nsIHttpProtocolHandler
       ).userAgent,
       safeMode: Services.appinfo.inSafeMode,
+      memorySizeBytes: Services.sysinfo.getProperty("memsize"),
+      diskAvailableBytes: Services.dirsvc.get("ProfD", Ci.nsIFile)
+        .diskSpaceAvailable,
     };
+
+    if (Services.sysinfo.getProperty("name") == "Windows_NT") {
+      if ((await Services.sysinfo.processInfo).isWindowsSMode) {
+        data.osVersion += " S";
+      }
+    }
 
     if (AppConstants.MOZ_UPDATER) {
       data.updateChannel = ChromeUtils.import(
-        "resource://gre/modules/UpdateUtils.jsm",
-        {}
+        "resource://gre/modules/UpdateUtils.jsm"
       ).UpdateUtils.UpdateChannel;
     }
 
@@ -292,6 +311,7 @@ var dataProviders = {
       "extension",
       "locale",
       "dictionary",
+      "sitepermission",
     ]);
     addons = addons.filter(e => !e.isSystem);
     addons.sort(function(a, b) {
@@ -549,7 +569,6 @@ var dataProviders = {
         data.numTotalWindows++;
         data.windowLayerManagerType = winUtils.layerManagerType;
         data.windowLayerManagerRemote = winUtils.layerManagerRemote;
-        data.windowUsingAdvancedLayers = winUtils.usingAdvancedLayers;
       } catch (e) {
         continue;
       }
@@ -607,7 +626,6 @@ var dataProviders = {
       DWriteEnabled: "directWriteEnabled",
       DWriteVersion: "directWriteVersion",
       cleartypeParameters: "clearTypeParameters",
-      UsesTiling: "usesTiling",
       TargetFrameRate: "targetFrameRate",
       windowProtocol: null,
       desktopEnvironment: null,
@@ -758,6 +776,22 @@ var dataProviders = {
         .audioDevices(Ci.nsIDOMWindowUtils.AUDIO_INPUT)
         .QueryInterface(Ci.nsIArray)
     );
+
+    data.codecSupportInfo = "Unknown";
+
+    // We initialize gfxInfo here in the same way as in the media
+    // section -- should we break this out into a separate function?
+    try {
+      // nsIGfxInfo may not be implemented on some platforms.
+      var gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
+
+      // Note: CodecSupportInfo is not populated until we have
+      // actually instantiated a PDM. We may want to add a button
+      // or some other means of allowing the user to manually
+      // instantiate a PDM to ensure that the data is available.
+      data.codecSupportInfo = gfxInfo.CodecSupportInfo;
+    } catch (e) {}
+
     done(data);
   },
 
@@ -855,7 +889,7 @@ var dataProviders = {
       prefRollouts,
       prefStudies,
       nimbusExperiments,
-      remoteConfigs,
+      nimbusRollouts,
     ] = await Promise.all(
       [
         NormandyAddonStudies.getAllActive(),
@@ -866,7 +900,7 @@ var dataProviders = {
           .then(() => ExperimentManager.store.getAllActive()),
         ExperimentManager.store
           .ready()
-          .then(() => ExperimentManager.store.getAllRemoteConfigs()),
+          .then(() => ExperimentManager.store.getAllRollouts()),
       ].map(promise =>
         promise
           .catch(error => {
@@ -882,7 +916,7 @@ var dataProviders = {
       prefRollouts,
       prefStudies,
       nimbusExperiments,
-      remoteConfigs,
+      nimbusRollouts,
     });
   },
 };
@@ -962,11 +996,11 @@ if (AppConstants.ENABLE_WEBDRIVER) {
     const { RemoteAgent } = ChromeUtils.import(
       "chrome://remote/content/components/RemoteAgent.jsm"
     );
-    const { listening, scheme, host, port } = RemoteAgent;
+    const { running, scheme, host, port } = RemoteAgent;
     let url = "";
-    if (listening) {
+    if (running) {
       url = `${scheme}://${host}:${port}/`;
     }
-    done({ listening, url });
+    done({ running, url });
   };
 }

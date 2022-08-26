@@ -312,16 +312,18 @@ def create_parser(mach_interface=False):
         " Currently only supported in production.",
     )
     add_arg(
-        "--enable-webrender",
-        action="store_true",
-        default=False,
-        help="Enable the WebRender compositor in Gecko.",
+        "--disable-fission",
+        action="store_false",
+        dest="fission",
+        default=True,
+        help="Disable Fission (site isolation) in Gecko.",
     )
     add_arg(
-        "--enable-fission",
-        action="store_true",
-        default=False,
-        help="Enable Fission (site isolation) in Gecko.",
+        "--project",
+        type=str,
+        default="mozilla-central",
+        help="The project branch we're running tests on. Used for "
+        "disabling/skipping tests.",
     )
 
     add_logging_group(parser)

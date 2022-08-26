@@ -141,8 +141,8 @@ class ChannelWrapper final : public DOMEventTargetHelper,
   void UpgradeToSecure(ErrorResult& aRv);
 
   bool Suspended() const { return mSuspended; }
-  void Suspend(ErrorResult& aRv);
-  void Resume(const nsCString& aText, ErrorResult& aRv);
+  void Suspend(const nsCString& aProfileMarkerText, ErrorResult& aRv);
+  void Resume(ErrorResult& aRv);
 
   void GetContentType(nsCString& aContentType) const;
   void SetContentType(const nsACString& aContentType);
@@ -197,6 +197,10 @@ class ChannelWrapper final : public DOMEventTargetHelper,
       dom::Nullable<nsTArray<dom::MozFrameAncestorInfo>>& aFrameAncestors,
       ErrorResult& aRv) const;
 
+  bool IsServiceWorkerScript() const;
+
+  static bool IsServiceWorkerScript(const nsCOMPtr<nsIChannel>& aChannel);
+
   bool IsSystemLoad() const;
 
   void GetOriginURL(nsCString& aRetVal) const;
@@ -245,7 +249,8 @@ class ChannelWrapper final : public DOMEventTargetHelper,
 
   nsISupports* GetParentObject() const { return mParent; }
 
-  JSObject* WrapObject(JSContext* aCx, JS::HandleObject aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
   ~ChannelWrapper();
@@ -318,7 +323,9 @@ class ChannelWrapper final : public DOMEventTargetHelper,
 
   nsInterfaceHashtable<nsPtrHashKey<const nsAtom>, nsIRemoteTab> mAddonEntries;
 
-  mozilla::TimeStamp mSuspendTime;
+  // The text for the "Extension Suspend" marker, set from the Suspend method
+  // when called for the first time and then cleared on the Resume method.
+  nsCString mSuspendedMarkerText = VoidCString();
 
   class RequestListener final : public nsIStreamListener,
                                 public nsIMultiPartChannelListener,

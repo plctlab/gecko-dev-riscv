@@ -19,22 +19,16 @@ namespace impl {
 
 void NumeratorMetric::AddToNumerator(int32_t aAmount) const {
   auto scalarId = ScalarIdForMetric(mId);
-  if (scalarId) {
+  if (scalarId && aAmount >= 0) {
     Telemetry::ScalarAdd(scalarId.extract(), u"numerator"_ns, aAmount);
   }
-#ifndef MOZ_GLEAN_ANDROID
   fog_numerator_add_to_numerator(mId, aAmount);
-#endif
 }
 
 Result<Maybe<std::pair<int32_t, int32_t>>, nsCString>
 NumeratorMetric::TestGetValue(const nsACString& aPingName) const {
-#ifdef MOZ_GLEAN_ANDROID
-  Unused << mId;
-  return Maybe<std::pair<int32_t, int32_t>>();
-#else
   nsCString err;
-  if (fog_numerator_test_get_error(mId, &aPingName, &err)) {
+  if (fog_numerator_test_get_error(mId, &err)) {
     return Err(err);
   }
   if (!fog_numerator_test_has_value(mId, &aPingName)) {
@@ -44,7 +38,6 @@ NumeratorMetric::TestGetValue(const nsACString& aPingName) const {
   int32_t den = 0;
   fog_numerator_test_get_value(mId, &aPingName, &num, &den);
   return Some(std::make_pair(num, den));
-#endif
 }
 
 }  // namespace impl
@@ -60,7 +53,7 @@ GleanNumerator::AddToNumerator(int32_t aAmount) {
 
 NS_IMETHODIMP
 GleanNumerator::TestGetValue(const nsACString& aPingName, JSContext* aCx,
-                             JS::MutableHandleValue aResult) {
+                             JS::MutableHandle<JS::Value> aResult) {
   auto result = mNumerator.TestGetValue(aPingName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());
@@ -73,7 +66,7 @@ GleanNumerator::TestGetValue(const nsACString& aPingName, JSContext* aCx,
     aResult.set(JS::UndefinedValue());
   } else {
     // Build return value of the form: { numerator: n, denominator: d }
-    JS::RootedObject root(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> root(aCx, JS_NewPlainObject(aCx));
     if (!root) {
       return NS_ERROR_FAILURE;
     }

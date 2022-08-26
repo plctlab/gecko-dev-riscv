@@ -9,20 +9,20 @@
 #include "mozilla/TextUtils.h"  // mozilla::IsAscii
 
 #include <memory>  // std::uninitialized_fill_n
-#include <type_traits>
 
 #include "jsnum.h"  // CharsToNumber
 
 #include "frontend/BytecodeCompiler.h"  // IsIdentifier
 #include "frontend/CompilationStencil.h"
-#include "frontend/NameCollections.h"
 #include "util/StringBuffer.h"  // StringBuffer
 #include "util/Text.h"          // AsciiDigitToNumber
 #include "util/Unicode.h"
+#include "vm/ErrorContext.h"
 #include "vm/JSContext.h"
 #include "vm/Printer.h"  // Sprinter, QuoteString
 #include "vm/Runtime.h"
 #include "vm/SelfHosting.h"  // ExtendedUnclonedSelfHostedFunctionNamePrefix
+#include "vm/StaticStrings.h"
 #include "vm/StringType.h"
 
 using namespace js;
@@ -35,21 +35,21 @@ JSAtom* GetWellKnownAtom(JSContext* cx, WellKnownAtomId atomId) {
 #define ASSERT_OFFSET_(_, NAME, _2)              \
   static_assert(offsetof(JSAtomState, NAME) ==   \
                 int32_t(WellKnownAtomId::NAME) * \
-                    sizeof(js::ImmutablePropertyNamePtr));
+                    sizeof(js::ImmutableTenuredPtr<PropertyName*>));
   FOR_EACH_COMMON_PROPERTYNAME(ASSERT_OFFSET_);
 #undef ASSERT_OFFSET_
 
 #define ASSERT_OFFSET_(NAME, _)                  \
   static_assert(offsetof(JSAtomState, NAME) ==   \
                 int32_t(WellKnownAtomId::NAME) * \
-                    sizeof(js::ImmutablePropertyNamePtr));
+                    sizeof(js::ImmutableTenuredPtr<PropertyName*>));
   JS_FOR_EACH_PROTOTYPE(ASSERT_OFFSET_);
 #undef ASSERT_OFFSET_
 
 #define ASSERT_OFFSET_(NAME)                     \
   static_assert(offsetof(JSAtomState, NAME) ==   \
                 int32_t(WellKnownAtomId::NAME) * \
-                    sizeof(js::ImmutablePropertyNamePtr));
+                    sizeof(js::ImmutableTenuredPtr<PropertyName*>));
   JS_FOR_EACH_WELL_KNOWN_SYMBOL(ASSERT_OFFSET_);
 #undef ASSERT_OFFSET_
 
@@ -67,9 +67,11 @@ void TaggedParserAtomIndex::validateRaw() {
     MOZ_ASSERT(uint32_t(toWellKnownAtomId()) <
                uint32_t(WellKnownAtomId::Limit));
   } else if (isLength1StaticParserString()) {
-    MOZ_ASSERT(size_t(toLength1StaticParserString()) < Length1StaticLimit);
+    // always valid
   } else if (isLength2StaticParserString()) {
     MOZ_ASSERT(size_t(toLength2StaticParserString()) < Length2StaticLimit);
+  } else if (isLength3StaticParserString()) {
+    // always valid
   } else {
     MOZ_ASSERT(isNull());
   }
@@ -78,12 +80,12 @@ void TaggedParserAtomIndex::validateRaw() {
 
 template <typename CharT, typename SeqCharT>
 /* static */ ParserAtom* ParserAtom::allocate(
-    JSContext* cx, LifoAlloc& alloc, InflatedChar16Sequence<SeqCharT> seq,
+    ErrorContext* ec, LifoAlloc& alloc, InflatedChar16Sequence<SeqCharT> seq,
     uint32_t length, HashNumber hash) {
   constexpr size_t HeaderSize = sizeof(ParserAtom);
   void* raw = alloc.alloc(HeaderSize + (sizeof(CharT) * length));
   if (!raw) {
-    js::ReportOutOfMemory(cx);
+    js::ReportOutOfMemory(ec);
     return nullptr;
   }
 
@@ -109,43 +111,64 @@ bool ParserAtom::isInstantiatedAsJSAtom() const {
   return false;
 }
 
-JSString* ParserAtom::instantiateString(JSContext* cx, ParserAtomIndex index,
+JSString* ParserAtom::instantiateString(JSContext* cx, ErrorContext* ec,
+                                        ParserAtomIndex index,
                                         CompilationAtomCache& atomCache) const {
   MOZ_ASSERT(!isInstantiatedAsJSAtom());
 
   JSString* str;
   if (hasLatin1Chars()) {
-    str =
-        NewStringCopyN<CanGC>(cx, reinterpret_cast<const char*>(latin1Chars()),
-                              length(), gc::TenuredHeap);
+    str = NewStringCopyNDontDeflateNonStaticValidLength<CanGC>(
+        cx, latin1Chars(), length(), gc::TenuredHeap);
   } else {
-    str = NewStringCopyN<CanGC>(cx, twoByteChars(), length(), gc::TenuredHeap);
+    str = NewStringCopyNDontDeflateNonStaticValidLength<CanGC>(
+        cx, twoByteChars(), length(), gc::TenuredHeap);
   }
   if (!str) {
     return nullptr;
   }
-  if (!atomCache.setAtomAt(cx, index, str)) {
+  if (!atomCache.setAtomAt(ec, index, str)) {
     return nullptr;
   }
 
   return str;
 }
 
-JSAtom* ParserAtom::instantiateAtom(JSContext* cx, ParserAtomIndex index,
+JSAtom* ParserAtom::instantiateAtom(JSContext* cx, ErrorContext* ec,
+                                    ParserAtomIndex index,
                                     CompilationAtomCache& atomCache) const {
-  // See the comment in InstantiateMarkedAtoms for !cx->zone().
-  MOZ_ASSERT(isInstantiatedAsJSAtom() || !cx->zone());
+  MOZ_ASSERT(isInstantiatedAsJSAtom());
 
   JSAtom* atom;
   if (hasLatin1Chars()) {
-    atom = AtomizeChars(cx, hash(), latin1Chars(), length());
+    atom =
+        AtomizeCharsNonStaticValidLength(cx, hash(), latin1Chars(), length());
   } else {
-    atom = AtomizeChars(cx, hash(), twoByteChars(), length());
+    atom =
+        AtomizeCharsNonStaticValidLength(cx, hash(), twoByteChars(), length());
   }
   if (!atom) {
     return nullptr;
   }
-  if (!atomCache.setAtomAt(cx, index, atom)) {
+  if (!atomCache.setAtomAt(ec, index, atom)) {
+    return nullptr;
+  }
+  return atom;
+}
+
+JSAtom* ParserAtom::instantiatePermanentAtom(
+    JSContext* cx, ErrorContext* ec, AtomSet& atomSet, ParserAtomIndex index,
+    CompilationAtomCache& atomCache) const {
+  MOZ_ASSERT(!cx->zone());
+
+  MOZ_ASSERT(hasLatin1Chars());
+  MOZ_ASSERT(length() <= JSString::MAX_LENGTH);
+  JSAtom* atom = PermanentlyAtomizeCharsNonStaticValidLength(
+      cx, atomSet, hash(), latin1Chars(), length());
+  if (!atom) {
+    return nullptr;
+  }
+  if (!atomCache.setAtomAt(ec, index, atom)) {
     return nullptr;
   }
   return atom;
@@ -183,22 +206,25 @@ void ParserAtomsTable::dump(TaggedParserAtomIndex index) const {
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
-    getLength1Content(index.toLength1StaticParserString(), content);
     js::Fprinter out(stderr);
     out.put("\"");
-    out.putChar(content[0]);
+    dumpCharsNoQuote(out, index.toLength1StaticParserString());
     out.put("\"\n");
     return;
   }
 
   if (index.isLength2StaticParserString()) {
-    char content[2];
-    getLength2Content(index.toLength2StaticParserString(), content);
     js::Fprinter out(stderr);
     out.put("\"");
-    out.putChar(content[0]);
-    out.putChar(content[1]);
+    dumpCharsNoQuote(out, index.toLength2StaticParserString());
+    out.put("\"\n");
+    return;
+  }
+
+  if (index.isLength3StaticParserString()) {
+    js::Fprinter out(stderr);
+    out.put("\"");
+    dumpCharsNoQuote(out, index.toLength3StaticParserString());
     out.put("\"\n");
     return;
   }
@@ -230,6 +256,11 @@ void ParserAtomsTable::dumpCharsNoQuote(js::GenericPrinter& out,
     return;
   }
 
+  if (index.isLength3StaticParserString()) {
+    dumpCharsNoQuote(out, index.toLength3StaticParserString());
+    return;
+  }
+
   MOZ_ASSERT(index.isNull());
   out.put("#<null>");
 }
@@ -244,7 +275,7 @@ void ParserAtomsTable::dumpCharsNoQuote(js::GenericPrinter& out,
 /* static */
 void ParserAtomsTable::dumpCharsNoQuote(js::GenericPrinter& out,
                                         Length1StaticParserString index) {
-  char content[1];
+  Latin1Char content[1];
   getLength1Content(index, content);
   out.putChar(content[0]);
 }
@@ -257,27 +288,37 @@ void ParserAtomsTable::dumpCharsNoQuote(js::GenericPrinter& out,
   out.putChar(content[0]);
   out.putChar(content[1]);
 }
+
+/* static */
+void ParserAtomsTable::dumpCharsNoQuote(js::GenericPrinter& out,
+                                        Length3StaticParserString index) {
+  char content[3];
+  getLength3Content(index, content);
+  out.putChar(content[0]);
+  out.putChar(content[1]);
+  out.putChar(content[2]);
+}
 #endif
 
 ParserAtomsTable::ParserAtomsTable(JSRuntime* rt, LifoAlloc& alloc)
     : wellKnownTable_(*rt->commonParserNames), alloc_(&alloc) {}
 
-TaggedParserAtomIndex ParserAtomsTable::addEntry(JSContext* cx,
+TaggedParserAtomIndex ParserAtomsTable::addEntry(ErrorContext* ec,
                                                  EntryMap::AddPtr& addPtr,
                                                  ParserAtom* entry) {
   MOZ_ASSERT(!addPtr);
   ParserAtomIndex index = ParserAtomIndex(entries_.length());
   if (size_t(index) >= TaggedParserAtomIndex::IndexLimit) {
-    ReportAllocationOverflow(cx);
+    ReportAllocationOverflow(ec);
     return TaggedParserAtomIndex::null();
   }
   if (!entries_.append(entry)) {
-    js::ReportOutOfMemory(cx);
+    js::ReportOutOfMemory(ec);
     return TaggedParserAtomIndex::null();
   }
   auto taggedIndex = TaggedParserAtomIndex(index);
   if (!entryMap_.add(addPtr, entry, taggedIndex)) {
-    js::ReportOutOfMemory(cx);
+    js::ReportOutOfMemory(ec);
     return TaggedParserAtomIndex::null();
   }
   return taggedIndex;
@@ -285,30 +326,30 @@ TaggedParserAtomIndex ParserAtomsTable::addEntry(JSContext* cx,
 
 template <typename AtomCharT, typename SeqCharT>
 TaggedParserAtomIndex ParserAtomsTable::internChar16Seq(
-    JSContext* cx, EntryMap::AddPtr& addPtr, HashNumber hash,
+    ErrorContext* ec, EntryMap::AddPtr& addPtr, HashNumber hash,
     InflatedChar16Sequence<SeqCharT> seq, uint32_t length) {
   MOZ_ASSERT(!addPtr);
 
   ParserAtom* entry =
-      ParserAtom::allocate<AtomCharT>(cx, *alloc_, seq, length, hash);
+      ParserAtom::allocate<AtomCharT>(ec, *alloc_, seq, length, hash);
   if (!entry) {
     return TaggedParserAtomIndex::null();
   }
-  return addEntry(cx, addPtr, entry);
+  return addEntry(ec, addPtr, entry);
 }
 
 static const uint16_t MAX_LATIN1_CHAR = 0xff;
 
-TaggedParserAtomIndex ParserAtomsTable::internAscii(JSContext* cx,
+TaggedParserAtomIndex ParserAtomsTable::internAscii(ErrorContext* ec,
                                                     const char* asciiPtr,
                                                     uint32_t length) {
   // ASCII strings are strict subsets of Latin1 strings.
   const Latin1Char* latin1Ptr = reinterpret_cast<const Latin1Char*>(asciiPtr);
-  return internLatin1(cx, latin1Ptr, length);
+  return internLatin1(ec, latin1Ptr, length);
 }
 
 TaggedParserAtomIndex ParserAtomsTable::internLatin1(
-    JSContext* cx, const Latin1Char* latin1Ptr, uint32_t length) {
+    ErrorContext* ec, const Latin1Char* latin1Ptr, uint32_t length) {
   // Check for tiny strings which are abundant in minified code.
   if (auto tiny = wellKnownTable_.lookupTinyIndex(latin1Ptr, length)) {
     return tiny;
@@ -327,7 +368,7 @@ TaggedParserAtomIndex ParserAtomsTable::internLatin1(
     return addPtr->value();
   }
 
-  return internChar16Seq<Latin1Char>(cx, addPtr, lookup.hash(), seq, length);
+  return internChar16Seq<Latin1Char>(ec, addPtr, lookup.hash(), seq, length);
 }
 
 bool IsWide(const InflatedChar16Sequence<char16_t>& seq) {
@@ -344,7 +385,7 @@ bool IsWide(const InflatedChar16Sequence<char16_t>& seq) {
 
 template <typename AtomCharT>
 TaggedParserAtomIndex ParserAtomsTable::internExternalParserAtomImpl(
-    JSContext* cx, const ParserAtom* atom) {
+    ErrorContext* ec, const ParserAtom* atom) {
   InflatedChar16Sequence<AtomCharT> seq(atom->chars<AtomCharT>(),
                                         atom->length());
   SpecificParserAtomLookup<AtomCharT> lookup(seq, atom->hash());
@@ -362,7 +403,7 @@ TaggedParserAtomIndex ParserAtomsTable::internExternalParserAtomImpl(
   }
 
   auto index =
-      internChar16Seq<AtomCharT>(cx, addPtr, atom->hash(), seq, atom->length());
+      internChar16Seq<AtomCharT>(ec, addPtr, atom->hash(), seq, atom->length());
   if (!index) {
     return TaggedParserAtomIndex::null();
   }
@@ -375,24 +416,67 @@ TaggedParserAtomIndex ParserAtomsTable::internExternalParserAtomImpl(
 }
 
 TaggedParserAtomIndex ParserAtomsTable::internExternalParserAtom(
-    JSContext* cx, const ParserAtom* atom) {
+    ErrorContext* ec, const ParserAtom* atom) {
   if (atom->hasLatin1Chars()) {
-    return internExternalParserAtomImpl<JS::Latin1Char>(cx, atom);
+    return internExternalParserAtomImpl<JS::Latin1Char>(ec, atom);
   }
-  return internExternalParserAtomImpl<char16_t>(cx, atom);
+  return internExternalParserAtomImpl<char16_t>(ec, atom);
 }
 
-bool ParserAtomsTable::addPlaceholder(JSContext* cx) {
+bool ParserAtomsTable::addPlaceholder(ErrorContext* ec) {
   ParserAtomIndex index = ParserAtomIndex(entries_.length());
   if (size_t(index) >= TaggedParserAtomIndex::IndexLimit) {
-    ReportAllocationOverflow(cx);
+    ReportAllocationOverflow(ec);
     return false;
   }
   if (!entries_.append(nullptr)) {
-    js::ReportOutOfMemory(cx);
+    js::ReportOutOfMemory(ec);
     return false;
   }
   return true;
+}
+
+TaggedParserAtomIndex ParserAtomsTable::internExternalParserAtomIndex(
+    ErrorContext* ec, const CompilationStencil& context,
+    TaggedParserAtomIndex atom) {
+  // When the atom is not a parser atom index, the value represent the atom
+  // without the need for a ParserAtom, and thus we can skip interning it.
+  if (!atom.isParserAtomIndex()) {
+    return atom;
+  }
+  auto index = atom.toParserAtomIndex();
+  return internExternalParserAtom(ec, context.parserAtomData[index]);
+}
+
+bool ParserAtomsTable::isEqualToExternalParserAtomIndex(
+    TaggedParserAtomIndex internal, const CompilationStencil& context,
+    TaggedParserAtomIndex external) const {
+  // If one is null, well-known or static, then testing the equality of the bits
+  // of the TaggedParserAtomIndex is sufficient.
+  if (!internal.isParserAtomIndex() || !external.isParserAtomIndex()) {
+    return internal == external;
+  }
+
+  // Otherwise we have to compare 2 atom-indexes from different ParserAtomTable.
+  ParserAtom* internalAtom = getParserAtom(internal.toParserAtomIndex());
+  ParserAtom* externalAtom =
+      context.parserAtomData[external.toParserAtomIndex()];
+
+  if (internalAtom->hash() != externalAtom->hash()) {
+    return false;
+  }
+
+  HashNumber hash = internalAtom->hash();
+  size_t length = internalAtom->length();
+  if (internalAtom->hasLatin1Chars()) {
+    const Latin1Char* chars = internalAtom->latin1Chars();
+    InflatedChar16Sequence<Latin1Char> seq(chars, length);
+    return externalAtom->equalsSeq(hash, seq);
+  }
+
+  const char16_t* chars = internalAtom->twoByteChars();
+  InflatedChar16Sequence<char16_t> seq(chars, length);
+  return externalAtom->equalsSeq(hash, seq);
 }
 
 bool ParserAtomSpanBuilder::allocate(JSContext* cx, LifoAlloc& alloc,
@@ -413,13 +497,26 @@ bool ParserAtomSpanBuilder::allocate(JSContext* cx, LifoAlloc& alloc,
   return true;
 }
 
+static inline bool IsLatin1(mozilla::Utf8Unit c1, mozilla::Utf8Unit c2) {
+  auto u1 = c1.toUint8();
+  auto u2 = c2.toUint8();
+
+  // 0x80-0xBF
+  if (u1 == 0xC2 && 0x80 <= u2 && u2 <= 0xBF) {
+    return true;
+  }
+
+  // 0xC0-0xFF
+  if (u1 == 0xC3 && 0x80 <= u2 && u2 <= 0xBF) {
+    return true;
+  }
+
+  return false;
+}
+
 TaggedParserAtomIndex ParserAtomsTable::internUtf8(
-    JSContext* cx, const mozilla::Utf8Unit* utf8Ptr, uint32_t nbyte) {
-  // Check for tiny strings which are abundant in minified code.
-  // NOTE: The tiny atoms are all ASCII-only so we can directly look at the
-  //        UTF-8 data without worrying about surrogates.
-  if (auto tiny = wellKnownTable_.lookupTinyIndex(
-          reinterpret_cast<const Latin1Char*>(utf8Ptr), nbyte)) {
+    ErrorContext* ec, const mozilla::Utf8Unit* utf8Ptr, uint32_t nbyte) {
+  if (auto tiny = wellKnownTable_.lookupTinyIndexUTF8(utf8Ptr, nbyte)) {
     return tiny;
   }
 
@@ -433,7 +530,7 @@ TaggedParserAtomIndex ParserAtomsTable::internUtf8(
     // unit is the same size, we can reliably cast this `Utf8Unit*`
     // to a `Latin1Char*`.
     const Latin1Char* latin1Ptr = reinterpret_cast<const Latin1Char*>(utf8Ptr);
-    return internLatin1(cx, latin1Ptr, nbyte);
+    return internLatin1(ec, latin1Ptr, nbyte);
   }
 
   // Check for existing.
@@ -457,12 +554,12 @@ TaggedParserAtomIndex ParserAtomsTable::internUtf8(
   // Otherwise, add new entry.
   bool wide = (minEncoding == JS::SmallestEncoding::UTF16);
   return wide
-             ? internChar16Seq<char16_t>(cx, addPtr, lookup.hash(), seq, length)
-             : internChar16Seq<Latin1Char>(cx, addPtr, lookup.hash(), seq,
+             ? internChar16Seq<char16_t>(ec, addPtr, lookup.hash(), seq, length)
+             : internChar16Seq<Latin1Char>(ec, addPtr, lookup.hash(), seq,
                                            length);
 }
 
-TaggedParserAtomIndex ParserAtomsTable::internChar16(JSContext* cx,
+TaggedParserAtomIndex ParserAtomsTable::internChar16(ErrorContext* ec,
                                                      const char16_t* char16Ptr,
                                                      uint32_t length) {
   // Check for tiny strings which are abundant in minified code.
@@ -485,21 +582,22 @@ TaggedParserAtomIndex ParserAtomsTable::internChar16(JSContext* cx,
 
   // Otherwise, add new entry.
   return IsWide(seq)
-             ? internChar16Seq<char16_t>(cx, addPtr, lookup.hash(), seq, length)
-             : internChar16Seq<Latin1Char>(cx, addPtr, lookup.hash(), seq,
+             ? internChar16Seq<char16_t>(ec, addPtr, lookup.hash(), seq, length)
+             : internChar16Seq<Latin1Char>(ec, addPtr, lookup.hash(), seq,
                                            length);
 }
 
 TaggedParserAtomIndex ParserAtomsTable::internJSAtom(
-    JSContext* cx, CompilationAtomCache& atomCache, JSAtom* atom) {
+    JSContext* cx, ErrorContext* ec, CompilationAtomCache& atomCache,
+    JSAtom* atom) {
   TaggedParserAtomIndex parserAtom;
   {
     JS::AutoCheckCannotGC nogc;
 
     parserAtom =
         atom->hasLatin1Chars()
-            ? internLatin1(cx, atom->latin1Chars(nogc), atom->length())
-            : internChar16(cx, atom->twoByteChars(nogc), atom->length());
+            ? internLatin1(ec, atom->latin1Chars(nogc), atom->length())
+            : internChar16(ec, atom->twoByteChars(nogc), atom->length());
     if (!parserAtom) {
       return TaggedParserAtomIndex::null();
     }
@@ -508,14 +606,14 @@ TaggedParserAtomIndex ParserAtomsTable::internJSAtom(
   if (parserAtom.isParserAtomIndex()) {
     ParserAtomIndex index = parserAtom.toParserAtomIndex();
     if (!atomCache.hasAtomAt(index)) {
-      if (!atomCache.setAtomAt(cx, index, atom)) {
+      if (!atomCache.setAtomAt(ec, index, atom)) {
         return TaggedParserAtomIndex::null();
       }
     }
   }
 
   // We should (infallibly) map back to the same JSAtom.
-  MOZ_ASSERT(toJSAtom(cx, parserAtom, atomCache) == atom);
+  MOZ_ASSERT(toJSAtom(cx, ec, parserAtom, atomCache) == atom);
 
   return parserAtom;
 }
@@ -557,15 +655,28 @@ bool ParserAtomsTable::isIdentifier(TaggedParserAtomIndex index) const {
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
-    return IsIdentifierASCII(content[0]);
+    if (MOZ_UNLIKELY(content[0] > 127)) {
+      return IsIdentifier(content, 1);
+    }
+    return IsIdentifierASCII(char(content[0]));
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
-  return IsIdentifierASCII(content[0], content[1]);
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return IsIdentifierASCII(content[0], content[1]);
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+#ifdef DEBUG
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
+  MOZ_ASSERT(!reinterpret_cast<const Latin1Char*>(
+      IsIdentifier(reinterpret_cast<const Latin1Char*>(content), 3)));
+#endif
+  return false;
 }
 
 bool ParserAtomsTable::isPrivateName(TaggedParserAtomIndex index) const {
@@ -574,11 +685,7 @@ bool ParserAtomsTable::isPrivateName(TaggedParserAtomIndex index) const {
   }
 
   const auto* atom = getParserAtom(index.toParserAtomIndex());
-  if (atom->length() < 2) {
-    return false;
-  }
-
-  return atom->charAt(0) == '#';
+  return atom->isPrivateName();
 }
 
 bool ParserAtomsTable::isExtendedUnclonedSelfHostedFunctionName(
@@ -619,16 +726,21 @@ bool ParserAtomsTable::isExtendedUnclonedSelfHostedFunctionName(
     return false;
   }
 
-  // Length-1/2 shouldn't be used for extented uncloned self-hosted
+  // Length-1/2/3 shouldn't be used for extented uncloned self-hosted
   // function name, and this query shouldn't be used for them.
 #ifdef DEBUG
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
     MOZ_ASSERT(content[0] != ExtendedUnclonedSelfHostedFunctionNamePrefix);
-  } else {
+  } else if (index.isLength2StaticParserString()) {
     char content[2];
     getLength2Content(index.toLength2StaticParserString(), content);
+    MOZ_ASSERT(content[0] != ExtendedUnclonedSelfHostedFunctionNamePrefix);
+  } else {
+    MOZ_ASSERT(index.isLength3StaticParserString());
+    char content[3];
+    getLength3Content(index.toLength3StaticParserString(), content);
     MOZ_ASSERT(content[0] != ExtendedUnclonedSelfHostedFunctionNamePrefix);
   }
 #endif
@@ -656,7 +768,8 @@ bool ParserAtomsTable::isModuleExportName(TaggedParserAtomIndex index) const {
            !HasUnpairedSurrogate(name->twoByteRange());
   }
 
-  // Well-known/length-1/length-2 are ASCII.
+  // Well-known/length-2 are ASCII.
+  // length-1 are Latin1.
   return true;
 }
 
@@ -686,7 +799,7 @@ bool ParserAtomsTable::isIndex(TaggedParserAtomIndex index,
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
     if (mozilla::IsAsciiDigit(content[0])) {
       *indexp = AsciiDigitToNumber(content[0]);
@@ -695,18 +808,32 @@ bool ParserAtomsTable::isIndex(TaggedParserAtomIndex index,
     return false;
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
-  // Leading '0' isn't allowed.
-  // See CheckStringIsIndex comment.
-  if (content[0] != '0' && mozilla::IsAsciiDigit(content[0]) &&
-      mozilla::IsAsciiDigit(content[1])) {
-    *indexp =
-        AsciiDigitToNumber(content[0]) * 10 + AsciiDigitToNumber(content[1]);
-    return true;
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    // Leading '0' isn't allowed.
+    // See CheckStringIsIndex comment.
+    if (content[0] != '0' && mozilla::IsAsciiDigit(content[0]) &&
+        mozilla::IsAsciiDigit(content[1])) {
+      *indexp =
+          AsciiDigitToNumber(content[0]) * 10 + AsciiDigitToNumber(content[1]);
+      return true;
+    }
+    return false;
   }
-  return false;
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  *indexp = uint32_t(index.toLength3StaticParserString());
+#ifdef DEBUG
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
+  MOZ_ASSERT(uint32_t(AsciiDigitToNumber(content[0])) * 100 +
+                 uint32_t(AsciiDigitToNumber(content[1])) * 10 +
+                 uint32_t(AsciiDigitToNumber(content[2])) ==
+             *indexp);
+  MOZ_ASSERT(100 <= *indexp);
+#endif
+  return true;
 }
 
 bool ParserAtomsTable::isInstantiatedAsJSAtom(
@@ -734,38 +861,49 @@ uint32_t ParserAtomsTable::length(TaggedParserAtomIndex index) const {
     return 1;
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  return 2;
+  if (index.isLength2StaticParserString()) {
+    return 2;
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  return 3;
 }
 
-bool ParserAtomsTable::toNumber(JSContext* cx, TaggedParserAtomIndex index,
-                                double* result) const {
+double ParserAtomsTable::toNumber(TaggedParserAtomIndex index) const {
   if (index.isParserAtomIndex()) {
     const auto* atom = getParserAtom(index.toParserAtomIndex());
     size_t len = atom->length();
-    return atom->hasLatin1Chars()
-               ? CharsToNumber(cx, atom->latin1Chars(), len, result)
-               : CharsToNumber(cx, atom->twoByteChars(), len, result);
+    return atom->hasLatin1Chars() ? CharsToNumber(atom->latin1Chars(), len)
+                                  : CharsToNumber(atom->twoByteChars(), len);
   }
 
   if (index.isWellKnownAtomId()) {
     const auto& info = GetWellKnownAtomInfo(index.toWellKnownAtomId());
-    return CharsToNumber(cx, reinterpret_cast<const Latin1Char*>(info.content),
-                         info.length, result);
+    return CharsToNumber(reinterpret_cast<const Latin1Char*>(info.content),
+                         info.length);
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
-    return CharsToNumber(cx, reinterpret_cast<const Latin1Char*>(content), 1,
-                         result);
+    return CharsToNumber(content, 1);
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
-  return CharsToNumber(cx, reinterpret_cast<const Latin1Char*>(content), 2,
-                       result);
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return CharsToNumber(reinterpret_cast<const Latin1Char*>(content), 2);
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  double result = double(index.toLength3StaticParserString());
+#ifdef DEBUG
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
+  double tmp = CharsToNumber(reinterpret_cast<const Latin1Char*>(content), 3);
+  MOZ_ASSERT(tmp == result);
+#endif
+  return result;
 }
 
 UniqueChars ParserAtomsTable::toNewUTF8CharsZ(
@@ -789,20 +927,27 @@ UniqueChars ParserAtomsTable::toNewUTF8CharsZ(
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
     return UniqueChars(
+        JS::CharsToNewUTF8CharsZ(cx, mozilla::Range(content, 1)).c_str());
+  }
+
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return UniqueChars(
         JS::CharsToNewUTF8CharsZ(
-            cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 1))
+            cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2))
             .c_str());
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
   return UniqueChars(
       JS::CharsToNewUTF8CharsZ(
-          cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2))
+          cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 3))
           .c_str());
 }
 
@@ -836,17 +981,24 @@ UniqueChars ParserAtomsTable::toPrintableString(
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
-    return ToPrintableStringImpl(
-        cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 1));
+    return ToPrintableStringImpl(cx,
+                                 mozilla::Range<const Latin1Char>(content, 1));
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return ToPrintableStringImpl(
+        cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2));
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
   return ToPrintableStringImpl(
-      cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2));
+      cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 3));
 }
 
 UniqueChars ParserAtomsTable::toQuotedString(
@@ -868,22 +1020,30 @@ UniqueChars ParserAtomsTable::toQuotedString(
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
     return ToPrintableStringImpl(
-        cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 1),
+        cx, mozilla::Range<const Latin1Char>(content, 1), '\"');
+  }
+
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return ToPrintableStringImpl(
+        cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2),
         '\"');
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
   return ToPrintableStringImpl(
-      cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 2),
+      cx, mozilla::Range(reinterpret_cast<const Latin1Char*>(content), 3),
       '\"');
 }
 
-JSAtom* ParserAtomsTable::toJSAtom(JSContext* cx, TaggedParserAtomIndex index,
+JSAtom* ParserAtomsTable::toJSAtom(JSContext* cx, ErrorContext* ec,
+                                   TaggedParserAtomIndex index,
                                    CompilationAtomCache& atomCache) const {
   // This function can be called before we instantiate atoms based on
   // AtomizeFlag.
@@ -901,7 +1061,7 @@ JSAtom* ParserAtomsTable::toJSAtom(JSContext* cx, TaggedParserAtomIndex index,
     // For consistency, mark atomize.
     ParserAtom* parserAtom = getParserAtom(atomIndex);
     parserAtom->markAtomize(ParserAtom::Atomize::Yes);
-    return parserAtom->instantiateAtom(cx, atomIndex, atomCache);
+    return parserAtom->instantiateAtom(cx, ec, atomIndex, atomCache);
   }
 
   if (index.isWellKnownAtomId()) {
@@ -913,9 +1073,14 @@ JSAtom* ParserAtomsTable::toJSAtom(JSContext* cx, TaggedParserAtomIndex index,
     return cx->staticStrings().getUnit(ch);
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  size_t s = static_cast<size_t>(index.toLength2StaticParserString());
-  return cx->staticStrings().getLength2FromIndex(s);
+  if (index.isLength2StaticParserString()) {
+    size_t s = static_cast<size_t>(index.toLength2StaticParserString());
+    return cx->staticStrings().getLength2FromIndex(s);
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  uint32_t s = uint32_t(index.toLength3StaticParserString());
+  return cx->staticStrings().getUint(s);
 }
 
 bool ParserAtomsTable::appendTo(StringBuffer& buffer,
@@ -933,21 +1098,27 @@ bool ParserAtomsTable::appendTo(StringBuffer& buffer,
   }
 
   if (index.isLength1StaticParserString()) {
-    char content[1];
+    Latin1Char content[1];
     getLength1Content(index.toLength1StaticParserString(), content);
     return buffer.append(content[0]);
   }
 
-  MOZ_ASSERT(index.isLength2StaticParserString());
-  char content[2];
-  getLength2Content(index.toLength2StaticParserString(), content);
-  return buffer.append(content, 2);
+  if (index.isLength2StaticParserString()) {
+    char content[2];
+    getLength2Content(index.toLength2StaticParserString(), content);
+    return buffer.append(content, 2);
+  }
+
+  MOZ_ASSERT(index.isLength3StaticParserString());
+  char content[3];
+  getLength3Content(index.toLength3StaticParserString(), content);
+  return buffer.append(content, 3);
 }
 
-bool InstantiateMarkedAtoms(JSContext* cx, const ParserAtomSpan& entries,
+bool InstantiateMarkedAtoms(JSContext* cx, ErrorContext* ec,
+                            const ParserAtomSpan& entries,
                             CompilationAtomCache& atomCache) {
-  // Self-hosting JS has no zone, and it should ue JSAtom for all strings.
-  bool allowNonAtom = !!cx->zone();
+  MOZ_ASSERT(cx->zone());
 
   for (size_t i = 0; i < entries.size(); i++) {
     const auto& entry = entries[i];
@@ -963,14 +1134,42 @@ bool InstantiateMarkedAtoms(JSContext* cx, const ParserAtomSpan& entries,
       continue;
     }
 
-    if (allowNonAtom && !entry->isInstantiatedAsJSAtom()) {
-      if (!entry->instantiateString(cx, index, atomCache)) {
+    if (!entry->isInstantiatedAsJSAtom()) {
+      if (!entry->instantiateString(cx, ec, index, atomCache)) {
         return false;
       }
     } else {
-      if (!entry->instantiateAtom(cx, index, atomCache)) {
+      if (!entry->instantiateAtom(cx, ec, index, atomCache)) {
         return false;
       }
+    }
+  }
+  return true;
+}
+
+bool InstantiateMarkedAtomsAsPermanent(JSContext* cx, ErrorContext* ec,
+                                       AtomSet& atomSet,
+                                       const ParserAtomSpan& entries,
+                                       CompilationAtomCache& atomCache) {
+  MOZ_ASSERT(!cx->zone());
+
+  for (size_t i = 0; i < entries.size(); i++) {
+    const auto& entry = entries[i];
+    if (!entry) {
+      continue;
+    }
+    if (!entry->isUsedByStencil()) {
+      continue;
+    }
+
+    auto index = ParserAtomIndex(i);
+    if (atomCache.hasAtomAt(index)) {
+      MOZ_ASSERT(atomCache.getAtomAt(index)->isPermanentAtom());
+      continue;
+    }
+
+    if (!entry->instantiatePermanentAtom(cx, ec, atomSet, index, atomCache)) {
+      return false;
     }
   }
   return true;
@@ -984,6 +1183,26 @@ TaggedParserAtomIndex WellKnownParserAtoms::lookupChar16Seq(
     return ptr->value();
   }
   return TaggedParserAtomIndex::null();
+}
+
+TaggedParserAtomIndex WellKnownParserAtoms::lookupTinyIndexUTF8(
+    const mozilla::Utf8Unit* utf8Ptr, size_t nbyte) const {
+  // Check for tiny strings which are abundant in minified code.
+  if (nbyte == 2 && IsLatin1(utf8Ptr[0], utf8Ptr[1])) {
+    // Special case the length-1 non-ASCII range.
+    InflatedChar16Sequence<mozilla::Utf8Unit> seq(utf8Ptr, 2);
+    char16_t u = seq.next();
+    const Latin1Char c = u;
+    MOZ_ASSERT(!seq.hasMore());
+    auto tiny = lookupTinyIndex(&c, 1);
+    MOZ_ASSERT(tiny);
+    return tiny;
+  }
+
+  // NOTE: Other than length-1 non-ASCII range, the tiny atoms are all
+  //       ASCII-only so we can directly look at the UTF-8 data without
+  //       worrying about surrogates.
+  return lookupTinyIndex(reinterpret_cast<const Latin1Char*>(utf8Ptr), nbyte);
 }
 
 bool WellKnownParserAtoms::initSingle(JSContext* cx,

@@ -1,6 +1,5 @@
-const { AppConstants } = SpecialPowers.Cu.import(
-  "resource://gre/modules/AppConstants.jsm",
-  {}
+const { AppConstants } = SpecialPowers.ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
 // In each list of tests below, test file types that are not supported should
@@ -176,7 +175,7 @@ var gPlayedTests = [
 
 if (
   manifestNavigator().userAgent.includes("Windows") &&
-  manifestVideo().canPlayType('video/mp4; codecs="avc1.42E01E"')
+  manifestVideo().canPlayType('video/mp4; codecs="avc1.64000c"')
 ) {
   gPlayedTests = gPlayedTests.concat(
     { name: "red-46x48.mp4", type: "video/mp4", duration: 1.0 },
@@ -1226,7 +1225,7 @@ var gEMETests = [
     tracks: [
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1248,7 +1247,7 @@ var gEMETests = [
     tracks: [
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1281,7 +1280,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1313,7 +1312,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1347,7 +1346,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1380,7 +1379,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1413,7 +1412,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_959kbps-cenc-video-key1-init.mp4",
           "bipbop_480_959kbps-cenc-video-key1-1.m4s",
@@ -1446,7 +1445,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1480,7 +1479,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key2-init.mp4",
           "bipbop_480_624kbps-cenc-video-key2-1.m4s",
@@ -1514,7 +1513,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1549,7 +1548,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015,avc1.4d401e"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1584,7 +1583,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_959kbps-cenc-video-key1-init.mp4",
           "bipbop_480_959kbps-cenc-video-key1-1.m4s",
@@ -1619,7 +1618,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1654,7 +1653,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300wp_227kbps-cenc-video-key1-init.mp4",
           "bipbop_300wp_227kbps-cenc-video-key1-1.m4s",
@@ -1687,7 +1686,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1753,7 +1752,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64001e"',
         fragments: [
           "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
           "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
@@ -1785,7 +1784,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64000d,avc1.64001e"',
         fragments: [
           "bipbop_225w_175kbps-cenc-video-key1-init.mp4",
           "bipbop_225w_175kbps-cenc-video-key1-1.m4s",
@@ -1820,7 +1819,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64001e,avc1.4d401e"',
         fragments: [
           "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
           "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
@@ -2135,6 +2134,14 @@ var gDecodeSuspendTests = [
     type: 'video/webm; codecs="vp9"',
     duration: 5.56,
   },
+];
+
+// These are video files with hardware-decodable formats and longer
+// durations that are looped while we check telemetry for macOS video
+// low power mode.
+var gVideoLowPowerTests = [
+  { name: "seek.ogv", type: "video/ogg", duration: 3.966 },
+  { name: "gizmo.mp4", type: "video/mp4", duration: 5.56 },
 ];
 
 function checkMetadata(msg, e, test) {

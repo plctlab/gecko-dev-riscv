@@ -5,13 +5,14 @@
 
 var EXPORTED_SYMBOLS = ["SearchSERPTelemetryChild", "ADLINK_CHECK_TIMEOUT_MS"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   clearTimeout: "resource://gre/modules/Timer.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
 
@@ -162,13 +163,13 @@ class SearchSERPTelemetryChild extends JSWindowActorChild {
   handleEvent(event) {
     const cancelCheck = () => {
       if (this._waitForContentTimeout) {
-        clearTimeout(this._waitForContentTimeout);
+        lazy.clearTimeout(this._waitForContentTimeout);
       }
     };
 
     const check = () => {
       cancelCheck();
-      this._waitForContentTimeout = setTimeout(() => {
+      this._waitForContentTimeout = lazy.setTimeout(() => {
         this._checkForAdLink();
       }, ADLINK_CHECK_TIMEOUT_MS);
     };
@@ -185,6 +186,15 @@ class SearchSERPTelemetryChild extends JSWindowActorChild {
         break;
       }
       case "DOMContentLoaded": {
+        check();
+        break;
+      }
+      case "load": {
+        // We check both DOMContentLoaded and load in case the page has
+        // taken a long time to load and the ad is only detected on load.
+        // We still check at DOMContentLoaded because if the page hasn't
+        // finished loading and the user navigates away, we still want to know
+        // if there were ads on the page or not at that time.
         check();
         break;
       }

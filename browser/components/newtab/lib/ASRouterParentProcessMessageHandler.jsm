@@ -7,6 +7,10 @@
 
 const EXPORTED_SYMBOLS = ["ASRouterParentProcessMessageHandler"];
 
+const { ASRouterPreferences } = ChromeUtils.import(
+  "resource://activity-stream/lib/ASRouterPreferences.jsm"
+);
+
 const { MESSAGE_TYPE_HASH: msg } = ChromeUtils.import(
   "resource://activity-stream/common/ActorConstants.jsm"
 );
@@ -35,7 +39,8 @@ class ASRouterParentProcessMessageHandler {
       case msg.TOOLBAR_PANEL_TELEMETRY:
       case msg.MOMENTS_PAGE_TELEMETRY:
       case msg.DOORHANGER_TELEMETRY:
-      case msg.SPOTLIGHT_TELEMETRY: {
+      case msg.SPOTLIGHT_TELEMETRY:
+      case msg.TOAST_NOTIFICATION_TELEMETRY: {
         return this.handleTelemetry({ type, data });
       }
       default: {
@@ -52,6 +57,12 @@ class ASRouterParentProcessMessageHandler {
           data,
         });
       case msg.BLOCK_MESSAGE_BY_ID: {
+        ASRouterPreferences.console.debug(
+          "handleMesssage(): about to block, data = ",
+          data
+        );
+        ASRouterPreferences.console.trace();
+
         // Block the message but don't dismiss it in case the action taken has
         // another state that needs to be visible
         return this._router
@@ -71,6 +82,13 @@ class ASRouterParentProcessMessageHandler {
       case msg.TRIGGER: {
         return this._router.sendTriggerMessage({
           ...(data && data.trigger),
+          tabId,
+          browser,
+        });
+      }
+      case msg.PBNEWTAB_MESSAGE_REQUEST: {
+        return this._router.sendPBNewTabMessage({
+          ...data,
           tabId,
           browser,
         });

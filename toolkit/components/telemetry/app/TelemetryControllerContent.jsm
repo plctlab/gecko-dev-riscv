@@ -8,7 +8,6 @@
 const { DeferredTask } = ChromeUtils.import(
   "resource://gre/modules/DeferredTask.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryControllerBase } = ChromeUtils.import(
   "resource://gre/modules/TelemetryControllerBase.jsm"
 );
@@ -92,7 +91,7 @@ var Impl = {
    * This observer drives telemetry.
    */
   observe(aSubject, aTopic, aData) {
-    if (aTopic == "app-startup") {
+    if (aTopic == "content-process-ready-for-script") {
       TelemetryControllerBase.configureLogging();
 
       this._log.trace(`observe - ${aTopic} notified.`);

@@ -7,7 +7,6 @@
 const { BrowserUtils } = ChromeUtils.import(
   "resource://gre/modules/BrowserUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryTimestamps } = ChromeUtils.import(
   "resource://gre/modules/TelemetryTimestamps.jsm"
 );
@@ -21,9 +20,7 @@ const { TelemetrySend } = ChromeUtils.import(
   "resource://gre/modules/TelemetrySend.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
@@ -31,14 +28,13 @@ ChromeUtils.defineModuleGetter(
   "Preferences",
   "resource://gre/modules/Preferences.jsm"
 );
+ChromeUtils.defineModuleGetter(
+  this,
+  "ObjectUtils",
+  "resource://gre/modules/ObjectUtils.jsm"
+);
 
 const Telemetry = Services.telemetry;
-const bundle = Services.strings.createBundle(
-  "chrome://global/locale/aboutTelemetry.properties"
-);
-const brandBundle = Services.strings.createBundle(
-  "chrome://branding/locale/brand.properties"
-);
 
 // Maximum height of a histogram bar (in em for html, in chars for text)
 const MAX_BAR_HEIGHT = 8;
@@ -47,7 +43,8 @@ const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
 const PREF_DEBUG_SLOW_SQL = "toolkit.telemetry.debugSlowSql";
 const PREF_SYMBOL_SERVER_URI = "profiler.symbolicationUrl";
-const DEFAULT_SYMBOL_SERVER_URI = "https://symbols.mozilla.org/symbolicate/v4";
+const DEFAULT_SYMBOL_SERVER_URI =
+  "https://symbolication.services.mozilla.com/symbolicate/v4";
 const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
 
 // ms idle before applying the filter (allow uninterrupted typing)
@@ -639,14 +636,6 @@ var EnvironmentData = {
     this.createAddonSection(dataDiv, ping);
   },
 
-  renderPersona(addonObj, addonSection, sectionTitle) {
-    let table = document.createElement("table");
-    table.setAttribute("id", sectionTitle);
-    this.appendAddonSubsectionTitle(sectionTitle, table);
-    this.appendRow(table, "persona", addonObj.persona);
-    addonSection.appendChild(table);
-  },
-
   renderAddonsObject(addonObj, addonSection, sectionTitle) {
     let table = document.createElement("table");
     table.setAttribute("id", sectionTitle);
@@ -705,7 +694,6 @@ var EnvironmentData = {
       addonSection,
       "activeGMPlugins"
     );
-    this.renderPersona(addons, addonSection, "persona");
 
     let hasAddonData = !!Object.keys(ping.environment.addons).length;
     let s = GenericSubsection.renderSubsectionHeader(
@@ -954,19 +942,21 @@ var StackRenderer = {
    * Renders the title of the stack: e.g. "Late Write #1" or
    * "Hang Report #1 (6 seconds)".
    *
-   * @param aFormatArgs formating args to be passed to formatStringFromName.
+   * @param aDivId The id of the div to append the header to.
+   * @param aL10nId The l10n id of the message to use for the title.
+   * @param aL10nArgs The l10n args for the provided message id.
    */
-  renderHeader: function StackRenderer_renderHeader(aPrefix, aFormatArgs) {
-    let div = document.getElementById(aPrefix);
+  renderHeader: function StackRenderer_renderHeader(
+    aDivId,
+    aL10nId,
+    aL10nArgs
+  ) {
+    let div = document.getElementById(aDivId);
 
     let titleElement = document.createElement("span");
     titleElement.className = "stack-title";
 
-    let titleText = bundle.formatStringFromName(
-      aPrefix + "-title",
-      aFormatArgs
-    );
-    titleElement.appendChild(document.createTextNode(titleText));
+    document.l10n.setAttributes(titleElement, aL10nId, aL10nArgs);
 
     div.appendChild(titleElement);
     div.appendChild(document.createElement("br"));
@@ -1066,41 +1056,6 @@ SymbolicationRequest.prototype.fetchSymbols = function SymbolicationRequest_fetc
   this.symbolRequest.setRequestHeader("Connection", "close");
   this.symbolRequest.onreadystatechange = this.handleSymbolResponse.bind(this);
   this.symbolRequest.send(requestJSON);
-};
-
-var CapturedStacks = {
-  symbolRequest: null,
-
-  render: function CapturedStacks_render(payload) {
-    // Retrieve captured stacks from telemetry payload.
-    let capturedStacks =
-      "processes" in payload && "parent" in payload.processes
-        ? payload.processes.parent.capturedStacks
-        : false;
-    let hasData =
-      capturedStacks && capturedStacks.stacks && !!capturedStacks.stacks.length;
-    setHasData("captured-stacks-section", hasData);
-    if (!hasData) {
-      return;
-    }
-
-    let stacks = capturedStacks.stacks;
-    let memoryMap = capturedStacks.memoryMap;
-    let captures = capturedStacks.captures;
-
-    StackRenderer.renderStacks("captured-stacks", stacks, memoryMap, index =>
-      this.renderCaptureHeader(index, captures)
-    );
-  },
-
-  renderCaptureHeader: function CaptureStacks_renderCaptureHeader(
-    index,
-    captures
-  ) {
-    let key = captures[index][0];
-    let cardinality = captures[index][2];
-    StackRenderer.renderHeader("captured-stacks", [key, cardinality]);
-  },
 };
 
 var Histogram = {
@@ -1846,7 +1801,7 @@ class Section {
       data = isCurrentPayload
         ? this.dataFiltering(payload, selectedStore, process)
         : this.archivePingDataFiltering(aPayload, process);
-      hasData = hasData || data !== {};
+      hasData = hasData || !ObjectUtils.isEmpty(data);
       this.renderContent(data, process, div, section, this.renderData);
     }
     setHasData(section, hasData);
@@ -1962,8 +1917,8 @@ var Events = {
     if (payload) {
       for (const process of Object.keys(aPayload.processes)) {
         let data = aPayload.processes[process].events;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,
@@ -1984,8 +1939,8 @@ var Events = {
       // handle archived ping
       for (const process of Object.keys(aPayload.events)) {
         let data = process;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,
@@ -2274,31 +2229,6 @@ function setupListeners() {
   search.addEventListener("input", Search.searchHandler);
 
   document
-    .getElementById("captured-stacks-fetch-symbols")
-    .addEventListener("click", function() {
-      if (!gPingData) {
-        return;
-      }
-      let capturedStacks = gPingData.payload.processes.parent.capturedStacks;
-      let req = new SymbolicationRequest(
-        "captured-stacks",
-        CapturedStacks.renderCaptureHeader,
-        capturedStacks.memoryMap,
-        capturedStacks.stacks,
-        capturedStacks.captures
-      );
-      req.fetchSymbols();
-    });
-
-  document
-    .getElementById("captured-stacks-hide-symbols")
-    .addEventListener("click", function() {
-      if (gPingData) {
-        CapturedStacks.render(gPingData.payload);
-      }
-    });
-
-  document
     .getElementById("late-writes-fetch-symbols")
     .addEventListener("click", function() {
       if (!gPingData) {
@@ -2395,7 +2325,11 @@ function onLoad() {
 
 var LateWritesSingleton = {
   renderHeader: function LateWritesSingleton_renderHeader(aIndex) {
-    StackRenderer.renderHeader("late-writes", [aIndex + 1]);
+    StackRenderer.renderHeader(
+      "late-writes",
+      "about-telemetry-late-writes-title",
+      { lateWriteCount: aIndex + 1 }
+    );
   },
 
   renderLateWrites: function LateWritesSingleton_renderLateWrites(lateWrites) {
@@ -2709,9 +2643,6 @@ function displayRichPingData(ping, updatePayloadList) {
 
   // Show event data.
   Events.render(payload);
-
-  // Show captured stacks.
-  CapturedStacks.render(payload);
 
   LateWritesSingleton.renderLateWrites(payload.lateWrites);
 

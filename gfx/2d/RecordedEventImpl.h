@@ -370,7 +370,7 @@ class RecordedFillGlyphs : public RecordedDrawingEvent<RecordedFillGlyphs> {
   PatternStorage mPattern;
   DrawOptions mOptions;
   Glyph* mGlyphs = nullptr;
-  uint32_t mNumGlyphs;
+  uint32_t mNumGlyphs = 0;
 };
 
 class RecordedMask : public RecordedDrawingEvent<RecordedMask> {
@@ -733,15 +733,12 @@ class RecordedDrawSurfaceWithShadow
     : public RecordedDrawingEvent<RecordedDrawSurfaceWithShadow> {
  public:
   RecordedDrawSurfaceWithShadow(DrawTarget* aDT, ReferencePtr aRefSource,
-                                const Point& aDest, const DeviceColor& aColor,
-                                const Point& aOffset, Float aSigma,
-                                CompositionOp aOp)
+                                const Point& aDest,
+                                const ShadowOptions& aShadow, CompositionOp aOp)
       : RecordedDrawingEvent(DRAWSURFACEWITHSHADOW, aDT),
         mRefSource(aRefSource),
         mDest(aDest),
-        mColor(aColor),
-        mOffset(aOffset),
-        mSigma(aSigma),
+        mShadow(aShadow),
         mOp(aOp) {}
 
   bool PlayEvent(Translator* aTranslator) const override;
@@ -760,9 +757,7 @@ class RecordedDrawSurfaceWithShadow
 
   ReferencePtr mRefSource;
   Point mDest;
-  DeviceColor mColor;
-  Point mOffset;
-  Float mSigma;
+  ShadowOptions mShadow;
   CompositionOp mOp;
 };
 
@@ -1042,7 +1037,7 @@ class RecordedGradientStopsCreation
 
   ReferencePtr mRefPtr;
   GradientStop* mStops = nullptr;
-  uint32_t mNumStops;
+  uint32_t mNumStops = 0;
   ExtendMode mExtendMode;
   bool mDataOwned;
 
@@ -2384,6 +2379,11 @@ inline void RecordedFill::OutputSimpleEventInfo(
 inline RecordedFillGlyphs::~RecordedFillGlyphs() { delete[] mGlyphs; }
 
 inline bool RecordedFillGlyphs::PlayEvent(Translator* aTranslator) const {
+  if (mNumGlyphs > 0 && !mGlyphs) {
+    // Glyph allocation failed
+    return false;
+  }
+
   DrawTarget* dt = aTranslator->LookupDrawTarget(mDT);
   if (!dt) {
     return false;
@@ -2409,12 +2409,18 @@ RecordedFillGlyphs::RecordedFillGlyphs(S& aStream)
   ReadDrawOptions(aStream, mOptions);
   ReadPatternData(aStream, mPattern);
   ReadElement(aStream, mNumGlyphs);
-  if (!aStream.good()) {
+  if (!aStream.good() || mNumGlyphs <= 0) {
     return;
   }
 
-  mGlyphs = new Glyph[mNumGlyphs];
-  aStream.read((char*)mGlyphs, sizeof(Glyph) * mNumGlyphs);
+  mGlyphs = new (fallible) Glyph[mNumGlyphs];
+  if (!mGlyphs) {
+    gfxCriticalNote << "RecordedFillGlyphs failed to allocate glyphs of size "
+                    << mNumGlyphs;
+    aStream.SetIsBad();
+  } else {
+    aStream.read((char*)mGlyphs, sizeof(Glyph) * mNumGlyphs);
+  }
 }
 
 template <class S>
@@ -2922,7 +2928,7 @@ inline bool RecordedDrawSurfaceWithShadow::PlayEvent(
     return false;
   }
 
-  dt->DrawSurfaceWithShadow(surface, mDest, mColor, mOffset, mSigma, mOp);
+  dt->DrawSurfaceWithShadow(surface, mDest, mShadow, mOp);
   return true;
 }
 
@@ -2931,9 +2937,7 @@ void RecordedDrawSurfaceWithShadow::Record(S& aStream) const {
   RecordedDrawingEvent::Record(aStream);
   WriteElement(aStream, mRefSource);
   WriteElement(aStream, mDest);
-  WriteElement(aStream, mColor);
-  WriteElement(aStream, mOffset);
-  WriteElement(aStream, mSigma);
+  WriteElement(aStream, mShadow);
   WriteElement(aStream, mOp);
 }
 
@@ -2942,9 +2946,7 @@ RecordedDrawSurfaceWithShadow::RecordedDrawSurfaceWithShadow(S& aStream)
     : RecordedDrawingEvent(DRAWSURFACEWITHSHADOW, aStream) {
   ReadElement(aStream, mRefSource);
   ReadElement(aStream, mDest);
-  ReadElement(aStream, mColor);
-  ReadElement(aStream, mOffset);
-  ReadElement(aStream, mSigma);
+  ReadElement(aStream, mShadow);
   ReadElementConstrained(aStream, mOp, CompositionOp::OP_OVER,
                          CompositionOp::OP_COUNT);
 }
@@ -2952,8 +2954,9 @@ RecordedDrawSurfaceWithShadow::RecordedDrawSurfaceWithShadow(S& aStream)
 inline void RecordedDrawSurfaceWithShadow::OutputSimpleEventInfo(
     std::stringstream& aStringStream) const {
   aStringStream << "[" << mDT << "] DrawSurfaceWithShadow (" << mRefSource
-                << ") DeviceColor: (" << mColor.r << ", " << mColor.g << ", "
-                << mColor.b << ", " << mColor.a << ")";
+                << ") DeviceColor: (" << mShadow.mColor.r << ", "
+                << mShadow.mColor.g << ", " << mShadow.mColor.b << ", "
+                << mShadow.mColor.a << ")";
 }
 
 inline RecordedPathCreation::RecordedPathCreation(PathRecording* aPath)
@@ -3071,8 +3074,11 @@ RecordedSourceSurfaceCreation::RecordedSourceSurfaceCreation(S& aStream)
     return;
   }
 
-  size_t size = mSize.width * mSize.height * BytesPerPixel(mFormat);
-  mData = new (fallible) uint8_t[size];
+  size_t size = 0;
+  if (mSize.width >= 0 && mSize.height >= 0) {
+    size = size_t(mSize.width) * size_t(mSize.height) * BytesPerPixel(mFormat);
+    mData = new (fallible) uint8_t[size];
+  }
   if (!mData) {
     gfxCriticalNote
         << "RecordedSourceSurfaceCreation failed to allocate data of size "
@@ -3245,6 +3251,10 @@ inline RecordedGradientStopsCreation::~RecordedGradientStopsCreation() {
 
 inline bool RecordedGradientStopsCreation::PlayEvent(
     Translator* aTranslator) const {
+  if (mNumStops > 0 && !mStops) {
+    // Stops allocation failed
+    return false;
+  }
   RefPtr<GradientStops> src =
       aTranslator->GetOrCreateGradientStops(mStops, mNumStops, mExtendMode);
   aTranslator->AddGradientStops(mRefPtr, src);
@@ -3266,13 +3276,19 @@ RecordedGradientStopsCreation::RecordedGradientStopsCreation(S& aStream)
   ReadElementConstrained(aStream, mExtendMode, ExtendMode::CLAMP,
                          ExtendMode::REFLECT);
   ReadElement(aStream, mNumStops);
-  if (!aStream.good()) {
+  if (!aStream.good() || mNumStops <= 0) {
     return;
   }
 
-  mStops = new GradientStop[mNumStops];
-
-  aStream.read((char*)mStops, mNumStops * sizeof(GradientStop));
+  mStops = new (fallible) GradientStop[mNumStops];
+  if (!mStops) {
+    gfxCriticalNote
+        << "RecordedGradientStopsCreation failed to allocate stops of size "
+        << mNumStops;
+    aStream.SetIsBad();
+  } else {
+    aStream.read((char*)mStops, mNumStops * sizeof(GradientStop));
+  }
 }
 
 inline void RecordedGradientStopsCreation::OutputSimpleEventInfo(

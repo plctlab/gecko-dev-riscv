@@ -21,7 +21,8 @@ extern LogModule* GetGMPLog();
 
 namespace gmp {
 
-GMPStorageParent::GMPStorageParent(const nsCString& aNodeId, GMPParent* aPlugin)
+GMPStorageParent::GMPStorageParent(const nsACString& aNodeId,
+                                   GMPParent* aPlugin)
     : mNodeId(aNodeId), mPlugin(aPlugin), mShutdown(true) {}
 
 nsresult GMPStorageParent::Init() {
@@ -55,19 +56,20 @@ nsresult GMPStorageParent::Init() {
 }
 
 mozilla::ipc::IPCResult GMPStorageParent::RecvOpen(
-    const nsCString& aRecordName) {
-  LOGD(
-      ("GMPStorageParent[%p]::RecvOpen(record='%s')", this, aRecordName.get()));
+    const nsACString& aRecordName) {
+  LOGD(("GMPStorageParent[%p]::RecvOpen(record='%s')", this,
+        PromiseFlatCString(aRecordName).get()));
 
   if (mShutdown) {
-    return IPC_FAIL_NO_REASON(this);
+    // Shutdown is an expected state, so we do not IPC_FAIL.
+    return IPC_OK();
   }
 
   if (mNodeId.EqualsLiteral("null")) {
     // Refuse to open storage if the page is opened from local disk,
     // or shared across origin.
     LOGD(("GMPStorageParent[%p]::RecvOpen(record='%s') failed; null nodeId",
-          this, aRecordName.get()));
+          this, PromiseFlatCString(aRecordName).get()));
     Unused << SendOpenComplete(aRecordName, GMPGenericErr);
     return IPC_OK();
   }
@@ -75,14 +77,14 @@ mozilla::ipc::IPCResult GMPStorageParent::RecvOpen(
   if (aRecordName.IsEmpty()) {
     LOGD((
         "GMPStorageParent[%p]::RecvOpen(record='%s') failed; record name empty",
-        this, aRecordName.get()));
+        this, PromiseFlatCString(aRecordName).get()));
     Unused << SendOpenComplete(aRecordName, GMPGenericErr);
     return IPC_OK();
   }
 
   if (mStorage->IsOpen(aRecordName)) {
     LOGD(("GMPStorageParent[%p]::RecvOpen(record='%s') failed; record in use",
-          this, aRecordName.get()));
+          this, PromiseFlatCString(aRecordName).get()));
     Unused << SendOpenComplete(aRecordName, GMPRecordInUse);
     return IPC_OK();
   }
@@ -90,32 +92,34 @@ mozilla::ipc::IPCResult GMPStorageParent::RecvOpen(
   auto err = mStorage->Open(aRecordName);
   MOZ_ASSERT(GMP_FAILED(err) || mStorage->IsOpen(aRecordName));
   LOGD(("GMPStorageParent[%p]::RecvOpen(record='%s') complete; rv=%d", this,
-        aRecordName.get(), err));
+        PromiseFlatCString(aRecordName).get(), err));
   Unused << SendOpenComplete(aRecordName, err);
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult GMPStorageParent::RecvRead(
-    const nsCString& aRecordName) {
-  LOGD(
-      ("GMPStorageParent[%p]::RecvRead(record='%s')", this, aRecordName.get()));
+    const nsACString& aRecordName) {
+  LOGD(("GMPStorageParent[%p]::RecvRead(record='%s')", this,
+        PromiseFlatCString(aRecordName).get()));
 
   if (mShutdown) {
-    return IPC_FAIL_NO_REASON(this);
+    // Shutdown is an expected state, so we do not IPC_FAIL.
+    return IPC_OK();
   }
 
   nsTArray<uint8_t> data;
   if (!mStorage->IsOpen(aRecordName)) {
     LOGD(("GMPStorageParent[%p]::RecvRead(record='%s') failed; record not open",
-          this, aRecordName.get()));
+          this, PromiseFlatCString(aRecordName).get()));
     Unused << SendReadComplete(aRecordName, GMPClosedErr, data);
   } else {
     GMPErr rv = mStorage->Read(aRecordName, data);
     LOGD(
         ("GMPStorageParent[%p]::RecvRead(record='%s') read %zu bytes "
          "rv=%" PRIu32,
-         this, aRecordName.get(), data.Length(), static_cast<uint32_t>(rv)));
+         this, PromiseFlatCString(aRecordName).get(), data.Length(),
+         static_cast<uint32_t>(rv)));
     Unused << SendReadComplete(aRecordName, rv, data);
   }
 
@@ -123,31 +127,32 @@ mozilla::ipc::IPCResult GMPStorageParent::RecvRead(
 }
 
 mozilla::ipc::IPCResult GMPStorageParent::RecvWrite(
-    const nsCString& aRecordName, nsTArray<uint8_t>&& aBytes) {
+    const nsACString& aRecordName, nsTArray<uint8_t>&& aBytes) {
   LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') %zu bytes", this,
-        aRecordName.get(), aBytes.Length()));
+        PromiseFlatCString(aRecordName).get(), aBytes.Length()));
 
   if (mShutdown) {
-    return IPC_FAIL_NO_REASON(this);
+    // Shutdown is an expected state, so we do not IPC_FAIL.
+    return IPC_OK();
   }
 
   if (!mStorage->IsOpen(aRecordName)) {
     LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') failed record not open",
-          this, aRecordName.get()));
+          this, PromiseFlatCString(aRecordName).get()));
     Unused << SendWriteComplete(aRecordName, GMPClosedErr);
     return IPC_OK();
   }
 
   if (aBytes.Length() > GMP_MAX_RECORD_SIZE) {
     LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') failed record too big",
-          this, aRecordName.get()));
+          this, PromiseFlatCString(aRecordName).get()));
     Unused << SendWriteComplete(aRecordName, GMPQuotaExceededErr);
     return IPC_OK();
   }
 
   GMPErr rv = mStorage->Write(aRecordName, aBytes);
   LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') write complete rv=%d",
-        this, aRecordName.get(), rv));
+        this, PromiseFlatCString(aRecordName).get(), rv));
 
   Unused << SendWriteComplete(aRecordName, rv);
 
@@ -155,9 +160,9 @@ mozilla::ipc::IPCResult GMPStorageParent::RecvWrite(
 }
 
 mozilla::ipc::IPCResult GMPStorageParent::RecvClose(
-    const nsCString& aRecordName) {
+    const nsACString& aRecordName) {
   LOGD(("GMPStorageParent[%p]::RecvClose(record='%s')", this,
-        aRecordName.get()));
+        PromiseFlatCString(aRecordName).get()));
 
   if (mShutdown) {
     return IPC_OK();

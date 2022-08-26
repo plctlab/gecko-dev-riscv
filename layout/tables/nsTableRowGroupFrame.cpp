@@ -6,6 +6,7 @@
 
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_layout.h"
 
 #include "nsCOMPtr.h"
 #include "nsTableRowFrame.h"
@@ -442,7 +443,17 @@ void nsTableRowGroupFrame::ReflowChildren(
         }
       }
     } else {
-      SlideChild(aReflowInput, kidFrame);
+      // Move a child that was skipped during a reflow.
+      const LogicalPoint oldPosition =
+          kidFrame->GetLogicalNormalPosition(wm, containerSize);
+      if (oldPosition.B(wm) != aReflowInput.bCoord) {
+        kidFrame->InvalidateFrameSubtree();
+        const LogicalPoint offset(wm, 0,
+                                  aReflowInput.bCoord - oldPosition.B(wm));
+        kidFrame->MovePositionBy(wm, offset);
+        nsTableFrame::RePositionViews(kidFrame);
+        kidFrame->InvalidateFrameSubtree();
+      }
 
       // Adjust the running b-offset so we know where the next row should be
       // placed
@@ -915,27 +926,6 @@ nscoord nsTableRowGroupFrame::CollapseRowGroupIfNecessary(nscoord aBTotalOffset,
                                      false);
 
   return bGroupOffset;
-}
-
-// Move a child that was skipped during a reflow.
-void nsTableRowGroupFrame::SlideChild(TableRowGroupReflowInput& aReflowInput,
-                                      nsIFrame* aKidFrame) {
-  // Move the frame if we need to.
-  WritingMode wm = aReflowInput.reflowInput.GetWritingMode();
-  const nsSize containerSize =
-      aReflowInput.reflowInput.ComputedSizeAsContainerIfConstrained();
-  LogicalPoint oldPosition =
-      aKidFrame->GetLogicalNormalPosition(wm, containerSize);
-  LogicalPoint newPosition = oldPosition;
-  newPosition.B(wm) = aReflowInput.bCoord;
-  if (oldPosition.B(wm) != newPosition.B(wm)) {
-    aKidFrame->InvalidateFrameSubtree();
-    aReflowInput.reflowInput.ApplyRelativePositioning(&newPosition,
-                                                      containerSize);
-    aKidFrame->SetPosition(wm, newPosition, containerSize);
-    nsTableFrame::RePositionViews(aKidFrame);
-    aKidFrame->InvalidateFrameSubtree();
-  }
 }
 
 // Create a continuing frame, add it to the child list, and then push it
@@ -1434,8 +1424,6 @@ void nsTableRowGroupFrame::Reflow(nsPresContext* aPresContext,
   // nsIFrame::FixupPositionedTableParts in another pass, so propagate our
   // dirtiness to them before our parent clears our dirty bits.
   PushDirtyBitToAbsoluteFrames();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 bool nsTableRowGroupFrame::ComputeCustomOverflow(
@@ -1696,7 +1684,7 @@ bool nsTableRowGroupFrame::GetDirection() {
 }
 
 Result<nsILineIterator::LineInfo, nsresult> nsTableRowGroupFrame::GetLine(
-    int32_t aLineNumber) const {
+    int32_t aLineNumber) {
   if ((aLineNumber < 0) || (aLineNumber >= GetRowCount())) {
     return Err(NS_ERROR_FAILURE);
   }
@@ -1750,7 +1738,7 @@ NS_IMETHODIMP
 nsTableRowGroupFrame::FindFrameAt(int32_t aLineNumber, nsPoint aPos,
                                   nsIFrame** aFrameFound,
                                   bool* aPosIsBeforeFirstFrame,
-                                  bool* aPosIsAfterLastFrame) const {
+                                  bool* aPosIsAfterLastFrame) {
   nsTableFrame* table = GetTableFrame();
   nsTableCellMap* cellMap = table->GetCellMap();
 
@@ -1933,8 +1921,9 @@ void nsTableRowGroupFrame::InvalidateFrame(uint32_t aDisplayItemKey,
                                            bool aRebuildDisplayItems) {
   nsIFrame::InvalidateFrame(aDisplayItemKey, aRebuildDisplayItems);
   if (GetTableFrame()->IsBorderCollapse()) {
+    const bool rebuild = StaticPrefs::layout_display_list_retain_sc();
     GetParent()->InvalidateFrameWithRect(InkOverflowRect() + GetPosition(),
-                                         aDisplayItemKey, false);
+                                         aDisplayItemKey, rebuild);
   }
 }
 
@@ -1947,5 +1936,5 @@ void nsTableRowGroupFrame::InvalidateFrameWithRect(const nsRect& aRect,
   // we get an inactive layer created and this is computed
   // within FrameLayerBuilder
   GetParent()->InvalidateFrameWithRect(aRect + GetPosition(), aDisplayItemKey,
-                                       false);
+                                       aRebuildDisplayItems);
 }

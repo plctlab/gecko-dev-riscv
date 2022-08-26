@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <utility>
 #include "ErrorList.h"
+#include "fs/FileSystemRequestHandler.h"
 #include "MainThreadUtils.h"
 #include "js/CallArgs.h"
 #include "js/TypeDecls.h"
@@ -193,7 +194,7 @@ class PersistentStoragePermissionRequest final
 
   // nsIContentPermissionRequest
   NS_IMETHOD Cancel(void) override;
-  NS_IMETHOD Allow(JS::HandleValue choices) override;
+  NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
  private:
   ~PersistentStoragePermissionRequest() = default;
@@ -360,6 +361,7 @@ already_AddRefed<Promise> ExecuteOpOnMainOrWorkerThread(
   RefPtr<PromiseWorkerProxy> promiseProxy =
       PromiseWorkerProxy::Create(workerPrivate, promise);
   if (NS_WARN_IF(!promiseProxy)) {
+    aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
 
@@ -695,7 +697,7 @@ PersistentStoragePermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-PersistentStoragePermissionRequest::Allow(JS::HandleValue aChoices) {
+PersistentStoragePermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<RequestResolver> resolver =
@@ -750,6 +752,20 @@ already_AddRefed<Promise> StorageManager::Estimate(ErrorResult& aRv) {
                        1);
   return ExecuteOpOnMainOrWorkerThread(mOwner, RequestResolver::Type::Estimate,
                                        aRv);
+}
+
+already_AddRefed<Promise> StorageManager::GetDirectory(ErrorResult& aRv) {
+  MOZ_ASSERT(mOwner);
+
+  RefPtr<Promise> promise = Promise::Create(mOwner, aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  MOZ_ASSERT(promise);
+
+  fs::FileSystemRequestHandler{}.GetRoot(promise);
+  return promise.forget();
 }
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(StorageManager, mOwner)

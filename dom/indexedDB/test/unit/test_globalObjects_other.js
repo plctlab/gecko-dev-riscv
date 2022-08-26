@@ -14,19 +14,9 @@ function* testSteps() {
 
   // Test for IDBKeyRange and indexedDB availability in JS modules.
   const { GlobalObjectsModule } = ChromeUtils.import(
-    getSpec("GlobalObjectsModule.jsm")
+    "resource://test/GlobalObjectsModule.jsm"
   );
   let test = new GlobalObjectsModule();
-  test.ok = ok;
-  test.finishTest = continueToNextStep;
-  test.runTest();
-  yield undefined;
-
-  // Test for IDBKeyRange and indexedDB availability in JS components.
-  do_load_manifest("GlobalObjectsComponent.manifest");
-  test = Cc[
-    "@mozilla.org/dom/indexeddb/GlobalObjectsComponent;1"
-  ].createInstance(Ci.nsISupports).wrappedJSObject;
   test.ok = ok;
   test.finishTest = continueToNextStep;
   test.runTest();

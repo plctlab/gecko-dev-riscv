@@ -4,15 +4,16 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { DOMRequestIpcHelper } = ChromeUtils.import(
   "resource://gre/modules/DOMRequestHelper.jsm"
 );
 
-XPCOMUtils.defineLazyGetter(this, "console", () => {
+const lazy = {};
+
+XPCOMUtils.defineLazyGetter(lazy, "console", () => {
   let { ConsoleAPI } = ChromeUtils.import("resource://gre/modules/Console.jsm");
   return new ConsoleAPI({
     maxLogLevelPref: "dom.push.loglevel",
@@ -21,7 +22,7 @@ XPCOMUtils.defineLazyGetter(this, "console", () => {
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "PushService",
   "@mozilla.org/push/Service;1",
   "nsIPushService"
@@ -35,7 +36,7 @@ const PUSH_CID = Components.ID("{cde1d019-fad8-4044-b141-65fb4fb7a245}");
  * one actually performing all operations.
  */
 function Push() {
-  console.debug("Push()");
+  lazy.console.debug("Push()");
 }
 
 Push.prototype = {
@@ -52,13 +53,19 @@ Push.prototype = {
   ]),
 
   init(win) {
-    console.debug("init()");
+    lazy.console.debug("init()");
 
     this._window = win;
 
     this.initDOMRequestHelper(win);
 
-    this._principal = win.document.nodePrincipal;
+    // Get the client principal from the window. This won't be null because the
+    // service worker should be available when accessing the push manager.
+    this._principal = win.clientPrincipal;
+
+    if (!this._principal) {
+      throw new Error(" The client principal of the window is not available");
+    }
 
     try {
       this._topLevelPrincipal = win.top.document.nodePrincipal;
@@ -73,7 +80,7 @@ Push.prototype = {
   },
 
   askPermission() {
-    console.debug("askPermission()");
+    lazy.console.debug("askPermission()");
 
     let hasValidTransientUserGestureActivation = this._window.document
       .hasValidTransientUserGestureActivation;
@@ -104,14 +111,14 @@ Push.prototype = {
   },
 
   subscribe(options) {
-    console.debug("subscribe()", this._scope);
+    lazy.console.debug("subscribe()", this._scope);
 
     return this.askPermission().then(() =>
       this.createPromise((resolve, reject) => {
         let callback = new PushSubscriptionCallback(this, resolve, reject);
 
         if (!options || options.applicationServerKey === null) {
-          PushService.subscribe(this._scope, this._principal, callback);
+          lazy.PushService.subscribe(this._scope, this._principal, callback);
           return;
         }
 
@@ -120,7 +127,7 @@ Push.prototype = {
           callback._rejectWithError(Cr.NS_ERROR_DOM_PUSH_INVALID_KEY_ERR);
           return;
         }
-        PushService.subscribeWithKey(
+        lazy.PushService.subscribeWithKey(
           this._scope,
           this._principal,
           keyView,
@@ -156,16 +163,16 @@ Push.prototype = {
   },
 
   getSubscription() {
-    console.debug("getSubscription()", this._scope);
+    lazy.console.debug("getSubscription()", this._scope);
 
     return this.createPromise((resolve, reject) => {
       let callback = new PushSubscriptionCallback(this, resolve, reject);
-      PushService.getSubscription(this._scope, this._principal, callback);
+      lazy.PushService.getSubscription(this._scope, this._principal, callback);
     });
   },
 
   permissionState() {
-    console.debug("permissionState()", this._scope);
+    lazy.console.debug("permissionState()", this._scope);
 
     return this.createPromise((resolve, reject) => {
       let permission = Ci.nsIPermissionManager.UNKNOWN_ACTION;

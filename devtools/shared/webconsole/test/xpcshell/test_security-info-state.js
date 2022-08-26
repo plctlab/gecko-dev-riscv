@@ -5,10 +5,8 @@
 // Tests that security info parser gives correct general security state for
 // different cases.
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
-
 Object.defineProperty(this, "NetworkHelper", {
-  get: function() {
+  get() {
     return require("devtools/shared/webconsole/network-helper");
   },
   configurable: true,
@@ -41,7 +39,7 @@ add_task(async function run_test() {
  * Test that undefined security information is returns "insecure".
  */
 async function test_nullSecurityInfo() {
-  const result = await NetworkHelper.parseSecurityInfo(null, {}, new Map());
+  const result = await NetworkHelper.parseSecurityInfo(null, {}, {}, new Map());
   equal(
     result.state,
     "insecure",
@@ -60,6 +58,7 @@ async function test_insecureSecurityInfoWithNSSError() {
 
   const result = await NetworkHelper.parseSecurityInfo(
     MockSecurityInfo,
+    {},
     {},
     new Map()
   );
@@ -82,6 +81,7 @@ async function test_insecureSecurityInfoWithoutNSSError() {
   const result = await NetworkHelper.parseSecurityInfo(
     MockSecurityInfo,
     {},
+    {},
     new Map()
   );
   equal(
@@ -101,6 +101,7 @@ async function test_secureSecurityInfo() {
   const result = await NetworkHelper.parseSecurityInfo(
     MockSecurityInfo,
     {},
+    {},
     new Map()
   );
   equal(
@@ -118,6 +119,7 @@ async function test_brokenSecurityInfo() {
 
   const result = await NetworkHelper.parseSecurityInfo(
     MockSecurityInfo,
+    {},
     {},
     new Map()
   );

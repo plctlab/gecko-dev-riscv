@@ -4,14 +4,17 @@ const { AddonTestUtils } = ChromeUtils.import(
   "resource://testing-common/AddonTestUtils.jsm"
 );
 
+ChromeUtils.defineESModuleGetters(this, {
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
+  UrlbarQueryContext: "resource:///modules/UrlbarUtils.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+});
+
 XPCOMUtils.defineLazyModuleGetters(this, {
   ExtensionParent: "resource://gre/modules/ExtensionParent.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
-  UrlbarQueryContext: "resource:///modules/UrlbarUtils.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
 });
 
 AddonTestUtils.init(this);
@@ -24,10 +27,6 @@ AddonTestUtils.createAppInfo(
 );
 SearchTestUtils.init(this);
 SearchTestUtils.initXPCShellAddonManager(this, "system");
-
-// Override ExtensionXPCShellUtils.jsm's overriding of the pref as the
-// search service needs it.
-Services.prefs.clearUserPref("services.settings.default_bucket");
 
 function promiseUninstallCompleted(extensionId) {
   return new Promise(resolve => {
@@ -113,6 +112,37 @@ add_task(async function test_urlbar_no_privilege() {
   });
   await ext.startup();
   await ext.unload();
+});
+
+// Extensions must be privileged to use browser.urlbar.
+add_task(async function test_urlbar_temporary_without_privilege() {
+  let extension = ExtensionTestUtils.loadExtension({
+    temporarilyInstalled: true,
+    isPrivileged: false,
+    manifest: {
+      permissions: ["urlbar"],
+    },
+  });
+  ExtensionTestUtils.failOnSchemaWarnings(false);
+  let { messages } = await promiseConsoleOutput(async () => {
+    await Assert.rejects(
+      extension.startup(),
+      /Using the privileged permission/,
+      "Startup failed with privileged permission"
+    );
+  });
+  ExtensionTestUtils.failOnSchemaWarnings(true);
+  AddonTestUtils.checkMessages(
+    messages,
+    {
+      expected: [
+        {
+          message: /Using the privileged permission 'urlbar' requires a privileged add-on/,
+        },
+      ],
+    },
+    true
+  );
 });
 
 // Checks that providers are added and removed properly.
@@ -1074,7 +1104,8 @@ add_task(async function test_onBehaviorRequestedTimeout() {
     incognitoOverride: "spanning",
     background() {
       browser.urlbar.onBehaviorRequested.addListener(async query => {
-        // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+        // setTimeout is available in background scripts
+        // eslint-disable-next-line mozilla/no-arbitrary-setTimeout, no-undef
         await new Promise(r => setTimeout(r, 500));
         return "active";
       }, "test");
@@ -1129,7 +1160,8 @@ add_task(async function test_onResultsRequestedTimeout() {
         return "active";
       }, "test");
       browser.urlbar.onResultsRequested.addListener(async query => {
-        // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+        // setTimeout is available in background scripts
+        // eslint-disable-next-line mozilla/no-arbitrary-setTimeout, no-undef
         await new Promise(r => setTimeout(r, 600));
         return [
           {

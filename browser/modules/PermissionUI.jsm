@@ -20,8 +20,12 @@ var EXPORTED_SYMBOLS = ["PermissionUI"];
  * permission request is coming up from content by way of the
  * nsContentPermissionHelper. The system add-on could then do the following:
  *
- * Cu.import("resource://gre/modules/Integration.jsm");
- * Cu.import("resource:///modules/PermissionUI.jsm");
+ * const { Integration } = ChromeUtils.import(
+ *   "resource://gre/modules/Integration.jsm"
+ * );
+ * const { PermissionUI } = ChromeUtils.import(
+ *   "resource:///modules/PermissionUI.jsm"
+ * );
  *
  * const SoundCardIntegration = (base) => ({
  *   __proto__: base,
@@ -57,41 +61,36 @@ var EXPORTED_SYMBOLS = ["PermissionUI"];
  * imported, subclassed, and have prompt() called directly, without
  * the caller having called into createPermissionPrompt.
  */
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "SitePermissions",
   "resource:///modules/SitePermissions.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "IDNService",
   "@mozilla.org/network/idn-service;1",
   "nsIIDNService"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "ContentPrefService2",
   "@mozilla.org/content-pref/service;1",
   "nsIContentPrefService2"
 );
 
-XPCOMUtils.defineLazyGetter(this, "gBrowserBundle", function() {
+XPCOMUtils.defineLazyGetter(lazy, "gBrowserBundle", function() {
   return Services.strings.createBundle(
     "chrome://browser/locale/browser.properties"
   );
@@ -163,6 +162,14 @@ var PermissionPromptPrototype = {
    */
   get usePermissionManager() {
     return true;
+  },
+
+  /**
+   * Indicates what URI should be used as the scope when using temporary
+   * permissions. If undefined, it defaults to the browser.currentURI.
+   */
+  get temporaryPermissionURI() {
+    return undefined;
   },
 
   /**
@@ -372,20 +379,21 @@ var PermissionPromptPrototype = {
       // If we're reading and setting permissions, then we need
       // to check to see if we already have a permission setting
       // for this particular principal.
-      let { state } = SitePermissions.getForPrincipal(
+      let { state } = lazy.SitePermissions.getForPrincipal(
         this.principal,
         this.permissionKey,
-        this.browser
+        this.browser,
+        this.temporaryPermissionURI
       );
 
-      if (state == SitePermissions.BLOCK) {
+      if (state == lazy.SitePermissions.BLOCK) {
         // If this block was done based on a global user setting, we want to show
         // a post prompt to give the user some more granular control without
         // annoying them too much.
         if (
           this.postPromptEnabled &&
-          SitePermissions.getDefault(this.permissionKey) ==
-            SitePermissions.BLOCK
+          lazy.SitePermissions.getDefault(this.permissionKey) ==
+            lazy.SitePermissions.BLOCK
         ) {
           this.postPrompt();
         }
@@ -394,7 +402,7 @@ var PermissionPromptPrototype = {
       }
 
       if (
-        state == SitePermissions.ALLOW &&
+        state == lazy.SitePermissions.ALLOW &&
         !this.request.isRequestDelegatedToUnsafeThirdParty
       ) {
         this.allow();
@@ -403,13 +411,14 @@ var PermissionPromptPrototype = {
     } else if (this.permissionKey) {
       // If we're reading a permission which already has a temporary value,
       // see if we can use the temporary value.
-      let { state } = SitePermissions.getForPrincipal(
+      let { state } = lazy.SitePermissions.getForPrincipal(
         null,
         this.permissionKey,
-        this.browser
+        this.browser,
+        this.temporaryPermissionURI
       );
 
-      if (state == SitePermissions.BLOCK) {
+      if (state == lazy.SitePermissions.BLOCK) {
         this.cancel();
         return;
       }
@@ -446,51 +455,55 @@ var PermissionPromptPrototype = {
           if (this.usePermissionManager && this.permissionKey) {
             if (
               (state && state.checkboxChecked && state.source != "esc-press") ||
-              promptAction.scope == SitePermissions.SCOPE_PERSISTENT
+              promptAction.scope == lazy.SitePermissions.SCOPE_PERSISTENT
             ) {
               // Permanently store permission.
-              let scope = SitePermissions.SCOPE_PERSISTENT;
+              let scope = lazy.SitePermissions.SCOPE_PERSISTENT;
               // Only remember permission for session if in PB mode.
-              if (PrivateBrowsingUtils.isBrowserPrivate(this.browser)) {
-                scope = SitePermissions.SCOPE_SESSION;
+              if (lazy.PrivateBrowsingUtils.isBrowserPrivate(this.browser)) {
+                scope = lazy.SitePermissions.SCOPE_SESSION;
               }
-              SitePermissions.setForPrincipal(
+              lazy.SitePermissions.setForPrincipal(
                 this.principal,
                 this.permissionKey,
                 promptAction.action,
                 scope
               );
-            } else if (promptAction.action == SitePermissions.BLOCK) {
+            } else if (promptAction.action == lazy.SitePermissions.BLOCK) {
               // Temporarily store BLOCK permissions only
               // SitePermissions does not consider subframes when storing temporary
               // permissions on a tab, thus storing ALLOW could be exploited.
-              SitePermissions.setForPrincipal(
+              lazy.SitePermissions.setForPrincipal(
                 this.principal,
                 this.permissionKey,
                 promptAction.action,
-                SitePermissions.SCOPE_TEMPORARY,
-                this.browser
+                lazy.SitePermissions.SCOPE_TEMPORARY,
+                this.browser,
+                undefined,
+                this.temporaryPermissionURI
               );
             }
 
             // Grant permission if action is ALLOW.
-            if (promptAction.action == SitePermissions.ALLOW) {
+            if (promptAction.action == lazy.SitePermissions.ALLOW) {
               this.allow();
             } else {
               this.cancel();
             }
           } else if (this.permissionKey) {
             // TODO: Add support for permitTemporaryAllow
-            if (promptAction.action == SitePermissions.BLOCK) {
+            if (promptAction.action == lazy.SitePermissions.BLOCK) {
               // Temporarily store BLOCK permissions.
               // We don't consider subframes when storing temporary
               // permissions on a tab, thus storing ALLOW could be exploited.
-              SitePermissions.setForPrincipal(
+              lazy.SitePermissions.setForPrincipal(
                 null,
                 this.permissionKey,
                 promptAction.action,
-                SitePermissions.SCOPE_TEMPORARY,
-                this.browser
+                lazy.SitePermissions.SCOPE_TEMPORARY,
+                this.browser,
+                undefined,
+                this.temporaryPermissionURI
               );
             }
           }
@@ -537,12 +550,12 @@ var PermissionPromptPrototype = {
           // Since we can not reply to the original permission request anymore,
           // the page will need to listen for permission changes which are triggered
           // by permanent entries in the permission manager.
-          let scope = SitePermissions.SCOPE_PERSISTENT;
+          let scope = lazy.SitePermissions.SCOPE_PERSISTENT;
           // Only remember permission for session if in PB mode.
-          if (PrivateBrowsingUtils.isBrowserPrivate(browser)) {
-            scope = SitePermissions.SCOPE_SESSION;
+          if (lazy.PrivateBrowsingUtils.isBrowserPrivate(browser)) {
+            scope = lazy.SitePermissions.SCOPE_SESSION;
           }
-          SitePermissions.setForPrincipal(
+          lazy.SitePermissions.setForPrincipal(
             principal,
             this.permissionKey,
             promptAction.action,
@@ -709,7 +722,9 @@ GeolocationPermissionPrompt.prototype = {
     } else {
       // Don't offer "always remember" action in PB mode
       options.checkbox = {
-        show: !PrivateBrowsingUtils.isWindowPrivate(this.browser.ownerGlobal),
+        show: !lazy.PrivateBrowsingUtils.isWindowPrivate(
+          this.browser.ownerGlobal
+        ),
       };
     }
 
@@ -720,7 +735,7 @@ GeolocationPermissionPrompt.prototype = {
     }
 
     if (options.checkbox.show) {
-      options.checkbox.label = gBrowserBundle.GetStringFromName(
+      options.checkbox.label = lazy.gBrowserBundle.GetStringFromName(
         "geolocation.remember"
       );
     }
@@ -738,36 +753,39 @@ GeolocationPermissionPrompt.prototype = {
 
   get message() {
     if (this.principal.schemeIs("file")) {
-      return gBrowserBundle.GetStringFromName("geolocation.shareWithFile4");
+      return lazy.gBrowserBundle.GetStringFromName(
+        "geolocation.shareWithFile4"
+      );
     }
 
     if (this.request.isRequestDelegatedToUnsafeThirdParty) {
-      return gBrowserBundle.formatStringFromName(
+      return lazy.gBrowserBundle.formatStringFromName(
         "geolocation.shareWithSiteUnsafeDelegation2",
         ["<>", "{}"]
       );
     }
 
-    return gBrowserBundle.formatStringFromName("geolocation.shareWithSite4", [
-      "<>",
-    ]);
+    return lazy.gBrowserBundle.formatStringFromName(
+      "geolocation.shareWithSite4",
+      ["<>"]
+    );
   },
 
   get promptActions() {
     return [
       {
-        label: gBrowserBundle.GetStringFromName("geolocation.allow"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("geolocation.allow"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "geolocation.allow.accesskey"
         ),
-        action: SitePermissions.ALLOW,
+        action: lazy.SitePermissions.ALLOW,
       },
       {
-        label: gBrowserBundle.GetStringFromName("geolocation.block"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("geolocation.block"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "geolocation.block.accesskey"
         ),
-        action: SitePermissions.BLOCK,
+        action: lazy.SitePermissions.BLOCK,
       },
     ];
   },
@@ -789,7 +807,7 @@ GeolocationPermissionPrompt.prototype = {
     if (host == null || host == "") {
       return;
     }
-    ContentPrefService2.set(
+    lazy.ContentPrefService2.set(
       this.browser.currentURI.host,
       "permissions.geoLocation.lastAccess",
       new Date().toString(),
@@ -845,12 +863,16 @@ XRPermissionPrompt.prototype = {
     } else {
       // Don't offer "always remember" action in PB mode
       options.checkbox = {
-        show: !PrivateBrowsingUtils.isWindowPrivate(this.browser.ownerGlobal),
+        show: !lazy.PrivateBrowsingUtils.isWindowPrivate(
+          this.browser.ownerGlobal
+        ),
       };
     }
 
     if (options.checkbox.show) {
-      options.checkbox.label = gBrowserBundle.GetStringFromName("xr.remember");
+      options.checkbox.label = lazy.gBrowserBundle.GetStringFromName(
+        "xr.remember"
+      );
     }
 
     return options;
@@ -866,23 +888,25 @@ XRPermissionPrompt.prototype = {
 
   get message() {
     if (this.principal.schemeIs("file")) {
-      return gBrowserBundle.GetStringFromName("xr.shareWithFile4");
+      return lazy.gBrowserBundle.GetStringFromName("xr.shareWithFile4");
     }
 
-    return gBrowserBundle.formatStringFromName("xr.shareWithSite4", ["<>"]);
+    return lazy.gBrowserBundle.formatStringFromName("xr.shareWithSite4", [
+      "<>",
+    ]);
   },
 
   get promptActions() {
     return [
       {
-        label: gBrowserBundle.GetStringFromName("xr.allow2"),
-        accessKey: gBrowserBundle.GetStringFromName("xr.allow2.accesskey"),
-        action: SitePermissions.ALLOW,
+        label: lazy.gBrowserBundle.GetStringFromName("xr.allow2"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName("xr.allow2.accesskey"),
+        action: lazy.SitePermissions.ALLOW,
       },
       {
-        label: gBrowserBundle.GetStringFromName("xr.block"),
-        accessKey: gBrowserBundle.GetStringFromName("xr.block.accesskey"),
-        action: SitePermissions.BLOCK,
+        label: lazy.gBrowserBundle.GetStringFromName("xr.block"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName("xr.block.accesskey"),
+        action: lazy.SitePermissions.BLOCK,
       },
     ];
   },
@@ -974,7 +998,7 @@ DesktopNotificationPermissionPrompt.prototype = {
   },
 
   get message() {
-    return gBrowserBundle.formatStringFromName(
+    return lazy.gBrowserBundle.formatStringFromName(
       "webNotifications.receiveFromSite3",
       ["<>"]
     );
@@ -983,38 +1007,42 @@ DesktopNotificationPermissionPrompt.prototype = {
   get promptActions() {
     let actions = [
       {
-        label: gBrowserBundle.GetStringFromName("webNotifications.allow2"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("webNotifications.allow2"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "webNotifications.allow2.accesskey"
         ),
-        action: SitePermissions.ALLOW,
-        scope: SitePermissions.SCOPE_PERSISTENT,
+        action: lazy.SitePermissions.ALLOW,
+        scope: lazy.SitePermissions.SCOPE_PERSISTENT,
       },
     ];
     if (this.notNowEnabled) {
       actions.push({
-        label: gBrowserBundle.GetStringFromName("webNotifications.notNow"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("webNotifications.notNow"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "webNotifications.notNow.accesskey"
         ),
-        action: SitePermissions.BLOCK,
+        action: lazy.SitePermissions.BLOCK,
       });
     }
 
-    let isBrowserPrivate = PrivateBrowsingUtils.isBrowserPrivate(this.browser);
+    let isBrowserPrivate = lazy.PrivateBrowsingUtils.isBrowserPrivate(
+      this.browser
+    );
     actions.push({
       label: isBrowserPrivate
-        ? gBrowserBundle.GetStringFromName("webNotifications.block")
-        : gBrowserBundle.GetStringFromName("webNotifications.alwaysBlock"),
+        ? lazy.gBrowserBundle.GetStringFromName("webNotifications.block")
+        : lazy.gBrowserBundle.GetStringFromName("webNotifications.alwaysBlock"),
       accessKey: isBrowserPrivate
-        ? gBrowserBundle.GetStringFromName("webNotifications.block.accesskey")
-        : gBrowserBundle.GetStringFromName(
+        ? lazy.gBrowserBundle.GetStringFromName(
+            "webNotifications.block.accesskey"
+          )
+        : lazy.gBrowserBundle.GetStringFromName(
             "webNotifications.alwaysBlock.accesskey"
           ),
-      action: SitePermissions.BLOCK,
+      action: lazy.SitePermissions.BLOCK,
       scope: isBrowserPrivate
-        ? SitePermissions.SCOPE_SESSION
-        : SitePermissions.SCOPE_PERSISTENT,
+        ? lazy.SitePermissions.SCOPE_SESSION
+        : lazy.SitePermissions.SCOPE_PERSISTENT,
     });
     return actions;
   },
@@ -1022,25 +1050,29 @@ DesktopNotificationPermissionPrompt.prototype = {
   get postPromptActions() {
     let actions = [
       {
-        label: gBrowserBundle.GetStringFromName("webNotifications.allow2"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("webNotifications.allow2"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "webNotifications.allow2.accesskey"
         ),
-        action: SitePermissions.ALLOW,
+        action: lazy.SitePermissions.ALLOW,
       },
     ];
 
-    let isBrowserPrivate = PrivateBrowsingUtils.isBrowserPrivate(this.browser);
+    let isBrowserPrivate = lazy.PrivateBrowsingUtils.isBrowserPrivate(
+      this.browser
+    );
     actions.push({
       label: isBrowserPrivate
-        ? gBrowserBundle.GetStringFromName("webNotifications.block")
-        : gBrowserBundle.GetStringFromName("webNotifications.alwaysBlock"),
+        ? lazy.gBrowserBundle.GetStringFromName("webNotifications.block")
+        : lazy.gBrowserBundle.GetStringFromName("webNotifications.alwaysBlock"),
       accessKey: isBrowserPrivate
-        ? gBrowserBundle.GetStringFromName("webNotifications.block.accesskey")
-        : gBrowserBundle.GetStringFromName(
+        ? lazy.gBrowserBundle.GetStringFromName(
+            "webNotifications.block.accesskey"
+          )
+        : lazy.gBrowserBundle.GetStringFromName(
             "webNotifications.alwaysBlock.accesskey"
           ),
-      action: SitePermissions.BLOCK,
+      action: lazy.SitePermissions.BLOCK,
     });
     return actions;
   },
@@ -1090,7 +1122,7 @@ PersistentStoragePermissionPrompt.prototype = {
   },
 
   get message() {
-    return gBrowserBundle.formatStringFromName(
+    return lazy.gBrowserBundle.formatStringFromName(
       "persistentStorage.allowWithSite2",
       ["<>"]
     );
@@ -1099,21 +1131,21 @@ PersistentStoragePermissionPrompt.prototype = {
   get promptActions() {
     return [
       {
-        label: gBrowserBundle.GetStringFromName("persistentStorage.allow"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName("persistentStorage.allow"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "persistentStorage.allow.accesskey"
         ),
         action: Ci.nsIPermissionManager.ALLOW_ACTION,
-        scope: SitePermissions.SCOPE_PERSISTENT,
+        scope: lazy.SitePermissions.SCOPE_PERSISTENT,
       },
       {
-        label: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName(
           "persistentStorage.block.label"
         ),
-        accessKey: gBrowserBundle.GetStringFromName(
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "persistentStorage.block.accesskey"
         ),
-        action: SitePermissions.BLOCK,
+        action: lazy.SitePermissions.BLOCK,
       },
     ];
   },
@@ -1164,12 +1196,14 @@ MIDIPermissionPrompt.prototype = {
     } else {
       // Don't offer "always remember" action in PB mode
       options.checkbox = {
-        show: !PrivateBrowsingUtils.isWindowPrivate(this.browser.ownerGlobal),
+        show: !lazy.PrivateBrowsingUtils.isWindowPrivate(
+          this.browser.ownerGlobal
+        ),
       };
     }
 
     if (options.checkbox.show) {
-      options.checkbox.label = gBrowserBundle.GetStringFromName(
+      options.checkbox.label = lazy.gBrowserBundle.GetStringFromName(
         "midi.remember"
       );
     }
@@ -1189,16 +1223,19 @@ MIDIPermissionPrompt.prototype = {
     let message;
     if (this.principal.schemeIs("file")) {
       if (this.isSysexPerm) {
-        message = gBrowserBundle.GetStringFromName("midi.shareSysexWithFile");
+        message = lazy.gBrowserBundle.GetStringFromName(
+          "midi.shareSysexWithFile"
+        );
       } else {
-        message = gBrowserBundle.GetStringFromName("midi.shareWithFile");
+        message = lazy.gBrowserBundle.GetStringFromName("midi.shareWithFile");
       }
     } else if (this.isSysexPerm) {
-      message = gBrowserBundle.formatStringFromName("midi.shareSysexWithSite", [
-        "<>",
-      ]);
+      message = lazy.gBrowserBundle.formatStringFromName(
+        "midi.shareSysexWithSite",
+        ["<>"]
+      );
     } else {
-      message = gBrowserBundle.formatStringFromName("midi.shareWithSite", [
+      message = lazy.gBrowserBundle.formatStringFromName("midi.shareWithSite", [
         "<>",
       ]);
     }
@@ -1208,13 +1245,17 @@ MIDIPermissionPrompt.prototype = {
   get promptActions() {
     return [
       {
-        label: gBrowserBundle.GetStringFromName("midi.allow.label"),
-        accessKey: gBrowserBundle.GetStringFromName("midi.allow.accesskey"),
+        label: lazy.gBrowserBundle.GetStringFromName("midi.allow.label"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
+          "midi.allow.accesskey"
+        ),
         action: Ci.nsIPermissionManager.ALLOW_ACTION,
       },
       {
-        label: gBrowserBundle.GetStringFromName("midi.block.label"),
-        accessKey: gBrowserBundle.GetStringFromName("midi.block.accesskey"),
+        label: lazy.gBrowserBundle.GetStringFromName("midi.block.label"),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
+          "midi.block.accesskey"
+        ),
         action: Ci.nsIPermissionManager.DENY_ACTION,
       },
     ];
@@ -1225,6 +1266,18 @@ PermissionUI.MIDIPermissionPrompt = MIDIPermissionPrompt;
 
 function StorageAccessPermissionPrompt(request) {
   this.request = request;
+  this.siteOption = null;
+
+  let types = this.request.types.QueryInterface(Ci.nsIArray);
+  let perm = types.queryElementAt(0, Ci.nsIContentPermissionType);
+  let options = perm.options.QueryInterface(Ci.nsIArray);
+  // If we have an option, we are in a call from requestStorageAccessUnderSite
+  // which means that the embedding principal is not the current top-level.
+  // Instead we have to grab the Site string out of the option and use that
+  // in the UI.
+  if (options.length) {
+    this.siteOption = options.queryElementAt(0, Ci.nsISupportsString).data;
+  }
 }
 
 StorageAccessPermissionPrompt.prototype = {
@@ -1240,12 +1293,19 @@ StorageAccessPermissionPrompt.prototype = {
 
   get permissionKey() {
     // Make sure this name is unique per each third-party tracker
-    return "storage-access-" + this.principal.origin;
+    return `3rdPartyStorage${lazy.SitePermissions.PERM_KEY_DELIMITER}${this.principal.origin}`;
+  },
+
+  get temporaryPermissionURI() {
+    if (this.siteOption) {
+      return Services.io.newURI(this.siteOption);
+    }
+    return undefined;
   },
 
   prettifyHostPort(hostport) {
     let [host, port] = hostport.split(":");
-    host = IDNService.convertToDisplayIDN(host, {});
+    host = lazy.IDNService.convertToDisplayIDN(host, {});
     if (port) {
       return `${host}:${port}`;
     }
@@ -1257,7 +1317,7 @@ StorageAccessPermissionPrompt.prototype = {
       Services.urlFormatter.formatURLPref("app.support.baseURL") +
       "third-party-cookies";
     let hostPort = this.prettifyHostPort(this.principal.hostPort);
-    let hintText = gBrowserBundle.formatStringFromName(
+    let hintText = lazy.gBrowserBundle.formatStringFromName(
       "storageAccess1.hintText",
       [hostPort]
     );
@@ -1278,9 +1338,15 @@ StorageAccessPermissionPrompt.prototype = {
   },
 
   get message() {
-    return gBrowserBundle.formatStringFromName("storageAccess4.message", [
+    let embeddingHost = this.topLevelPrincipal.host;
+
+    if (this.siteOption) {
+      embeddingHost = this.siteOption.split("://").at(-1);
+    }
+
+    return lazy.gBrowserBundle.formatStringFromName("storageAccess4.message", [
       this.prettifyHostPort(this.principal.hostPort),
-      this.prettifyHostPort(this.topLevelPrincipal.hostPort),
+      this.prettifyHostPort(embeddingHost),
     ]);
   },
 
@@ -1289,8 +1355,10 @@ StorageAccessPermissionPrompt.prototype = {
 
     return [
       {
-        label: gBrowserBundle.GetStringFromName("storageAccess1.Allow.label"),
-        accessKey: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName(
+          "storageAccess1.Allow.label"
+        ),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "storageAccess1.Allow.accesskey"
         ),
         action: Ci.nsIPermissionManager.ALLOW_ACTION,
@@ -1299,10 +1367,10 @@ StorageAccessPermissionPrompt.prototype = {
         },
       },
       {
-        label: gBrowserBundle.GetStringFromName(
+        label: lazy.gBrowserBundle.GetStringFromName(
           "storageAccess1.DontAllow.label"
         ),
-        accessKey: gBrowserBundle.GetStringFromName(
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
           "storageAccess1.DontAllow.accesskey"
         ),
         action: Ci.nsIPermissionManager.DENY_ACTION,
