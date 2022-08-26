@@ -26,5 +26,9 @@ jobs:
       - uses: actions/checkout@v3
 
       # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
-        run: MOZCONFIG=./simulator-riscv64 ./mach build
+      - name:build simulator
+        run: MOZCONFIG=$PWD/mozconfigs/simulator-riscv64 ./mach build
+
+      # Runs a set of commands using the runners shell
+      - name: cross build riscv64
+        run: MOZCONFIG=$PWD/mozconfigs/riscv64-debug CFLAGS="-I/home/lyh/zlib/include" CXXFLAGS="-I/home/lyh/zlib/include" LDFLAGS=-L/home/lyh/zlib/lib/ CC=/home/lyh/llvm-build/Release+Asserts/bin/clang++ CXX=/home/lyh/llvm-build/Release+Asserts/bin/clang++ ./mach build
