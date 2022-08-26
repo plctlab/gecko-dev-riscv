@@ -1024,7 +1024,9 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
  public:
   // The following functions are exposed for use in platform-shared code.
 
-  void incrementInt32Value(const Address& addr);
+  void incrementInt32Value(const Address& addr) {
+    asMasm().add32(Imm32(1), addr);
+  }
 
   void move32(Imm32 imm, Register dest);
   void move32(Register src, Register dest);
