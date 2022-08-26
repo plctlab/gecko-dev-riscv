@@ -738,10 +738,6 @@ void MacroAssemblerRiscv64Compat::wasmLoadI64Impl(
   MOZ_CRASH("Unimplement riscv");
 }
 
-void MacroAssemblerRiscv64Compat::incrementInt32Value(Address const&) {
-  MOZ_CRASH("Unimplement riscv");
-}
-
 void MacroAssemblerRiscv64Compat::wasmStoreI64Impl(
     const wasm::MemoryAccessDesc& access,
     Register64 value,

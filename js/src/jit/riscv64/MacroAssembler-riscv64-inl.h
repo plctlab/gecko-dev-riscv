@@ -1046,6 +1046,9 @@ void MacroAssembler::xorPtr(Register, Register) {
 }
 //}}} check_macroassembler_style
 
+void MacroAssemblerRiscv64Compat::incrementInt32Value(const Address& addr) {
+  asMasm().add32(Imm32(1), addr);
+}
 }  // namespace jit
 }  // namespace js
 
