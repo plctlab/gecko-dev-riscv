@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 #include "jit/riscv64/extension/base-riscv-i.h"
-#include "jit/riscv64/Assembler-riscv64.h"
 #include "jit/riscv64/constant/Constant-riscv64.h"
+#include "jit/riscv64/Assembler-riscv64.h"
 #include "jit/riscv64/Architecture-riscv64.h"
 namespace js {
 namespace jit {
@@ -327,6 +327,27 @@ void AssemblerRISCVI::sraw(Register rd, Register rs1, Register rs2) {
 }
 
 #endif
+
+int AssemblerRISCVI::BranchOffset(Instr instr) {
+  // | imm[12] | imm[10:5] | rs2 | rs1 | funct3 | imm[4:1|11] | opcode |
+  //  31          25                      11          7
+  int32_t imm13 = ((instr & 0xf00) >> 7) | ((instr & 0x7e000000) >> 20) |
+                  ((instr & 0x80) << 4) | ((instr & 0x80000000) >> 19);
+  imm13 = imm13 << 19 >> 19;
+  return imm13;
+}
+
+int AssemblerRISCVI::BrachlongOffset(Instr auipc, Instr instr_I) {
+  MOZ_ASSERT(reinterpret_cast<Instruction*>(&instr_I)->InstructionType() ==
+         InstructionBase::kIType);
+  MOZ_ASSERT(IsAuipc(auipc));
+  MOZ_ASSERT(((auipc & kRdFieldMask) >> kRdShift) ==
+             ((instr_I & kRs1FieldMask) >> kRs1Shift));
+  int32_t imm_auipc = AuipcOffset(auipc);
+  int32_t imm12 = static_cast<int32_t>(instr_I & kImm12Mask) >> 20;
+  int32_t offset = imm12 + imm_auipc;
+  return offset;
+}
 
 }  // namespace jit
 }  // namespace js

@@ -4079,7 +4079,7 @@ void MacroAssembler::emitPreBarrierFastPath(JSRuntime* rt, MIRType type,
 #elif JS_CODEGEN_LOONG64
   as_sll_d(temp1, temp1, temp3);
 #elif JS_CODEGEN_RISCV64
-  MOZ_CRASH();
+  sll(temp1, temp1, temp3);
 #elif JS_CODEGEN_WASM32
   MOZ_CRASH();
 #elif JS_CODEGEN_NONE

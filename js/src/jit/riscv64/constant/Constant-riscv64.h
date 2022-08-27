@@ -24,12 +24,34 @@
 
 namespace js {
 namespace jit {
-namespace disasm {
-
 
 // A reasonable (ie, safe) buffer size for the disassembly of a single
 // instruction.
 const int ReasonableBufferSize = 256;
+
+// Difference between address of current opcode and value read from pc
+// register.
+static constexpr int kPcLoadDelta = 4;
+
+// Bits available for offset field in branches
+static constexpr int kBranchOffsetBits = 13;
+
+// Bits available for offset field in jump
+static constexpr int kJumpOffsetBits = 21;
+
+// Bits available for offset field in compresed jump
+static constexpr int kCJalOffsetBits = 12;
+
+// Bits available for offset field in compressed branch
+static constexpr int kCBranchOffsetBits = 9;
+
+// Max offset for b instructions with 12-bit offset field (multiple of 2)
+static constexpr int kMaxBranchOffset = (1 << (13 - 1)) - 1;
+
+// Max offset for jal instruction with 20-bit offset field (multiple of 2)
+static constexpr int kMaxJumpOffset = (1 << (21 - 1)) - 1;
+
+static constexpr int kTrampolineSlotsSize = 2 * kInstrSize;
 
 // Vector as used by the original code to allow for minimal modification.
 // Functions exactly like a character array with helper methods.
@@ -93,7 +115,6 @@ class EmbeddedVector : public V8Vector<T> {
   T buffer_[kSize];
 };
 
-}  // namespace disasm
 }  // namespace jit
 }  // namespace js
 

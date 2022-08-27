@@ -31,7 +31,7 @@
 #include "jit/riscv64/Register-riscv64.h"
 #include "jit/shared/Assembler-shared.h"
 #include "jit/shared/Disassembler-shared.h"
-#include "jit/shared/IonAssemblerBuffer.h"
+#include "jit/shared/IonAssemblerBufferWithConstantPools.h"
 #include "wasm/WasmTypeDecls.h"
 namespace js {
 namespace jit {
@@ -40,30 +40,6 @@ namespace jit {
   if (FLAG_riscv_debug) { \
     printf(__VA_ARGS__);  \
   }
-
-// Difference between address of current opcode and value read from pc
-// register.
-static constexpr int kPcLoadDelta = 4;
-
-// Bits available for offset field in branches
-static constexpr int kBranchOffsetBits = 13;
-
-// Bits available for offset field in jump
-static constexpr int kJumpOffsetBits = 21;
-
-// Bits available for offset field in compresed jump
-static constexpr int kCJalOffsetBits = 12;
-
-// Bits available for offset field in compressed branch
-static constexpr int kCBranchOffsetBits = 9;
-
-// Max offset for b instructions with 12-bit offset field (multiple of 2)
-static constexpr int kMaxBranchOffset = (1 << (13 - 1)) - 1;
-
-// Max offset for jal instruction with 20-bit offset field (multiple of 2)
-static constexpr int kMaxJumpOffset = (1 << (21 - 1)) - 1;
-
-static constexpr int kTrampolineSlotsSize = 2 * kInstrSize;
 struct ScratchFloat32Scope : public AutoFloatRegisterScope {
   explicit ScratchFloat32Scope(MacroAssembler& masm)
       : AutoFloatRegisterScope(masm, ScratchFloat32Reg) {}
@@ -93,9 +69,10 @@ static constexpr uint32_t JitStackValueAlignment =
 
 static const Scale ScalePointer = TimesEight;
 
+class Assembler;
 
 static constexpr int32_t SliceSize = 1024;
-typedef js::jit::AssemblerBuffer<SliceSize, Instruction> Buffer;
+typedef js::jit::AssemblerBufferWithConstantPools<SliceSize, 4, Instruction, Assembler> Buffer;
 class Assembler : public AssemblerShared,
                   public AssemblerRISCVI,
                   public AssemblerRISCVA,
@@ -161,6 +138,7 @@ class Assembler : public AssemblerShared,
  // Emission of the trampoline pool may be blocked in some code sequences.
  int trampoline_pool_blocked_nesting_;  // Block emission if this is not zero.
  uint32_t no_trampoline_pool_before_;        // Block emission before this pc offset.
+ bool internal_trampoline_exception_;
 
  // Keep track of the last emitted pool to guarantee a maximal distance.
  int last_trampoline_pool_end_;  // pc offset of the end of the last pool.
@@ -226,7 +204,8 @@ class Assembler : public AssemblerShared,
 #ifdef JS_JITSPEW
         printer(nullptr),
 #endif
-        m_buffer(),
+        m_buffer(1, 1, 8, GetPoolMaxOffset(), 8, kNopByte, kNopByte,
+                 GetNopFill()),
         isFinished(false) {
     last_trampoline_pool_end_ = 0;
     no_trampoline_pool_before_ = 0;
@@ -237,13 +216,48 @@ class Assembler : public AssemblerShared,
     trampoline_emitted_ = false;
     unbound_labels_count_ = 0;
     block_buffer_growth_ = false;
+    internal_trampoline_exception_ = false;
   }
+  static uint32_t NopFill;
+  static uint32_t GetNopFill();
+  static uint32_t AsmPoolMaxOffset;
+  static uint32_t GetPoolMaxOffset();
   bool oom() const;
   void setPrinter(Sprinter* sp) {
 #ifdef JS_JITSPEW
     printer = sp;
 #endif
   }
+  void finish() {
+    MOZ_ASSERT(!isFinished);
+    isFinished = true;
+  }
+  // Size of the instruction stream, in bytes.
+  size_t size() const;
+  // Size of the data table, in bytes.
+  size_t bytesNeeded() const;
+  // Size of the jump relocation table, in bytes.
+  size_t jumpRelocationTableBytes() const;
+  size_t dataRelocationTableBytes() const;
+  void copyJumpRelocationTable(uint8_t* dest);
+  void copyDataRelocationTable(uint8_t* dest);
+  // Copy the assembly code to the given buffer, and perform any pending
+  // relocations relying on the target address.
+  void executableCopy(uint8_t* buffer);
+  // API for speaking with the IonAssemblerBufferWithConstantPools generate an
+  // initial placeholder instruction that we want to later fix up.
+  static void InsertIndexIntoTag(uint8_t* load, uint32_t index);
+  static void PatchConstantPoolLoad(void* loadAddr, void* constPoolAddr);
+  // We're not tracking short-range branches for ARM for now.
+  static void PatchShortRangeBranchToVeneer(Buffer*, unsigned rangeIdx,
+                                            BufferOffset deadline,
+                                            BufferOffset veneer) {
+    MOZ_CRASH();
+  }
+  static void WritePoolHeader(uint8_t* start, Pool* p, bool isNatural);
+  static void WritePoolGuard(BufferOffset branch, Instruction* inst,
+                             BufferOffset dest);
+  void processCodeLabels(uint8_t* rawCode);
   BufferOffset nextOffset() { return m_buffer.nextOffset(); }
   
 #ifdef JS_JITSPEW
@@ -309,11 +323,14 @@ class Assembler : public AssemblerShared,
 
   
   Register getStackPointer() const { return StackPointer; }
-  
+  void flushBuffer() {}
   void disassembleInstr(Instr instr);
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
-  void target_at_put(BufferOffset pos, BufferOffset target_pos);
+  static uintptr_t target_address_at(Instruction* pos);
+  void set_target_value_at(Instruction* pc,
+                           uint64_t target);
+  void target_at_put(BufferOffset pos, BufferOffset target_pos, bool trampoline = false);
   virtual int32_t branch_offset_helper(Label* L, OffsetSize bits);
   int32_t branch_long_offset(Label* L);
 
@@ -323,15 +340,32 @@ class Assembler : public AssemblerShared,
   bool is_near(Label* L, OffsetSize bits);
   bool is_near_branch(Label* L);
 
-  virtual void emit(Instr x) {
+  void nopAlign(int m) {
+    MOZ_ASSERT(m >= 4 && (m & (m - 1)) == 0);
+    while ((currentOffset() & (m - 1)) != 0) {
+      nop();
+    }
+  }
+  virtual  void emit(Instr x) {
     MOZ_ASSERT(hasCreator());
     m_buffer.putInt(x);
+    DEBUG_PRINTF(
+        "0x%lx(%x): ",
+        (uint64_t)editSrc(BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
+        currentOffset());
+    disassembleInstr(x);
+    CheckTrampolinePoolQuick();
   }
 
-  virtual void emit(ShortInstr x) { MOZ_CRASH(); }
-  virtual void emit(uint64_t x) { MOZ_CRASH(); }
+  virtual  void emit(ShortInstr x) { MOZ_CRASH(); }
+  virtual  void emit(uint64_t x) { MOZ_CRASH(); }
+  virtual  void emit(uint32_t x) { m_buffer.putInt(x); }
 
-  virtual void BlockTrampolinePoolFor(int instructions) { MOZ_CRASH(); }
+  virtual void BlockTrampolinePoolFor(int instructions);
+
+  void instr_at_put(BufferOffset offset, Instr instr) {
+    *reinterpret_cast<Instr*>(editSrc(offset)) = instr;
+  }
 
   static Condition InvertCondition(Condition) { MOZ_CRASH(); }
 
@@ -352,7 +386,7 @@ class Assembler : public AssemblerShared,
   static void ToggleToCmp(CodeLocationLabel) { MOZ_CRASH(); }
   static void ToggleCall(CodeLocationLabel, bool) { MOZ_CRASH(); }
 
-  static void Bind(uint8_t*, const CodeLabel&) { MOZ_CRASH(); }
+  static void Bind(uint8_t* rawCode, const CodeLabel& label);
   // label operations
   void bind(Label* label, BufferOffset boff = BufferOffset());
   void bind(CodeLabel* label) {
@@ -373,7 +407,13 @@ class Assembler : public AssemblerShared,
 
   GeneralRegisterSet* GetScratchRegisterList() { return &scratch_register_list_; }
 
-  bool is_trampoline_emitted() const { return trampoline_emitted_; }
+  bool has_exception() const {
+    return internal_trampoline_exception_;
+  }
+
+  bool is_trampoline_emitted() const {
+    return trampoline_emitted_;
+  }
 
   void CheckTrampolinePool();
 
@@ -547,6 +587,21 @@ class Operand {
   int32_t offset() const { 
     MOZ_ASSERT(is_mem());
     return offset_; 
+  }
+
+  FloatRegister toFReg() const {
+    MOZ_ASSERT(tag == FREG);
+    return FloatRegister::FromCode(rm_);
+  }
+
+  Register toReg() const {
+    MOZ_ASSERT(tag == REG);
+    return Register::FromCode(rm_);
+  }
+
+  Address toAddress() const {
+    MOZ_ASSERT(tag == MEM);
+    return Address(Register::FromCode(rm_), offset());
   }
 
  private:

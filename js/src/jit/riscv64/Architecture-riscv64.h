@@ -9,9 +9,14 @@
 
 // JitSpewer.h is included through MacroAssembler implementations for other
 // platforms, so include it here to avoid inadvertent build bustage.
-#include "jit/JitSpewer.h"
+#include "mozilla/MathAlgorithms.h"
 
+#include <algorithm>
+#include <iterator>
+
+#include "jit/JitSpewer.h"
 #include "jit/shared/Architecture-shared.h"
+#include "js/Utility.h"
 
 namespace js {
 namespace jit {
@@ -303,7 +308,7 @@ class FloatRegisters {
   static const uint32_t Total = 32;
   static const uint32_t TotalPhys = 32;
   static const uint32_t Allocatable = 23;
-  static const SetType AllPhysMask = ((SetType(1) << TotalPhys) - 1);
+  static const SetType AllPhysMask = 0xFFFFFFFF;
   static const SetType AllMask = 0xFFFFFFFF;
   static const SetType AllDoubleMask = AllMask;
   static const SetType AllSingleMask = AllMask;
@@ -334,8 +339,11 @@ struct FloatRegister {
   typedef Codes::SetType SetType;
 
   static uint32_t SetSize(SetType x) {
-    MOZ_CRASH();
+    static_assert(sizeof(SetType) == 4, "SetType must be 64 bits");
+    x &= FloatRegisters::AllPhysMask;
+    return mozilla::CountPopulation32(x);
   }
+
 
   static uint32_t FirstBit(SetType x) {
     static_assert(sizeof(SetType) == 4, "SetType");
@@ -355,17 +363,34 @@ struct FloatRegister {
   FloatRegister asSingle() const { MOZ_CRASH(); }
   FloatRegister asDouble() const { MOZ_CRASH(); }
   FloatRegister asSimd128() const { MOZ_CRASH(); }
-  Code code() const { MOZ_CRASH(); }
-  Encoding encoding() const { MOZ_CRASH(); }
-  const char* name() const { MOZ_CRASH(); }
-  bool volatile_() const { MOZ_CRASH(); }
-  bool operator!=(FloatRegister) const { MOZ_CRASH(); }
-  bool operator==(FloatRegister) const { MOZ_CRASH(); }
+  constexpr Code code() const {
+    // assert(!invalid_);
+    return encoding_;
+  }
+  Encoding encoding() const { return encoding_; }
+  const char* name() const { return FloatRegisters::GetName(code()); }
+  bool volatile_() const {
+    MOZ_ASSERT(!invalid_);
+    return !!((SetType(1) << code()) & FloatRegisters::VolatileMask);
+  }
+  bool operator!=(FloatRegister other) const {
+    return code() != other.code();
+  }
+  bool operator==(FloatRegister other) const {
+    return code() == other.code();
+  }
   bool aliases(FloatRegister) const { MOZ_CRASH(); }
   uint32_t numAliased() const { MOZ_CRASH(); }
   FloatRegister aliased(uint32_t) { MOZ_CRASH(); }
   bool equiv(FloatRegister) const { MOZ_CRASH(); }
-  uint32_t size() const { MOZ_CRASH(); }
+  constexpr uint32_t size() const {
+    MOZ_ASSERT(!invalid_);
+    if (kind_ == FloatRegisters::Double) {
+      return sizeof(double);
+    }
+    MOZ_ASSERT(kind_ == FloatRegisters::Single);
+    return sizeof(float);
+  }
   uint32_t numAlignedAliased() const { MOZ_CRASH(); }
   FloatRegister alignedAliased(uint32_t) { MOZ_CRASH(); }
   SetType alignedOrDominatedAliasedSet() const { MOZ_CRASH(); }
@@ -394,11 +419,9 @@ struct FloatRegister {
 
   // This is used in static initializers, so produce a bogus value instead of
   // crashing.
-  static uint32_t GetPushSizeInBytes(const TypedRegisterSet<FloatRegister>&) {
-    return 0;
-  }
+  static uint32_t GetPushSizeInBytes(const TypedRegisterSet<FloatRegister>& s);
 
-private:
+ private:
   typedef Codes::Kind Kind;
   // These fields only hold valid values: an invalid register is always
   // represented as a valid encoding and kind with the invalid_ bit set.
