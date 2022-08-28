@@ -308,6 +308,23 @@ class Assembler : public AssemblerShared,
   MOZ_ALWAYS_INLINE void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3) {}
 #endif
 
+
+#ifdef JS_JITSPEW
+  MOZ_COLD void spew(const char* fmt, va_list va) MOZ_FORMAT_PRINTF(2, 0) {
+    // Buffer to hold the formatted string. Note that this may contain
+    // '%' characters, so do not pass it directly to printf functions.
+    char buf[200];
+
+    int i = VsprintfLiteral(buf, fmt, va);
+    if (i > -1) {
+      if (printer) {
+        printer->printf("%s\n", buf);
+      }
+      js::jit::JitSpew(js::jit::JitSpew_Codegen, "%s", buf);
+    }
+  }
+#endif
+
   enum Condition {
     Overflow = overflow,
     Below = Uless,
@@ -358,7 +375,7 @@ class Assembler : public AssemblerShared,
   
   Register getStackPointer() const { return StackPointer; }
   void flushBuffer() {}
-  void disassembleInstr(Instr instr);
+  void disassembleInstr(Instr instr, bool enable_spew = false);
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
   static uintptr_t target_address_at(Instruction* pos);
@@ -387,13 +404,13 @@ class Assembler : public AssemblerShared,
                  (uint64_t)editSrc(
                      BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
                  currentOffset());
-    disassembleInstr(x);
+    disassembleInstr(x, JitSpew_Codegen);
     CheckTrampolinePoolQuick();
   }
 
-  virtual  void emit(ShortInstr x) { MOZ_CRASH(); }
-  virtual  void emit(uint64_t x) { MOZ_CRASH(); }
-  virtual  void emit(uint32_t x) { m_buffer.putInt(x); }
+  virtual void emit(ShortInstr x) { MOZ_CRASH(); }
+  virtual void emit(uint64_t x) { MOZ_CRASH(); }
+  virtual void emit(uint32_t x) { m_buffer.putInt(x); }
 
   virtual void BlockTrampolinePoolFor(int instructions);
 
