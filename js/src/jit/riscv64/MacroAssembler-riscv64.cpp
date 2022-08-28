@@ -4241,6 +4241,27 @@ void MacroAssemblerRiscv64::ma_addPtrTestCarry(Condition cond,
   }
 }
 
+void MacroAssemblerRiscv64::ma_addPtrTestCarry(Condition cond,
+                                               Register rd,
+                                               Register rj,
+                                               ImmWord imm,
+                                               Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+
+  // Check for signed range because of as_addi_d
+  if (is_intn(imm.value, 12)) {
+    uint32_t value = imm.value;
+    addi(rd, rj, value);
+    ma_sltu(scratch2, rd, Operand(value));
+    ma_b(scratch2, scratch2, label,
+         cond == Assembler::CarrySet ? Assembler::NonZero : Assembler::Zero);
+  } else {
+    ma_li(scratch2, imm);
+    ma_addPtrTestCarry(cond, rd, rj, scratch2, label);
+  }
+}
+
 void MacroAssemblerRiscv64::ma_load(Register dest,
                                     const BaseIndex& src,
                                     LoadStoreSize size,
