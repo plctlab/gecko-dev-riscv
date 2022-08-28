@@ -401,8 +401,8 @@ bool Assembler::oom() const {
   return m_buffer.oom() || jumpRelocations_.oom() || dataRelocations_.oom();
 }
 
-void Assembler::disassembleInstr(Instr instr) {
-  if (!FLAG_riscv_debug)
+void Assembler::disassembleInstr(Instr instr, bool enable_spew) {
+  if (!FLAG_riscv_debug && !enable_spew)
     return;
   disasm::NameConverter converter;
   disasm::Disassembler disasm(converter);
@@ -410,6 +410,9 @@ void Assembler::disassembleInstr(Instr instr) {
 
   disasm.InstructionDecode(disasm_buffer, reinterpret_cast<byte*>(&instr));
   DEBUG_PRINTF("%s\n", disasm_buffer.start());
+  if(enable_spew) {
+    JitSpew(JitSpew_Codegen,"%s", disasm_buffer.start());
+  }
 }
 
 void Assembler::BlockTrampolinePoolFor(int instructions) {
@@ -733,7 +736,7 @@ uint32_t Assembler::next_link(Label* L, bool is_internal) {
 }
 
 void Assembler::bind(Label* label, BufferOffset boff) {
-  spew(".set Llabel %p", label);
+  JitSpew(JitSpew_Codegen, ".set Llabel %p", label);
   // If our caller didn't give us an explicit target to bind to
   // then we want to bind to the location of the next instruction
   BufferOffset dest = boff.assigned() ? boff : nextOffset();
@@ -814,12 +817,15 @@ int32_t Assembler::branch_long_offset(Label* L) {
 
   DEBUG_PRINTF("branch_long_offset: %p to (%d)\n", L, currentOffset());
   if (L->bound()) {
+    JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
     target_pos = L->offset();
   } else {
     if (L->used()) {
       target_pos = L->offset();  // L's link.
+      JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
     } else {
+      JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
       if (!trampoline_emitted_) {
         unbound_labels_count_++;
@@ -840,14 +846,16 @@ int32_t Assembler::branch_offset_helper(Label* L, OffsetSize bits) {
 
   DEBUG_PRINTF("branch_offset_helper: %p to %d\n", L, currentOffset());
   if (L->bound()) {
+    JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
     target_pos = L->offset();
-    DEBUG_PRINTF("\tbound: %d", target_pos);
   } else {
     if (L->used()) {
       target_pos = L->offset();
+      JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
       DEBUG_PRINTF("\tadded to link: %d\n", target_pos);
     } else {
+      JitSpew(JitSpew_Codegen,".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
       if (!trampoline_emitted_) {
         unbound_labels_count_++;
