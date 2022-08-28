@@ -989,7 +989,7 @@ void Decoder::DecodeRType(Instruction* instr) {
     case RO_AND:
       Format(instr, "and       'rd, 'rs1, 'rs2");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_ADDW:
       Format(instr, "addw      'rd, 'rs1, 'rs2");
       break;
@@ -1008,7 +1008,7 @@ void Decoder::DecodeRType(Instruction* instr) {
     case RO_SRAW:
       Format(instr, "sraw      'rd, 'rs1, 'rs2");
       break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
     // TODO(riscv): Add RISCV M extension macro
     case RO_MUL:
       Format(instr, "mul       'rd, 'rs1, 'rs2");
@@ -1034,7 +1034,7 @@ void Decoder::DecodeRType(Instruction* instr) {
     case RO_REMU:
       Format(instr, "remu      'rd, 'rs1, 'rs2");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_MULW:
       Format(instr, "mulw      'rd, 'rs1, 'rs2");
       break;
@@ -1050,7 +1050,7 @@ void Decoder::DecodeRType(Instruction* instr) {
     case RO_REMUW:
       Format(instr, "remuw     'rd, 'rs1, 'rs2");
       break;
-#endif /*V8_TARGET_ARCH_64_BIT*/
+#endif /*JS_CODEGEN_RISCV64*/
     // TODO(riscv): End Add RISCV M extension macro
     default: {
       switch (instr->BaseOpcode()) {
@@ -1106,7 +1106,7 @@ void Decoder::DecodeRAType(Instruction* instr) {
     case RO_AMOMAXU_W:
       Format(instr, "amomaxu.w'a 'rd, 'rs2, ('rs1)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_LR_D:
       Format(instr, "lr.d'a 'rd, ('rs1)");
       break;
@@ -1140,7 +1140,7 @@ void Decoder::DecodeRAType(Instruction* instr) {
     case RO_AMOMAXU_D:
       Format(instr, "amomaxu.d'a 'rd, 'rs2, ('rs1)");
       break;
-#endif /*V8_TARGET_ARCH_64_BIT*/
+#endif /*JS_CODEGEN_RISCV64*/
     // TODO(riscv): End Add macro for RISCV A extension
     default: {
       UNSUPPORTED_RISCV();
@@ -1215,14 +1215,14 @@ void Decoder::DecodeRFPType(Instruction* instr) {
         case 0b00001:  // RO_FCVT_WU_S
           Format(instr, "fcvt.wu.s ['frm] 'rd, 'fs1");
           break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
         case 0b00010:  // RO_FCVT_L_S
           Format(instr, "fcvt.l.s  ['frm] 'rd, 'fs1");
           break;
         case 0b00011:  // RO_FCVT_LU_S
           Format(instr, "fcvt.lu.s ['frm] 'rd, 'fs1");
           break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
         default:
           UNSUPPORTED_RISCV();
       }
@@ -1268,14 +1268,14 @@ void Decoder::DecodeRFPType(Instruction* instr) {
         case 0b00001:  // RO_FCVT_S_WU
           Format(instr, "fcvt.s.wu 'fd, 'rs1");
           break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
         case 0b00010:  // RO_FCVT_S_L
           Format(instr, "fcvt.s.l  'fd, 'rs1");
           break;
         case 0b00011:  // RO_FCVT_S_LU
           Format(instr, "fcvt.s.lu 'fd, 'rs1");
           break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
         default: {
           UNSUPPORTED_RISCV();
         }
@@ -1390,11 +1390,11 @@ void Decoder::DecodeRFPType(Instruction* instr) {
         case 0b001:  // RO_FCLASS_D
           Format(instr, "fclass.d  'rd, 'fs1");
           break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
         case 0b000:  // RO_FMV_X_D
           Format(instr, "fmv.x.d   'rd, 'fs1");
           break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
         default:
           UNSUPPORTED_RISCV();
       }
@@ -1408,14 +1408,14 @@ void Decoder::DecodeRFPType(Instruction* instr) {
         case 0b00001:  // RO_FCVT_WU_D
           Format(instr, "fcvt.wu.d ['frm] 'rd, 'fs1");
           break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
         case 0b00010:  // RO_FCVT_L_D
           Format(instr, "fcvt.l.d  ['frm] 'rd, 'fs1");
           break;
         case 0b00011:  // RO_FCVT_LU_D
           Format(instr, "fcvt.lu.d ['frm] 'rd, 'fs1");
           break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
         default:
           UNSUPPORTED_RISCV();
       }
@@ -1429,20 +1429,20 @@ void Decoder::DecodeRFPType(Instruction* instr) {
         case 0b00001:  // RO_FCVT_D_WU
           Format(instr, "fcvt.d.wu 'fd, 'rs1");
           break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
         case 0b00010:  // RO_FCVT_D_L
           Format(instr, "fcvt.d.l  'fd, 'rs1");
           break;
         case 0b00011:  // RO_FCVT_D_LU
           Format(instr, "fcvt.d.lu 'fd, 'rs1");
           break;
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
         default:
           UNSUPPORTED_RISCV();
       }
       break;
     }
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_FMV_D_X: {
       if (instr->Funct3Value() == 0b000 && instr->Rs2Value() == 0b00000) {
         Format(instr, "fmv.d.x   'fd, 'rs1");
@@ -1451,7 +1451,7 @@ void Decoder::DecodeRFPType(Instruction* instr) {
       }
       break;
     }
-#endif /* V8_TARGET_ARCH_64_BIT */
+#endif /* JS_CODEGEN_RISCV64 */
     default: {
       UNSUPPORTED_RISCV();
     }
@@ -1519,14 +1519,14 @@ void Decoder::DecodeIType(Instruction* instr) {
     case RO_LHU:
       Format(instr, "lhu       'rd, 'imm12('rs1)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_LWU:
       Format(instr, "lwu       'rd, 'imm12('rs1)");
       break;
     case RO_LD:
       Format(instr, "ld        'rd, 'imm12('rs1)");
       break;
-#endif /*V8_TARGET_ARCH_64_BIT*/
+#endif /*JS_CODEGEN_RISCV64*/
     case RO_ADDI:
       if (instr->Imm12Value() == 0) {
         if (instr->RdValue() == zero.code() &&
@@ -1572,7 +1572,7 @@ void Decoder::DecodeIType(Instruction* instr) {
       }
       break;
     }
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_ADDIW:
       if (instr->Imm12Value() == 0)
         Format(instr, "sext.w    'rd, 'rs1");
@@ -1590,7 +1590,7 @@ void Decoder::DecodeIType(Instruction* instr) {
       }
       break;
     }
-#endif /*V8_TARGET_ARCH_64_BIT*/
+#endif /*JS_CODEGEN_RISCV64*/
     case RO_FENCE:
       if (instr->MemoryOrder(true) == PSIORW &&
           instr->MemoryOrder(false) == PSIORW)
@@ -1734,11 +1734,11 @@ void Decoder::DecodeSType(Instruction* instr) {
     case RO_SW:
       Format(instr, "sw        'rs2, 'offS('rs1)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_SD:
       Format(instr, "sd        'rs2, 'offS('rs1)");
       break;
-#endif /*V8_TARGET_ARCH_64_BIT*/
+#endif /*JS_CODEGEN_RISCV64*/
     // TODO(riscv): use F Extension macro block
     case RO_FSW:
       Format(instr, "fsw       'fs2, 'offS('rs1)");
@@ -1854,7 +1854,7 @@ void Decoder::DecodeCAType(Instruction* instr) {
     case RO_C_AND:
       Format(instr, "and       'Crs1s, 'Crs1s, 'Crs2s");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_SUBW:
       Format(instr, "subw       'Crs1s, 'Crs1s, 'Crs2s");
       break;
@@ -1875,7 +1875,7 @@ void Decoder::DecodeCIType(Instruction* instr) {
       else
         Format(instr, "addi      'Crd, 'Crd, 'Cimm6");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_ADDIW:
       Format(instr, "addiw     'Crd, 'Crd, 'Cimm6");
       break;
@@ -1900,11 +1900,11 @@ void Decoder::DecodeCIType(Instruction* instr) {
     case RO_C_LWSP:
       Format(instr, "lw        'Crd, 'Cimm6Lwsp(sp)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_LDSP:
       Format(instr, "ld        'Crd, 'Cimm6Ldsp(sp)");
       break;
-#elif defined(V8_TARGET_ARCH_32_BIT)
+#elif defined(JS_CODEGEN_RISCV32)
     case RO_C_FLWSP:
       Format(instr, "flw       'Cfd, 'Cimm6Ldsp(sp)");
       break;
@@ -1929,11 +1929,11 @@ void Decoder::DecodeCSSType(Instruction* instr) {
     case RO_C_SWSP:
       Format(instr, "sw        'Crs2, 'Cimm6Swsp(sp)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_SDSP:
       Format(instr, "sd        'Crs2, 'Cimm6Sdsp(sp)");
       break;
-#elif defined(V8_TARGET_ARCH_32_BIT)
+#elif defined(JS_CODEGEN_RISCV32)
     case RO_C_FSWSP:
       Format(instr, "fsw       'Cfs2, 'Cimm6Sdsp(sp)");
       break;
@@ -1954,11 +1954,11 @@ void Decoder::DecodeCLType(Instruction* instr) {
     case RO_C_LW:
       Format(instr, "lw       'Crs2s, 'Cimm5W('Crs1s)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_LD:
       Format(instr, "ld       'Crs2s, 'Cimm5D('Crs1s)");
       break;
-#elif defined(V8_TARGET_ARCH_32_BIT)
+#elif defined(JS_CODEGEN_RISCV32)
     case RO_C_FLW:
       Format(instr, "fld       'Cfs2s, 'Cimm5D('Crs1s)");
       break;
@@ -1977,11 +1977,11 @@ void Decoder::DecodeCSType(Instruction* instr) {
     case RO_C_SW:
       Format(instr, "sw       'Crs2s, 'Cimm5W('Crs1s)");
       break;
-#ifdef V8_TARGET_ARCH_64_BIT
+#ifdef JS_CODEGEN_RISCV64
     case RO_C_SD:
       Format(instr, "sd       'Crs2s, 'Cimm5D('Crs1s)");
       break;
-#elif defined(V8_TARGET_ARCH_32_BIT)
+#elif defined(JS_CODEGEN_RISCV32)
     case RO_C_FSW:
       Format(instr, "fsw       'Cfs2s, 'Cimm5D('Crs1s)");
       break;
@@ -2126,13 +2126,11 @@ const char* NameConverter::NameOfCPURegister(int reg) const {
 }
 
 const char* NameConverter::NameOfByteCPURegister(int reg) const {
-  MOZ_CRASH();  // ARM does not have the concept of a byte register
-  return "nobytereg";
+   MOZ_CRASH(" RISC-V does not have the concept of a byte register.");
 }
 
 const char* NameConverter::NameOfXMMRegister(int reg) const {
-  MOZ_CRASH();  // ARM does not have any XMM registers
-  return "noxmmreg";
+  return FloatRegisters::GetName(reg);
 }
 
 const char* NameConverter::NameInCode(uint8_t* addr) const {

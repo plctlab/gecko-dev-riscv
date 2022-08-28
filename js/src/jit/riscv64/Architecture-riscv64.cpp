@@ -63,7 +63,28 @@ FloatRegister FloatRegister::doubleOverlay() const {
   return *this;
 }
 
-void FlushICache(void* code, size_t size) { MOZ_CRASH(); }
+uint32_t FloatRegister::GetPushSizeInBytes(
+    const TypedRegisterSet<FloatRegister>& s) {
+#ifdef ENABLE_WASM_SIMD
+#error "Needs more careful logic if SIMD is enabled"
+#endif
+
+  return s.size() * sizeof(double);
+}
+void FlushICache(void* code, size_t size) {
+#if defined(JS_SIMULATOR)
+  js::jit::SimulatorProcess::FlushICache(code, size);
+
+#elif defined(__GNUC__)
+  intptr_t end = reinterpret_cast<intptr_t>(code) + size;
+  __builtin___clear_cache(reinterpret_cast<char*>(code),
+                          reinterpret_cast<char*>(end));
+
+#else
+  _flush_cache(reinterpret_cast<char*>(code), size, BCACHE);
+
+#endif
+}
 
 bool CPUFlagsHaveBeenComputed() {
   // TODO Add CPU flags support

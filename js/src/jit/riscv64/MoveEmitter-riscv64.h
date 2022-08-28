@@ -35,17 +35,21 @@ class MoveEmitterRiscv64 {
   Register spilledReg_;
   FloatRegister spilledFloatReg_;
  public:
-  explicit MoveEmitterRiscv64(MacroAssemblerRiscv64&)
+  explicit MoveEmitterRiscv64(MacroAssembler& m)
       : inCycle_(0),
-        masm(masm),
+        masm(m),
         pushedAtStart_(masm.framePushed()),
         pushedAtCycle_(-1),
         pushedAtSpill_(-1),
         spilledReg_(InvalidReg),
         spilledFloatReg_(InvalidFloatReg) {
-    MOZ_CRASH("Unimplement on riscv");
   }
   void emit(const MoveResolver&);
+  void emit(const MoveOp& move);
+  void emitMove(const MoveOperand& from, const MoveOperand& to);
+  void emitInt32Move(const MoveOperand& from, const MoveOperand& to);
+  void emitFloat32Move(const MoveOperand& from, const MoveOperand& to);
+  void emitDoubleMove(const MoveOperand& from, const MoveOperand& to);
   void finish();
   void assertDone();
   void setScratchRegister(Register) { MOZ_CRASH("Unimplement on riscv"); }
@@ -57,7 +61,6 @@ class MoveEmitterRiscv64 {
                                     const MoveOperand& to,
                                     MoveOp::Type type,
                                     uint32_t slotId);
-  void emitDoubleMove(const MoveOperand& from, const MoveOperand& to);
   void completeCycle(const MoveOperand& from, const MoveOperand& to,
                      MoveOp::Type type, uint32_t slot);
 };

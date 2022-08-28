@@ -4,9 +4,13 @@
 #ifndef jit_riscv64_extension_Base_riscv_i_h_
 #define jit_riscv64_extension_Base_riscv_i_h_
 #include "mozilla/Assertions.h"
+
 #include <stdint.h>
+
+#include "jit/riscv64/constant/Constant-riscv64.h"
 namespace js {
 namespace jit {
+
 class AssemblerRISCVI : public AssemblerRiscvBase {
  public:
   void lui(Register rd, int32_t imm20);
@@ -83,6 +87,69 @@ class AssemblerRISCVI : public AssemblerRiscvBase {
   static int AuipcOffset(Instr instr);
   static int JalrOffset(Instr instr);
   static int LoadOffset(Instr instr);
+  static int BranchOffset(Instr instr);
+  static int BrachlongOffset(Instr auipc, Instr instr_I);
+  static inline Instr SetBranchOffset(int32_t pos,
+                                      int32_t target_pos,
+                                      Instr instr) {
+    int32_t imm = target_pos - pos;
+    MOZ_ASSERT((imm & 1) == 0);
+    MOZ_ASSERT(is_intn(imm, kBranchOffsetBits));
+
+    instr &= ~kBImm12Mask;
+    int32_t imm12 = ((imm & 0x800) >> 4) |   // bit  11
+                    ((imm & 0x1e) << 7) |    // bits 4-1
+                    ((imm & 0x7e0) << 20) |  // bits 10-5
+                    ((imm & 0x1000) << 19);  // bit 12
+
+    return instr | (imm12 & kBImm12Mask);
+  }
+
+  static inline Instr SetJalOffset(int32_t pos,
+                                   int32_t target_pos,
+                                   Instr instr) {
+    MOZ_ASSERT(IsJal(instr));
+    int32_t imm = target_pos - pos;
+    MOZ_ASSERT((imm & 1) == 0);
+    MOZ_ASSERT(is_intn(imm, kJumpOffsetBits));
+
+    instr &= ~kImm20Mask;
+    int32_t imm20 = (imm & 0xff000) |          // bits 19-12
+                    ((imm & 0x800) << 9) |     // bit  11
+                    ((imm & 0x7fe) << 20) |    // bits 10-1
+                    ((imm & 0x100000) << 11);  // bit  20
+
+    return instr | (imm20 & kImm20Mask);
+  }
+
+  static inline Instr SetJalrOffset(int32_t offset, Instr instr) {
+    MOZ_ASSERT(IsJalr(instr));
+    MOZ_ASSERT(is_int12(offset));
+    instr &= ~kImm12Mask;
+    int32_t imm12 = offset << kImm12Shift;
+    MOZ_ASSERT(IsJalr(instr | (imm12 & kImm12Mask)));
+    MOZ_ASSERT(JalrOffset(instr | (imm12 & kImm12Mask)) == offset);
+    return instr | (imm12 & kImm12Mask);
+  }
+
+  static inline Instr SetLoadOffset(int32_t offset, Instr instr) {
+#if JS_CODEGEN_RISCV64
+    MOZ_ASSERT(IsLd(instr));
+#elif JS_CODEGEN_RISCV32
+    MOZ_ASSERT(IsLw(instr));
+#endif
+    MOZ_ASSERT(is_int12(offset));
+    instr &= ~kImm12Mask;
+    int32_t imm12 = offset << kImm12Shift;
+    return instr | (imm12 & kImm12Mask);
+  }
+
+  static inline Instr SetAuipcOffset(int32_t offset, Instr instr) {
+    MOZ_ASSERT(IsAuipc(instr));
+    MOZ_ASSERT(is_int20(offset));
+    instr = (instr & ~kImm31_12Mask) | ((offset & kImm19_0Mask) << 12);
+    return instr;
+  }
 
   // Check if an instruction is a branch of some kind.
   static bool IsBranch(Instr instr);
@@ -124,24 +191,52 @@ class AssemblerRISCVI : public AssemblerRiscvBase {
     bgeu(rs1, rs2, branch_offset(L));
   }
 
-  void beqz(Register rs, int16_t imm13) { beq(rs, zero_reg, imm13); }
-  void beqz(Register rs1, Label* L) { beqz(rs1, branch_offset(L)); }
-  void bnez(Register rs, int16_t imm13) { bne(rs, zero_reg, imm13); }
-  void bnez(Register rs1, Label* L) { bnez(rs1, branch_offset(L)); }
-  void blez(Register rs, int16_t imm13) { bge(zero_reg, rs, imm13); }
-  void blez(Register rs1, Label* L) { blez(rs1, branch_offset(L)); }
-  void bgez(Register rs, int16_t imm13) { bge(rs, zero_reg, imm13); }
-  void bgez(Register rs1, Label* L) { bgez(rs1, branch_offset(L)); }
-  void bltz(Register rs, int16_t imm13) { blt(rs, zero_reg, imm13); }
-  void bltz(Register rs1, Label* L) { bltz(rs1, branch_offset(L)); }
-  void bgtz(Register rs, int16_t imm13) { blt(zero_reg, rs, imm13); }
+  void beqz(Register rs, int16_t imm13) {
+    beq(rs, zero_reg, imm13);
+  }
+  void beqz(Register rs1, Label* L) {
+    beqz(rs1, branch_offset(L));
+  }
+  void bnez(Register rs, int16_t imm13) {
+    bne(rs, zero_reg, imm13);
+  }
+  void bnez(Register rs1, Label* L) {
+    bnez(rs1, branch_offset(L));
+  }
+  void blez(Register rs, int16_t imm13) {
+    bge(zero_reg, rs, imm13);
+  }
+  void blez(Register rs1, Label* L) {
+    blez(rs1, branch_offset(L));
+  }
+  void bgez(Register rs, int16_t imm13) {
+    bge(rs, zero_reg, imm13);
+  }
+  void bgez(Register rs1, Label* L) {
+    bgez(rs1, branch_offset(L));
+  }
+  void bltz(Register rs, int16_t imm13) {
+    blt(rs, zero_reg, imm13);
+  }
+  void bltz(Register rs1, Label* L) {
+    bltz(rs1, branch_offset(L));
+  }
+  void bgtz(Register rs, int16_t imm13) {
+    blt(zero_reg, rs, imm13);
+  }
 
-  void bgtz(Register rs1, Label* L) { bgtz(rs1, branch_offset(L)); }
-  void bgt(Register rs1, Register rs2, int16_t imm13) { blt(rs2, rs1, imm13); }
+  void bgtz(Register rs1, Label* L) {
+    bgtz(rs1, branch_offset(L));
+  }
+  void bgt(Register rs1, Register rs2, int16_t imm13) {
+    blt(rs2, rs1, imm13);
+  }
   void bgt(Register rs1, Register rs2, Label* L) {
     bgt(rs1, rs2, branch_offset(L));
   }
-  void ble(Register rs1, Register rs2, int16_t imm13) { bge(rs2, rs1, imm13); }
+  void ble(Register rs1, Register rs2, int16_t imm13) {
+    bge(rs2, rs1, imm13);
+  }
   void ble(Register rs1, Register rs2, Label* L) {
     ble(rs1, rs2, branch_offset(L));
   }
@@ -158,27 +253,59 @@ class AssemblerRISCVI : public AssemblerRiscvBase {
     bleu(rs1, rs2, branch_offset(L));
   }
 
-  void j(int32_t imm21) { jal(zero_reg, imm21); }
-  void j(Label* L) { j(jump_offset(L)); }
-  void b(Label* L) { j(L); }
-  void jal(int32_t imm21) { jal(ra, imm21); }
-  void jal(Label* L) { jal(jump_offset(L)); }
-  void jr(Register rs) { jalr(zero_reg, rs, 0); }
-  void jr(Register rs, int32_t imm12) { jalr(zero_reg, rs, imm12); }
-  void jalr(Register rs, int32_t imm12) { jalr(ra, rs, imm12); }
-  void jalr(Register rs) { jalr(ra, rs, 0); }
+  void j(int32_t imm21) {
+    jal(zero_reg, imm21);
+  }
+  void j(Label* L) {
+    j(jump_offset(L));
+  }
+  void b(Label* L) {
+    j(L);
+  }
+  void jal(int32_t imm21) {
+    jal(ra, imm21);
+  }
+  void jal(Label* L) {
+    jal(jump_offset(L));
+  }
+  void jr(Register rs) {
+    jalr(zero_reg, rs, 0);
+  }
+  void jr(Register rs, int32_t imm12) {
+    jalr(zero_reg, rs, imm12);
+  }
+  void jalr(Register rs, int32_t imm12) {
+    jalr(ra, rs, imm12);
+  }
+  void jalr(Register rs) {
+    jalr(ra, rs, 0);
+  }
   void call(int32_t offset) {
     auipc(ra, (offset >> 12) + ((offset & 0x800) >> 11));
     jalr(ra, ra, offset << 20 >> 20);
   }
 
-  void mv(Register rd, Register rs) { addi(rd, rs, 0); }
-  void not_(Register rd, Register rs) { xori(rd, rs, -1); }
-  void neg(Register rd, Register rs) { sub(rd, zero_reg, rs); }
-  void seqz(Register rd, Register rs) { sltiu(rd, rs, 1); }
-  void snez(Register rd, Register rs) { sltu(rd, zero_reg, rs); }
-  void sltz(Register rd, Register rs) { slt(rd, rs, zero_reg); }
-  void sgtz(Register rd, Register rs) { slt(rd, zero_reg, rs); }
+  void mv(Register rd, Register rs) {
+    addi(rd, rs, 0);
+  }
+  void not_(Register rd, Register rs) {
+    xori(rd, rs, -1);
+  }
+  void neg(Register rd, Register rs) {
+    sub(rd, zero_reg, rs);
+  }
+  void seqz(Register rd, Register rs) {
+    sltiu(rd, rs, 1);
+  }
+  void snez(Register rd, Register rs) {
+    sltu(rd, zero_reg, rs);
+  }
+  void sltz(Register rd, Register rs) {
+    slt(rd, rs, zero_reg);
+  }
+  void sgtz(Register rd, Register rs) {
+    slt(rd, zero_reg, rs);
+  }
 
 #if JS_CODEGEN_RISCV64
   void lwu(Register rd, Register rs1, int16_t imm12);
@@ -193,8 +320,12 @@ class AssemblerRISCVI : public AssemblerRiscvBase {
   void sllw(Register rd, Register rs1, Register rs2);
   void srlw(Register rd, Register rs1, Register rs2);
   void sraw(Register rd, Register rs1, Register rs2);
-  void negw(Register rd, Register rs) { subw(rd, zero_reg, rs); }
-  void sext_w(Register rd, Register rs) { addiw(rd, rs, 0); }
+  void negw(Register rd, Register rs) {
+    subw(rd, zero_reg, rs);
+  }
+  void sext_w(Register rd, Register rs) {
+    addiw(rd, rs, 0);
+  }
 
   static bool IsAddiw(Instr instr);
   static bool IsLd(Instr instr);

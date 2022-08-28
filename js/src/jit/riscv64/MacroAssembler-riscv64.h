@@ -61,10 +61,6 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   MoveResolver moveResolver_;
 
-  size_t size() const { MOZ_CRASH(); }
-  size_t bytesNeeded() const { MOZ_CRASH(); }
-  size_t jumpRelocationTableBytes() const { MOZ_CRASH(); }
-  size_t dataRelocationTableBytes() const { MOZ_CRASH(); }
   size_t preBarrierTableBytes() const { MOZ_CRASH(); }
 
   size_t numCodeLabels() const { MOZ_CRASH(); }
@@ -86,27 +82,18 @@ class MacroAssemblerRiscv64 : public Assembler {
   static bool SupportsFloatingPoint() { return true; }
   static bool SupportsUnalignedAccesses() { return true; }
   static bool SupportsFastUnalignedFPAccesses() { return true; }
-
-  void executableCopy(void*, bool = true) { MOZ_CRASH(); }
-  void copyJumpRelocationTable(uint8_t*) { MOZ_CRASH(); }
-  void copyDataRelocationTable(uint8_t*) { MOZ_CRASH(); }
-  void copyPreBarrierTable(uint8_t*) { MOZ_CRASH(); }
-  void processCodeLabels(uint8_t*) { MOZ_CRASH(); }
-
-  void flushBuffer() { MOZ_CRASH(); }
-
   template <typename T>
   void j(Condition, T) {
     MOZ_CRASH();
   }
-  void haltingAlign(size_t) { MOZ_CRASH(); }
-  void nopAlign(size_t) { MOZ_CRASH(); }
+  void haltingAlign(int alignment) {
+    // TODO(loong64): Implement a proper halting align.
+    nopAlign(alignment);
+  }
 
   // TODO(RISCV) Reorder parameters so out parameters come last.
   bool CalculateOffset(Label* L, int32_t* offset, OffsetSize bits);
   int32_t GetOffset(int32_t offset, Label* L, OffsetSize bits);
-
-  void finish() { MOZ_CRASH(); }
 
   inline void GenPCRelativeJump(Register rd, int32_t imm32) {
     MOZ_ASSERT(is_int32(imm32 + 0x800));
@@ -179,7 +166,7 @@ class MacroAssemblerRiscv64 : public Assembler {
   }                                           \
   void instr(Register rs, Imm32 j) {          \
     instr(rs, Operand(j.value));              \
-  }
+  }                                          
 
   DEFINE_INSTRUCTION(ma_and);
   DEFINE_INSTRUCTION(ma_or);
@@ -329,12 +316,12 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   void ma_branch(Label* target,
                  Condition cond,
-                 Register r1 = InvalidReg,
-                 const Operand& r2 = InvalidReg,
-                 JumpKind jumpKind = LongJump);
+                 Register r1,
+                 const Operand& r2,
+                 JumpKind jumpKind = ShortJump);
 
-  void ma_branch(Label* target, JumpKind jumpKind = LongJump) {
-    ma_branch(target, Always, InvalidReg, InvalidReg, jumpKind);
+  void ma_branch(Label* target, JumpKind jumpKind = ShortJump) {
+    ma_branch(target, Always, zero, zero, jumpKind);
   }
 
   // fp instructions
@@ -363,6 +350,8 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_pop(FloatRegister f);
   void ma_push(FloatRegister f);
 
+  Condition ma_cmp(Register rd, Register lhs, Register rhs, Condition c);
+  Condition ma_cmp(Register rd, Register lhs, Imm32 imm, Condition c);
   void ma_cmp_set(Register dst, Register lhs, ImmWord imm, Condition c);
   void ma_cmp_set(Register dst, Register lhs, ImmPtr imm, Condition c);
   void ma_cmp_set(Register dst, Address address, Imm32 imm, Condition c);
@@ -605,7 +594,7 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     }
   }
 
-  void j(Label* dest) { ma_branch(dest, Always); }
+  void j(Label* dest) { ma_branch(dest); }
 
   void mov(Register src, Register dest) { addi(dest, src, 0); }
   void mov(ImmWord imm, Register dest) { ma_li(dest, imm); }
@@ -711,7 +700,7 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     emit(uint64_t(-1));
   }
 
-  void jump(Label* label) { ma_branch(label, Always); }
+  void jump(Label* label) { ma_branch(label); }
   void jump(Register reg) { jr(reg); }
   void jump(const Address& address) {
     UseScratchRegisterScope temps(this);
@@ -742,6 +731,14 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     splitTag(value, tag);
   }
 
+  void moveIfNotZero(Register dst, Register src, Register cond) {
+    ScratchRegisterScope scratch(asMasm());
+    MOZ_ASSERT(dst != scratch && cond != scratch);
+    Label done;
+    ma_branch(&done, Equal, cond, zero);
+    mv(dst, src);
+    bind(&done);
+  }
   // unboxing code
   void unboxNonDouble(const ValueOperand& operand,
                       Register dest,
@@ -778,15 +775,15 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     unboxNonDouble(src, dest, JSVAL_TYPE_OBJECT);
     static_assert(JS::detail::ValueObjectOrNullBit ==
                   (uint64_t(0x8) << JSVAL_TAG_SHIFT));
-    InsertBits(dest, zero, JSVAL_TAG_SHIFT + 3, JSVAL_TAG_SHIFT + 3);
+    InsertBits(dest, zero, JSVAL_TAG_SHIFT + 3, 1);
   }
 
   void unboxGCThingForGCBarrier(const Address& src, Register dest) {
     loadPtr(src, dest);
-    ExtractBits(dest, dest, JSVAL_TAG_SHIFT - 1, 0);
+    ExtractBits(dest, dest, 0, JSVAL_TAG_SHIFT - 1);
   }
   void unboxGCThingForGCBarrier(const ValueOperand& src, Register dest) {
-    ExtractBits(dest, src.valueReg(), JSVAL_TAG_SHIFT - 1, 0);
+    ExtractBits(dest, src.valueReg(), 0, JSVAL_TAG_SHIFT - 1);
   }
 
   void unboxInt32(const ValueOperand& operand, Register dest);
