@@ -192,6 +192,7 @@ class Registers {
       (1 << Registers::t6) |    // call reg
       (1 << Registers::s9) |    // Scratch reg
       (1 << Registers::s10) |    // Scratch reg
+      (1 << Registers::s11) |    // Scratch reg
       (1 << Registers::ra) | (1 << Registers::tp) | (1 << Registers::sp) |
       (1 << Registers::fp) | (1 << Registers::gp) ;
 

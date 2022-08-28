@@ -39,7 +39,8 @@ void MacroAssemblerRiscv64::ma_cmp_set(Register rd,
   if (imm.value <= INT32_MAX) {
     ma_cmp_set(rd, rj, Imm32(uint32_t(imm.value)), c);
   } else {
-    ScratchRegisterScope scratch(asMasm());
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     ma_li(scratch, imm);
     ma_cmp_set(rd, rj, scratch, c);
   }
@@ -73,7 +74,9 @@ void MacroAssemblerRiscv64::ma_cmp_set(Register rd,
   ma_cmp_set(rd, Register(scratch2), imm, c);
 }
 
-void MacroAssemblerRiscv64::ma_cmp_set(Register rd, Register rj, Imm32 imm,
+void MacroAssemblerRiscv64::ma_cmp_set(Register rd,
+                                       Register rj,
+                                       Imm32 imm,
                                        Condition c) {
   if (imm.value == 0) {
     switch (c) {
@@ -141,13 +144,15 @@ void MacroAssemblerRiscv64::ma_cmp_set(Register rd, Register rj, Imm32 imm,
       Condition cond = ma_cmp(rd, rj, imm, c);
       MOZ_ASSERT(cond == Equal || cond == NotEqual);
 
-      if (cond == Equal) xori(rd, rd, 1);
+      if (cond == Equal)
+        xori(rd, rd, 1);
   }
 }
 
-
-Assembler::Condition MacroAssemblerRiscv64::ma_cmp(Register dest, Register lhs,
-                                                   Register rhs, Condition c) {
+Assembler::Condition MacroAssemblerRiscv64::ma_cmp(Register dest,
+                                                   Register lhs,
+                                                   Register rhs,
+                                                   Condition c) {
   switch (c) {
     case Above:
       // bgtu s,t,label =>
@@ -203,9 +208,12 @@ Assembler::Condition MacroAssemblerRiscv64::ma_cmp(Register dest, Register lhs,
   return Always;
 }
 
-Assembler::Condition MacroAssemblerRiscv64::ma_cmp(Register dest, Register lhs,
-                                                   Imm32 imm, Condition c) {
-  ScratchRegisterScope scratch(asMasm());
+Assembler::Condition MacroAssemblerRiscv64::ma_cmp(Register dest,
+                                                   Register lhs,
+                                                   Imm32 imm,
+                                                   Condition c) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   MOZ_RELEASE_ASSERT(lhs != scratch);
 
   switch (c) {
@@ -1999,17 +2007,30 @@ CodeOffset MacroAssembler::nopPatchableToCall() {
   return CodeOffset(currentOffset());
 }
 CodeOffset MacroAssembler::wasmTrapInstruction() {
-  MOZ_CRASH();
+  CodeOffset offset(currentOffset());
+  ebreak();  // TODO: as_teq(zero, zero, WASM_TRAP)
+  return offset;
 }
-size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet) {
-  MOZ_CRASH();
+size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet set) {
+  return set.gprs().size() * sizeof(intptr_t) + set.fpus().getPushSizeInBytes();
 }
 template <typename T>
-void MacroAssembler::branchValueIsNurseryCellImpl(Condition,
-                                                  const T&,
-                                                  Register,
-                                                  Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchValueIsNurseryCellImpl(Condition cond,
+                                                  const T& value,
+                                                  Register temp,
+                                                  Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  MOZ_ASSERT(temp != InvalidReg);
+  Label done;
+  branchTestGCThing(Assembler::NotEqual, value,
+                    cond == Assembler::Equal ? &done : label);
+
+  unboxGCThingForGCBarrier(value, temp);
+  orPtr(Imm32(gc::ChunkMask), temp);
+  loadPtr(Address(temp, gc::ChunkStoreBufferOffsetFromLastByte), temp);
+  branchPtr(InvertCondition(cond), temp, zero, label);
+
+  bind(&done);
 }
 
 template <typename T>
@@ -2210,29 +2231,44 @@ void MacroAssembler::atomicFetchOp(Scalar::Type,
                                    Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchPtrInNurseryChunk(Condition,
-                                             Register,
-                                             Register,
-                                             Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchPtrInNurseryChunk(Condition cond,
+                                             Register ptr,
+                                             Register temp,
+                                             Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  MOZ_ASSERT(ptr != temp);
+  MOZ_ASSERT(ptr != ScratchRegister);  // Both may be used internally.
+  MOZ_ASSERT(temp != ScratchRegister);
+  MOZ_ASSERT(temp != InvalidReg);
+
+  movePtr(ptr, temp);
+  orPtr(Imm32(gc::ChunkMask), temp);
+  branchPtr(InvertCondition(cond),
+            Address(temp, gc::ChunkStoreBufferOffsetFromLastByte), zero, label);
 }
-void MacroAssembler::branchTestValue(Condition,
-                                     const ValueOperand&,
-                                     const Value&,
-                                     Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestValue(Condition cond,
+                                     const ValueOperand& lhs,
+                                     const Value& rhs,
+                                     Label* label) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  MOZ_ASSERT(lhs.valueReg() != scratch);
+  moveValue(rhs, ValueOperand(scratch));
+  ma_b(lhs.valueReg(), scratch, label, cond);
 }
-void MacroAssembler::branchValueIsNurseryCell(Condition,
-                                              const Address&,
-                                              Register,
-                                              Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchValueIsNurseryCell(Condition cond,
+                                              const Address& address,
+                                              Register temp,
+                                              Label* label) {
+  branchValueIsNurseryCellImpl(cond, address, temp, label);
 }
-void MacroAssembler::branchValueIsNurseryCell(Condition,
-                                              ValueOperand,
-                                              Register,
-                                              Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchValueIsNurseryCell(Condition cond,
+                                              ValueOperand value,
+                                              Register temp,
+                                              Label* label) {
+  branchValueIsNurseryCellImpl(cond, value, temp, label);
 }
 void MacroAssembler::call(const Address& addr) {
   loadPtr(addr, CallReg);
@@ -2248,7 +2284,8 @@ void MacroAssembler::call(ImmWord target) {
 }
 
 void MacroAssembler::call(JitCode* c) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   BufferOffset bo = m_buffer.nextOffset();
   addPendingJump(bo, ImmPtr(c->raw()), RelocationKind::JITCODE);
   ma_liPatchable(scratch, ImmPtr(c->raw()));
@@ -2546,20 +2583,34 @@ void MacroAssembler::oolWasmTruncateCheckF64ToI64(FloatRegister,
                                                   Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::patchCallToNop(uint8_t*) {
+void MacroAssembler::patchCallToNop(uint8_t* call) {
   MOZ_CRASH();
 }
-void MacroAssembler::patchCall(uint32_t, uint32_t) {
-  MOZ_CRASH();
+void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
+  BufferOffset call(callerOffset - 1 * sizeof(uint32_t));
+
+  int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
+  if (is_int12(offset)) {
+    Instruction* bal = editSrc(call);
+    MOZ_CRASH();
+  } else {
+    uint32_t u32Offset = callerOffset - 4 * sizeof(uint32_t);
+    uint32_t* u32 =
+        reinterpret_cast<uint32_t*>(editSrc(BufferOffset(u32Offset)));
+    *u32 = calleeOffset - callerOffset;
+  }
 }
-void MacroAssembler::patchFarJump(CodeOffset, uint32_t) {
-  MOZ_CRASH();
+void MacroAssembler::patchFarJump(CodeOffset farJump, uint32_t targetOffset) {
+  uint32_t* u32 =
+      reinterpret_cast<uint32_t*>(editSrc(BufferOffset(farJump.offset())));
+  MOZ_ASSERT(*u32 == UINT32_MAX);
+  *u32 = targetOffset - farJump.offset();
 }
-void MacroAssembler::patchNearAddressMove(CodeLocationLabel,
-                                          CodeLocationLabel) {
-  MOZ_CRASH();
+void MacroAssembler::patchNearAddressMove(CodeLocationLabel loc,
+                                          CodeLocationLabel target) {
+  PatchDataWithValueCheck(loc, ImmPtr(target.raw()), ImmPtr(nullptr));
 }
-void MacroAssembler::patchNopToCall(uint8_t*, uint8_t*) {
+void MacroAssembler::patchNopToCall(uint8_t* call, uint8_t* target) {
   MOZ_CRASH();
 }
 void MacroAssembler::Pop(Register reg) {
@@ -2626,14 +2677,16 @@ void MacroAssembler::Push(Register reg) {
 }
 
 void MacroAssembler::Push(const Imm32 imm) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   ma_li(scratch, imm);
   ma_push(scratch);
   adjustFrame(int32_t(sizeof(intptr_t)));
 }
 
 void MacroAssembler::Push(const ImmWord imm) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   ma_li(scratch, imm);
   ma_push(scratch);
   adjustFrame(int32_t(sizeof(intptr_t)));
@@ -2644,7 +2697,8 @@ void MacroAssembler::Push(const ImmPtr imm) {
 }
 
 void MacroAssembler::Push(const ImmGCPtr ptr) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   ma_li(scratch, ptr);
   ma_push(scratch);
   adjustFrame(int32_t(sizeof(intptr_t)));
@@ -3270,7 +3324,8 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
                                  Label* label,
                                  Condition c,
                                  JumpKind jumpKind) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   MOZ_ASSERT(lhs != scratch);
   ma_li(scratch, imm);
   ma_b(lhs, Register(scratch), label, c, jumpKind);
@@ -3281,7 +3336,8 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
                                  Label* label,
                                  Condition c,
                                  JumpKind jumpKind) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   MOZ_ASSERT(lhs != scratch);
   ma_li(scratch, imm);
   ma_b(lhs, Register(scratch), label, c, jumpKind);
@@ -3931,7 +3987,8 @@ void MacroAssemblerRiscv64::ma_neg(Register rd, const Operand& rt) {
 }
 
 void MacroAssemblerRiscv64::ma_jump(ImmPtr dest) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   asMasm().ma_liPatchable(scratch, dest);
   jr(scratch, 0);
 }
@@ -3940,7 +3997,8 @@ void MacroAssemblerRiscv64::ma_lid(FloatRegister dest, double value) {
   ImmWord imm(mozilla::BitwiseCast<uint64_t>(value));
 
   if (imm.value != 0) {
-    ScratchRegisterScope scratch(asMasm());
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     ma_li(scratch, imm);
     fmv_d_x(dest, scratch);
   } else {
@@ -3952,7 +4010,8 @@ void MacroAssemblerRiscv64::ma_lis(FloatRegister dest, float value) {
   Imm32 imm(mozilla::BitwiseCast<uint32_t>(value));
 
   if (imm.value != 0) {
-    ScratchRegisterScope scratch(asMasm());
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     ma_li(scratch, imm);
     fmv_w_x(dest, scratch);
   } else {
@@ -3964,7 +4023,8 @@ void MacroAssemblerRiscv64::ma_sub32TestOverflow(Register rd,
                                                  Register rj,
                                                  Register rk,
                                                  Label* overflow) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   sub(scratch, rj, rk);
   subw(rd, rj, rk);
   ma_b(rd, Register(scratch), overflow, Assembler::NotEqual);
@@ -3977,7 +4037,8 @@ void MacroAssemblerRiscv64::ma_sub32TestOverflow(Register rd,
   if (imm.value != INT32_MIN) {
     asMasm().ma_add32TestOverflow(rd, rj, Imm32(-imm.value), overflow);
   } else {
-    ScratchRegisterScope scratch(asMasm());
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     MOZ_ASSERT(rj != scratch);
     ma_li(scratch, Imm32(imm.value));
     asMasm().ma_sub32TestOverflow(rd, rj, scratch, overflow);
@@ -3988,7 +4049,8 @@ void MacroAssemblerRiscv64::ma_add32TestOverflow(Register rd,
                                                  Register rj,
                                                  Register rk,
                                                  Label* overflow) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   add(scratch, rj, rk);
   addw(rd, rj, rk);
   ma_b(rd, Register(scratch), overflow, Assembler::NotEqual);
@@ -4000,7 +4062,8 @@ void MacroAssemblerRiscv64::ma_add32TestOverflow(Register rd,
                                                  Label* overflow) {
   // Check for signed range because of addi
   if (is_intn(imm.value, 12)) {
-    ScratchRegisterScope scratch(asMasm());
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     addi(scratch, rj, imm.value);
     addiw(rd, rj, imm.value);
     ma_b(rd, scratch, overflow, Assembler::NotEqual);
@@ -4049,7 +4112,8 @@ void MacroAssemblerRiscv64::ma_addPtrTestOverflow(Register rd,
                                                   Register rj,
                                                   Register rk,
                                                   Label* overflow) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   MOZ_ASSERT(rd != scratch);
 
   if (rj == rk) {
@@ -4113,7 +4177,8 @@ void MacroAssemblerRiscv64::ma_add32TestCarry(Condition cond,
                                               Label* overflow) {
   MOZ_ASSERT(cond == Assembler::CarrySet || cond == Assembler::CarryClear);
   MOZ_ASSERT_IF(rd == rj, rk != rd);
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   addw(rd, rj, rk);
   sltu(scratch, rd, rd == rj ? rk : rj);
   ma_b(Register(scratch), Register(scratch), overflow,
@@ -4146,7 +4211,8 @@ void MacroAssemblerRiscv64::ma_addPtrTestCarry(Condition cond,
                                                Register rj,
                                                Register rk,
                                                Label* label) {
-  ScratchRegisterScope scratch(asMasm());
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   MOZ_ASSERT(rd != rk);
   MOZ_ASSERT(rd != scratch);
   add(rd, rj, rk);
@@ -4167,6 +4233,27 @@ void MacroAssemblerRiscv64::ma_addPtrTestCarry(Condition cond,
   if (is_intn(imm.value, 12)) {
     addi(rd, rj, imm.value);
     sltiu(scratch2, rd, imm.value);
+    ma_b(scratch2, scratch2, label,
+         cond == Assembler::CarrySet ? Assembler::NonZero : Assembler::Zero);
+  } else {
+    ma_li(scratch2, imm);
+    ma_addPtrTestCarry(cond, rd, rj, scratch2, label);
+  }
+}
+
+void MacroAssemblerRiscv64::ma_addPtrTestCarry(Condition cond,
+                                               Register rd,
+                                               Register rj,
+                                               ImmWord imm,
+                                               Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+
+  // Check for signed range because of as_addi_d
+  if (is_intn(imm.value, 12)) {
+    uint32_t value = imm.value;
+    addi(rd, rj, value);
+    ma_sltu(scratch2, rd, Operand(value));
     ma_b(scratch2, scratch2, label,
          cond == Assembler::CarrySet ? Assembler::NonZero : Assembler::Zero);
   } else {

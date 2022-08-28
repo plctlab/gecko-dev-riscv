@@ -4,6 +4,40 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Copyright (c) 1994-2006 Sun Microsystems Inc.
+// All Rights Reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+// - Redistributions of source code must retain the above copyright notice,
+// this list of conditions and the following disclaimer.
+//
+// - Redistribution in binary form must reproduce the above copyright
+// notice, this list of conditions and the following disclaimer in the
+// documentation and/or other materials provided with the distribution.
+//
+// - Neither the name of Sun Microsystems or the names of contributors may
+// be used to endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+// IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+// PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+// CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+// EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+// PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+// PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+// LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// The original source code covered by the above license above has been
+// modified significantly by Google Inc.
+// Copyright 2021 the V8 project authors. All rights reserved.
+
 #ifndef jit_riscv64_Assembler_riscv64_h
 #define jit_riscv64_Assembler_riscv64_h
 
@@ -328,7 +362,7 @@ class Assembler : public AssemblerShared,
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
   static uintptr_t target_address_at(Instruction* pos);
-  void set_target_value_at(Instruction* pc,
+  static void set_target_value_at(Instruction* pc,
                            uint64_t target);
   void target_at_put(BufferOffset pos, BufferOffset target_pos, bool trampoline = false);
   virtual int32_t branch_offset_helper(Label* L, OffsetSize bits);
@@ -346,13 +380,13 @@ class Assembler : public AssemblerShared,
       nop();
     }
   }
-  virtual  void emit(Instr x) {
+  virtual void emit(Instr x) {
     MOZ_ASSERT(hasCreator());
     m_buffer.putInt(x);
-    DEBUG_PRINTF(
-        "0x%lx(%x): ",
-        (uint64_t)editSrc(BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
-        currentOffset());
+    DEBUG_PRINTF("0x%lx(%x): ",
+                 (uint64_t)editSrc(
+                     BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
+                 currentOffset());
     disassembleInstr(x);
     CheckTrampolinePoolQuick();
   }
@@ -367,14 +401,17 @@ class Assembler : public AssemblerShared,
     *reinterpret_cast<Instr*>(editSrc(offset)) = instr;
   }
 
-  static Condition InvertCondition(Condition) { MOZ_CRASH(); }
+  static Condition InvertCondition(Condition);
 
-  static DoubleCondition InvertCondition(DoubleCondition) { MOZ_CRASH(); }
+  static DoubleCondition InvertCondition(DoubleCondition);
 
-  template <typename T, typename S>
-  static void PatchDataWithValueCheck(CodeLocationLabel, T, S) {
-    MOZ_CRASH();
-  }
+  static uint64_t ExtractLoad64Value(Instruction* inst0);
+  static void UpdateLoad64Value(Instruction* inst0, uint64_t value);
+  static void PatchDataWithValueCheck(CodeLocationLabel label, ImmPtr newValue,
+                                      ImmPtr expectedValue);
+  static void PatchDataWithValueCheck(CodeLocationLabel label,
+                                      PatchedImmPtr newValue,
+                                      PatchedImmPtr expectedValue);
   static void PatchWrite_Imm32(CodeLocationLabel, Imm32) { MOZ_CRASH(); }
 
   static void PatchWrite_NearCall(CodeLocationLabel, CodeLocationLabel) {

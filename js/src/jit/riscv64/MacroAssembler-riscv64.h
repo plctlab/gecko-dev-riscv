@@ -697,7 +697,8 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     label->patchAt()->bind(currentOffset());
     label->setLinkMode(CodeLabel::RawPointer);
     m_buffer.ensureSpace(sizeof(void*));
-    emit(uint64_t(-1));
+    emit(uint32_t(-1));
+    emit(uint32_t(-1));
   }
 
   void jump(Label* label) { ma_branch(label); }
