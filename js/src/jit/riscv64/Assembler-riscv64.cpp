@@ -341,6 +341,7 @@ void Assembler::li_ptr(Register rd, int64_t imm) {
   ori(rd, rd, a6);       // 6 bits are put in. 48 bis in rd
 }
 
+
 void Assembler::li_constant(Register rd, int64_t imm) {
   DEBUG_PRINTF("li_constant(%d, %lx <%ld>)\n", ToNumber(rd), imm, imm);
   lui(rd, (imm + (1LL << 47) + (1LL << 35) + (1LL << 23) + (1LL << 11)) >>
@@ -449,6 +450,107 @@ uintptr_t Assembler::target_address_at(Instruction* pc) {
   }
   // We should never get here, force a bad address if we do.
   MOZ_CRASH("RISC-V  UNREACHABLE");
+}
+
+void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
+                                        ImmPtr newValue, ImmPtr expectedValue) {
+  PatchDataWithValueCheck(label, PatchedImmPtr(newValue.value),
+                          PatchedImmPtr(expectedValue.value));
+}
+
+void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
+                                        PatchedImmPtr newValue,
+                                        PatchedImmPtr expectedValue) {
+  Instruction* inst = (Instruction*)label.raw();
+
+  // Extract old Value
+  DebugOnly<uint64_t> value = Assembler::ExtractLoad64Value(inst);
+  MOZ_ASSERT(value == uint64_t(expectedValue.value));
+
+  // Replace with new value
+  Assembler::UpdateLoad64Value(inst, uint64_t(newValue.value));
+}
+
+uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
+  Instruction* instr1 = inst0 + 1 * kInstrSize;
+  if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
+   //Li64
+    Instruction* instr2 = inst0 + 2 * kInstrSize;
+    Instruction* instr3 = inst0 + 3 * kInstrSize;
+    Instruction* instr4 = inst0 + 4 * kInstrSize;
+    Instruction* instr5 = inst0 + 5 * kInstrSize;
+    Instruction* instr6 = inst0 + 6 * kInstrSize;
+    Instruction* instr7 = inst0 + 7 * kInstrSize;
+    if (IsLui(*reinterpret_cast<Instr*>(inst0)) &&
+        IsAddiw(*reinterpret_cast<Instr*>(instr1)) &&
+        IsSlli(*reinterpret_cast<Instr*>(instr2)) &&
+        IsAddi(*reinterpret_cast<Instr*>(instr3)) &&
+        IsSlli(*reinterpret_cast<Instr*>(instr4)) &&
+        IsAddi(*reinterpret_cast<Instr*>(instr5)) &&
+        IsSlli(*reinterpret_cast<Instr*>(instr6)) &&
+        IsAddi(*reinterpret_cast<Instr*>(instr7))) {
+      int64_t imm = (int64_t)(inst0->Imm20UValue() << kImm20Shift) +
+                     (int64_t)instr1->Imm12Value();
+      imm <<= 12;
+      imm += (int64_t)instr3->Imm12Value();
+      imm <<= 12;
+      imm += (int64_t)instr5->Imm12Value();
+      imm <<= 12;
+      imm += (int64_t)instr7->Imm12Value();
+      return imm;
+    } else {
+      MOZ_CRASH();
+    }
+  } else {
+    MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
+    //Li48
+    return target_address_at(inst0);
+  }
+}
+
+void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
+  Instruction* instr1 = pc + 1 * kInstrSize;
+  if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
+    Instruction* instr0 = pc;
+    Instruction* instr2 = pc + 2 * kInstrSize;
+    Instruction* instr3 = pc + 3 * kInstrSize;
+    Instruction* instr4 = pc + 4 * kInstrSize;
+    Instruction* instr5 = pc + 5 * kInstrSize;
+    Instruction* instr6 = pc + 6 * kInstrSize;
+    Instruction* instr7 = pc + 7 * kInstrSize;
+    MOZ_ASSERT(IsLui(*reinterpret_cast<Instr*>(pc)) &&
+               IsAddiw(*reinterpret_cast<Instr*>(instr1)) &&
+               IsSlli(*reinterpret_cast<Instr*>(instr2)) &&
+               IsAddi(*reinterpret_cast<Instr*>(instr3)) &&
+               IsSlli(*reinterpret_cast<Instr*>(instr4)) &&
+               IsAddi(*reinterpret_cast<Instr*>(instr5)) &&
+               IsSlli(*reinterpret_cast<Instr*>(instr6)) &&
+               IsAddi(*reinterpret_cast<Instr*>(instr7)));
+  // lui(rd, (imm + (1LL << 47) + (1LL << 35) + (1LL << 23) + (1LL << 11)) >>
+  //             48);  // Bits 63:48
+  // addiw(rd, rd,
+  //       (imm + (1LL << 35) + (1LL << 23) + (1LL << 11)) << 16 >>
+  //           52);  // Bits 47:36
+  // slli(rd, rd, 12);
+  // addi(rd, rd, (imm + (1LL << 23) + (1LL << 11)) << 28 >> 52);  // Bits 35:24
+  // slli(rd, rd, 12);
+  // addi(rd, rd, (imm + (1LL << 11)) << 40 >> 52);  // Bits 23:12
+  // slli(rd, rd, 12);
+  // addi(rd, rd, imm << 52 >> 52);  // Bits 11:0
+  *reinterpret_cast<Instr*>(instr0) &= 0xfff;
+  *reinterpret_cast<Instr*>(instr0) |= (((value + (1LL << 47) + (1LL << 35) + (1LL << 23) + (1LL << 11)) >> 48) << 12);
+  *reinterpret_cast<Instr*>(instr1) &= 0xfffff;
+  *reinterpret_cast<Instr*>(instr1) |= (((value + (1LL << 35) + (1LL << 23) + (1LL << 11)) << 16 >> 52) << 20);
+  *reinterpret_cast<Instr*>(instr3) &= 0xfffff;
+  *reinterpret_cast<Instr*>(instr3) |= (((value + (1LL << 23) + (1LL << 11)) << 28 >> 52) << 20);
+  *reinterpret_cast<Instr*>(instr5) &= 0xfffff;
+  *reinterpret_cast<Instr*>(instr5) |= (((value + (1LL << 11)) << 40 >> 52) << 20);
+  *reinterpret_cast<Instr*>(instr7) &= 0xfffff;
+  *reinterpret_cast<Instr*>(instr7) |= ((value << 52 >> 52) << 20);
+  } else {
+    MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
+    set_target_value_at(pc, value);
+  }
 }
 
 void Assembler::set_target_value_at(Instruction* pc, uint64_t target) {

@@ -328,7 +328,7 @@ class Assembler : public AssemblerShared,
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
   static uintptr_t target_address_at(Instruction* pos);
-  void set_target_value_at(Instruction* pc,
+  static void set_target_value_at(Instruction* pc,
                            uint64_t target);
   void target_at_put(BufferOffset pos, BufferOffset target_pos, bool trampoline = false);
   virtual int32_t branch_offset_helper(Label* L, OffsetSize bits);
@@ -346,13 +346,13 @@ class Assembler : public AssemblerShared,
       nop();
     }
   }
-  virtual  void emit(Instr x) {
+  virtual void emit(Instr x) {
     MOZ_ASSERT(hasCreator());
     m_buffer.putInt(x);
-    DEBUG_PRINTF(
-        "0x%lx(%x): ",
-        (uint64_t)editSrc(BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
-        currentOffset());
+    DEBUG_PRINTF("0x%lx(%x): ",
+                 (uint64_t)editSrc(
+                     BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
+                 currentOffset());
     disassembleInstr(x);
     CheckTrampolinePoolQuick();
   }
@@ -371,10 +371,13 @@ class Assembler : public AssemblerShared,
 
   static DoubleCondition InvertCondition(DoubleCondition);
 
-  template <typename T, typename S>
-  static void PatchDataWithValueCheck(CodeLocationLabel, T, S) {
-    MOZ_CRASH();
-  }
+  static uint64_t ExtractLoad64Value(Instruction* inst0);
+  static void UpdateLoad64Value(Instruction* inst0, uint64_t value);
+  static void PatchDataWithValueCheck(CodeLocationLabel label, ImmPtr newValue,
+                                      ImmPtr expectedValue);
+  static void PatchDataWithValueCheck(CodeLocationLabel label,
+                                      PatchedImmPtr newValue,
+                                      PatchedImmPtr expectedValue);
   static void PatchWrite_Imm32(CodeLocationLabel, Imm32) { MOZ_CRASH(); }
 
   static void PatchWrite_NearCall(CodeLocationLabel, CodeLocationLabel) {
