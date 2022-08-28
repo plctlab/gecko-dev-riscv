@@ -1999,17 +1999,29 @@ CodeOffset MacroAssembler::nopPatchableToCall() {
   return CodeOffset(currentOffset());
 }
 CodeOffset MacroAssembler::wasmTrapInstruction() {
-  MOZ_CRASH();
+  CodeOffset offset(currentOffset());
+  ebreak();  // TODO: as_teq(zero, zero, WASM_TRAP)
+  return offset;
 }
-size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet) {
-  MOZ_CRASH();
+size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet set) {
+  return set.gprs().size() * sizeof(intptr_t) + set.fpus().getPushSizeInBytes();
 }
 template <typename T>
-void MacroAssembler::branchValueIsNurseryCellImpl(Condition,
-                                                  const T&,
-                                                  Register,
-                                                  Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchValueIsNurseryCellImpl(Condition cond,
+                                                  const T& value, Register temp,
+                                                  Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  MOZ_ASSERT(temp != InvalidReg);
+  Label done;
+  branchTestGCThing(Assembler::NotEqual, value,
+                    cond == Assembler::Equal ? &done : label);
+
+  unboxGCThingForGCBarrier(value, temp);
+  orPtr(Imm32(gc::ChunkMask), temp);
+  loadPtr(Address(temp, gc::ChunkStoreBufferOffsetFromLastByte), temp);
+  branchPtr(InvertCondition(cond), temp, zero, label);
+
+  bind(&done);
 }
 
 template <typename T>
@@ -2210,29 +2222,37 @@ void MacroAssembler::atomicFetchOp(Scalar::Type,
                                    Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchPtrInNurseryChunk(Condition,
-                                             Register,
-                                             Register,
-                                             Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchPtrInNurseryChunk(Condition cond, Register ptr,
+                                             Register temp, Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  MOZ_ASSERT(ptr != temp);
+  MOZ_ASSERT(ptr != ScratchRegister);  // Both may be used internally.
+  MOZ_ASSERT(temp != ScratchRegister);
+  MOZ_ASSERT(temp != InvalidReg);
+
+  movePtr(ptr, temp);
+  orPtr(Imm32(gc::ChunkMask), temp);
+  branchPtr(InvertCondition(cond),
+            Address(temp, gc::ChunkStoreBufferOffsetFromLastByte), zero, label);
 }
-void MacroAssembler::branchTestValue(Condition,
-                                     const ValueOperand&,
-                                     const Value&,
-                                     Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestValue(Condition cond, const ValueOperand& lhs,
+                                     const Value& rhs, Label* label) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  ScratchRegisterScope scratch(asMasm());
+  MOZ_ASSERT(lhs.valueReg() != scratch);
+  moveValue(rhs, ValueOperand(scratch));
+  ma_b(lhs.valueReg(), scratch, label, cond);
 }
-void MacroAssembler::branchValueIsNurseryCell(Condition,
-                                              const Address&,
-                                              Register,
-                                              Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchValueIsNurseryCell(Condition cond,
+                                              const Address& address,
+                                              Register temp, Label* label) {
+  branchValueIsNurseryCellImpl(cond, address, temp, label);
 }
-void MacroAssembler::branchValueIsNurseryCell(Condition,
-                                              ValueOperand,
-                                              Register,
-                                              Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchValueIsNurseryCell(Condition cond,
+                                              ValueOperand value, Register temp,
+                                              Label* label) {
+  branchValueIsNurseryCellImpl(cond, value, temp, label);
 }
 void MacroAssembler::call(const Address& addr) {
   loadPtr(addr, CallReg);

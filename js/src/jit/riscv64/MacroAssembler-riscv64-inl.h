@@ -46,7 +46,6 @@ inline void MacroAssembler::cmpPtrSet(Assembler::Condition cond,
   cmpPtrSet(cond, Register(scratch2), rhs, dest);
 }
 
-
 template <>
 inline void MacroAssembler::cmp32Set(Assembler::Condition cond,
                                      Register lhs,
@@ -69,7 +68,6 @@ inline void MacroAssembler::cmp32Set(Assembler::Condition cond,
   load32(lhs, scratch2);
   cmp32Set(cond, Register(scratch2), rhs, dest);
 }
-
 
 //{{{ check_macroassembler_style
 CodeOffset MacroAssembler::sub32FromStackPtrWithPatch(Register) {
@@ -212,8 +210,15 @@ void MacroAssembler::branchSubPtr(Condition cond,
   }
 }
 template <typename T>
-void MacroAssembler::branchTestGCThingImpl(Condition, const T&, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestGCThingImpl(Condition cond,
+                                           const T& address,
+                                           Label* label) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(address, scratch2);
+  ma_b(tag, ImmTag(JS::detail::ValueLowerInclGCThingTag), label,
+       (cond == Equal) ? AboveOrEqual : Below);
 }
 template <typename T>
 void MacroAssembler::testBigIntSet(Condition, const T&, Register) {
@@ -841,26 +846,55 @@ void MacroAssembler::branchTestDouble(Condition cond,
 void MacroAssembler::branchTestDoubleTruthy(bool, FloatRegister, Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::branchTestGCThing(Condition, const Address&, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestGCThing(Condition cond,
+                                       const Address& address,
+                                       Label* label) {
+  branchTestGCThingImpl(cond, address, label);
 }
-void MacroAssembler::branchTestGCThing(Condition, const BaseIndex&, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTestGCThing(Condition cond,
+                                       const BaseIndex& address,
+                                       Label* label) {
+  branchTestGCThingImpl(cond, address, label);
 }
-void MacroAssembler::branchTestGCThing(Condition, const ValueOperand&, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTestGCThing(Condition cond,
+                                       const ValueOperand& address,
+                                       Label* label) {
+  branchTestGCThingImpl(cond, address, label);
 }
-void MacroAssembler::branchTestInt32(Condition, const Address&, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestInt32(Condition cond,
+                                     Register tag,
+                                     Label* label) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  ma_b(tag, ImmTag(JSVAL_TAG_INT32), label, cond);
 }
-void MacroAssembler::branchTestInt32(Condition, const BaseIndex&, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTestInt32(Condition cond,
+                                     const ValueOperand& value,
+                                     Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  splitTag(value, scratch2);
+  branchTestInt32(cond, scratch2, label);
 }
-void MacroAssembler::branchTestInt32(Condition, const ValueOperand&, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTestInt32(Condition cond,
+                                     const Address& address,
+                                     Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(address, scratch2);
+  branchTestInt32(cond, tag, label);
 }
-void MacroAssembler::branchTestInt32(Condition, Register, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTestInt32(Condition cond,
+                                     const BaseIndex& address,
+                                     Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(address, scratch2);
+  branchTestInt32(cond, tag, label);
 }
 void MacroAssembler::branchTestInt32Truthy(bool, const ValueOperand&, Label*) {
   MOZ_CRASH();
@@ -1297,23 +1331,33 @@ void MacroAssembler::divDouble(FloatRegister, FloatRegister) {
 void MacroAssembler::divFloat32(FloatRegister, FloatRegister) {
   MOZ_CRASH();
 }
-void MacroAssembler::fallibleUnboxPtr(const Address&,
-                                      Register,
-                                      JSValueType,
-                                      Label*) {
-  MOZ_CRASH();
+void MacroAssembler::fallibleUnboxPtr(const ValueOperand& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  MOZ_ASSERT(type == JSVAL_TYPE_OBJECT || type == JSVAL_TYPE_STRING ||
+             type == JSVAL_TYPE_SYMBOL || type == JSVAL_TYPE_BIGINT);
+  // dest := src XOR mask
+  // scratch := dest >> JSVAL_TAG_SHIFT
+  // fail if scratch != 0
+  //
+  // Note: src and dest can be the same register
+  ScratchRegisterScope scratch(asMasm());
+  MOZ_ASSERT(src.valueReg() != scratch);
+  mov(ImmWord(JSVAL_TYPE_TO_SHIFTED_TAG(type)), scratch);
+  xor_(dest, src.valueReg(), scratch);
+  srli(scratch, dest, JSVAL_TAG_SHIFT);
+  ma_b(scratch, Imm32(0), fail, Assembler::NotEqual);
 }
-void MacroAssembler::fallibleUnboxPtr(const BaseIndex&,
-                                      Register,
-                                      JSValueType,
-                                      Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::fallibleUnboxPtr(const Address& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  loadValue(src, ValueOperand(dest));
+  fallibleUnboxPtr(ValueOperand(dest), dest, type, fail);
 }
-void MacroAssembler::fallibleUnboxPtr(const ValueOperand&,
-                                      Register,
-                                      JSValueType,
-                                      Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::fallibleUnboxPtr(const BaseIndex& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  loadValue(src, ValueOperand(dest));
+  fallibleUnboxPtr(ValueOperand(dest), dest, type, fail);
 }
 void MacroAssembler::flexibleLshift32(Register, Register) {
   MOZ_CRASH();

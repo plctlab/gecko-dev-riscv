@@ -367,9 +367,9 @@ class Assembler : public AssemblerShared,
     *reinterpret_cast<Instr*>(editSrc(offset)) = instr;
   }
 
-  static Condition InvertCondition(Condition) { MOZ_CRASH(); }
+  static Condition InvertCondition(Condition);
 
-  static DoubleCondition InvertCondition(DoubleCondition) { MOZ_CRASH(); }
+  static DoubleCondition InvertCondition(DoubleCondition);
 
   template <typename T, typename S>
   static void PatchDataWithValueCheck(CodeLocationLabel, T, S) {

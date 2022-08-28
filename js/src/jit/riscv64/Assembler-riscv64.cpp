@@ -779,6 +779,77 @@ int32_t Assembler::get_trampoline_entry(int32_t pos) {
   return trampoline_entry;
 }
 
+Assembler::Condition Assembler::InvertCondition(Condition cond) {
+  switch (cond) {
+    case Equal:
+      return NotEqual;
+    case NotEqual:
+      return Equal;
+    case Zero:
+      return NonZero;
+    case NonZero:
+      return Zero;
+    case LessThan:
+      return GreaterThanOrEqual;
+    case LessThanOrEqual:
+      return GreaterThan;
+    case GreaterThan:
+      return LessThanOrEqual;
+    case GreaterThanOrEqual:
+      return LessThan;
+    case Above:
+      return BelowOrEqual;
+    case AboveOrEqual:
+      return Below;
+    case Below:
+      return AboveOrEqual;
+    case BelowOrEqual:
+      return Above;
+    case Signed:
+      return NotSigned;
+    case NotSigned:
+      return Signed;
+    default:
+      MOZ_CRASH("unexpected condition");
+  }
+}
+
+Assembler::DoubleCondition Assembler::InvertCondition(
+    DoubleCondition cond) {
+  switch (cond) {
+    case DoubleOrdered:
+      return DoubleUnordered;
+    case DoubleEqual:
+      return DoubleNotEqualOrUnordered;
+    case DoubleNotEqual:
+      return DoubleEqualOrUnordered;
+    case DoubleGreaterThan:
+      return DoubleLessThanOrEqualOrUnordered;
+    case DoubleGreaterThanOrEqual:
+      return DoubleLessThanOrUnordered;
+    case DoubleLessThan:
+      return DoubleGreaterThanOrEqualOrUnordered;
+    case DoubleLessThanOrEqual:
+      return DoubleGreaterThanOrUnordered;
+    case DoubleUnordered:
+      return DoubleOrdered;
+    case DoubleEqualOrUnordered:
+      return DoubleNotEqual;
+    case DoubleNotEqualOrUnordered:
+      return DoubleEqual;
+    case DoubleGreaterThanOrUnordered:
+      return DoubleLessThanOrEqual;
+    case DoubleGreaterThanOrEqualOrUnordered:
+      return DoubleLessThan;
+    case DoubleLessThanOrUnordered:
+      return DoubleGreaterThanOrEqual;
+    case DoubleLessThanOrEqualOrUnordered:
+      return DoubleGreaterThan;
+    default:
+      MOZ_CRASH("unexpected condition");
+  }
+}
+
 void Assembler::CheckTrampolinePool() {
   // Some small sequences of instructions must not be broken up by the
   // insertion of a trampoline pool; such sequences are protected by setting
