@@ -16,8 +16,11 @@
 #include "jit/riscv64/constant/Constant-riscv-v.h"
 #include "jit/riscv64/constant/Constant-riscv-zicsr.h"
 #include "jit/riscv64/constant/Constant-riscv-zifencei.h"
+#include "jit/riscv64/Simulator-riscv64.h"
 namespace js {
 namespace jit {
+  
+
 bool InstructionBase::IsShortInstruction() const {
   uint8_t FirstByte = *reinterpret_cast<const uint8_t*>(this);
   return (FirstByte & 0x03) <= C2;
@@ -105,7 +108,7 @@ uint32_t InstructionGetters<T>::Rvvuimm() const {
 }
 
 template class InstructionGetters<InstructionBase>;
-#ifdef USE_SIMULATOR
+#ifdef JS_SIMULATOR_RISCV64
 template class InstructionGetters<SimInstructionBase>;
 #endif
 

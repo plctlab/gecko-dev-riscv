@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Copyright 2021 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 #include "jit/riscv64/MacroAssembler-riscv64.h"
 
 #include "jsmath.h"
@@ -2591,7 +2594,6 @@ void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
 
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
   if (is_int12(offset)) {
-    Instruction* bal = editSrc(call);
     MOZ_CRASH();
   } else {
     uint32_t u32Offset = callerOffset - 4 * sizeof(uint32_t);

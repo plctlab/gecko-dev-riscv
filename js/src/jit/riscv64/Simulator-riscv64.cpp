@@ -36,6 +36,7 @@
 #include "mozilla/MathAlgorithms.h"
 
 #include <float.h>
+#include <iostream>
 #include <limits>
 
 #include "jit/AtomicOperations.h"
@@ -69,16 +70,9 @@
 namespace js {
 namespace jit {
 
-//TODO
-static const Instr kCallRedirInstr = 0xfffff;
+bool Simulator::FLAG_trace_sim = false;
+bool Simulator::FLAG_riscv_trap_to_simulator_debugger = false;
 
-// Utils functions.
-static uint32_t GetFCSRConditionBit(uint32_t cc) {
-  if (cc == 0) {
-    return 23;
-  }
-  return 24 + cc;
-}
 
 static void UNIMPLEMENTED() {
   printf("UNIMPLEMENTED instruction.\n");
@@ -88,10 +82,12 @@ static void UNREACHABLE() {
   printf("UNREACHABLE instruction.\n");
   MOZ_CRASH();
 }
-static void UNSUPPORTED() {
-  printf("Unsupported instruction.\n");
+#define UNSUPPORTED()                                                \
+  std::cout << "Unrecognized instruction [@pc=0x" << std::hex        \
+            << registers_[pc] << "]: 0x" << instr_.InstructionBits() \
+            << std::endl;                                            \
+  printf("Unsupported instruction.\n");                              \
   MOZ_CRASH();
-}
 
 static char* ReadLine(const char* prompt) {
   UniqueChars result;
@@ -140,143 +136,12 @@ static char* ReadLine(const char* prompt) {
 }
 
 // -----------------------------------------------------------------------------
-// MIPS assembly various constants.
-
-class SimInstruction {
- public:
-  enum {
-    kInstrSize = 4,
-    // On MIPS PC cannot actually be directly accessed. We behave as if PC was
-    // always the value of the current instruction being executed.
-    kPCReadOffset = 0
-  };
-
-  // Get the raw instruction bits.
-  inline Instr instructionBits() const {
-    return *reinterpret_cast<const Instr*>(this);
-  }
-
-  // Set the raw instruction bits to value.
-  inline void setinstructionBits(Instr value) {
-    *reinterpret_cast<Instr*>(this) = value;
-  }
-
-  // Read one particular bit out of the instruction bits.
-  inline int bit(int nr) const { return (instructionBits() >> nr) & 1; }
-
-  // Read a bit field out of the instruction bits.
-  inline int bits(int hi, int lo) const {
-    return (instructionBits() >> lo) & ((2 << (hi - lo)) - 1);
-  }
-
-  // SimInstruction type.
-  enum Type { kRegisterType, kImmediateType, kJumpType, kUnsupported = -1 };
-
-  // Get the encoding type of the instruction.
-  Type instructionType() const;
-
- // Accessors for the different named fields used in the RISC-V encoding.
-  inline BaseOpcode BaseOpcodeValue() const {
-    return static_cast<BaseOpcode>(
-        bits(kBaseOpcodeShift + kBaseOpcodeBits - 1, kBaseOpcodeShift));
-  }
-
-  inline int Rs1Value() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
-    //        this->InstructionType() == InstructionBase::kR4Type ||
-    //        this->InstructionType() == InstructionBase::kIType ||
-    //        this->InstructionType() == InstructionBase::kSType ||
-    //        this->InstructionType() == InstructionBase::kBType ||
-    //        this->InstructionType() == InstructionBase::kIType ||
-    //        this->InstructionType() == InstructionBase::kVType);
-    return bits(kRs1Shift + kRs1Bits - 1, kRs1Shift);
-  }
-
-  inline int Rs2Value() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
-    //        this->InstructionType() == InstructionBase::kR4Type ||
-    //        this->InstructionType() == InstructionBase::kSType ||
-    //        this->InstructionType() == InstructionBase::kBType ||
-    //        this->InstructionType() == InstructionBase::kIType ||
-    //        this->InstructionType() == InstructionBase::kVType);
-    return bits(kRs2Shift + kRs2Bits - 1, kRs2Shift);
-  }
-
-  inline int Rs3Value() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kR4Type);
-    return bits(kRs3Shift + kRs3Bits - 1, kRs3Shift);
-  }
-
-  inline int RdValue() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kRType ||
-    //        this->InstructionType() == InstructionBase::kR4Type ||
-    //        this->InstructionType() == InstructionBase::kIType ||
-    //        this->InstructionType() == InstructionBase::kSType ||
-    //        this->InstructionType() == InstructionBase::kUType ||
-    //        this->InstructionType() == InstructionBase::kJType ||
-    //        this->InstructionType() == InstructionBase::kVType);
-    return bits(kRdShift + kRdBits - 1, kRdShift);
-  }
-
-  // Return the fields at their original place in the instruction encoding.
-  inline BaseOpcode BaseOpcodeFieldRaw() const {
-    return static_cast<BaseOpcode>(instructionBits() & kBaseOpcodeMask);
-  }
-
-  inline int Imm12Value() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kIType);
-    int Value = bits(kImm12Shift + kImm12Bits - 1, kImm12Shift);
-    return Value << 20 >> 20;
-  }
-
-  inline int Imm20UValue() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kUType);
-    // | imm[31:12] | rd | opcode |
-    //  31        12
-    int32_t Bits = instructionBits();
-    return Bits >> 12;
-  }
-
-  inline int Imm20JValue() const {
-    // MOZ_ASSERT(this->InstructionType() == InstructionBase::kJType);
-    // | imm[20|10:1|11|19:12] | rd | opcode |
-    //  31                   12
-    uint32_t Bits = instructionBits();
-    int32_t imm20 = ((Bits & 0x7fe00000) >> 20) | ((Bits & 0x100000) >> 9) |
-                    (Bits & 0xff000) | ((Bits & 0x80000000) >> 11);
-    return imm20 << 11 >> 11;
-  }
-
-  // Say if the instruction 'links'. e.g. jal, bal.
-  bool isLinkingInstruction() const;
-  // Say if the instruction is a debugger break/trap.
-  bool isTrap() const;
-
- private:
-  SimInstruction() = delete;
-  SimInstruction(const SimInstruction& other) = delete;
-  void operator=(const SimInstruction& other) = delete;
-};
-
-bool SimInstruction::isLinkingInstruction() const {
-  UNSUPPORTED();
-  return false;
-}
-
-bool SimInstruction::isTrap() const {
-   UNSUPPORTED();
-   return false;
-}
-
-SimInstruction::Type SimInstruction::instructionType() const {
-  UNSUPPORTED();
-  return kUnsupported;
-}
+// Riscv assembly various constants.
 
 // C/C++ argument slots size.
 const int kCArgSlotCount = 0;
 const int kCArgsSlotsSize = kCArgSlotCount * sizeof(uintptr_t);
-const int kBranchReturnOffset = 2 * SimInstruction::kInstrSize;
+const int kBranchReturnOffset = 2 * kInstrSize;
 
 class CachePage {
  public:
@@ -341,8 +206,84 @@ Simulator* Simulator::Create() {
   return sim.release();
 }
 
-void Simulator::Destroy(Simulator* sim) { js_delete(sim); }
+void Simulator::Destroy(Simulator* sim) {
+  js_delete(sim);
+}
 
+#if JS_CODEGEN_RISCV64
+void Simulator::TraceRegWr(int64_t value, TraceType t) {
+  if (FLAG_trace_sim) {
+    union {
+      int64_t fmt_int64;
+      int32_t fmt_int32[2];
+      float fmt_float[2];
+      double fmt_double;
+    } v;
+    v.fmt_int64 = value;
+
+    switch (t) {
+      case WORD:
+        SNPrintF(trace_buf_,
+                 "%016" REGIx_FORMAT "    (%" PRId64 ")    int32:%" PRId32
+                 " uint32:%" PRIu32,
+                 v.fmt_int64, icount_, v.fmt_int32[0], v.fmt_int32[0]);
+        break;
+      case DWORD:
+        SNPrintF(trace_buf_,
+                 "%016" REGIx_FORMAT "    (%" PRId64 ")    int64:%" REGId_FORMAT
+                 " uint64:%" PRIu64,
+                 value, icount_, value, value);
+        break;
+      case FLOAT:
+        SNPrintF(trace_buf_, "%016" REGIx_FORMAT "    (%" PRId64 ")    flt:%e",
+                 v.fmt_int64, icount_, v.fmt_float[0]);
+        break;
+      case DOUBLE:
+        SNPrintF(trace_buf_, "%016" REGIx_FORMAT "    (%" PRId64 ")    dbl:%e",
+                 v.fmt_int64, icount_, v.fmt_double);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  }
+}
+
+#elif JS_CODEGEN_RISCV32
+template <typename T>
+void Simulator::TraceRegWr(T value, TraceType t) {
+  if (::v8::internal::FLAG_trace_sim) {
+    union {
+      int32_t fmt_int32;
+      float fmt_float;
+      double fmt_double;
+    } v;
+    if (t != DOUBLE) {
+      v.fmt_int32 = value;
+    } else {
+      DCHECK_EQ(sizeof(T), 8);
+      v.fmt_double = value;
+    }
+    switch (t) {
+      case WORD:
+        SNPrintF(trace_buf_,
+                 "%016" REGIx_FORMAT "    (%" PRId64 ")    int32:%" REGId_FORMAT
+                 " uint32:%" PRIu32,
+                 v.fmt_int32, icount_, v.fmt_int32, v.fmt_int32);
+        break;
+      case FLOAT:
+        SNPrintF(trace_buf_, "%016" REGIx_FORMAT "    (%" PRId64 ")    flt:%e",
+                 v.fmt_int32, icount_, v.fmt_float);
+        break;
+      case DOUBLE:
+        SNPrintF(trace_buf_, "%016" PRIx64 "    (%" PRId64 ")    dbl:%e",
+                 static_cast<int64_t>(v.fmt_double), icount_, v.fmt_double);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  }
+}
+#endif
 // The RiscvDebugger class is used by the simulator while debugging simulated
 // code.
 class RiscvDebugger {
@@ -369,7 +310,6 @@ class RiscvDebugger {
 #endif
   bool GetValue(const char* desc, int64_t* value);
 };
-
 
 int64_t RiscvDebugger::GetRegisterValue(int regnum) {
   if (regnum == Simulator::Register::kNumSimuRegisters) {
@@ -399,7 +339,7 @@ double RiscvDebugger::GetFPURegisterValueDouble(int regnum) {
   if (regnum == Simulator::FPURegister::kNumFPURegisters) {
     return sim_->get_pc();
   } else {
-    return sim_->getFpuRegisterFloat(regnum);
+    return sim_->getFpuRegisterDouble(regnum);
   }
 }
 
@@ -430,29 +370,69 @@ bool RiscvDebugger::GetValue(const char* desc, int64_t* value) {
   }
 }
 
+#define REG_INFO(name)                             \
+  name, GetRegisterValue(Registers::FromName(name)), \
+      GetRegisterValue(Registers::FromName(name))
 
 void RiscvDebugger::PrintRegs(char name_prefix, int start_index,
                               int end_index) {
+  EmbeddedVector<char, 10> name1, name2;
   MOZ_ASSERT(name_prefix == 'a' || name_prefix == 't' || name_prefix == 's');
   MOZ_ASSERT(start_index >= 0 && end_index <= 99);
   int num_registers = (end_index - start_index) + 1;
-  UNSUPPORTED();
+  for (int i = 0; i < num_registers / 2; i++) {
+    SNPrintF(name1, "%c%d", name_prefix, start_index + 2 * i);
+    SNPrintF(name2, "%c%d", name_prefix, start_index + 2 * i + 1);
+    printf("%3s: 0x%016" REGIx_FORMAT "  %14" REGId_FORMAT
+           " \t%3s: 0x%016" REGIx_FORMAT "  %14" REGId_FORMAT " \n",
+           REG_INFO(name1.start()), REG_INFO(name2.start()));
+  }
+  if (num_registers % 2 == 1) {
+    SNPrintF(name1, "%c%d", name_prefix, end_index);
+    printf("%3s: 0x%016" REGIx_FORMAT "  %14" REGId_FORMAT " \n",
+           REG_INFO(name1.start()));
+  }
 }
 
 void RiscvDebugger::printAllRegs() {
-  UNSUPPORTED();  
+  printf("\n");
+  // ra, sp, gp
+  printf("%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT
+         "\t%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT
+         "\t%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT "\n",
+         REG_INFO("ra"), REG_INFO("sp"), REG_INFO("gp"));
+
+  // tp, fp, pc
+  printf("%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT
+         "\t%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT
+         "\t%3s: 0x%016" REGIx_FORMAT " %14" REGId_FORMAT "\n",
+         REG_INFO("tp"), REG_INFO("fp"), REG_INFO("pc"));
+
+  // print register a0, .., a7
+  PrintRegs('a', 0, 7);
+  // print registers s1, ..., s11
+  PrintRegs('s', 1, 11);
+  // print registers t0, ..., t6
+  PrintRegs('t', 0, 6);
 }
 
 #undef REG_INFO
 
 void RiscvDebugger::printAllRegsIncludingFPU() {
-  UNSUPPORTED();
+#define FPU_REG_INFO(n) \
+  FloatRegisters::GetName(n), GetFPURegisterValue(n), GetFPURegisterValueDouble(n)
+
+  printAllRegs();
+
+  printf("\n\n");
+  // f0, f1, f2, ... f31.
+  MOZ_ASSERT(kNumFPURegisters % 2 == 0);
+  for (int i = 0; i < kNumFPURegisters; i += 2)
+    printf("%3s: 0x%016" PRIx64 "  %16.4e \t%3s: 0x%016" PRIx64 "  %16.4e\n",
+           FPU_REG_INFO(i), FPU_REG_INFO(i + 1));
+#undef FPU_REG_INFO
 }
 
-static void DisassembleInstruction(uint64_t pc) {
-  printf("Not supported on loongarch64 yet\n");
-  UNSUPPORTED();
-}
 
 void RiscvDebugger::Debug() {
   intptr_t last_pc = -1;
@@ -476,8 +456,12 @@ void RiscvDebugger::Debug() {
 
   while (!done && (sim_->get_pc() != Simulator::end_sim_pc)) {
     if (last_pc != sim_->get_pc()) {
-      DisassembleInstruction(sim_->get_pc());
-      printf("  0x%016" PRIi64 "  \n", sim_->get_pc());
+      disasm::NameConverter converter;
+      disasm::Disassembler dasm(converter);
+      // Use a reasonably large buffer.
+      EmbeddedVector<char, 256> buffer;
+      dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(sim_->get_pc()));
+      printf("  0x%016" REGIx_FORMAT "   %s\n", sim_->get_pc(), buffer.start());
       last_pc = sim_->get_pc();
     }
     char* line = ReadLine("sim> ");
@@ -502,11 +486,11 @@ void RiscvDebugger::Debug() {
       if ((strcmp(cmd, "si") == 0) || (strcmp(cmd, "stepi") == 0)) {
         SimInstruction* instr =
             reinterpret_cast<SimInstruction*>(sim_->get_pc());
-        if (!(instr->isTrap()) ||
-            instr->instructionBits() == rtCallRedirInstr) {
+        if (!(instr->IsTrap()) ||
+            instr->InstructionBits() == rtCallRedirInstr) {
           sim_->icount_++;
-          sim_->instructionDecode(
-              reinterpret_cast<SimInstruction*>(sim_->get_pc()));
+          sim_->InstructionDecode(
+              reinterpret_cast<Instruction*>(sim_->get_pc()));
         } else {
           // Allow si to jump over generated breakpoints.
           printf("/!\\ Jumping over generated breakpoint.\n");
@@ -514,7 +498,8 @@ void RiscvDebugger::Debug() {
         }
       } else if ((strcmp(cmd, "c") == 0) || (strcmp(cmd, "cont") == 0)) {
         // Execute the one instruction we broke at with breakpoints disabled.
-        sim_->instructionDecode(reinterpret_cast<SimInstruction*>(sim_->get_pc()));
+        sim_->InstructionDecode(
+            reinterpret_cast<Instruction*>(sim_->get_pc()));
         // Leave the debugger shell.
         done = true;
       } else if ((strcmp(cmd, "p") == 0) || (strcmp(cmd, "print") == 0)) {
@@ -576,7 +561,7 @@ void RiscvDebugger::Debug() {
         }
       } else if ((strcmp(cmd, "po") == 0) ||
                  (strcmp(cmd, "printobject") == 0)) {
-         UNSUPPORTED();
+        UNIMPLEMENTED();
       } else if (strcmp(cmd, "stack") == 0 || strcmp(cmd, "mem") == 0) {
         int64_t* cur = nullptr;
         int64_t* end = nullptr;
@@ -624,9 +609,9 @@ void RiscvDebugger::Debug() {
         sim_->watch_value_ = *(sim_->watch_address_);
       } else if ((strcmp(cmd, "disasm") == 0) || (strcmp(cmd, "dpc") == 0) ||
                  (strcmp(cmd, "di") == 0)) {
-        UNSUPPORTED();
+        UNIMPLEMENTED();
       } else if (strcmp(cmd, "trace") == 0) {
-         UNSUPPORTED();
+        UNIMPLEMENTED();
       } else if (strcmp(cmd, "break") == 0 || strcmp(cmd, "b") == 0 ||
                  strcmp(cmd, "tbreak") == 0) {
         bool is_tbreak = strcmp(cmd, "tbreak") == 0;
@@ -692,7 +677,7 @@ void RiscvDebugger::Debug() {
           printf("Wrong usage. Use help command for more information.\n");
         }
       } else if ((strcmp(cmd, "stat") == 0) || (strcmp(cmd, "st") == 0)) {
-         UNSUPPORTED();
+        UNIMPLEMENTED();
       } else if ((strcmp(cmd, "h") == 0) || (strcmp(cmd, "help") == 0)) {
         printf("cont (alias 'c')\n");
         printf("  Continue execution\n");
@@ -763,7 +748,6 @@ void RiscvDebugger::Debug() {
 #undef STR
 #undef XSTR
 }
-
 
 void Simulator::SetBreakpoint(SimInstruction* location, bool is_tbreak) {
   for (unsigned i = 0; i < breakpoints_.size(); i++) {
@@ -848,7 +832,8 @@ static CachePage* GetCachePageLocked(SimulatorProcess::ICacheMap& i_cache,
 
 // Flush from start up to and not including start + size.
 static void FlushOnePageLocked(SimulatorProcess::ICacheMap& i_cache,
-                               intptr_t start, int size) {
+                               intptr_t start,
+                               int size) {
   MOZ_ASSERT(size <= CachePage::kPageSize);
   MOZ_ASSERT(AllOnOnePage(start, size - 1));
   MOZ_ASSERT((start & CachePage::kLineMask) == 0);
@@ -861,7 +846,8 @@ static void FlushOnePageLocked(SimulatorProcess::ICacheMap& i_cache,
 }
 
 static void FlushICacheLocked(SimulatorProcess::ICacheMap& i_cache,
-                              void* start_addr, size_t size) {
+                              void* start_addr,
+                              size_t size) {
   intptr_t start = reinterpret_cast<intptr_t>(start_addr);
   int intra_line = (start & CachePage::kLineMask);
   start -= intra_line;
@@ -896,7 +882,7 @@ void SimulatorProcess::checkICacheLocked(SimInstruction* instr) {
     // Check that the data in memory matches the contents of the I-cache.
     int cmpret =
         memcmp(reinterpret_cast<void*>(instr), cache_page->cachedData(offset),
-               SimInstruction::kInstrSize);
+               kInstrSize);
     MOZ_ASSERT(cmpret == 0);
   } else {
     // Cache miss.  Load memory into the cache.
@@ -999,13 +985,13 @@ class Redirection {
   // sim's lock must already be held.
   Redirection(void* nativeFunction, ABIFunctionType type)
       : nativeFunction_(nativeFunction),
-        swiInstruction_(kCallRedirInstr),
+        swiInstruction_(rtCallRedirInstr),
         type_(type),
         next_(nullptr) {
     next_ = SimulatorProcess::redirection();
     if (!SimulatorProcess::ICacheCheckingDisableCount) {
       FlushICacheLocked(SimulatorProcess::icache(), addressOfSwiInstruction(),
-                        SimInstruction::kInstrSize);
+                        kInstrSize);
     }
     SimulatorProcess::setRedirection(this);
   }
@@ -1050,7 +1036,9 @@ class Redirection {
   Redirection* next_;
 };
 
-Simulator::~Simulator() { js_free(stack_); }
+Simulator::~Simulator() {
+  js_free(stack_);
+}
 
 SimulatorProcess::SimulatorProcess()
     : cacheLock_(mutexid::SimulatorCacheLock), redirection_(nullptr) {
@@ -1085,7 +1073,7 @@ Simulator* Simulator::Current() {
 // Sets the register in the architecture state. It will also deal with updating
 // Simulator internal state for special registers such as PC.
 void Simulator::setRegister(int reg, int64_t value) {
-  MOZ_ASSERT((reg >= 0) && (reg < Simulator::FPURegister::kNumFPURegisters));
+  MOZ_ASSERT((reg >= 0) && (reg < Simulator::Register::kNumSimuRegisters));
   if (reg == pc) {
     pc_modified_ = true;
   }
@@ -1118,10 +1106,21 @@ void Simulator::setFpuRegisterFloat(int fpureg, float value) {
   *mozilla::BitwiseCast<float*>(&FPUregisters_[fpureg]) = value;
 }
 
+void Simulator::setFpuRegisterFloat(int fpureg, Float32 value) {
+  MOZ_ASSERT((fpureg >= 0) && (fpureg < kNumFPURegisters));
+  Float64 t = Float64::FromBits(box_float(value.get_bits()));
+  memcpy(&FPUregisters_[fpureg], &t, 8);
+}
+
 void Simulator::setFpuRegisterDouble(int fpureg, double value) {
   MOZ_ASSERT((fpureg >= 0) &&
              (fpureg < Simulator::FPURegister::kNumFPURegisters));
   *mozilla::BitwiseCast<double*>(&FPUregisters_[fpureg]) = value;
+}
+
+void Simulator::setFpuRegisterDouble(int fpureg, Float64 value) {
+  MOZ_ASSERT((fpureg >= 0) && (fpureg < kNumFPURegisters));
+  memcpy(&FPUregisters_[fpureg], &value, 8);
 }
 
 // Get the register from the architecture state. This function does handle
@@ -1158,11 +1157,26 @@ float Simulator::getFpuRegisterFloat(int fpureg) const {
   return *mozilla::BitwiseCast<float*>(&FPUregisters_[fpureg]);
 }
 
+Float32 Simulator::getFpuRegisterFloat32(int fpureg) const {
+  MOZ_ASSERT((fpureg >= 0) && (fpureg < kNumFPURegisters));
+  if (!is_boxed_float(FPUregisters_[fpureg])) {
+    return Float32::FromBits(0x7ffc0000);
+  }
+  return Float32::FromBits(
+      *bit_cast<uint32_t*>(const_cast<int64_t*>(&FPUregisters_[fpureg])));
+}
+
 double Simulator::getFpuRegisterDouble(int fpureg) const {
   MOZ_ASSERT((fpureg >= 0) &&
              (fpureg < Simulator::FPURegister::kNumFPURegisters));
   return *mozilla::BitwiseCast<double*>(&FPUregisters_[fpureg]);
 }
+
+Float64 Simulator::getFpuRegisterFloat64(int fpureg) const {
+  MOZ_ASSERT((fpureg >= 0) && (fpureg < kNumFPURegisters));
+  return Float64::FromBits(FPUregisters_[fpureg]);
+}
+
 
 void Simulator::setCallResultDouble(double result) {
   setFpuRegisterDouble(fa0, result);
@@ -1172,63 +1186,13 @@ void Simulator::setCallResultFloat(float result) {
   setFpuRegisterFloat(fa0, result);
 }
 
-void Simulator::setCallResult(int64_t res) { setRegister(a0, res); }
+void Simulator::setCallResult(int64_t res) {
+  setRegister(a0, res);
+}
 
 void Simulator::setCallResult(__int128_t res) {
   setRegister(a0, I64(res));
   setRegister(a1, I64(res >> 64));
-}
-
-// Helper functions for setting and testing the FCSR register's bits.
-void Simulator::setFCSRBit(uint32_t cc, bool value) {
-  if (value) {
-    FCSR_ |= (1 << cc);
-  } else {
-    FCSR_ &= ~(1 << cc);
-  }
-}
-
-bool Simulator::testFCSRBit(uint32_t cc) { return FCSR_ & (1 << cc); }
-
-// Sets the rounding error codes in FCSR based on the result of the rounding.
-// Returns true if the operation was invalid.
-template <typename T>
-bool Simulator::setFCSRRoundError(double original, double rounded) {
-  bool ret = false;
-
-  setFCSRBit(kFCSRInexactCauseBit, false);
-  setFCSRBit(kFCSRUnderflowCauseBit, false);
-  setFCSRBit(kFCSROverflowCauseBit, false);
-  setFCSRBit(kFCSRInvalidOpCauseBit, false);
-
-  if (!std::isfinite(original) || !std::isfinite(rounded)) {
-    setFCSRBit(kFCSRInvalidOpFlagBit, true);
-    setFCSRBit(kFCSRInvalidOpCauseBit, true);
-    ret = true;
-  }
-
-  if (original != rounded) {
-    setFCSRBit(kFCSRInexactFlagBit, true);
-    setFCSRBit(kFCSRInexactCauseBit, true);
-  }
-
-  if (rounded < DBL_MIN && rounded > -DBL_MIN && rounded != 0) {
-    setFCSRBit(kFCSRUnderflowFlagBit, true);
-    setFCSRBit(kFCSRUnderflowCauseBit, true);
-    ret = true;
-  }
-
-  if ((long double)rounded > (long double)std::numeric_limits<T>::max() ||
-      (long double)rounded < (long double)std::numeric_limits<T>::min()) {
-    setFCSRBit(kFCSROverflowFlagBit, true);
-    setFCSRBit(kFCSROverflowCauseBit, true);
-    // The reference is not really clear but it seems this is required:
-    setFCSRBit(kFCSRInvalidOpFlagBit, true);
-    setFCSRBit(kFCSRInvalidOpCauseBit, true);
-    ret = true;
-  }
-
-  return ret;
 }
 
 // Raw access to the PC register.
@@ -1242,7 +1206,9 @@ bool Simulator::has_bad_pc() const {
 }
 
 // Raw access to the PC register without the special adjustment when reading.
-int64_t Simulator::get_pc() const { return registers_[pc]; }
+int64_t Simulator::get_pc() const {
+  return registers_[pc];
+}
 
 JS::ProfilingFrameIterator::RegisterState Simulator::registerState() {
   wasm::RegisterState state;
@@ -1253,374 +1219,219 @@ JS::ProfilingFrameIterator::RegisterState Simulator::registerState() {
   return state;
 }
 
-static bool AllowUnaligned() {
-  static bool hasReadFlag = false;
-  static bool unalignedAllowedFlag = false;
-  if (!hasReadFlag) {
-    unalignedAllowedFlag = !!getenv("MIPS_UNALIGNED");
-    hasReadFlag = true;
+
+// TODO(plind): consider making icount_ printing a flag option.
+template <typename T>
+void Simulator::TraceMemRd(sreg_t addr, T value, sreg_t reg_value) {
+  if (FLAG_trace_sim) {
+    if (std::is_integral<T>::value) {
+      switch (sizeof(T)) {
+        case 1:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int8:%" PRId8
+                   " uint8:%" PRIu8 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int8_t>(value),
+                   static_cast<uint8_t>(value), addr);
+          break;
+        case 2:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int16:%" PRId16
+                   " uint16:%" PRIu16 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int16_t>(value),
+                   static_cast<uint16_t>(value), addr);
+          break;
+        case 4:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int32:%" PRId32
+                   " uint32:%" PRIu32 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int32_t>(value),
+                   static_cast<uint32_t>(value), addr);
+          break;
+        case 8:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int64:%" PRId64
+                   " uint64:%" PRIu64 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int64_t>(value),
+                   static_cast<uint64_t>(value), addr);
+          break;
+        default:
+          UNREACHABLE();
+      }
+    } else if (std::is_same<float, T>::value) {
+      SNPrintF(trace_buf_,
+               "%016" REGIx_FORMAT "    (%" PRId64
+               ")    flt:%e <-- [addr: %" REGIx_FORMAT "]",
+               reg_value, icount_, static_cast<float>(value), addr);
+    } else if (std::is_same<double, T>::value) {
+      SNPrintF(trace_buf_,
+               "%016" REGIx_FORMAT "    (%" PRId64
+               ")    dbl:%e <-- [addr: %" REGIx_FORMAT "]",
+               reg_value, icount_, static_cast<double>(value), addr);
+    } else {
+      UNREACHABLE();
+    }
   }
-  return unalignedAllowedFlag;
 }
 
-// MIPS memory instructions (except lw(d)l/r , sw(d)l/r) trap on unaligned
-// memory access enabling the OS to handle them via trap-and-emulate. Note that
-// simulator runs have the runtime system running directly on the host system
-// and only generated code is executed in the simulator. Since the host is
-// typically IA32 it will not trap on unaligned memory access. We assume that
-// that executing correct generated code will not produce unaligned memory
-// access, so we explicitly check for address alignment and trap. Note that
-// trapping does not occur when executing wasm code, which requires that
-// unaligned memory access provides correct result.
-
-uint8_t Simulator::readBU(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 1)) {
-    return 0xff;
+void Simulator::TraceMemRdFloat(sreg_t addr, Float32 value, int64_t reg_value) {
+  if (FLAG_trace_sim) {
+    SNPrintF(trace_buf_,
+             "%016" PRIx64 "    (%" PRId64
+             ")    flt:%e <-- [addr: %" REGIx_FORMAT "]",
+             reg_value, icount_, static_cast<float>(value.get_scalar()), addr);
   }
-
-  uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
-  return *ptr;
 }
 
-int8_t Simulator::readB(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 1)) {
-    return -1;
+void Simulator::TraceMemRdDouble(sreg_t addr, double value, int64_t reg_value) {
+  if (FLAG_trace_sim) {
+    SNPrintF(trace_buf_,
+             "%016" PRIx64 "    (%" PRId64
+             ")    dbl:%e <-- [addr: %" REGIx_FORMAT "]",
+             reg_value, icount_, static_cast<double>(value), addr);
   }
-
-  int8_t* ptr = reinterpret_cast<int8_t*>(addr);
-  return *ptr;
 }
 
-void Simulator::writeB(uint64_t addr, uint8_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 1)) {
-    return;
+void Simulator::TraceMemRdDouble(sreg_t addr, Float64 value,
+                                 int64_t reg_value) {
+  if (FLAG_trace_sim) {
+    SNPrintF(trace_buf_,
+             "%016" PRIx64 "    (%" PRId64
+             ")    dbl:%e <-- [addr: %" REGIx_FORMAT "]",
+             reg_value, icount_, static_cast<double>(value.get_scalar()), addr);
   }
+}
 
-  uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
+template <typename T>
+void Simulator::TraceMemWr(sreg_t addr, T value) {
+  if (FLAG_trace_sim) {
+    switch (sizeof(T)) {
+      case 1:
+        SNPrintF(trace_buf_,
+                 "                    (%" PRIu64 ")    int8:%" PRId8
+                 " uint8:%" PRIu8 " --> [addr: %" REGIx_FORMAT "]",
+                 icount_, static_cast<int8_t>(value),
+                 static_cast<uint8_t>(value), addr);
+        break;
+      case 2:
+        SNPrintF(trace_buf_,
+                 "                    (%" PRIu64 ")    int16:%" PRId16
+                 " uint16:%" PRIu16 " --> [addr: %" REGIx_FORMAT "]",
+                 icount_, static_cast<int16_t>(value),
+                 static_cast<uint16_t>(value), addr);
+        break;
+      case 4:
+        if (std::is_integral<T>::value) {
+          SNPrintF(trace_buf_,
+                   "                    (%" PRIu64 ")    int32:%" PRId32
+                   " uint32:%" PRIu32 " --> [addr: %" REGIx_FORMAT "]",
+                   icount_, static_cast<int32_t>(value),
+                   static_cast<uint32_t>(value), addr);
+        } else {
+          SNPrintF(trace_buf_,
+                   "                    (%" PRIu64
+                   ")    flt:%e --> [addr: %" REGIx_FORMAT "]",
+                   icount_, static_cast<float>(value), addr);
+        }
+        break;
+      case 8:
+        if (std::is_integral<T>::value) {
+          SNPrintF(trace_buf_,
+                   "                    (%" PRIu64 ")    int64:%" PRId64
+                   " uint64:%" PRIu64 " --> [addr: %" REGIx_FORMAT "]",
+                   icount_, static_cast<int64_t>(value),
+                   static_cast<uint64_t>(value), addr);
+        } else {
+          SNPrintF(trace_buf_,
+                   "                    (%" PRIu64
+                   ")    dbl:%e --> [addr: %" REGIx_FORMAT "]",
+                   icount_, static_cast<double>(value), addr);
+        }
+        break;
+      default:
+        UNREACHABLE();
+    }
+  }
+}
+
+void Simulator::TraceMemWrDouble(sreg_t addr, double value) {
+  if (FLAG_trace_sim) {
+    SNPrintF(trace_buf_,
+             "                    (%" PRIu64
+             ")    dbl:%e --> [addr: %" REGIx_FORMAT "]",
+             icount_, value, addr);
+  }
+}
+
+// TODO(RISCV): check whether the specific board supports unaligned load/store
+// (determined by EEI). For now, we assume the board does not support unaligned
+// load/store (e.g., trapping)
+template <typename T>
+T Simulator::ReadMem(sreg_t addr, Instruction* instr) {
+  if (addr >= 0 && addr < 0x400) {
+    // This has to be a nullptr-dereference, drop into debugger.
+    printf("Memory read from bad address: 0x%08" REGIx_FORMAT
+           " , pc=0x%08" PRIxPTR " \n",
+           addr, reinterpret_cast<intptr_t>(instr));
+    DieOrDebug();
+  }
+  T* ptr = reinterpret_cast<T*>(addr);
+  T value = *ptr;
+  return value;
+}
+
+template <typename T>
+void Simulator::WriteMem(sreg_t addr, T value, Instruction* instr) {
+  if (addr >= 0 && addr < 0x400) {
+    // This has to be a nullptr-dereference, drop into debugger.
+    printf("Memory write to bad address: 0x%08" REGIx_FORMAT
+           " , pc=0x%08" PRIxPTR " \n",
+           addr, reinterpret_cast<intptr_t>(instr));
+    DieOrDebug();
+  }
+  T* ptr = reinterpret_cast<T*>(addr);
+  if (!std::is_same<double, T>::value) {
+    TraceMemWr(addr, value);
+  } else {
+    TraceMemWrDouble(addr, value);
+  }
   *ptr = value;
 }
 
-void Simulator::writeB(uint64_t addr, int8_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 1)) {
-    return;
+template <>
+void Simulator::WriteMem(sreg_t addr, Float32 value, Instruction* instr) {
+  if (addr >= 0 && addr < 0x400) {
+    // This has to be a nullptr-dereference, drop into debugger.
+    printf("Memory write to bad address: 0x%08" REGIx_FORMAT
+           " , pc=0x%08" PRIxPTR " \n",
+           addr, reinterpret_cast<intptr_t>(instr));
+    DieOrDebug();
   }
-
-  int8_t* ptr = reinterpret_cast<int8_t*>(addr);
-  *ptr = value;
+  float* ptr = reinterpret_cast<float*>(addr);
+  TraceMemWr(addr, value.get_scalar());
+  memcpy(ptr, &value, 4);
 }
 
-uint16_t Simulator::readHU(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 2)) {
-    return 0xffff;
+template <>
+void Simulator::WriteMem(sreg_t addr, Float64 value, Instruction* instr) {
+  if (addr >= 0 && addr < 0x400) {
+    // This has to be a nullptr-dereference, drop into debugger.
+    printf("Memory write to bad address: 0x%08" REGIx_FORMAT
+           " , pc=0x%08" PRIxPTR " \n",
+           addr, reinterpret_cast<intptr_t>(instr));
+    DieOrDebug();
   }
-
-  if (AllowUnaligned() || (addr & 1) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned unsigned halfword read at 0x%016" PRIx64
-         ", pc=0x%016" PRIxPTR "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
+  double* ptr = reinterpret_cast<double*>(addr);
+  TraceMemWrDouble(addr, value.get_scalar());
+  memcpy(ptr, &value, 8);
 }
 
-int16_t Simulator::readH(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 2)) {
-    return -1;
-  }
-
-  if (AllowUnaligned() || (addr & 1) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    int16_t* ptr = reinterpret_cast<int16_t*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned signed halfword read at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR
-         "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
+uintptr_t Simulator::stackLimit() const {
+  return stackLimit_;
 }
 
-void Simulator::writeH(uint64_t addr, uint16_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 2)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & 1) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned unsigned halfword write at 0x%016" PRIx64
-         ", pc=0x%016" PRIxPTR "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
+uintptr_t* Simulator::addressOfStackLimit() {
+  return &stackLimit_;
 }
-
-void Simulator::writeH(uint64_t addr, int16_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 2)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & 1) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    int16_t* ptr = reinterpret_cast<int16_t*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned halfword write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-}
-
-uint32_t Simulator::readWU(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 4)) {
-    return -1;
-  }
-
-  if (AllowUnaligned() || (addr & 3) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    uint32_t* ptr = reinterpret_cast<uint32_t*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned read at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-int32_t Simulator::readW(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 4)) {
-    return -1;
-  }
-
-  if (AllowUnaligned() || (addr & 3) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    int32_t* ptr = reinterpret_cast<int32_t*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned read at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-void Simulator::writeW(uint64_t addr, uint32_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 4)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & 3) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    uint32_t* ptr = reinterpret_cast<uint32_t*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-}
-
-void Simulator::writeW(uint64_t addr, int32_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 4)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & 3) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    int32_t* ptr = reinterpret_cast<int32_t*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-}
-
-int64_t Simulator::readDW(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 8)) {
-    return -1;
-  }
-
-  if (AllowUnaligned() || (addr & kPointerAlignmentMask) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned read at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-void Simulator::writeDW(uint64_t addr, int64_t value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 8)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & kPointerAlignmentMask) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    int64_t* ptr = reinterpret_cast<int64_t*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-}
-
-double Simulator::readD(uint64_t addr, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 8)) {
-    return NAN;
-  }
-
-  if (AllowUnaligned() || (addr & kDoubleAlignmentMask) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    double* ptr = reinterpret_cast<double*>(addr);
-    return *ptr;
-  }
-  printf("Unaligned (double) read at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-void Simulator::writeD(uint64_t addr, double value, SimInstruction* instr) {
-  if (handleWasmSegFault(addr, 8)) {
-    return;
-  }
-
-  if (AllowUnaligned() || (addr & kDoubleAlignmentMask) == 0 ||
-      wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
-    double* ptr = reinterpret_cast<double*>(addr);
-    LLBit_ = false;
-    *ptr = value;
-    return;
-  }
-  printf("Unaligned (double) write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n",
-         addr, reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-}
-
-int Simulator::loadLinkedW(uint64_t addr, SimInstruction* instr) {
-  if ((addr & 3) == 0) {
-    if (handleWasmSegFault(addr, 4)) {
-      return -1;
-    }
-
-    volatile int32_t* ptr = reinterpret_cast<volatile int32_t*>(addr);
-    int32_t value = *ptr;
-    lastLLValue_ = value;
-    LLAddr_ = addr;
-    // Note that any memory write or "external" interrupt should reset this
-    // value to false.
-    LLBit_ = true;
-    return value;
-  }
-  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-int Simulator::storeConditionalW(uint64_t addr, int value,
-                                 SimInstruction* instr) {
-  // Correct behavior in this case, as defined by architecture, is to just
-  // return 0, but there is no point at allowing that. It is certainly an
-  // indicator of a bug.
-  if (addr != LLAddr_) {
-    printf("SC to bad address: 0x%016" PRIx64 ", pc=0x%016" PRIx64
-           ", expected: 0x%016" PRIx64 "\n",
-           addr, reinterpret_cast<intptr_t>(instr), LLAddr_);
-    MOZ_CRASH();
-  }
-
-  if ((addr & 3) == 0) {
-    SharedMem<int32_t*> ptr =
-        SharedMem<int32_t*>::shared(reinterpret_cast<int32_t*>(addr));
-
-    if (!LLBit_) {
-      return 0;
-    }
-
-    LLBit_ = false;
-    LLAddr_ = 0;
-    int32_t expected = int32_t(lastLLValue_);
-    int32_t old =
-        AtomicOperations::compareExchangeSeqCst(ptr, expected, int32_t(value));
-    return (old == expected) ? 1 : 0;
-  }
-  printf("Unaligned SC at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-int64_t Simulator::loadLinkedD(uint64_t addr, SimInstruction* instr) {
-  if ((addr & kPointerAlignmentMask) == 0) {
-    if (handleWasmSegFault(addr, 8)) {
-      return -1;
-    }
-
-    volatile int64_t* ptr = reinterpret_cast<volatile int64_t*>(addr);
-    int64_t value = *ptr;
-    lastLLValue_ = value;
-    LLAddr_ = addr;
-    // Note that any memory write or "external" interrupt should reset this
-    // value to false.
-    LLBit_ = true;
-    return value;
-  }
-  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-int Simulator::storeConditionalD(uint64_t addr, int64_t value,
-                                 SimInstruction* instr) {
-  // Correct behavior in this case, as defined by architecture, is to just
-  // return 0, but there is no point at allowing that. It is certainly an
-  // indicator of a bug.
-  if (addr != LLAddr_) {
-    printf("SC to bad address: 0x%016" PRIx64 ", pc=0x%016" PRIx64
-           ", expected: 0x%016" PRIx64 "\n",
-           addr, reinterpret_cast<intptr_t>(instr), LLAddr_);
-    MOZ_CRASH();
-  }
-
-  if ((addr & kPointerAlignmentMask) == 0) {
-    SharedMem<int64_t*> ptr =
-        SharedMem<int64_t*>::shared(reinterpret_cast<int64_t*>(addr));
-
-    if (!LLBit_) {
-      return 0;
-    }
-
-    LLBit_ = false;
-    LLAddr_ = 0;
-    int64_t expected = lastLLValue_;
-    int64_t old =
-        AtomicOperations::compareExchangeSeqCst(ptr, expected, int64_t(value));
-    return (old == expected) ? 1 : 0;
-  }
-  printf("Unaligned SC at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
-         reinterpret_cast<intptr_t>(instr));
-  MOZ_CRASH();
-  return 0;
-}
-
-uintptr_t Simulator::stackLimit() const { return stackLimit_; }
-
-uintptr_t* Simulator::addressOfStackLimit() { return &stackLimit_; }
 
 bool Simulator::overRecursed(uintptr_t newsp) const {
   if (newsp == 0) {
@@ -1648,18 +1459,36 @@ typedef int64_t (*Prototype_General0)();
 typedef int64_t (*Prototype_General1)(int64_t arg0);
 typedef int64_t (*Prototype_General2)(int64_t arg0, int64_t arg1);
 typedef int64_t (*Prototype_General3)(int64_t arg0, int64_t arg1, int64_t arg2);
-typedef int64_t (*Prototype_General4)(int64_t arg0, int64_t arg1, int64_t arg2,
+typedef int64_t (*Prototype_General4)(int64_t arg0,
+                                      int64_t arg1,
+                                      int64_t arg2,
                                       int64_t arg3);
-typedef int64_t (*Prototype_General5)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4);
-typedef int64_t (*Prototype_General6)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5);
-typedef int64_t (*Prototype_General7)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5,
+typedef int64_t (*Prototype_General5)(int64_t arg0,
+                                      int64_t arg1,
+                                      int64_t arg2,
+                                      int64_t arg3,
+                                      int64_t arg4);
+typedef int64_t (*Prototype_General6)(int64_t arg0,
+                                      int64_t arg1,
+                                      int64_t arg2,
+                                      int64_t arg3,
+                                      int64_t arg4,
+                                      int64_t arg5);
+typedef int64_t (*Prototype_General7)(int64_t arg0,
+                                      int64_t arg1,
+                                      int64_t arg2,
+                                      int64_t arg3,
+                                      int64_t arg4,
+                                      int64_t arg5,
                                       int64_t arg6);
-typedef int64_t (*Prototype_General8)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5,
-                                      int64_t arg6, int64_t arg7);
+typedef int64_t (*Prototype_General8)(int64_t arg0,
+                                      int64_t arg1,
+                                      int64_t arg2,
+                                      int64_t arg3,
+                                      int64_t arg4,
+                                      int64_t arg5,
+                                      int64_t arg6,
+                                      int64_t arg7);
 typedef int64_t (*Prototype_GeneralGeneralGeneralInt64)(int64_t arg0,
                                                         int64_t arg1,
                                                         int64_t arg2,
@@ -1672,10 +1501,13 @@ typedef int64_t (*Prototype_GeneralGeneralInt64Int64)(int64_t arg0,
 typedef int64_t (*Prototype_Int_Double)(double arg0);
 typedef int64_t (*Prototype_Int_IntDouble)(int64_t arg0, double arg1);
 typedef int64_t (*Prototype_Int_DoubleInt)(double arg0, int64_t arg1);
-typedef int64_t (*Prototype_Int_DoubleIntInt)(double arg0, int64_t arg1,
+typedef int64_t (*Prototype_Int_DoubleIntInt)(double arg0,
+                                              int64_t arg1,
                                               int64_t arg2);
-typedef int64_t (*Prototype_Int_IntDoubleIntInt)(int64_t arg0, double arg1,
-                                                 int64_t arg2, int64_t arg3);
+typedef int64_t (*Prototype_Int_IntDoubleIntInt)(int64_t arg0,
+                                                 double arg1,
+                                                 int64_t arg2,
+                                                 int64_t arg3);
 
 typedef float (*Prototype_Float32_Float32)(float arg0);
 typedef int64_t (*Prototype_Int_Float32)(float arg0);
@@ -1687,7 +1519,8 @@ typedef double (*Prototype_Double_Int)(int64_t arg0);
 typedef double (*Prototype_Double_DoubleInt)(double arg0, int64_t arg1);
 typedef double (*Prototype_Double_IntDouble)(int64_t arg0, double arg1);
 typedef double (*Prototype_Double_DoubleDouble)(double arg0, double arg1);
-typedef double (*Prototype_Double_DoubleDoubleDouble)(double arg0, double arg1,
+typedef double (*Prototype_Double_DoubleDoubleDouble)(double arg0,
+                                                      double arg1,
                                                       double arg2);
 typedef double (*Prototype_Double_DoubleDoubleDoubleDouble)(double arg0,
                                                             double arg1,
@@ -1697,56 +1530,98 @@ typedef double (*Prototype_Double_DoubleDoubleDoubleDouble)(double arg0,
 typedef int32_t (*Prototype_Int32_General)(int64_t);
 typedef int32_t (*Prototype_Int32_GeneralInt32)(int64_t, int32_t);
 typedef int32_t (*Prototype_Int32_GeneralInt32Int32)(int64_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32)(int64_t, int32_t,
-                                                               int32_t, int32_t,
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32)(int64_t,
+                                                               int32_t,
+                                                               int32_t,
+                                                               int32_t,
                                                                int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32Int32)(
-    int64_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32General)(
-    int64_t, int32_t, int32_t, int32_t, int32_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32General)(
-    int64_t, int32_t, int32_t, int32_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int64)(int64_t, int32_t,
-                                                          int32_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int32General)(int64_t, int32_t,
-                                                            int32_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32Int64Int64)(int64_t, int32_t,
-                                                          int64_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32)(int64_t, int32_t,
-                                                            int64_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32Int32)(
-    int64_t, int32_t, int64_t, int32_t, int32_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32Int32)(int64_t,
+                                                                    int32_t,
+                                                                    int32_t,
+                                                                    int32_t,
+                                                                    int32_t,
+                                                                    int32_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32Int32General)(int64_t,
+                                                                      int32_t,
+                                                                      int32_t,
+                                                                      int32_t,
+                                                                      int32_t,
+                                                                      int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int32General)(int64_t,
+                                                                 int32_t,
+                                                                 int32_t,
+                                                                 int32_t,
+                                                                 int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32Int64)(int64_t,
+                                                          int32_t,
+                                                          int32_t,
+                                                          int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int32General)(int64_t,
+                                                            int32_t,
+                                                            int32_t,
+                                                            int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32Int64Int64)(int64_t,
+                                                          int32_t,
+                                                          int64_t,
+                                                          int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32)(int64_t,
+                                                            int32_t,
+                                                            int64_t,
+                                                            int32_t);
+typedef int32_t (*Prototype_Int32_GeneralInt32GeneralInt32Int32)(int64_t,
+                                                                 int32_t,
+                                                                 int64_t,
+                                                                 int32_t,
+                                                                 int32_t);
 typedef int32_t (*Prototype_Int32_GeneralGeneral)(int64_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralGeneral)(int64_t, int64_t,
+typedef int32_t (*Prototype_Int32_GeneralGeneralGeneral)(int64_t,
+                                                         int64_t,
                                                          int64_t);
-typedef int32_t (*Prototype_Int32_GeneralGeneralInt32Int32)(int64_t, int64_t,
-                                                            int32_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int32Int32)(int64_t, int64_t,
-                                                               int32_t, int32_t,
+typedef int32_t (*Prototype_Int32_GeneralGeneralInt32Int32)(int64_t,
+                                                            int64_t,
+                                                            int32_t,
+                                                            int32_t);
+typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int32Int32)(int64_t,
+                                                               int64_t,
+                                                               int32_t,
+                                                               int32_t,
                                                                int32_t);
 typedef int32_t (*Prototype_Int32_GeneralInt64Int32)(int64_t, int64_t, int32_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64)(int64_t, int64_t,
-                                                          int32_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64General)(
-    int64_t, int64_t, int32_t, int64_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64)(int64_t, int64_t,
-                                                          int64_t, int64_t);
-typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64General)(
-    int64_t, int64_t, int64_t, int64_t, int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64)(int64_t,
+                                                          int64_t,
+                                                          int32_t,
+                                                          int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt64Int32Int64General)(int64_t,
+                                                                 int64_t,
+                                                                 int32_t,
+                                                                 int64_t,
+                                                                 int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64)(int64_t,
+                                                          int64_t,
+                                                          int64_t,
+                                                          int64_t);
+typedef int32_t (*Prototype_Int32_GeneralInt64Int64Int64General)(int64_t,
+                                                                 int64_t,
+                                                                 int64_t,
+                                                                 int64_t,
+                                                                 int64_t);
 typedef int64_t (*Prototype_General_GeneralInt32)(int64_t, int32_t);
-typedef int64_t (*Prototype_General_GeneralInt32Int32)(int64_t, int32_t,
+typedef int64_t (*Prototype_General_GeneralInt32Int32)(int64_t,
+                                                       int32_t,
                                                        int32_t);
-typedef int64_t (*Prototype_General_GeneralInt32General)(int64_t, int32_t,
+typedef int64_t (*Prototype_General_GeneralInt32General)(int64_t,
+                                                         int32_t,
                                                          int64_t);
 typedef int64_t (*Prototype_Int64_General)(int64_t);
 typedef int64_t (*Prototype_Int64_GeneralInt64)(int64_t, int64_t);
 
 // Generated by Assembler::break_()/stop(), ebreak code is passed as immediate
 // field of a subsequent LUI instruction; otherwise returns -1
-static inline int32_t get_ebreak_code(SimInstruction* instr) {
-  MOZ_ASSERT(instr->instructionBits() == kBreakInstr);
+static inline int32_t get_ebreak_code(Instruction* instr) {
+  MOZ_ASSERT(instr->InstructionBits() == kBreakInstr);
   uint8_t* cur = reinterpret_cast<uint8_t*>(instr);
-  SimInstruction* next_instr = reinterpret_cast<SimInstruction*>(cur + kInstrSize);
+  Instruction* next_instr =
+      reinterpret_cast<Instruction*>(cur + kInstrSize);
   if (next_instr->BaseOpcodeFieldRaw() == LUI)
     return (next_instr->Imm20UValue());
   else
@@ -1754,15 +1629,17 @@ static inline int32_t get_ebreak_code(SimInstruction* instr) {
 }
 
 // Software interrupt instructions are used by the simulator to call into C++.
-void Simulator::softwareInterrupt(SimInstruction* instr) {
-  uint32_t code = (instr->instructionBits() == kBreakInstr) ? get_ebreak_code(instr) : -1;
-
+void Simulator::SoftwareInterrupt() {
+  // There are two instructions that could get us here, the ebreak or ecall
+  // instructions are "SYSTEM" class opcode distinuished by Imm12Value field w/
+  // the rest of instruction fields being zero
+  uint32_t code = get_ebreak_code(instr_.instr());
   // We first check if we met a call_rt_redirected.
-  if (instr->instructionBits() == kCallRedirInstr) {
+  if (instr_.InstructionBits() == rtCallRedirInstr) {
 #if !defined(USES_N64_ABI)
     MOZ_CRASH("Only N64 ABI supported.");
 #else
-    Redirection* redirection = Redirection::FromSwiInstruction(instr);
+    Redirection* redirection = Redirection::FromSwiInstruction(instr_.instr());
     uintptr_t nativeFn =
         reinterpret_cast<uintptr_t>(redirection->nativeFunction());
 
@@ -1899,7 +1776,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Int_DoubleInt: {
-        double dval = getFpuRegisterDouble(12);
+        double dval = getFpuRegisterDouble(fa0);
         Prototype_Int_DoubleInt target =
             reinterpret_cast<Prototype_Int_DoubleInt>(external);
         int64_t result = target(dval, arg1);
@@ -1907,7 +1784,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Int_DoubleIntInt: {
-        double dval = getFpuRegisterDouble(12);
+        double dval = getFpuRegisterDouble(fa0);
         Prototype_Int_DoubleIntInt target =
             reinterpret_cast<Prototype_Int_DoubleIntInt>(external);
         int64_t result = target(dval, arg1, arg2);
@@ -1915,7 +1792,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Int_IntDoubleIntInt: {
-        double dval = getFpuRegisterDouble(13);
+        double dval = getFpuRegisterDouble(fa1);
         Prototype_Int_IntDoubleIntInt target =
             reinterpret_cast<Prototype_Int_IntDoubleIntInt>(external);
         int64_t result = target(arg0, dval, arg2, arg3);
@@ -1923,7 +1800,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_Double: {
-        double dval0 = getFpuRegisterDouble(12);
+        double dval0 = getFpuRegisterDouble(fa0);
         Prototype_Double_Double target =
             reinterpret_cast<Prototype_Double_Double>(external);
         double dresult = target(dval0);
@@ -1932,7 +1809,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
       }
       case Args_Float32_Float32: {
         float fval0;
-        fval0 = getFpuRegisterFloat(12);
+        fval0 = getFpuRegisterFloat(fa0);
         Prototype_Float32_Float32 target =
             reinterpret_cast<Prototype_Float32_Float32>(external);
         float fresult = target(fval0);
@@ -1941,7 +1818,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
       }
       case Args_Int_Float32: {
         float fval0;
-        fval0 = getFpuRegisterFloat(12);
+        fval0 = getFpuRegisterFloat(fa0);
         Prototype_Int_Float32 target =
             reinterpret_cast<Prototype_Int_Float32>(external);
         int64_t result = target(fval0);
@@ -1951,8 +1828,8 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
       case Args_Float32_Float32Float32: {
         float fval0;
         float fval1;
-        fval0 = getFpuRegisterFloat(12);
-        fval1 = getFpuRegisterFloat(13);
+        fval0 = getFpuRegisterFloat(fa0);
+        fval1 = getFpuRegisterFloat(fa1);
         Prototype_Float32_Float32Float32 target =
             reinterpret_cast<Prototype_Float32_Float32Float32>(external);
         float fresult = target(fval0, fval1);
@@ -1967,7 +1844,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_DoubleInt: {
-        double dval0 = getFpuRegisterDouble(12);
+        double dval0 = getFpuRegisterDouble(fa0);
         Prototype_Double_DoubleInt target =
             reinterpret_cast<Prototype_Double_DoubleInt>(external);
         double dresult = target(dval0, arg1);
@@ -1975,8 +1852,8 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_DoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
+        double dval0 = getFpuRegisterDouble(fa0);
+        double dval1 = getFpuRegisterDouble(fa1);
         Prototype_Double_DoubleDouble target =
             reinterpret_cast<Prototype_Double_DoubleDouble>(external);
         double dresult = target(dval0, dval1);
@@ -1984,7 +1861,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_IntDouble: {
-        double dval1 = getFpuRegisterDouble(13);
+        double dval1 = getFpuRegisterDouble(fa1);
         Prototype_Double_IntDouble target =
             reinterpret_cast<Prototype_Double_IntDouble>(external);
         double dresult = target(arg0, dval1);
@@ -1992,7 +1869,7 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Int_IntDouble: {
-        double dval1 = getFpuRegisterDouble(13);
+        double dval1 = getFpuRegisterDouble(fa1);
         Prototype_Int_IntDouble target =
             reinterpret_cast<Prototype_Int_IntDouble>(external);
         int64_t result = target(arg0, dval1);
@@ -2000,9 +1877,9 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_DoubleDoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
-        double dval2 = getFpuRegisterDouble(14);
+        double dval0 = getFpuRegisterDouble(fa0);
+        double dval1 = getFpuRegisterDouble(fa1);
+        double dval2 = getFpuRegisterDouble(fa2);
         Prototype_Double_DoubleDoubleDouble target =
             reinterpret_cast<Prototype_Double_DoubleDoubleDouble>(external);
         double dresult = target(dval0, dval1, dval2);
@@ -2010,10 +1887,10 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
         break;
       }
       case Args_Double_DoubleDoubleDoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
-        double dval2 = getFpuRegisterDouble(14);
-        double dval3 = getFpuRegisterDouble(15);
+        double dval0 = getFpuRegisterDouble(fa0);
+        double dval1 = getFpuRegisterDouble(fa1);
+        double dval2 = getFpuRegisterDouble(fa2);
+        double dval3 = getFpuRegisterDouble(fa3);
         Prototype_Double_DoubleDoubleDoubleDouble target =
             reinterpret_cast<Prototype_Double_DoubleDoubleDoubleDouble>(
                 external);
@@ -2198,20 +2075,15 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
     setRegister(ra, saved_ra);
     set_pc(getRegister(ra));
 #endif
-  } else if (instr->instructionBits() == kBreakInstr && code <= kMaxStopCode) {
+  } else if (instr_.InstructionBits() == kBreakInstr && code <= kMaxStopCode) {
     if (isWatchpoint(code)) {
       printWatchpoint(code);
     } else {
       increaseStopCounter(code);
-      handleStop(code, instr);
+      handleStop(code);
     }
   } else {
-    switch (instr->instructionBits() & kBaseOpcodeMask) {
-       UNSUPPORTED();
-    };
-    // All remaining break_ codes, and all traps are handled here.
-    RiscvDebugger dbg(this);
-    dbg.Debug();
+    UNSUPPORTED();
   }
 }
 
@@ -2229,20 +2101,21 @@ void Simulator::printWatchpoint(uint32_t code) {
   dbg.printAllRegs();  // Print registers and continue running.
 }
 
-void Simulator::handleStop(uint32_t code, SimInstruction* instr) {
+void Simulator::handleStop(uint32_t code) {
   // Stop if it is enabled, otherwise go on jumping over the stop
   // and the message address.
   if (isEnabledStop(code)) {
     RiscvDebugger dbg(this);
     dbg.Debug();
   } else {
-    set_pc(get_pc() + 2 * SimInstruction::kInstrSize);
+    set_pc(get_pc() + 2 * kInstrSize);
   }
 }
 
 bool Simulator::isStopInstruction(SimInstruction* instr) {
-  if (instr->instructionBits() != kBreakInstr) return false;
-  int32_t code = get_ebreak_code(instr);
+  if (instr->InstructionBits() != kBreakInstr)
+    return false;
+  int32_t code = get_ebreak_code(instr->instr());
   return code != -1 && static_cast<uint32_t>(code) > kMaxWatchpointCode &&
          static_cast<uint32_t>(code) <= kMaxStopCode;
 }
@@ -2302,42 +2175,123 @@ void Simulator::printStopInfo(uint32_t code) {
   }
 }
 
-void Simulator::signalExceptions() {
-  for (int i = 1; i < kNumExceptions; i++) {
-    if (exceptions[i] != 0) {
-      MOZ_CRASH("Error: Exception raised.");
+void Simulator::SignalException(Exception e) {
+  printf("Error: Exception %i raised.", static_cast<int>(e));
+  MOZ_CRASH();
+}
+
+// TODO(plind): refactor this messy debug code when we do unaligned access.
+void Simulator::DieOrDebug() {
+  if (FLAG_riscv_trap_to_simulator_debugger) {
+    RiscvDebugger dbg(this);
+    dbg.Debug();
+  } else {
+    MOZ_CRASH("Die");
+  }
+}
+
+// Executes the current instruction.
+void Simulator::InstructionDecode(Instruction* instr) {
+  // if (FLAG_check_icache) {
+  //   CheckICache(SimulatorProcess::icache(), instr);
+  // }
+  pc_modified_ = false;
+
+  EmbeddedVector<char, 256> buffer;
+
+  if (FLAG_trace_sim) {
+    SNPrintF(trace_buf_, " ");
+    disasm::NameConverter converter;
+    disasm::Disassembler dasm(converter);
+    // Use a reasonably large buffer.
+    dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(instr));
+
+    // printf("EXECUTING  0x%08" PRIxPTR "   %-44s\n",
+    //        reinterpret_cast<intptr_t>(instr), buffer.begin());
+  }
+
+  instr_ = instr;
+  switch (instr_.InstructionType()) {
+    case Instruction::kRType:
+      DecodeRVRType();
+      break;
+    case Instruction::kR4Type:
+      DecodeRVR4Type();
+      break;
+    case Instruction::kIType:
+      DecodeRVIType();
+      break;
+    case Instruction::kSType:
+      DecodeRVSType();
+      break;
+    case Instruction::kBType:
+      DecodeRVBType();
+      break;
+    case Instruction::kUType:
+      DecodeRVUType();
+      break;
+    case Instruction::kJType:
+      DecodeRVJType();
+      break;
+    case Instruction::kCRType:
+      DecodeCRType();
+      break;
+    case Instruction::kCAType:
+      DecodeCAType();
+      break;
+    case Instruction::kCJType:
+      DecodeCJType();
+      break;
+    case Instruction::kCBType:
+      DecodeCBType();
+      break;
+    case Instruction::kCIType:
+      DecodeCIType();
+      break;
+    case Instruction::kCIWType:
+      DecodeCIWType();
+      break;
+    case Instruction::kCSSType:
+      DecodeCSSType();
+      break;
+    case Instruction::kCLType:
+      DecodeCLType();
+      break;
+    case Instruction::kCSType:
+      DecodeCSType();
+      break;
+#ifdef CAN_USE_RVV_INSTRUCTIONS
+    case Instruction::kVType:
+      DecodeVType();
+      break;
+#endif
+    default:
+      UNSUPPORTED();
+  }
+
+  if (FLAG_trace_sim) {
+    printf("  0x%012" PRIxPTR "      %-44s\t%s\n",
+           reinterpret_cast<intptr_t>(instr), buffer.start(),
+           trace_buf_.start());
+  }
+
+  if (!pc_modified_) {
+    setRegister(pc,
+                 reinterpret_cast<sreg_t>(instr) + instr->InstructionSize());
+  }
+
+  if (watch_address_ != nullptr) {
+    printf("  0x%012" PRIxPTR " :  0x%016" REGIx_FORMAT "  %14" REGId_FORMAT
+           " ",
+           reinterpret_cast<intptr_t>(watch_address_), *watch_address_,
+           *watch_address_);
+    if (watch_value_ != *watch_address_) {
+      RiscvDebugger dbg(this);
+      dbg.Debug();
+      watch_value_ = *watch_address_;
     }
   }
 }
-
-
-// Executes the current instruction.
-void Simulator::instructionDecode(SimInstruction* instr) {
-  if (!SimulatorProcess::ICacheCheckingDisableCount) {
-    AutoLockSimulatorCache als;
-    SimulatorProcess::checkICacheLocked(instr);
-  }
-  pc_modified_ = false;
-  UNSUPPORTED();
-  //   switch (instr->instructionType()) {
-  //     case SimInstruction::kRegisterType:
-  //       decodeTypeRegister(instr);
-  //       break;
-  //     case SimInstruction::kImmediateType:
-  //       decodeTypeImmediate(instr);
-  //       break;
-  //     case SimInstruction::kJumpType:
-  //       decodeTypeJump(instr);
-  //       break;
-  //     default:
-  //       UNSUPPORTED();
-  //   }
-  if (!pc_modified_) {
-    setRegister(pc,
-                reinterpret_cast<int64_t>(instr) + SimInstruction::kInstrSize);
-  }
-}
-
 
 void Simulator::enable_single_stepping(SingleStepCallback cb, void* arg) {
   single_stepping_ = true;
@@ -2375,9 +2329,9 @@ void Simulator::execute() {
         single_step_callback_(single_step_callback_arg_, this,
                               (void*)program_counter);
       }
-      SimInstruction* instr =
-          reinterpret_cast<SimInstruction*>(program_counter);
-      instructionDecode(instr);
+      Instruction* instr =
+          reinterpret_cast<Instruction*>(program_counter);
+      InstructionDecode(instr);
       icount_++;
     }
     program_counter = get_pc();
@@ -2385,6 +2339,1938 @@ void Simulator::execute() {
 
   if (single_stepping_) {
     single_step_callback_(single_step_callback_arg_, this, nullptr);
+  }
+}
+
+// RISCV Instruction Decode Routine
+void Simulator::DecodeRVRType() {
+  switch (instr_.InstructionBits() & kRTypeMask) {
+    case RO_ADD: {
+      set_rd(sext_xlen(rs1() + rs2()));
+      break;
+    }
+    case RO_SUB: {
+      set_rd(sext_xlen(rs1() - rs2()));
+      break;
+    }
+    case RO_SLL: {
+      set_rd(sext_xlen(rs1() << (rs2() & (xlen - 1))));
+      break;
+    }
+    case RO_SLT: {
+      set_rd(sreg_t(rs1()) < sreg_t(rs2()));
+      break;
+    }
+    case RO_SLTU: {
+      set_rd(reg_t(rs1()) < reg_t(rs2()));
+      break;
+    }
+    case RO_XOR: {
+      set_rd(rs1() ^ rs2());
+      break;
+    }
+    case RO_SRL: {
+      set_rd(sext_xlen(zext_xlen(rs1()) >> (rs2() & (xlen - 1))));
+      break;
+    }
+    case RO_SRA: {
+      set_rd(sext_xlen(sext_xlen(rs1()) >> (rs2() & (xlen - 1))));
+      break;
+    }
+    case RO_OR: {
+      set_rd(rs1() | rs2());
+      break;
+    }
+    case RO_AND: {
+      set_rd(rs1() & rs2());
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_ADDW: {
+      set_rd(sext32(rs1() + rs2()));
+      break;
+    }
+    case RO_SUBW: {
+      set_rd(sext32(rs1() - rs2()));
+      break;
+    }
+    case RO_SLLW: {
+      set_rd(sext32(rs1() << (rs2() & 0x1F)));
+      break;
+    }
+    case RO_SRLW: {
+      set_rd(sext32(uint32_t(rs1()) >> (rs2() & 0x1F)));
+      break;
+    }
+    case RO_SRAW: {
+      set_rd(sext32(int32_t(rs1()) >> (rs2() & 0x1F)));
+      break;
+    }
+#endif /* JS_CODEGEN_RISCV64 */
+      // TODO(riscv): Add RISCV M extension macro
+    case RO_MUL: {
+      set_rd(rs1() * rs2());
+      break;
+    }
+    case RO_MULH: {
+      set_rd(mulh(rs1(), rs2()));
+      break;
+    }
+    case RO_MULHSU: {
+      set_rd(mulhsu(rs1(), rs2()));
+      break;
+    }
+    case RO_MULHU: {
+      set_rd(mulhu(rs1(), rs2()));
+      break;
+    }
+    case RO_DIV: {
+      sreg_t lhs = sext_xlen(rs1());
+      sreg_t rhs = sext_xlen(rs2());
+      if (rhs == 0) {
+        set_rd(-1);
+      } else if (lhs == INTPTR_MIN && rhs == -1) {
+        set_rd(lhs);
+      } else {
+        set_rd(sext_xlen(lhs / rhs));
+      }
+      break;
+    }
+    case RO_DIVU: {
+      reg_t lhs = zext_xlen(rs1());
+      reg_t rhs = zext_xlen(rs2());
+      if (rhs == 0) {
+        set_rd(UINTPTR_MAX);
+      } else {
+        set_rd(zext_xlen(lhs / rhs));
+      }
+      break;
+    }
+    case RO_REM: {
+      sreg_t lhs = sext_xlen(rs1());
+      sreg_t rhs = sext_xlen(rs2());
+      if (rhs == 0) {
+        set_rd(lhs);
+      } else if (lhs == INTPTR_MIN && rhs == -1) {
+        set_rd(0);
+      } else {
+        set_rd(sext_xlen(lhs % rhs));
+      }
+      break;
+    }
+    case RO_REMU: {
+      reg_t lhs = zext_xlen(rs1());
+      reg_t rhs = zext_xlen(rs2());
+      if (rhs == 0) {
+        set_rd(lhs);
+      } else {
+        set_rd(zext_xlen(lhs % rhs));
+      }
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_MULW: {
+      set_rd(sext32(sext32(rs1()) * sext32(rs2())));
+      break;
+    }
+    case RO_DIVW: {
+      sreg_t lhs = sext32(rs1());
+      sreg_t rhs = sext32(rs2());
+      if (rhs == 0) {
+        set_rd(-1);
+      } else if (lhs == INT32_MIN && rhs == -1) {
+        set_rd(lhs);
+      } else {
+        set_rd(sext32(lhs / rhs));
+      }
+      break;
+    }
+    case RO_DIVUW: {
+      reg_t lhs = zext32(rs1());
+      reg_t rhs = zext32(rs2());
+      if (rhs == 0) {
+        set_rd(UINT32_MAX);
+      } else {
+        set_rd(zext32(lhs / rhs));
+      }
+      break;
+    }
+    case RO_REMW: {
+      sreg_t lhs = sext32(rs1());
+      sreg_t rhs = sext32(rs2());
+      if (rhs == 0) {
+        set_rd(lhs);
+      } else if (lhs == INT32_MIN && rhs == -1) {
+        set_rd(0);
+      } else {
+        set_rd(sext32(lhs % rhs));
+      }
+      break;
+    }
+    case RO_REMUW: {
+      reg_t lhs = zext32(rs1());
+      reg_t rhs = zext32(rs2());
+      if (rhs == 0) {
+        set_rd(zext32(lhs));
+      } else {
+        set_rd(zext32(lhs % rhs));
+      }
+      break;
+    }
+#endif /*JS_CODEGEN_RISCV64*/
+      // TODO(riscv): End Add RISCV M extension macro
+    default: {
+      switch (instr_.BaseOpcode()) {
+        case AMO:
+          DecodeRVRAType();
+          break;
+        case OP_FP:
+          DecodeRVRFPType();
+          break;
+        default:
+          UNSUPPORTED();
+      }
+    }
+  }
+}
+
+template <typename T>
+T Simulator::FMaxMinHelper(T a, T b, MaxMinKind kind) {
+  // set invalid bit for signaling nan
+  if ((a == std::numeric_limits<T>::signaling_NaN()) ||
+      (b == std::numeric_limits<T>::signaling_NaN())) {
+    set_csr_bits(csr_fflags, kInvalidOperation);
+  }
+
+  T result = 0;
+  if (std::isnan(a) && std::isnan(b)) {
+    result = std::numeric_limits<float>::quiet_NaN();
+  } else if (std::isnan(a)) {
+    result = b;
+  } else if (std::isnan(b)) {
+    result = a;
+  } else if (b == a) {  // Handle -0.0 == 0.0 case.
+    if (kind == MaxMinKind::kMax) {
+      result = std::signbit(b) ? a : b;
+    } else {
+      result = std::signbit(b) ? b : a;
+    }
+  } else {
+    result = (kind == MaxMinKind::kMax) ? fmax(a, b) : fmin(a, b);
+  }
+
+  return result;
+}
+
+
+float Simulator::RoundF2FHelper(float input_val, int rmode) {
+  if (rmode == DYN)
+    rmode = get_dynamic_rounding_mode();
+
+  float rounded = 0;
+  switch (rmode) {
+    case RNE: {  // Round to Nearest, tiest to Even
+      rounded = floorf(input_val);
+      float error = input_val - rounded;
+
+      // Take care of correctly handling the range [-0.5, -0.0], which must
+      // yield -0.0.
+      if ((-0.5 <= input_val) && (input_val < 0.0)) {
+        rounded = -0.0;
+
+        // If the error is greater than 0.5, or is equal to 0.5 and the integer
+        // result is odd, round up.
+      } else if ((error > 0.5) ||
+                 ((error == 0.5) && (std::fmod(rounded, 2) != 0))) {
+        rounded++;
+      }
+      break;
+    }
+    case RTZ:  // Round towards Zero
+      rounded = std::truncf(input_val);
+      break;
+    case RDN:  // Round Down (towards -infinity)
+      rounded = floorf(input_val);
+      break;
+    case RUP:  // Round Up (towards +infinity)
+      rounded = ceilf(input_val);
+      break;
+    case RMM:  // Round to Nearest, tiest to Max Magnitude
+      rounded = std::roundf(input_val);
+      break;
+    default:
+      UNREACHABLE();
+  }
+
+  return rounded;
+}
+
+double Simulator::RoundF2FHelper(double input_val, int rmode) {
+  if (rmode == DYN)
+    rmode = get_dynamic_rounding_mode();
+
+  double rounded = 0;
+  switch (rmode) {
+    case RNE: {  // Round to Nearest, tiest to Even
+      rounded = std::floor(input_val);
+      double error = input_val - rounded;
+
+      // Take care of correctly handling the range [-0.5, -0.0], which must
+      // yield -0.0.
+      if ((-0.5 <= input_val) && (input_val < 0.0)) {
+        rounded = -0.0;
+
+        // If the error is greater than 0.5, or is equal to 0.5 and the integer
+        // result is odd, round up.
+      } else if ((error > 0.5) ||
+                 ((error == 0.5) && (std::fmod(rounded, 2) != 0))) {
+        rounded++;
+      }
+      break;
+    }
+    case RTZ:  // Round towards Zero
+      rounded = std::trunc(input_val);
+      break;
+    case RDN:  // Round Down (towards -infinity)
+      rounded = std::floor(input_val);
+      break;
+    case RUP:  // Round Up (towards +infinity)
+      rounded = std::ceil(input_val);
+      break;
+    case RMM:  // Round to Nearest, tiest to Max Magnitude
+      rounded = std::round(input_val);
+      break;
+    default:
+      UNREACHABLE();
+  }
+  return rounded;
+}
+
+// convert rounded floating-point to integer types, handle input values that
+// are out-of-range, underflow, or NaN, and set appropriate fflags
+template <typename I_TYPE, typename F_TYPE>
+I_TYPE Simulator::RoundF2IHelper(F_TYPE original, int rmode) {
+  MOZ_ASSERT(std::is_integral<I_TYPE>::value);
+
+  MOZ_ASSERT((std::is_same<F_TYPE, float>::value ||
+          std::is_same<F_TYPE, double>::value));
+
+  I_TYPE max_i = std::numeric_limits<I_TYPE>::max();
+  I_TYPE min_i = std::numeric_limits<I_TYPE>::min();
+
+  if (!std::isfinite(original)) {
+    set_fflags(kInvalidOperation);
+    if (std::isnan(original) ||
+        original == std::numeric_limits<F_TYPE>::infinity()) {
+      return max_i;
+    } else {
+      MOZ_ASSERT(original == -std::numeric_limits<F_TYPE>::infinity());
+      return min_i;
+    }
+  }
+
+  F_TYPE rounded = RoundF2FHelper(original, rmode);
+  if (original != rounded)
+    set_fflags(kInexact);
+
+  if (!std::isfinite(rounded)) {
+    set_fflags(kInvalidOperation);
+    if (std::isnan(rounded) ||
+        rounded == std::numeric_limits<F_TYPE>::infinity()) {
+      return max_i;
+    } else {
+      MOZ_ASSERT(rounded == -std::numeric_limits<F_TYPE>::infinity());
+      return min_i;
+    }
+  }
+
+  // Since integer max values are either all 1s (for unsigned) or all 1s
+  // except for sign-bit (for signed), they cannot be represented precisely in
+  // floating point, in order to precisely tell whether the rounded floating
+  // point is within the max range, we compare against (max_i+1) which would
+  // have a single 1 w/ many trailing zeros
+  float max_i_plus_1 =
+      std::is_same<uint64_t, I_TYPE>::value
+          ? 0x1p64f  // uint64_t::max + 1 cannot be represented in integers,
+                     // so use its float representation directly
+          : static_cast<float>(static_cast<uint64_t>(max_i) + 1);
+  if (rounded >= max_i_plus_1) {
+    set_fflags(kOverflow | kInvalidOperation);
+    return max_i;
+  }
+
+  // Since min_i (either 0 for unsigned, or for signed) is represented
+  // precisely in floating-point,  comparing rounded directly against min_i
+  if (rounded <= min_i) {
+    if (rounded < min_i)
+      set_fflags(kOverflow | kInvalidOperation);
+    return min_i;
+  }
+
+  F_TYPE underflow_fval =
+      std::is_same<F_TYPE, float>::value ? FLT_MIN : DBL_MIN;
+  if (rounded < underflow_fval && rounded > -underflow_fval && rounded != 0) {
+    set_fflags(kUnderflow);
+  }
+
+  return static_cast<I_TYPE>(rounded);
+}
+
+template <typename T>
+static int64_t FclassHelper(T value) {
+  switch (std::fpclassify(value)) {
+    case FP_INFINITE:
+      return (std::signbit(value) ? kNegativeInfinity : kPositiveInfinity);
+    case FP_NAN:
+      return (isSnan(value) ? kSignalingNaN : kQuietNaN);
+    case FP_NORMAL:
+      return (std::signbit(value) ? kNegativeNormalNumber
+                                  : kPositiveNormalNumber);
+    case FP_SUBNORMAL:
+      return (std::signbit(value) ? kNegativeSubnormalNumber
+                                  : kPositiveSubnormalNumber);
+    case FP_ZERO:
+      return (std::signbit(value) ? kNegativeZero : kPositiveZero);
+    default:
+      UNREACHABLE();
+  }
+  UNREACHABLE();
+  return FP_ZERO;
+}
+
+template <typename T>
+bool Simulator::CompareFHelper(T input1, T input2, FPUCondition cc) {
+  MOZ_ASSERT(std::is_floating_point<T>::value);
+  bool result = false;
+  switch (cc) {
+    case LT:
+    case LE:
+      // FLT, FLE are signaling compares
+      if (std::isnan(input1) || std::isnan(input2)) {
+        set_fflags(kInvalidOperation);
+        result = false;
+      } else {
+        result = (cc == LT) ? (input1 < input2) : (input1 <= input2);
+      }
+      break;
+    case EQ:
+      if (std::numeric_limits<T>::signaling_NaN() == input1 ||
+          std::numeric_limits<T>::signaling_NaN() == input2) {
+        set_fflags(kInvalidOperation);
+      }
+      if (std::isnan(input1) || std::isnan(input2)) {
+        result = false;
+      } else {
+        result = (input1 == input2);
+      }
+      break;
+    case NE:
+      if (std::numeric_limits<T>::signaling_NaN() == input1 ||
+          std::numeric_limits<T>::signaling_NaN() == input2) {
+        set_fflags(kInvalidOperation);
+      }
+      if (std::isnan(input1) || std::isnan(input2)) {
+        result = true;
+      } else {
+        result = (input1 != input2);
+      }
+      break;
+    default:
+      UNREACHABLE();
+  }
+  return result;
+}
+
+template <typename T>
+static inline bool is_invalid_fmul(T src1, T src2) {
+  return (isinf(src1) && src2 == static_cast<T>(0.0)) ||
+         (src1 == static_cast<T>(0.0) && isinf(src2));
+}
+
+template <typename T>
+static inline bool is_invalid_fadd(T src1, T src2) {
+  return (isinf(src1) && isinf(src2) &&
+          std::signbit(src1) != std::signbit(src2));
+}
+
+template <typename T>
+static inline bool is_invalid_fsub(T src1, T src2) {
+  return (isinf(src1) && isinf(src2) &&
+          std::signbit(src1) == std::signbit(src2));
+}
+
+template <typename T>
+static inline bool is_invalid_fdiv(T src1, T src2) {
+  return ((src1 == 0 && src2 == 0) || (isinf(src1) && isinf(src2)));
+}
+
+template <typename T>
+static inline bool is_invalid_fsqrt(T src1) {
+  return (src1 < 0);
+}
+
+void Simulator::DecodeRVRAType() {
+  // TODO(riscv): Add macro for RISCV A extension
+  // Special handling for A extension instructions because it uses func5
+  // For all A extension instruction, V8 simulator is pure sequential. No
+  // Memory address lock or other synchronizaiton behaviors.
+  switch (instr_.InstructionBits() & kRATypeMask) {
+    case RO_LR_W: {
+      MOZ_CRASH();
+    }
+    case RO_SC_W: {
+      MOZ_CRASH();
+    }
+    case RO_AMOSWAP_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return (uint32_t)rs2(); }, instr_.instr(),
+          WORD)));
+      break;
+    }
+    case RO_AMOADD_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return lhs + (uint32_t)rs2(); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOXOR_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return lhs ^ (uint32_t)rs2(); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOAND_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return lhs & (uint32_t)rs2(); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOOR_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return lhs | (uint32_t)rs2(); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOMIN_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<int32_t>(
+          rs1(), [&](int32_t lhs) { return std::min(lhs, (int32_t)rs2()); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOMAX_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<int32_t>(
+          rs1(), [&](int32_t lhs) { return std::max(lhs, (int32_t)rs2()); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOMINU_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return std::min(lhs, (uint32_t)rs2()); },
+          instr_.instr(), WORD)));
+      break;
+    }
+    case RO_AMOMAXU_W: {
+      if ((rs1() & 0x3) != 0) {
+        DieOrDebug();
+      }
+      set_rd(sext32(amo<uint32_t>(
+          rs1(), [&](uint32_t lhs) { return std::max(lhs, (uint32_t)rs2()); },
+          instr_.instr(), WORD)));
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_LR_D: {
+      MOZ_CRASH();
+    }
+    case RO_SC_D: {
+      MOZ_CRASH();
+    }
+    case RO_AMOSWAP_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return rs2(); }, instr_.instr(), DWORD));
+      break;
+    }
+    case RO_AMOADD_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return lhs + rs2(); }, instr_.instr(),
+          DWORD));
+      break;
+    }
+    case RO_AMOXOR_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return lhs ^ rs2(); }, instr_.instr(),
+          DWORD));
+      break;
+    }
+    case RO_AMOAND_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return lhs & rs2(); }, instr_.instr(),
+          DWORD));
+      break;
+    }
+    case RO_AMOOR_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return lhs | rs2(); }, instr_.instr(),
+          DWORD));
+      break;
+    }
+    case RO_AMOMIN_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return std::min(lhs, rs2()); },
+          instr_.instr(), DWORD));
+      break;
+    }
+    case RO_AMOMAX_D: {
+      set_rd(amo<int64_t>(
+          rs1(), [&](int64_t lhs) { return std::max(lhs, rs2()); },
+          instr_.instr(), DWORD));
+      break;
+    }
+    case RO_AMOMINU_D: {
+      set_rd(amo<uint64_t>(
+          rs1(), [&](uint64_t lhs) { return std::min(lhs, (uint64_t)rs2()); },
+          instr_.instr(), DWORD));
+      break;
+    }
+    case RO_AMOMAXU_D: {
+      set_rd(amo<uint64_t>(
+          rs1(), [&](uint64_t lhs) { return std::max(lhs, (uint64_t)rs2()); },
+          instr_.instr(), DWORD));
+      break;
+    }
+#endif /*JS_CODEGEN_RISCV64*/
+    // TODO(riscv): End Add macro for RISCV A extension
+    default: {
+      UNSUPPORTED();
+    }
+  }
+}
+
+void Simulator::DecodeRVRFPType() {
+  // OP_FP instructions (F/D) uses func7 first. Some further uses func3 and
+  // rs2()
+
+  // kRATypeMask is only for func7
+  switch (instr_.InstructionBits() & kRFPTypeMask) {
+    // TODO(riscv): Add macro for RISCV F extension
+    case RO_FADD_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2) {
+        if (is_invalid_fadd(frs1, frs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return frs1 + frs2;
+        }
+      };
+      set_frd(CanonicalizeFPUOp2<float>(fn));
+      break;
+    }
+    case RO_FSUB_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2) {
+        if (is_invalid_fsub(frs1, frs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return frs1 - frs2;
+        }
+      };
+      set_frd(CanonicalizeFPUOp2<float>(fn));
+      break;
+    }
+    case RO_FMUL_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2) {
+        if (is_invalid_fmul(frs1, frs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return frs1 * frs2;
+        }
+      };
+      set_frd(CanonicalizeFPUOp2<float>(fn));
+      break;
+    }
+    case RO_FDIV_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2) {
+        if (is_invalid_fdiv(frs1, frs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else if (frs2 == 0.0f) {
+          this->set_fflags(kDivideByZero);
+          return (std::signbit(frs1) == std::signbit(frs2)
+                      ? std::numeric_limits<float>::infinity()
+                      : -std::numeric_limits<float>::infinity());
+        } else {
+          return frs1 / frs2;
+        }
+      };
+      set_frd(CanonicalizeFPUOp2<float>(fn));
+      break;
+    }
+    case RO_FSQRT_S: {
+      if (instr_.Rs2Value() == 0b00000) {
+        // TODO(riscv): use rm value (round mode)
+        auto fn = [this](float frs) {
+          if (is_invalid_fsqrt(frs)) {
+            this->set_fflags(kInvalidOperation);
+            return std::numeric_limits<float>::quiet_NaN();
+          } else {
+            return std::sqrt(frs);
+          }
+        };
+        set_frd(CanonicalizeFPUOp1<float>(fn));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+    case RO_FSGNJ_S: {  // RO_FSGNJN_S  RO_FSQNJX_S
+      switch (instr_.Funct3Value()) {
+        case 0b000: {  // RO_FSGNJ_S
+          set_frd(fsgnj32(frs1_boxed(), frs2_boxed(), false, false));
+          break;
+        }
+        case 0b001: {  // RO_FSGNJN_S
+          set_frd(fsgnj32(frs1_boxed(), frs2_boxed(), true, false));
+          break;
+        }
+        case 0b010: {  // RO_FSQNJX_S
+          set_frd(fsgnj32(frs1_boxed(), frs2_boxed(), false, true));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FMIN_S: {  // RO_FMAX_S
+      switch (instr_.Funct3Value()) {
+        case 0b000: {  // RO_FMIN_S
+          set_frd(FMaxMinHelper(frs1(), frs2(), MaxMinKind::kMin));
+          break;
+        }
+        case 0b001: {  // RO_FMAX_S
+          set_frd(FMaxMinHelper(frs1(), frs2(), MaxMinKind::kMax));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FCVT_W_S: {  // RO_FCVT_WU_S , 64F RO_FCVT_L_S RO_FCVT_LU_S
+      float original_val = frs1();
+      switch (instr_.Rs2Value()) {
+        case 0b00000: {  // RO_FCVT_W_S
+          set_rd(RoundF2IHelper<int32_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+        case 0b00001: {  // RO_FCVT_WU_S
+          set_rd(sext32(
+              RoundF2IHelper<uint32_t>(original_val, instr_.RoundMode())));
+          break;
+        }
+#ifdef JS_CODEGEN_RISCV64
+        case 0b00010: {  // RO_FCVT_L_S
+          set_rd(RoundF2IHelper<int64_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+        case 0b00011: {  // RO_FCVT_LU_S
+          set_rd(RoundF2IHelper<uint64_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+#endif /* JS_CODEGEN_RISCV64 */
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FMV: {  // RO_FCLASS_S
+      switch (instr_.Funct3Value()) {
+        case 0b000: {
+          if (instr_.Rs2Value() == 0b00000) {
+            // RO_FMV_X_W
+            set_rd(sext_xlen(getFpuRegister(rs1_reg())));
+          } else {
+            UNSUPPORTED();
+          }
+          break;
+        }
+        case 0b001: {  // RO_FCLASS_S
+          set_rd(FclassHelper(frs1()));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FLE_S: {  // RO_FEQ_S RO_FLT_S RO_FLE_S
+      switch (instr_.Funct3Value()) {
+        case 0b010: {  // RO_FEQ_S
+          set_rd(CompareFHelper(frs1(), frs2(), EQ));
+          break;
+        }
+        case 0b001: {  // RO_FLT_S
+          set_rd(CompareFHelper(frs1(), frs2(), LT));
+          break;
+        }
+        case 0b000: {  // RO_FLE_S
+          set_rd(CompareFHelper(frs1(), frs2(), LE));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FCVT_S_W: {  // RO_FCVT_S_WU , 64F RO_FCVT_S_L RO_FCVT_S_LU
+      switch (instr_.Rs2Value()) {
+        case 0b00000: {  // RO_FCVT_S_W
+          set_frd(static_cast<float>((int32_t)rs1()));
+          break;
+        }
+        case 0b00001: {  // RO_FCVT_S_WU
+          set_frd(static_cast<float>((uint32_t)rs1()));
+          break;
+        }
+#ifdef JS_CODEGEN_RISCV64
+        case 0b00010: {  // RO_FCVT_S_L
+          set_frd(static_cast<float>((int64_t)rs1()));
+          break;
+        }
+        case 0b00011: {  // RO_FCVT_S_LU
+          set_frd(static_cast<float>((uint64_t)rs1()));
+          break;
+        }
+#endif /* JS_CODEGEN_RISCV64 */
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FMV_W_X: {
+      if (instr_.Funct3Value() == 0b000) {
+        // since FMV preserves source bit-pattern, no need to canonize
+        Float32 result = Float32::FromBits((uint32_t)rs1());
+        set_frd(result);
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+      // TODO(riscv): Add macro for RISCV D extension
+    case RO_FADD_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2) {
+        if (is_invalid_fadd(drs1, drs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return drs1 + drs2;
+        }
+      };
+      set_drd(CanonicalizeFPUOp2<double>(fn));
+      break;
+    }
+    case RO_FSUB_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2) {
+        if (is_invalid_fsub(drs1, drs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return drs1 - drs2;
+        }
+      };
+      set_drd(CanonicalizeFPUOp2<double>(fn));
+      break;
+    }
+    case RO_FMUL_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2) {
+        if (is_invalid_fmul(drs1, drs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return drs1 * drs2;
+        }
+      };
+      set_drd(CanonicalizeFPUOp2<double>(fn));
+      break;
+    }
+    case RO_FDIV_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2) {
+        if (is_invalid_fdiv(drs1, drs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else if (drs2 == 0.0) {
+          this->set_fflags(kDivideByZero);
+          return (std::signbit(drs1) == std::signbit(drs2)
+                      ? std::numeric_limits<double>::infinity()
+                      : -std::numeric_limits<double>::infinity());
+        } else {
+          return drs1 / drs2;
+        }
+      };
+      set_drd(CanonicalizeFPUOp2<double>(fn));
+      break;
+    }
+    case RO_FSQRT_D: {
+      if (instr_.Rs2Value() == 0b00000) {
+        // TODO(riscv): use rm value (round mode)
+        auto fn = [this](double drs) {
+          if (is_invalid_fsqrt(drs)) {
+            this->set_fflags(kInvalidOperation);
+            return std::numeric_limits<double>::quiet_NaN();
+          } else {
+            return std::sqrt(drs);
+          }
+        };
+        set_drd(CanonicalizeFPUOp1<double>(fn));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+    case RO_FSGNJ_D: {  // RO_FSGNJN_D RO_FSQNJX_D
+      switch (instr_.Funct3Value()) {
+        case 0b000: {  // RO_FSGNJ_D
+          set_drd(fsgnj64(drs1_boxed(), drs2_boxed(), false, false));
+          break;
+        }
+        case 0b001: {  // RO_FSGNJN_D
+          set_drd(fsgnj64(drs1_boxed(), drs2_boxed(), true, false));
+          break;
+        }
+        case 0b010: {  // RO_FSQNJX_D
+          set_drd(fsgnj64(drs1_boxed(), drs2_boxed(), false, true));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FMIN_D: {  // RO_FMAX_D
+      switch (instr_.Funct3Value()) {
+        case 0b000: {  // RO_FMIN_D
+          set_drd(FMaxMinHelper(drs1(), drs2(), MaxMinKind::kMin));
+          break;
+        }
+        case 0b001: {  // RO_FMAX_D
+          set_drd(FMaxMinHelper(drs1(), drs2(), MaxMinKind::kMax));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case (RO_FCVT_S_D & kRFPTypeMask): {
+      if (instr_.Rs2Value() == 0b00001) {
+        auto fn = [](double drs) { return static_cast<float>(drs); };
+        set_frd(CanonicalizeDoubleToFloatOperation(fn));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+    case RO_FCVT_D_S: {
+      if (instr_.Rs2Value() == 0b00000) {
+        auto fn = [](float frs) { return static_cast<double>(frs); };
+        set_drd(CanonicalizeFloatToDoubleOperation(fn));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+    case RO_FLE_D: {  // RO_FEQ_D RO_FLT_D RO_FLE_D
+      switch (instr_.Funct3Value()) {
+        case 0b010: {  // RO_FEQ_S
+          set_rd(CompareFHelper(drs1(), drs2(), EQ));
+          break;
+        }
+        case 0b001: {  // RO_FLT_D
+          set_rd(CompareFHelper(drs1(), drs2(), LT));
+          break;
+        }
+        case 0b000: {  // RO_FLE_D
+          set_rd(CompareFHelper(drs1(), drs2(), LE));
+          break;
+        }
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case (RO_FCLASS_D & kRFPTypeMask): {  // RO_FCLASS_D , 64D RO_FMV_X_D
+      if (instr_.Rs2Value() != 0b00000) {
+        UNSUPPORTED();
+      }
+      switch (instr_.Funct3Value()) {
+        case 0b001: {  // RO_FCLASS_D
+          set_rd(FclassHelper(drs1()));
+          break;
+        }
+#ifdef JS_CODEGEN_RISCV64
+        case 0b000: {  // RO_FMV_X_D
+          set_rd(bit_cast<int64_t>(drs1()));
+          break;
+        }
+#endif /* JS_CODEGEN_RISCV64 */
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FCVT_W_D: {  // RO_FCVT_WU_D , 64F RO_FCVT_L_D RO_FCVT_LU_D
+      double original_val = drs1();
+      switch (instr_.Rs2Value()) {
+        case 0b00000: {  // RO_FCVT_W_D
+          set_rd(RoundF2IHelper<int32_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+        case 0b00001: {  // RO_FCVT_WU_D
+          set_rd(sext32(
+              RoundF2IHelper<uint32_t>(original_val, instr_.RoundMode())));
+          break;
+        }
+#ifdef JS_CODEGEN_RISCV64
+        case 0b00010: {  // RO_FCVT_L_D
+          set_rd(RoundF2IHelper<int64_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+        case 0b00011: {  // RO_FCVT_LU_D
+          set_rd(RoundF2IHelper<uint64_t>(original_val, instr_.RoundMode()));
+          break;
+        }
+#endif /* JS_CODEGEN_RISCV64 */
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+    case RO_FCVT_D_W: {  // RO_FCVT_D_WU , 64F RO_FCVT_D_L RO_FCVT_D_LU
+      switch (instr_.Rs2Value()) {
+        case 0b00000: {  // RO_FCVT_D_W
+          set_drd((int32_t)rs1());
+          break;
+        }
+        case 0b00001: {  // RO_FCVT_D_WU
+          set_drd((uint32_t)rs1());
+          break;
+        }
+#ifdef JS_CODEGEN_RISCV64
+        case 0b00010: {  // RO_FCVT_D_L
+          set_drd((int64_t)rs1());
+          break;
+        }
+        case 0b00011: {  // RO_FCVT_D_LU
+          set_drd((uint64_t)rs1());
+          break;
+        }
+#endif /* JS_CODEGEN_RISCV64 */
+        default: {
+          UNSUPPORTED();
+        }
+      }
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_FMV_D_X: {
+      if (instr_.Funct3Value() == 0b000 && instr_.Rs2Value() == 0b00000) {
+        // Since FMV preserves source bit-pattern, no need to canonize
+        set_drd(bit_cast<double>(rs1()));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+#endif /* JS_CODEGEN_RISCV64 */
+    default: {
+      UNSUPPORTED();
+    }
+  }
+}
+
+void Simulator::DecodeRVR4Type() {
+  switch (instr_.InstructionBits() & kR4TypeMask) {
+    // TODO(riscv): use F Extension macro block
+    case RO_FMADD_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2, float frs3) {
+        if (is_invalid_fmul(frs1, frs2) || is_invalid_fadd(frs1 * frs2, frs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return std::fma(frs1, frs2, frs3);
+        }
+      };
+      set_frd(CanonicalizeFPUOp3<float>(fn));
+      break;
+    }
+    case RO_FMSUB_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2, float frs3) {
+        if (is_invalid_fmul(frs1, frs2) || is_invalid_fsub(frs1 * frs2, frs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return std::fma(frs1, frs2, -frs3);
+        }
+      };
+      set_frd(CanonicalizeFPUOp3<float>(fn));
+      break;
+    }
+    case RO_FNMSUB_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2, float frs3) {
+        if (is_invalid_fmul(frs1, frs2) || is_invalid_fsub(frs3, frs1 * frs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return -std::fma(frs1, frs2, -frs3);
+        }
+      };
+      set_frd(CanonicalizeFPUOp3<float>(fn));
+      break;
+    }
+    case RO_FNMADD_S: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](float frs1, float frs2, float frs3) {
+        if (is_invalid_fmul(frs1, frs2) || is_invalid_fadd(frs1 * frs2, frs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<float>::quiet_NaN();
+        } else {
+          return -std::fma(frs1, frs2, frs3);
+        }
+      };
+      set_frd(CanonicalizeFPUOp3<float>(fn));
+      break;
+    }
+    // TODO(riscv): use F Extension macro block
+    case RO_FMADD_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2, double drs3) {
+        if (is_invalid_fmul(drs1, drs2) || is_invalid_fadd(drs1 * drs2, drs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return std::fma(drs1, drs2, drs3);
+        }
+      };
+      set_drd(CanonicalizeFPUOp3<double>(fn));
+      break;
+    }
+    case RO_FMSUB_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2, double drs3) {
+        if (is_invalid_fmul(drs1, drs2) || is_invalid_fsub(drs1 * drs2, drs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return std::fma(drs1, drs2, -drs3);
+        }
+      };
+      set_drd(CanonicalizeFPUOp3<double>(fn));
+      break;
+    }
+    case RO_FNMSUB_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2, double drs3) {
+        if (is_invalid_fmul(drs1, drs2) || is_invalid_fsub(drs3, drs1 * drs2)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return -std::fma(drs1, drs2, -drs3);
+        }
+      };
+      set_drd(CanonicalizeFPUOp3<double>(fn));
+      break;
+    }
+    case RO_FNMADD_D: {
+      // TODO(riscv): use rm value (round mode)
+      auto fn = [this](double drs1, double drs2, double drs3) {
+        if (is_invalid_fmul(drs1, drs2) || is_invalid_fadd(drs1 * drs2, drs3)) {
+          this->set_fflags(kInvalidOperation);
+          return std::numeric_limits<double>::quiet_NaN();
+        } else {
+          return -std::fma(drs1, drs2, drs3);
+        }
+      };
+      set_drd(CanonicalizeFPUOp3<double>(fn));
+      break;
+    }
+    default:
+      UNSUPPORTED();
+  }
+}
+
+#ifdef CAN_USE_RVV_INSTRUCTIONS
+bool Simulator::DecodeRvvVL() {
+  uint32_t instr_temp =
+      instr_.InstructionBits() & (kRvvMopMask | kRvvNfMask | kBaseOpcodeMask);
+  if (RO_V_VL == instr_temp) {
+    if (!(instr_.InstructionBits() & (kRvvRs2Mask))) {
+      switch (instr_.vl_vs_width()) {
+        case 8: {
+          RVV_VI_LD(0, (i * nf + fn), int8, false);
+          break;
+        }
+        case 16: {
+          RVV_VI_LD(0, (i * nf + fn), int16, false);
+          break;
+        }
+        case 32: {
+          RVV_VI_LD(0, (i * nf + fn), int32, false);
+          break;
+        }
+        case 64: {
+          RVV_VI_LD(0, (i * nf + fn), int64, false);
+          break;
+        }
+        default:
+          UNIMPLEMENTED_RISCV();
+          break;
+      }
+      return true;
+    } else {
+      UNIMPLEMENTED_RISCV();
+      return true;
+    }
+  } else if (RO_V_VLS == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VLX == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VLSEG2 == instr_temp || RO_V_VLSEG3 == instr_temp ||
+             RO_V_VLSEG4 == instr_temp || RO_V_VLSEG5 == instr_temp ||
+             RO_V_VLSEG6 == instr_temp || RO_V_VLSEG7 == instr_temp ||
+             RO_V_VLSEG8 == instr_temp) {
+    if (!(instr_.InstructionBits() & (kRvvRs2Mask))) {
+      UNIMPLEMENTED_RISCV();
+      return true;
+    } else {
+      UNIMPLEMENTED_RISCV();
+      return true;
+    }
+  } else if (RO_V_VLSSEG2 == instr_temp || RO_V_VLSSEG3 == instr_temp ||
+             RO_V_VLSSEG4 == instr_temp || RO_V_VLSSEG5 == instr_temp ||
+             RO_V_VLSSEG6 == instr_temp || RO_V_VLSSEG7 == instr_temp ||
+             RO_V_VLSSEG8 == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VLXSEG2 == instr_temp || RO_V_VLXSEG3 == instr_temp ||
+             RO_V_VLXSEG4 == instr_temp || RO_V_VLXSEG5 == instr_temp ||
+             RO_V_VLXSEG6 == instr_temp || RO_V_VLXSEG7 == instr_temp ||
+             RO_V_VLXSEG8 == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool Simulator::DecodeRvvVS() {
+  uint32_t instr_temp =
+      instr_.InstructionBits() & (kRvvMopMask | kRvvNfMask | kBaseOpcodeMask);
+  if (RO_V_VS == instr_temp) {
+    if (!(instr_.InstructionBits() & (kRvvRs2Mask))) {
+      switch (instr_.vl_vs_width()) {
+        case 8: {
+          RVV_VI_ST(0, (i * nf + fn), uint8, false);
+          break;
+        }
+        case 16: {
+          RVV_VI_ST(0, (i * nf + fn), uint16, false);
+          break;
+        }
+        case 32: {
+          RVV_VI_ST(0, (i * nf + fn), uint32, false);
+          break;
+        }
+        case 64: {
+          RVV_VI_ST(0, (i * nf + fn), uint64, false);
+          break;
+        }
+        default:
+          UNIMPLEMENTED_RISCV();
+          break;
+      }
+    } else {
+      UNIMPLEMENTED_RISCV();
+    }
+    return true;
+  } else if (RO_V_VSS == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VSX == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VSU == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VSSEG2 == instr_temp || RO_V_VSSEG3 == instr_temp ||
+             RO_V_VSSEG4 == instr_temp || RO_V_VSSEG5 == instr_temp ||
+             RO_V_VSSEG6 == instr_temp || RO_V_VSSEG7 == instr_temp ||
+             RO_V_VSSEG8 == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VSSSEG2 == instr_temp || RO_V_VSSSEG3 == instr_temp ||
+             RO_V_VSSSEG4 == instr_temp || RO_V_VSSSEG5 == instr_temp ||
+             RO_V_VSSSEG6 == instr_temp || RO_V_VSSSEG7 == instr_temp ||
+             RO_V_VSSSEG8 == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else if (RO_V_VSXSEG2 == instr_temp || RO_V_VSXSEG3 == instr_temp ||
+             RO_V_VSXSEG4 == instr_temp || RO_V_VSXSEG5 == instr_temp ||
+             RO_V_VSXSEG6 == instr_temp || RO_V_VSXSEG7 == instr_temp ||
+             RO_V_VSXSEG8 == instr_temp) {
+    UNIMPLEMENTED_RISCV();
+    return true;
+  } else {
+    return false;
+  }
+}
+#endif
+
+
+void Simulator::DecodeRVIType() {
+  switch (instr_.InstructionBits() & kITypeMask) {
+    case RO_JALR: {
+      set_rd(get_pc() + kInstrSize);
+      // Note: No need to shift 2 for JALR's imm12, but set lowest bit to 0.
+      sreg_t next_pc = (rs1() + imm12()) & ~sreg_t(1);
+      set_pc(next_pc);
+      break;
+    }
+    case RO_LB: {
+      sreg_t addr = rs1() + imm12();
+      int8_t val = ReadMem<int8_t>(addr, instr_.instr());
+      set_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+    case RO_LH: {
+      sreg_t addr = rs1() + imm12();
+      int16_t val = ReadMem<int16_t>(addr, instr_.instr());
+      set_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+    case RO_LW: {
+      sreg_t addr = rs1() + imm12();
+      int32_t val = ReadMem<int32_t>(addr, instr_.instr());
+      set_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+    case RO_LBU: {
+      sreg_t addr = rs1() + imm12();
+      uint8_t val = ReadMem<uint8_t>(addr, instr_.instr());
+      set_rd(zext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+    case RO_LHU: {
+      sreg_t addr = rs1() + imm12();
+      uint16_t val = ReadMem<uint16_t>(addr, instr_.instr());
+      set_rd(zext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_LWU: {
+      int64_t addr = rs1() + imm12();
+      uint32_t val = ReadMem<uint32_t>(addr, instr_.instr());
+      set_rd(zext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+    case RO_LD: {
+      int64_t addr = rs1() + imm12();
+      int64_t val = ReadMem<int64_t>(addr, instr_.instr());
+      set_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rd_reg()));
+      break;
+    }
+#endif /*JS_CODEGEN_RISCV64*/
+    case RO_ADDI: {
+      set_rd(sext_xlen(rs1() + imm12()));
+      break;
+    }
+    case RO_SLTI: {
+      set_rd(sreg_t(rs1()) < sreg_t(imm12()));
+      break;
+    }
+    case RO_SLTIU: {
+      set_rd(reg_t(rs1()) < reg_t(imm12()));
+      break;
+    }
+    case RO_XORI: {
+      set_rd(imm12() ^ rs1());
+      break;
+    }
+    case RO_ORI: {
+      set_rd(imm12() | rs1());
+      break;
+    }
+    case RO_ANDI: {
+      set_rd(imm12() & rs1());
+      break;
+    }
+    case RO_SLLI: {
+      require(shamt6() < xlen);
+      set_rd(sext_xlen(rs1() << shamt6()));
+      break;
+    }
+    case RO_SRLI: {  //  RO_SRAI
+      if (!instr_.IsArithShift()) {
+        require(shamt6() < xlen);
+        set_rd(sext_xlen(zext_xlen(rs1()) >> shamt6()));
+      } else {
+        require(shamt6() < xlen);
+        set_rd(sext_xlen(sext_xlen(rs1()) >> shamt6()));
+      }
+      break;
+    }
+#ifdef JS_CODEGEN_RISCV64
+    case RO_ADDIW: {
+      set_rd(sext32(rs1() + imm12()));
+      break;
+    }
+    case RO_SLLIW: {
+      set_rd(sext32(rs1() << shamt5()));
+      break;
+    }
+    case RO_SRLIW: {  //  RO_SRAIW
+      if (!instr_.IsArithShift()) {
+        set_rd(sext32(uint32_t(rs1()) >> shamt5()));
+      } else {
+        set_rd(sext32(int32_t(rs1()) >> shamt5()));
+      }
+      break;
+    }
+#endif /*JS_CODEGEN_RISCV64*/
+    case RO_FENCE: {
+      // DO nothing in sumulator
+      break;
+    }
+    case RO_ECALL: {                   // RO_EBREAK
+      if (instr_.Imm12Value() == 0) {  // ECALL
+        SoftwareInterrupt();
+      } else if (instr_.Imm12Value() == 1) {  // EBREAK
+        SoftwareInterrupt();
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    }
+      // TODO(riscv): use Zifencei Standard Extension macro block
+    case RO_FENCE_I: {
+      // spike: flush icache.
+      break;
+    }
+      // TODO(riscv): use Zicsr Standard Extension macro block
+    case RO_CSRRW: {
+      if (rd_reg() != zero_reg) {
+        set_rd(zext_xlen(read_csr_value(csr_reg())));
+      }
+      write_csr_value(csr_reg(), rs1());
+      break;
+    }
+    case RO_CSRRS: {
+      set_rd(zext_xlen(read_csr_value(csr_reg())));
+      if (rs1_reg() != zero_reg) {
+        set_csr_bits(csr_reg(), rs1());
+      }
+      break;
+    }
+    case RO_CSRRC: {
+      set_rd(zext_xlen(read_csr_value(csr_reg())));
+      if (rs1_reg() != zero_reg) {
+        clear_csr_bits(csr_reg(), rs1());
+      }
+      break;
+    }
+    case RO_CSRRWI: {
+      if (rd_reg() != zero_reg) {
+        set_rd(zext_xlen(read_csr_value(csr_reg())));
+      }
+      write_csr_value(csr_reg(), imm5CSR());
+      break;
+    }
+    case RO_CSRRSI: {
+      set_rd(zext_xlen(read_csr_value(csr_reg())));
+      if (imm5CSR() != 0) {
+        set_csr_bits(csr_reg(), imm5CSR());
+      }
+      break;
+    }
+    case RO_CSRRCI: {
+      set_rd(zext_xlen(read_csr_value(csr_reg())));
+      if (imm5CSR() != 0) {
+        clear_csr_bits(csr_reg(), imm5CSR());
+      }
+      break;
+    }
+    // TODO(riscv): use F Extension macro block
+    case RO_FLW: {
+      sreg_t addr = rs1() + imm12();
+      uint32_t val = ReadMem<uint32_t>(addr, instr_.instr());
+      set_frd(Float32::FromBits(val), false);
+      TraceMemRdFloat(addr, Float32::FromBits(val),
+                      getFpuRegister(frd_reg()));
+      break;
+    }
+    // TODO(riscv): use D Extension macro block
+    case RO_FLD: {
+      sreg_t addr = rs1() + imm12();
+      uint64_t val = ReadMem<uint64_t>(addr, instr_.instr());
+      set_drd(Float64::FromBits(val), false);
+      TraceMemRdDouble(addr, Float64::FromBits(val),
+                       getFpuRegister(frd_reg()));
+      break;
+    }
+    default: {
+#ifdef CAN_USE_RVV_INSTRUCTIONS
+      if (!DecodeRvvVL()) {
+        UNSUPPORTED();
+      }
+      break;
+#else
+      UNSUPPORTED();
+#endif
+    }
+  }
+}
+
+void Simulator::DecodeRVSType() {
+  switch (instr_.InstructionBits() & kSTypeMask) {
+    case RO_SB:
+      WriteMem<uint8_t>(rs1() + s_imm12(), (uint8_t)rs2(), instr_.instr());
+      break;
+    case RO_SH:
+      WriteMem<uint16_t>(rs1() + s_imm12(), (uint16_t)rs2(), instr_.instr());
+      break;
+    case RO_SW:
+      WriteMem<uint32_t>(rs1() + s_imm12(), (uint32_t)rs2(), instr_.instr());
+      break;
+#ifdef JS_CODEGEN_RISCV64
+    case RO_SD:
+      WriteMem<uint64_t>(rs1() + s_imm12(), (uint64_t)rs2(), instr_.instr());
+      break;
+#endif /*JS_CODEGEN_RISCV64*/
+    // TODO(riscv): use F Extension macro block
+    case RO_FSW: {
+      WriteMem<Float32>(rs1() + s_imm12(), getFpuRegisterFloat32(rs2_reg()),
+                        instr_.instr());
+      break;
+    }
+    // TODO(riscv): use D Extension macro block
+    case RO_FSD: {
+      WriteMem<Float64>(rs1() + s_imm12(), getFpuRegisterFloat64(rs2_reg()),
+                        instr_.instr());
+      break;
+    }
+    default:
+#ifdef CAN_USE_RVV_INSTRUCTIONS
+      if (!DecodeRvvVS()) {
+        UNSUPPORTED();
+      }
+      break;
+#else
+      UNSUPPORTED();
+#endif
+  }
+}
+
+void Simulator::DecodeRVBType() {
+  switch (instr_.InstructionBits() & kBTypeMask) {
+    case RO_BEQ:
+      if (rs1() == rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_BNE:
+      if (rs1() != rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_BLT:
+      if (rs1() < rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_BGE:
+      if (rs1() >= rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_BLTU:
+      if ((reg_t)rs1() < (reg_t)rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_BGEU:
+      if ((reg_t)rs1() >= (reg_t)rs2()) {
+        int64_t next_pc = get_pc() + boffset();
+        set_pc(next_pc);
+      }
+      break;
+    default:
+      UNSUPPORTED();
+  }
+}
+void Simulator::DecodeRVUType() {
+  // U Type doesn't have additoinal mask
+  switch (instr_.BaseOpcodeFieldRaw()) {
+    case LUI:
+      set_rd(u_imm20());
+      break;
+    case AUIPC:
+      set_rd(sext_xlen(u_imm20() + get_pc()));
+      break;
+    default:
+      UNSUPPORTED();
+  }
+}
+void Simulator::DecodeRVJType() {
+  // J Type doesn't have additional mask
+  switch (instr_.BaseOpcodeValue()) {
+    case JAL: {
+      set_rd(get_pc() + kInstrSize);
+      int64_t next_pc = get_pc() + imm20J();
+      set_pc(next_pc);
+      break;
+    }
+    default:
+      UNSUPPORTED();
+  }
+}
+void Simulator::DecodeCRType() {
+  switch (instr_.RvcFunct4Value()) {
+    case 0b1000:
+      if (instr_.RvcRs1Value() != 0 && instr_.RvcRs2Value() == 0) {  // c.jr
+        set_pc(rvc_rs1());
+      } else if (instr_.RvcRdValue() != 0 &&
+                 instr_.RvcRs2Value() != 0) {  // c.mv
+        set_rvc_rd(sext_xlen(rvc_rs2()));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    case 0b1001:
+      if (instr_.RvcRs1Value() == 0 && instr_.RvcRs2Value() == 0) {  // c.ebreak
+        DieOrDebug();
+      } else if (instr_.RvcRdValue() != 0 &&
+                 instr_.RvcRs2Value() == 0) {  // c.jalr
+        setRegister(ra, get_pc() + kShortInstrSize);
+        set_pc(rvc_rs1());
+      } else if (instr_.RvcRdValue() != 0 &&
+                 instr_.RvcRs2Value() != 0) {  // c.add
+        set_rvc_rd(sext_xlen(rvc_rs1() + rvc_rs2()));
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCAType() {
+  switch (instr_.InstructionBits() & kCATypeMask) {
+    case RO_C_SUB:
+      set_rvc_rs1s(sext_xlen(rvc_rs1s() - rvc_rs2s()));
+      break;
+    case RO_C_XOR:
+      set_rvc_rs1s(rvc_rs1s() ^ rvc_rs2s());
+      break;
+    case RO_C_OR:
+      set_rvc_rs1s(rvc_rs1s() | rvc_rs2s());
+      break;
+    case RO_C_AND:
+      set_rvc_rs1s(rvc_rs1s() & rvc_rs2s());
+      break;
+#if JS_CODEGEN_RISCV64
+    case RO_C_SUBW:
+      set_rvc_rs1s(sext32(rvc_rs1s() - rvc_rs2s()));
+      break;
+    case RO_C_ADDW:
+      set_rvc_rs1s(sext32(rvc_rs1s() + rvc_rs2s()));
+      break;
+#endif
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCIType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_NOP_ADDI:
+      if (instr_.RvcRdValue() == 0)  // c.nop
+        break;
+      else  // c.addi
+        set_rvc_rd(sext_xlen(rvc_rs1() + rvc_imm6()));
+      break;
+#if JS_CODEGEN_RISCV64
+    case RO_C_ADDIW:
+      set_rvc_rd(sext32(rvc_rs1() + rvc_imm6()));
+      break;
+#endif
+    case RO_C_LI:
+      set_rvc_rd(sext_xlen(rvc_imm6()));
+      break;
+    case RO_C_LUI_ADD:
+      if (instr_.RvcRdValue() == 2) {
+        // c.addi16sp
+        int64_t value = getRegister(sp) + rvc_imm6_addi16sp();
+        setRegister(sp, value);
+      } else if (instr_.RvcRdValue() != 0 && instr_.RvcRdValue() != 2) {
+        // c.lui
+        set_rvc_rd(rvc_u_imm6());
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    case RO_C_SLLI:
+      set_rvc_rd(sext_xlen(rvc_rs1() << rvc_shamt6()));
+      break;
+    case RO_C_FLDSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_ldsp();
+      uint64_t val = ReadMem<uint64_t>(addr, instr_.instr());
+      set_rvc_drd(Float64::FromBits(val), false);
+      TraceMemRdDouble(addr, Float64::FromBits(val),
+                       getFpuRegister(rvc_frd_reg()));
+      break;
+    }
+#if JS_CODEGEN_RISCV64
+    case RO_C_LWSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_lwsp();
+      int64_t val = ReadMem<int32_t>(addr, instr_.instr());
+      set_rvc_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rvc_rd_reg()));
+      break;
+    }
+    case RO_C_LDSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_ldsp();
+      int64_t val = ReadMem<int64_t>(addr, instr_.instr());
+      set_rvc_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rvc_rd_reg()));
+      break;
+    }
+#elif JS_CODEGEN_RISCV32
+    case RO_C_FLWSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_ldsp();
+      uint32_t val = ReadMem<uint32_t>(addr, instr_.instr());
+      set_rvc_frd(Float32::FromBits(val), false);
+      TraceMemRdFloat(addr, Float32::FromBits(val),
+                      getFpuRegister(rvc_frd_reg()));
+      break;
+    }
+    case RO_C_LWSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_lwsp();
+      int32_t val = ReadMem<int32_t>(addr, instr_.instr());
+      set_rvc_rd(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rvc_rd_reg()));
+      break;
+    }
+#endif
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCIWType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_ADDI4SPN: {
+      set_rvc_rs2s(getRegister(sp) + rvc_imm8_addi4spn());
+      break;
+      default:
+        UNSUPPORTED();
+    }
+  }
+}
+
+void Simulator::DecodeCSSType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_FSDSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_sdsp();
+      WriteMem<Float64>(addr, getFpuRegisterFloat64(rvc_rs2_reg()),
+                        instr_.instr());
+      break;
+    }
+#if JS_CODEGEN_RISCV32
+    case RO_C_FSWSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_sdsp();
+      WriteMem<Float32>(addr, getFpuRegisterFloat32(rvc_rs2_reg()),
+                        instr_.instr());
+      break;
+    }
+#endif
+    case RO_C_SWSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_swsp();
+      WriteMem<int32_t>(addr, (int32_t)rvc_rs2(), instr_.instr());
+      break;
+    }
+#if JS_CODEGEN_RISCV64
+    case RO_C_SDSP: {
+      sreg_t addr = getRegister(sp) + rvc_imm6_sdsp();
+      WriteMem<int64_t>(addr, (int64_t)rvc_rs2(), instr_.instr());
+      break;
+    }
+#endif
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCLType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_LW: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_w();
+      int64_t val = ReadMem<int32_t>(addr, instr_.instr());
+      set_rvc_rs2s(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rvc_rs2s_reg()));
+      break;
+    }
+    case RO_C_FLD: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_d();
+      uint64_t val = ReadMem<uint64_t>(addr, instr_.instr());
+      set_rvc_drs2s(Float64::FromBits(val), false);
+      break;
+    }
+#if JS_CODEGEN_RISCV64
+    case RO_C_LD: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_d();
+      int64_t val = ReadMem<int64_t>(addr, instr_.instr());
+      set_rvc_rs2s(sext_xlen(val), false);
+      TraceMemRd(addr, val, getRegister(rvc_rs2s_reg()));
+      break;
+    }
+#elif JS_CODEGEN_RISCV32
+    case RO_C_FLW: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_d();
+      uint32_t val = ReadMem<uint32_t>(addr, instr_.instr());
+      set_rvc_frs2s(Float32::FromBits(val), false);
+      break;
+    }
+#endif
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCSType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_SW: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_w();
+      WriteMem<int32_t>(addr, (int32_t)rvc_rs2s(), instr_.instr());
+      break;
+    }
+#if JS_CODEGEN_RISCV64
+    case RO_C_SD: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_d();
+      WriteMem<int64_t>(addr, (int64_t)rvc_rs2s(), instr_.instr());
+      break;
+    }
+#endif
+    case RO_C_FSD: {
+      sreg_t addr = rvc_rs1s() + rvc_imm5_d();
+      WriteMem<double>(addr, static_cast<double>(rvc_drs2s()), instr_.instr());
+      break;
+    }
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCJType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_J: {
+      set_pc(get_pc() + instr_.RvcImm11CJValue());
+      break;
+    }
+    default:
+      UNSUPPORTED();
+  }
+}
+
+void Simulator::DecodeCBType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_BNEZ:
+      if (rvc_rs1() != 0) {
+        sreg_t next_pc = get_pc() + rvc_imm8_b();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_C_BEQZ:
+      if (rvc_rs1() == 0) {
+        sreg_t next_pc = get_pc() + rvc_imm8_b();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_C_MISC_ALU:
+      if (instr_.RvcFunct2BValue() == 0b00) {  // c.srli
+        set_rvc_rs1s(sext_xlen(sext_xlen(rvc_rs1s()) >> rvc_shamt6()));
+      } else if (instr_.RvcFunct2BValue() == 0b01) {  // c.srai
+        require(rvc_shamt6() < xlen);
+        set_rvc_rs1s(sext_xlen(sext_xlen(rvc_rs1s()) >> rvc_shamt6()));
+      } else if (instr_.RvcFunct2BValue() == 0b10) {  // c.andi
+        set_rvc_rs1s(rvc_imm6() & rvc_rs1s());
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    default:
+      UNSUPPORTED();
   }
 }
 
@@ -2527,5 +4413,9 @@ uintptr_t Simulator::popAddress() {
 }  // namespace jit
 }  // namespace js
 
-js::jit::Simulator* JSContext::simulator() const { return simulator_; }
-#endif // JS_SIMULATOR_RISCV64
+js::jit::Simulator* JSContext::simulator() const {
+  return simulator_;
+}
+
+
+#endif  // JS_SIMULATOR_RISCV64
