@@ -11115,6 +11115,10 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
   if(op.getBoolOption("riscv-trap-to-simulator-debugger")){
     jit::Simulator::FLAG_riscv_trap_to_simulator_debugger = true;
   }
+  int32_t stopAt = op.getIntOption("riscv-sim-stop-at");
+  if (stopAt >= 0) {
+    jit::Simulator::StopSimAt = stopAt;
+  }
 #endif
 #endif
   reportWarnings = op.getBoolOption('w');
@@ -11979,6 +11983,10 @@ int main(int argc, char** argv) {
                        "print simulator info.") ||
       !op.addBoolOption('\0', "riscv-trap-to-simulator-debugger",
                        "trap into simulator debuggger.") ||
+      !op.addIntOption('\0', "riscv-sim-stop-at", "NUMBER",
+                       "Stop the riscv simulator after the given "
+                       "NUMBER of instructions.",
+                       -1) ||
 #endif
       !op.addIntOption('\0', "nursery-size", "SIZE-MB",
                        "Set the maximum nursery size in MB",

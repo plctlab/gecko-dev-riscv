@@ -73,7 +73,6 @@ namespace jit {
 bool Simulator::FLAG_trace_sim = false;
 bool Simulator::FLAG_riscv_trap_to_simulator_debugger = false;
 
-
 static void UNIMPLEMENTED() {
   printf("UNIMPLEMENTED instruction.\n");
   MOZ_CRASH();
@@ -477,7 +476,7 @@ void RiscvDebugger::Debug() {
       }
       // Use sscanf to parse the individual parts of the command line. At the
       // moment no command expects more than two parameters.
-      int argc = scanf(
+      int argc = sscanf(
             line,
             "%" XSTR(COMMAND_SIZE) "s "
             "%" XSTR(ARG_SIZE) "s "
