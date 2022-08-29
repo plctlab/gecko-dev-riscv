@@ -464,6 +464,7 @@ void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
 void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
                                         PatchedImmPtr newValue,
                                         PatchedImmPtr expectedValue) {
+  
   Instruction* inst = (Instruction*)label.raw();
 
   // Extract old Value
@@ -475,6 +476,7 @@ void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
 }
 
 uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
+  DEBUG_PRINTF("\tExtractLoad64Value:");
   Instruction* instr1 = inst0 + 1 * kInstrSize;
   if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
    //Li64
@@ -500,6 +502,7 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       imm += (int64_t)instr5->Imm12Value();
       imm <<= 12;
       imm += (int64_t)instr7->Imm12Value();
+      DEBUG_PRINTF("\tpc:%p imm:%ld\n", inst0, imm);
       return imm;
     } else {
       MOZ_CRASH();
@@ -512,6 +515,7 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
 }
 
 void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
+  DEBUG_PRINTF("\tUpdateLoad64Value: pc: %p\tvalue: %lx\n", pc, value);
   Instruction* instr1 = pc + 1 * kInstrSize;
   if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
     Instruction* instr0 = pc;
@@ -550,6 +554,14 @@ void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
   *reinterpret_cast<Instr*>(instr5) |= (((value + (1LL << 11)) << 40 >> 52) << 20);
   *reinterpret_cast<Instr*>(instr7) &= 0xfffff;
   *reinterpret_cast<Instr*>(instr7) |= ((value << 52 >> 52) << 20);
+  disassembleInstr(instr0->InstructionBits());
+  disassembleInstr(instr1->InstructionBits());
+  disassembleInstr(instr2->InstructionBits());
+  disassembleInstr(instr3->InstructionBits());
+  disassembleInstr(instr4->InstructionBits());
+  disassembleInstr(instr5->InstructionBits());
+  disassembleInstr(instr6->InstructionBits());
+  disassembleInstr(instr7->InstructionBits());
   } else {
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     set_target_value_at(pc, value);
@@ -557,7 +569,7 @@ void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
 }
 
 void Assembler::set_target_value_at(Instruction* pc, uint64_t target) {
-  DEBUG_PRINTF("set_target_value_at: pc: %p\ttarget: %lx\n", pc, target);
+  DEBUG_PRINTF("\tset_target_value_at: pc: %p\ttarget: %lx\n", pc, target);
   uint32_t* p = reinterpret_cast<uint32_t*>(pc);
   MOZ_ASSERT((target & 0xffff000000000000ll) == 0);
 #ifdef DEBUG
@@ -594,7 +606,7 @@ void Assembler::set_target_value_at(Instruction* pc, uint64_t target) {
 void Assembler::target_at_put(BufferOffset pos,
                               BufferOffset target_pos,
                               bool trampoline) {
-  DEBUG_PRINTF("target_at_put: %p (%d) to %p (%d)\n",
+  DEBUG_PRINTF("\ttarget_at_put: %p (%d) to %p (%d)\n",
                reinterpret_cast<Instr*>(editSrc(pos)), pos.getOffset(),
                reinterpret_cast<Instr*>(editSrc(pos)) + target_pos.getOffset() -
                    pos.getOffset(),
@@ -791,9 +803,20 @@ void Assembler::bind(Label* label, BufferOffset boff) {
 }
 
 void Assembler::Bind(uint8_t* rawCode, const CodeLabel& label) {
-  size_t offset = label.patchAt().offset();
-  size_t target = label.target().offset();
-  *reinterpret_cast<const void**>(rawCode + offset) = rawCode + target;
+  if (label.patchAt().bound()) {
+    auto mode = label.linkMode();
+    intptr_t offset = label.patchAt().offset();
+    intptr_t target = label.target().offset();
+
+    if (mode == CodeLabel::RawPointer) {
+      *reinterpret_cast<const void**>(rawCode + offset) = rawCode + target;
+    } else {
+      MOZ_ASSERT(mode == CodeLabel::MoveImmediate ||
+                 mode == CodeLabel::JumpImmediate);
+      Instruction* inst = (Instruction*)(rawCode + offset);
+      Assembler::UpdateLoad64Value(inst, (uint64_t)(rawCode + target));
+    }
+  }
 }
 
 bool Assembler::is_near(Label* L) {
@@ -1021,6 +1044,23 @@ void Assembler::CheckTrampolinePool() {
         currentOffset() + kMaxBranchOffset - kTrampolineSlotsSize * 16;
   }
   return;
+}
+
+// Break / Trap instructions.
+void Assembler::break_(uint32_t code, bool break_as_stop) {
+  // We need to invalidate breaks that could be stops as well because the
+  // simulator expects a char pointer after the stop instruction.
+  // See constants-mips.h for explanation.
+  MOZ_ASSERT(
+      (break_as_stop && code <= kMaxStopCode && code > kMaxWatchpointCode) ||
+      (!break_as_stop && (code > kMaxStopCode || code <= kMaxWatchpointCode)));
+
+  // since ebreak does not allow additional immediate field, we use the
+  // immediate field of lui instruction immediately following the ebreak to
+  // encode the "code" info
+  ebreak();
+  MOZ_ASSERT(is_uint20(code));
+  lui(zero_reg, code);
 }
 
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)

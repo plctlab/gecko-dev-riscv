@@ -44,6 +44,8 @@
 #include "jit/riscv64/constant/Constant-riscv64.h"
 #include "jit/riscv64/Register-riscv64.h"
 
+#define xlen (uint8_t(sizeof(void*) * 8))
+
 #define kBitsPerByte  8UL
 // Check number width.
 inline constexpr bool is_intn(int64_t x, unsigned n) {

@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Copyright 2021 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 #include "jit/riscv64/MacroAssembler-riscv64.h"
 
 #include "jsmath.h"
@@ -1740,7 +1743,7 @@ void MacroAssemblerRiscv64Compat::popValue(ValueOperand val) {
 }
 
 void MacroAssemblerRiscv64Compat::breakpoint(uint32_t value) {
-  ebreak();
+  break_(value);
 }
 
 void MacroAssemblerRiscv64Compat::ensureDouble(const ValueOperand& source,
@@ -2591,7 +2594,6 @@ void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
 
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
   if (is_int12(offset)) {
-    Instruction* bal = editSrc(call);
     MOZ_CRASH();
   } else {
     uint32_t u32Offset = callerOffset - 4 * sizeof(uint32_t);
@@ -3022,6 +3024,7 @@ void MacroAssemblerRiscv64::ma_li(Register dest, Imm32 imm) {
 }
 void MacroAssemblerRiscv64::ma_li(Register dest, CodeLabel* label) {
   BufferOffset bo = m_buffer.nextOffset();
+  JitSpew(JitSpew_Codegen, ".load CodeLabel %p", label);
   ma_liPatchable(dest, ImmWord(/* placeholder */ 0));
   label->patchAt()->bind(bo.getOffset());
   label->setLinkMode(CodeLabel::MoveImmediate);
@@ -3047,6 +3050,55 @@ void MacroAssemblerRiscv64::ma_push(Register r) {
 
   addi(StackPointer, StackPointer, (int32_t) - sizeof(intptr_t));
   sd(r, StackPointer, 0);
+}
+
+// multiplies.  For now, there are only few that we care about.
+void MacroAssemblerRiscv64::ma_mul32TestOverflow(Register rd,
+                                                 Register rj,
+                                                 Register rk,
+                                                 Label* overflow) {
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
+  MulOverflow32(rd, rj, rk, ScratchRegister);
+  ma_b(ScratchRegister, Register(zero), overflow, Assembler::NotEqual);
+}
+void MacroAssemblerRiscv64::ma_mul32TestOverflow(Register rd,
+                                                 Register rj,
+                                                 Imm32 imm,
+                                                 Label* overflow) {
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
+  MulOverflow32(rd, rj, Operand(imm.value), ScratchRegister);
+  ma_b(ScratchRegister, Register(zero), overflow, Assembler::NotEqual);
+}
+
+// MulOverflow32 sets overflow register to zero if no overflow occured
+void MacroAssemblerRiscv64::MulOverflow32(Register dst,
+                                          Register left,
+                                          const Operand& right,
+                                          Register overflow) {
+  UseScratchRegisterScope temps(this);
+  BlockTrampolinePoolScope block_trampoline_pool(this);
+  Register right_reg;
+  Register scratch = temps.Acquire();
+  Register scratch2 = temps.Acquire();
+  if (right.is_imm()) {
+    ma_li(scratch, right.immediate());
+    right_reg = scratch;
+  } else {
+    MOZ_ASSERT(right.is_reg());
+    right_reg = right.rm();
+  }
+
+  MOZ_ASSERT(left != scratch2 && right_reg != scratch2 && dst != scratch2 &&
+             overflow != scratch2);
+  MOZ_ASSERT(overflow != left && overflow != right_reg);
+  sext_w(overflow, left);
+  sext_w(scratch2, right_reg);
+
+  mul(overflow, overflow, scratch2);
+  sext_w(dst, overflow);
+  xor_(overflow, overflow, dst);
 }
 
 int32_t MacroAssemblerRiscv64::GetOffset(int32_t offset,

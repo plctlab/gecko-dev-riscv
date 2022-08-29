@@ -212,6 +212,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   ***************************************************************/
 
   // if we are constructing, that also needs to include newTarget
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   {
     Label noNewTarget;
     masm.branchTest32(Assembler::Zero, reg_token,
@@ -221,7 +222,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     masm.bind(&noNewTarget);
   }
-
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   // Make stack algined
   masm.ma_and(s2, reg_argc, Imm32(1));
   masm.ma_sub64(s1, zero, Imm32(sizeof(Value)));
@@ -233,7 +234,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
   masm.slli(s2, reg_argc, 3);  // Value* argv
   masm.addPtr(reg_argv, s2);        // s2 = &argv[argc]
-
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   // Loop over arguments, copying them from an unknown buffer onto the Ion
   // stack so they can be accessed from JIT'ed code.
   Label header, footer;
@@ -252,7 +253,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.ma_b(s2, reg_argv, &header, Assembler::Above, ShortJump);
   }
   masm.bind(&footer);
-
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   masm.push(reg_token);
   masm.pushFrameDescriptorForJitCall(FrameType::CppToJSJit, s3, s3);
 
@@ -358,7 +359,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     MOZ_ASSERT(R1.scratchReg() != reg_code);
     masm.ma_or(R1.scratchReg(), reg_chain, zero);
   }
-
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   // The call will push the return address and frame pointer on the stack, thus
   // we check that the stack would be aligned once the call is complete.
   masm.assertStackAlignment(JitStackAlignment, 2 * sizeof(uintptr_t));
@@ -380,7 +381,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   // Store the returned value into the vp
   masm.ld(reg_vp, StackPointer, offsetof(EnterJITRegs, a7));
   masm.storeValue(JSReturnOperand, Address(reg_vp, 0));
-
+  JitSpew(JitSpew_Codegen, "__Line__: %d", __LINE__);
   // Restore non-volatile registers and return.
   GenerateReturn(masm, ShortJump);
 }
