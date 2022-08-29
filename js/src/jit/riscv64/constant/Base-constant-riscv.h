@@ -5,6 +5,18 @@
 #define jit_riscv64_constant_Base_constant_riscv__h_
 namespace js {
 namespace jit {
+
+// On RISC-V Simulator breakpoints can have different codes:
+// - Breaks between 0 and kMaxWatchpointCode are treated as simple watchpoints,
+//   the simulator will run through them and print the registers.
+// - Breaks between kMaxWatchpointCode and kMaxStopCode are treated as stop()
+//   instructions (see Assembler::stop()).
+// - Breaks larger than kMaxStopCode are simple breaks, dropping you into the
+//   debugger.
+const uint32_t kMaxWatchpointCode = 31;
+const uint32_t kMaxStopCode = 127;
+static_assert(kMaxWatchpointCode < kMaxStopCode);
+
 // On RISCV all instructions are 32 bits, except for RVC.
 using Instr = int32_t;
 using ShortInstr = int16_t;

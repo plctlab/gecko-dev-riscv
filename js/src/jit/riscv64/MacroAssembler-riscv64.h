@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Copyright 2021 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 #ifndef jit_riscv64_MacroAssembler_riscv64_h
 #define jit_riscv64_MacroAssembler_riscv64_h
 
@@ -34,17 +37,20 @@ enum LoadStoreSize {
 enum LoadStoreExtension { ZeroExtend = 0, SignExtend = 1 };
 enum JumpKind { LongJump = 0, ShortJump = 1 };
 enum FloatFormat { SingleFloat, DoubleFloat };
-class ScratchTagScope {
+class ScratchTagScope : public ScratchRegisterScope {
  public:
-  ScratchTagScope(MacroAssembler&, const ValueOperand) {}
-  operator Register() { MOZ_CRASH(); }
-  void release() { MOZ_CRASH(); }
-  void reacquire() { MOZ_CRASH(); }
+  ScratchTagScope(MacroAssembler& masm, const ValueOperand&)
+      : ScratchRegisterScope(masm) {}
 };
 
 class ScratchTagScopeRelease {
+  ScratchTagScope* ts_;
+
  public:
-  explicit ScratchTagScopeRelease(ScratchTagScope*) {}
+  explicit ScratchTagScopeRelease(ScratchTagScope* ts) : ts_(ts) {
+    ts_->release();
+  }
+  ~ScratchTagScopeRelease() { ts_->reacquire(); }
 };
 
 struct ImmTag : public Imm32 {
@@ -388,6 +394,10 @@ class MacroAssemblerRiscv64 : public Assembler {
                             Imm32 imm,
                             Label* overflow);
 
+  void MulOverflow32(Register dst,
+                     Register left,
+                     const Operand& right,
+                     Register overflow);
   // multiplies.  For now, there are only few that we care about.
   void ma_mul32TestOverflow(Register rd,
                             Register rj,

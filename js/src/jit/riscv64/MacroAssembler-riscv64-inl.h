@@ -163,12 +163,17 @@ void MacroAssembler::branchAddPtr(Condition cond,
   }
 }
 template <typename T>
-void MacroAssembler::branchMul32(Condition, T, Register, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchMul32(Condition cond, T src, Register dest,
+                                 Label* overflow) {
+  MOZ_ASSERT(cond == Assembler::Overflow);
+  ma_mul32TestOverflow(dest, dest, src, overflow);
 }
 template <typename T>
-void MacroAssembler::branchRshift32(Condition, T, Register, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchRshift32(Condition cond, T src, Register dest,
+                                    Label* label) {
+  MOZ_ASSERT(cond == Zero || cond == NonZero);
+  rshift32(src, dest);
+  branch32(cond == Zero ? Equal : NotEqual, dest, Imm32(0), label);
 }
 // the type of 'T src' maybe a Register, maybe a Imm32,depends on who call it.
 template <typename T>
@@ -1379,11 +1384,12 @@ void MacroAssembler::ctz64(Register64, Register) {
 void MacroAssembler::decBranchPtr(Condition, Register, Imm32, Label*) {
   MOZ_CRASH();
 }
-void MacroAssembler::divDouble(FloatRegister, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::divFloat32(FloatRegister src, FloatRegister dest) {
+  fdiv_s(dest, dest, src);
 }
-void MacroAssembler::divFloat32(FloatRegister, FloatRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::divDouble(FloatRegister src, FloatRegister dest) {
+  fdiv_d(dest, dest, src);
 }
 void MacroAssembler::fallibleUnboxPtr(const ValueOperand& src,
                                       Register dest,
@@ -1746,11 +1752,11 @@ void MacroAssembler::spectreMovePtr(Condition, Register, Register) {
 void MacroAssembler::spectreZeroRegister(Condition, Register, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::sqrtDouble(FloatRegister, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::sqrtDouble(FloatRegister src, FloatRegister dest) {
+  fsqrt_d(dest, src);
 }
-void MacroAssembler::sqrtFloat32(FloatRegister, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::sqrtFloat32(FloatRegister src, FloatRegister dest) {
+  fsqrt_s(dest, src);
 }
 void MacroAssembler::storeUncanonicalizedFloat32(FloatRegister src,
                                                  const Address& addr) {

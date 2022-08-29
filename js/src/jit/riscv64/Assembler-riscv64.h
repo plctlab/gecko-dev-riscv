@@ -375,7 +375,7 @@ class Assembler : public AssemblerShared,
   
   Register getStackPointer() const { return StackPointer; }
   void flushBuffer() {}
-  void disassembleInstr(Instr instr, bool enable_spew = false);
+  static void disassembleInstr(Instr instr, bool enable_spew = false);
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
   static uintptr_t target_address_at(Instruction* pos);
@@ -530,6 +530,7 @@ class Assembler : public AssemblerShared,
   }
 
   // Assembler Pseudo Instructions (Tables 25.2, 25.3, RISC-V Unprivileged ISA)
+  void break_(uint32_t code, bool break_as_stop = false);
   void nop();
   void RV_li(Register rd, intptr_t imm);
   // Returns the number of instructions required to load the immediate
@@ -657,7 +658,6 @@ class Operand {
     MOZ_ASSERT(tag == MEM);
     return Address(Register::FromCode(rm_), offset());
   }
-
  private:
   Tag tag;
   uint32_t rm_;

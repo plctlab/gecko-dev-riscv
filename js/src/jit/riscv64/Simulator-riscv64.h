@@ -213,16 +213,6 @@ const uint32_t kFCSRFlagMask =
 
 const uint32_t kFCSRExceptionFlagMask = kFCSRFlagMask ^ kFCSRInexactFlagMask;
 
-// On RISC-V Simulator breakpoints can have different codes:
-// - Breaks between 0 and kMaxWatchpointCode are treated as simple watchpoints,
-//   the simulator will run through them and print the registers.
-// - Breaks between kMaxWatchpointCode and kMaxStopCode are treated as stop()
-//   instructions (see Assembler::stop()).
-// - Breaks larger than kMaxStopCode are simple breaks, dropping you into the
-//   debugger.
-const uint32_t kMaxWatchpointCode = 31;
-const uint32_t kMaxStopCode = 127;
-static_assert(kMaxWatchpointCode < kMaxStopCode);
 
 // -----------------------------------------------------------------------------
 // Utility types and functions for RISCV
