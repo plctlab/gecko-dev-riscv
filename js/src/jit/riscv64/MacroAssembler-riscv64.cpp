@@ -3215,6 +3215,10 @@ void MacroAssembler::widenInt32(Register) {
 // This method generates lui, dsll and ori instruction block that can be
 // modified by UpdateLoad64Value, either during compilation (eg.
 // Assembler::bind), or during execution (eg. jit::PatchJump).
+void MacroAssemblerRiscv64::ma_liPatchable(Register dest, Imm32 imm) {
+  return ma_liPatchable(dest, ImmWord(uintptr_t(imm.value)));
+}
+
 void MacroAssemblerRiscv64::ma_liPatchable(Register dest, ImmPtr imm) {
   return ma_liPatchable(dest, ImmWord(uintptr_t(imm.value)));
 }
@@ -5097,5 +5101,178 @@ void MacroAssemblerRiscv64::ma_fmovz(FloatFormat fmt,
   }
   bind(&done);
 }
+
+void MacroAssemblerRiscv64::ByteSwap(Register rd, Register rs, int operand_size,
+                              Register scratch) {
+  MOZ_ASSERT(scratch != rs);
+  MOZ_ASSERT(scratch != rd);
+  MOZ_ASSERT(operand_size == 4 || operand_size == 8);
+  if (operand_size == 4) {
+    // Uint32_t x1 = 0x00FF00FF;
+    // x0 = (x0 << 16 | x0 >> 16);
+    // x0 = (((x0 & x1) << 8)  | ((x0 & (x1 << 8)) >> 8));
+    UseScratchRegisterScope temps(this);
+    BlockTrampolinePoolScope block_trampoline_pool(this);
+    MOZ_ASSERT((rd != t6) && (rs != t6));
+    Register x0 = temps.Acquire();
+    Register x1 = temps.Acquire();
+    Register x2 = scratch;
+    RV_li(x1, 0x00FF00FF);
+    slliw(x0, rs, 16);
+    srliw(rd, rs, 16);
+    or_(x0, rd, x0);   // x0 <- x0 << 16 | x0 >> 16
+    and_(x2, x0, x1);  // x2 <- x0 & 0x00FF00FF
+    slliw(x2, x2, 8);  // x2 <- (x0 & x1) << 8
+    slliw(x1, x1, 8);  // x1 <- 0xFF00FF00
+    and_(rd, x0, x1);  // x0 & 0xFF00FF00
+    srliw(rd, rd, 8);
+    or_(rd, rd, x2);  // (((x0 & x1) << 8)  | ((x0 & (x1 << 8)) >> 8))
+  } else {
+    // uinx24_t x1 = 0x0000FFFF0000FFFFl;
+    // uinx24_t x1 = 0x00FF00FF00FF00FFl;
+    // x0 = (x0 << 32 | x0 >> 32);
+    // x0 = (x0 & x1) << 16 | (x0 & (x1 << 16)) >> 16;
+    // x0 = (x0 & x1) << 8  | (x0 & (x1 << 8)) >> 8;
+    UseScratchRegisterScope temps(this);
+    BlockTrampolinePoolScope block_trampoline_pool(this);
+    MOZ_ASSERT((rd != t6) && (rs != t6));
+    Register x0 = temps.Acquire();
+    Register x1 = temps.Acquire();
+    Register x2 = scratch;
+    RV_li(x1, 0x0000FFFF0000FFFFl);
+    slli(x0, rs, 32);
+    srli(rd, rs, 32);
+    or_(x0, rd, x0);   // x0 <- x0 << 32 | x0 >> 32
+    and_(x2, x0, x1);  // x2 <- x0 & 0x0000FFFF0000FFFF
+    slli(x2, x2, 16);  // x2 <- (x0 & 0x0000FFFF0000FFFF) << 16
+    slli(x1, x1, 16);  // x1 <- 0xFFFF0000FFFF0000
+    and_(rd, x0, x1);  // rd <- x0 & 0xFFFF0000FFFF0000
+    srli(rd, rd, 16);  // rd <- x0 & (x1 << 16)) >> 16
+    or_(x0, rd, x2);   // (x0 & x1) << 16 | (x0 & (x1 << 16)) >> 16;
+    RV_li(x1, 0x00FF00FF00FF00FFl);
+    and_(x2, x0, x1);  // x2 <- x0 & 0x00FF00FF00FF00FF
+    slli(x2, x2, 8);   // x2 <- (x0 & x1) << 8
+    slli(x1, x1, 8);   // x1 <- 0xFF00FF00FF00FF00
+    and_(rd, x0, x1);
+    srli(rd, rd, 8);  // rd <- (x0 & (x1 << 8)) >> 8
+    or_(rd, rd, x2);  // (((x0 & x1) << 8)  | ((x0 & (x1 << 8)) >> 8))
+  }
+}
+
+template <typename F_TYPE>
+void MacroAssemblerRiscv64::FloatMinMaxHelper(FPURegister dst, FPURegister src1,
+                                       FPURegister src2, MaxMinKind kind) {
+  MOZ_ASSERT((std::is_same<F_TYPE, float>::value) ||
+         (std::is_same<F_TYPE, double>::value));
+
+  if (src1 == src2 && dst != src1) {
+    if (std::is_same<float, F_TYPE>::value) {
+      fmv_s(dst, src1);
+    } else {
+      fmv_d(dst, src1);
+    }
+    return;
+  }
+
+  Label done, nan;
+
+  // For RISCV, fmin_s returns the other non-NaN operand as result if only one
+  // operand is NaN; but for JS, if any operand is NaN, result is Nan. The
+  // following handles the discrepency between handling of NaN between ISA and
+  // JS semantics
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  if (std::is_same<float, F_TYPE>::value) {
+    CompareIsNotNanF32(scratch, src1, src2);
+  } else {
+    CompareIsNotNanF64(scratch, src1, src2);
+  }
+  BranchFalseF(scratch, &nan);
+
+  if (kind == MaxMinKind::kMax) {
+    if (std::is_same<float, F_TYPE>::value) {
+      fmax_s(dst, src1, src2);
+    } else {
+      fmax_d(dst, src1, src2);
+    }
+  } else {
+    if (std::is_same<float, F_TYPE>::value) {
+      fmin_s(dst, src1, src2);
+    } else {
+      fmin_d(dst, src1, src2);
+    }
+  }
+  jump(&done);
+
+  bind(&nan);
+  // if any operand is NaN, return NaN (fadd returns NaN if any operand is NaN)
+  if (std::is_same<float, F_TYPE>::value) {
+    fadd_s(dst, src1, src2);
+  } else {
+    fadd_d(dst, src1, src2);
+  }
+
+  bind(&done);
+}
+
+void MacroAssemblerRiscv64::Float32Max(FPURegister dst, FPURegister src1,
+                                FPURegister src2) {
+  comment(__FUNCTION__);
+  FloatMinMaxHelper<float>(dst, src1, src2, MaxMinKind::kMax);
+}
+
+void MacroAssemblerRiscv64::Float32Min(FPURegister dst, FPURegister src1,
+                                FPURegister src2) {
+  comment(__FUNCTION__);
+  FloatMinMaxHelper<float>(dst, src1, src2, MaxMinKind::kMin);
+}
+
+void MacroAssemblerRiscv64::Float64Max(FPURegister dst, FPURegister src1,
+                                FPURegister src2) {
+  comment(__FUNCTION__);
+  FloatMinMaxHelper<double>(dst, src1, src2, MaxMinKind::kMax);
+}
+
+void MacroAssemblerRiscv64::Float64Min(FPURegister dst, FPURegister src1,
+                                FPURegister src2) {
+  comment(__FUNCTION__);
+  FloatMinMaxHelper<double>(dst, src1, src2, MaxMinKind::kMin);
+}
+
+void MacroAssemblerRiscv64::BranchTrueShortF(Register rs, Label* target) {
+  ma_branch(target, NotEqual, rs, Operand(zero_reg));
+}
+
+void MacroAssemblerRiscv64::BranchFalseShortF(Register rs, Label* target) {
+  ma_branch(target, Equal, rs, Operand(zero_reg));
+}
+
+void MacroAssemblerRiscv64::BranchTrueF(Register rs, Label* target) {
+  bool long_branch =
+      target->bound() ? !is_near(target) : is_trampoline_emitted();
+  if (long_branch) {
+    Label skip;
+    BranchFalseShortF(rs, &skip);
+    BranchLong(target);
+    bind(&skip);
+  } else {
+    BranchTrueShortF(rs, target);
+  }
+}
+
+void MacroAssemblerRiscv64::BranchFalseF(Register rs, Label* target) {
+  bool long_branch =
+      target->bound() ? !is_near(target) : is_trampoline_emitted();
+  if (long_branch) {
+    Label skip;
+    BranchTrueShortF(rs, &skip);
+    BranchLong(target);
+    bind(&skip);
+  } else {
+    BranchFalseShortF(rs, target);
+  }
+}
+
+
 }  // namespace jit
 }  // namespace js

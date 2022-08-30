@@ -131,6 +131,7 @@ class MacroAssemblerRiscv64 : public Assembler {
                 LoadStoreExtension extension = SignExtend);
   void ma_store(Imm32 imm, Address address, LoadStoreSize size = SizeWord,
                 LoadStoreExtension extension = SignExtend);
+  void ma_liPatchable(Register dest, Imm32 imm);
   void ma_liPatchable(Register dest, ImmPtr imm);
   void ma_liPatchable(Register dest, ImmWord imm, LiFlags flags = Li48);
   void ma_li(Register dest, ImmGCPtr ptr);
@@ -443,6 +444,9 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   void ma_jump(ImmPtr dest);
 
+  void jump(Label* label) { ma_branch(label); }
+  void jump(Register reg) { jr(reg); }
+  
   void ma_cmp_set(Register dst, Register lhs, Register rhs, Condition c);
   void ma_cmp_set(Register dst, Register lhs, Imm32 imm, Condition c);
 
@@ -467,6 +471,13 @@ class MacroAssemblerRiscv64 : public Assembler {
                         Register rs,
                         const Operand& rt);
   void BranchLong(Label* L);
+
+  // Floating point branches
+  void BranchTrueShortF(Register rs, Label* target);
+  void BranchFalseShortF(Register rs, Label* target);
+
+  void BranchTrueF(Register rs, Label* target);
+  void BranchFalseF(Register rs, Label* target);
 
   // Bit field starts at bit pos and extending for size bits is extracted from
   // rs and stored zero/sign-extended and right-justified in rt
@@ -554,6 +565,20 @@ class MacroAssemblerRiscv64 : public Assembler {
   void Popcnt64(Register rd, Register rs, Register scratch);
   void Ctz64(Register rd, Register rs);
   void Clz64(Register rd, Register rs);
+
+  // Change endianness
+  void ByteSwap(Register dest, Register src, int operand_size,
+                Register scratch);
+
+  void Float32Max(FPURegister dst, FPURegister src1, FPURegister src2);
+  void Float32Min(FPURegister dst, FPURegister src1, FPURegister src2);
+  void Float64Max(FPURegister dst, FPURegister src1, FPURegister src2);
+  void Float64Min(FPURegister dst, FPURegister src1, FPURegister src2);
+
+  template <typename F>
+  void FloatMinMaxHelper(FPURegister dst, FPURegister src1, FPURegister src2,
+                         MaxMinKind kind);
+
   inline void NegateBool(Register rd, Register rs) { xori(rd, rs, 1); }
 };
 

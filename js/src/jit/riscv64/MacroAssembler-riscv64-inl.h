@@ -72,8 +72,11 @@ inline void MacroAssembler::cmp32Set(Assembler::Condition cond,
 }
 
 //{{{ check_macroassembler_style
-CodeOffset MacroAssembler::sub32FromStackPtrWithPatch(Register) {
-  MOZ_CRASH();
+CodeOffset MacroAssembler::sub32FromStackPtrWithPatch(Register dest) {
+  CodeOffset offset = CodeOffset(currentOffset());
+  MacroAssemblerRiscv64::ma_liPatchable(dest, Imm32(0));
+  sub(dest, StackPointer, dest);
+  return offset;
 }
 
 template <class L>
@@ -217,25 +220,61 @@ void MacroAssembler::branchTestGCThingImpl(Condition cond,
        (cond == Equal) ? AboveOrEqual : Below);
 }
 template <typename T>
-void MacroAssembler::testBigIntSet(Condition, const T&, Register) {
-  MOZ_CRASH();
+void MacroAssembler::testBigIntSet(Condition cond,
+                                   const T& src,
+                                   Register dest) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(src, scratch2);
+  ma_cmp_set(dest, tag, ImmTag(JSVAL_TAG_BIGINT), cond);
 }
+
 template <typename T>
-void MacroAssembler::testBooleanSet(Condition, const T&, Register) {
-  MOZ_CRASH();
+void MacroAssembler::testBooleanSet(Condition cond,
+                                    const T& src,
+                                    Register dest) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(src, scratch2);
+  ma_cmp_set(dest, tag, ImmTag(JSVAL_TAG_BOOLEAN), cond);
 }
+
 template <typename T>
-void MacroAssembler::testNumberSet(Condition, const T&, Register) {
-  MOZ_CRASH();
+void MacroAssembler::testNumberSet(Condition cond,
+                                   const T& src,
+                                   Register dest) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(src, scratch2);
+  ma_cmp_set(dest, tag, ImmTag(JS::detail::ValueUpperInclNumberTag),
+             cond == Equal ? BelowOrEqual : Above);
 }
+
 template <typename T>
-void MacroAssembler::testStringSet(Condition, const T&, Register) {
-  MOZ_CRASH();
+void MacroAssembler::testStringSet(Condition cond,
+                                   const T& src,
+                                   Register dest) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(src, scratch2);
+  ma_cmp_set(dest, tag, ImmTag(JSVAL_TAG_STRING), cond);
 }
+
 template <typename T>
-void MacroAssembler::testSymbolSet(Condition, const T&, Register) {
-  MOZ_CRASH();
+void MacroAssembler::testSymbolSet(Condition cond,
+                                   const T& src,
+                                   Register dest) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  Register tag = extractTag(src, scratch2);
+  ma_cmp_set(dest, tag, ImmTag(JSVAL_TAG_SYMBOL), cond);
 }
+
 // Also see below for specializations of cmpPtrSet.
 template <typename T1, typename T2>
 void MacroAssembler::cmp32Set(Condition cond, T1 lhs, T2 rhs, Register dest) {
@@ -1264,6 +1303,7 @@ void MacroAssembler::branchTruncateDoubleMaybeModUint32(FloatRegister,
                                                         Label*) {
   MOZ_CRASH();
 }
+
 void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister,
                                                  Register,
                                                  Label*) {
@@ -1285,45 +1325,87 @@ void MacroAssembler::byteSwap16SignExtend(Register) {
 void MacroAssembler::byteSwap16ZeroExtend(Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::byteSwap32(Register) {
-  MOZ_CRASH();
+void MacroAssembler::byteSwap32(Register src) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  ByteSwap(src, src, 4, scratch);
 }
-void MacroAssembler::byteSwap64(Register64) {
-  MOZ_CRASH();
+void MacroAssembler::byteSwap64(Register64 src) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  ByteSwap(src.reg, src.reg, 8, scratch);
 }
 void MacroAssembler::clampIntToUint8(Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::clz32(Register, Register, bool) {
-  MOZ_CRASH();
+void MacroAssembler::clz32(Register src, Register dest, bool knownNotZero) {
+  Clz32(dest, src);
 }
-void MacroAssembler::clz64(Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::clz64(Register64 src, Register dest) {
+  Clz32(dest, src.reg);
 }
-void MacroAssembler::cmp16Set(Condition, Address, Imm32, Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::ctz64(Register64 src, Register dest) {
+  Ctz64(dest, src.reg);
 }
-void MacroAssembler::cmp32Load32(Condition,
-                                 Register,
-                                 const Address&,
-                                 const Address&,
-                                 Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::cmp16Set(Condition cond,
+                              Address lhs,
+                              Imm32 rhs,
+                              Register dest) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  MOZ_ASSERT(scratch2 != lhs.base);
+
+  switch (cond) {
+    case Assembler::Equal:
+    case Assembler::NotEqual:
+    case Assembler::Above:
+    case Assembler::AboveOrEqual:
+    case Assembler::Below:
+    case Assembler::BelowOrEqual:
+      load16ZeroExtend(lhs, scratch2);
+      ma_cmp_set(dest, scratch2, Imm32(uint16_t(rhs.value)), cond);
+      break;
+
+    case Assembler::GreaterThan:
+    case Assembler::GreaterThanOrEqual:
+    case Assembler::LessThan:
+    case Assembler::LessThanOrEqual:
+      load16SignExtend(lhs, scratch2);
+      ma_cmp_set(dest, scratch2, Imm32(int16_t(rhs.value)), cond);
+      break;
+
+    default:
+      MOZ_CRASH("unexpected condition");
+  }
 }
-void MacroAssembler::cmp32Load32(Condition,
-                                 Register,
-                                 Register,
-                                 const Address&,
-                                 Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::cmp32Load32(Condition cond, Register lhs,
+                                 const Address& rhs, const Address& src,
+                                 Register dest) {
+  ScratchRegisterScope scratch(*this);
+  MOZ_ASSERT(lhs != scratch && dest != scratch);
+  load32(rhs, scratch);
+  cmp32Load32(cond, lhs, scratch, src, dest);
 }
-void MacroAssembler::cmp32LoadPtr(Condition,
-                                  const Address&,
-                                  Imm32,
-                                  const Address&,
-                                  Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::cmp32Load32(Condition cond, Register lhs, Register rhs,
+                                 const Address& src, Register dest) {
+  Label skip;
+  branch32(Assembler::InvertCondition(cond), lhs, rhs, &skip);
+  load32(src, dest);
+  bind(&skip);
 }
+
+void MacroAssembler::cmp32LoadPtr(Condition cond, const Address& lhs, Imm32 rhs,
+                                  const Address& src, Register dest) {
+  Label skip;
+  branch32(Assembler::InvertCondition(cond), lhs, rhs, &skip);
+  loadPtr(src, dest);
+  bind(&skip);
+}
+
 void MacroAssembler::cmp32Move32(Condition cond,
                                  Register lhs,
                                  Register rhs,
@@ -1362,8 +1444,36 @@ void MacroAssembler::cmp64Set(Condition cond,
                               Register dest) {
   ma_cmp_set(dest, lhs, ImmWord(uint64_t(rhs.value)), cond);
 }
-void MacroAssembler::cmp8Set(Condition, Address, Imm32, Register) {
-  MOZ_CRASH();
+void MacroAssembler::cmp8Set(Condition cond,
+                             Address lhs,
+                             Imm32 rhs,
+                             Register dest) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  MOZ_ASSERT(scratch2 != lhs.base);
+
+  switch (cond) {
+    case Assembler::Equal:
+    case Assembler::NotEqual:
+    case Assembler::Above:
+    case Assembler::AboveOrEqual:
+    case Assembler::Below:
+    case Assembler::BelowOrEqual:
+      load8ZeroExtend(lhs, scratch2);
+      ma_cmp_set(dest, scratch2, Imm32(uint8_t(rhs.value)), cond);
+      break;
+
+    case Assembler::GreaterThan:
+    case Assembler::GreaterThanOrEqual:
+    case Assembler::LessThan:
+    case Assembler::LessThanOrEqual:
+      load8SignExtend(lhs, scratch2);
+      ma_cmp_set(dest, scratch2, Imm32(int8_t(rhs.value)), cond);
+      break;
+
+    default:
+      MOZ_CRASH("unexpected condition");
+  }
 }
 void MacroAssembler::cmpPtrMovePtr(Condition cond,
                                    Register lhs,
@@ -1386,11 +1496,10 @@ void MacroAssembler::cmpPtrMovePtr(Condition cond,
 void MacroAssembler::ctz32(Register, Register, bool) {
   MOZ_CRASH();
 }
-void MacroAssembler::ctz64(Register64, Register) {
-  MOZ_CRASH();
-}
-void MacroAssembler::decBranchPtr(Condition, Register, Imm32, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::decBranchPtr(Condition cond, Register lhs, Imm32 rhs,
+                                  Label* label) {
+  subPtr(rhs, lhs);
+  branchPtr(cond, lhs, Imm32(0), label);
 }
 void MacroAssembler::divFloat32(FloatRegister src, FloatRegister dest) {
   fdiv_s(dest, dest, src);
@@ -1434,8 +1543,8 @@ void MacroAssembler::fallibleUnboxPtr(const BaseIndex& src,
   loadValue(src, ValueOperand(dest));
   fallibleUnboxPtr(ValueOperand(dest), dest, type, fail);
 }
-void MacroAssembler::flexibleLshift32(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::flexibleLshift32(Register src, Register dest) {
+  lshift32(src, dest);
 }
 void MacroAssembler::flexibleRshift32Arithmetic(Register, Register) {
   MOZ_CRASH();
@@ -1694,7 +1803,8 @@ void MacroAssembler::popcnt32(Register, Register, Register) {
 void MacroAssembler::popcnt64(Register64, Register64, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::quotient32(Register rhs, Register srcDest,
+void MacroAssembler::quotient32(Register rhs,
+                                Register srcDest,
                                 bool isUnsigned) {
   if (isUnsigned) {
     ma_divu32(srcDest, srcDest, rhs);
@@ -1703,7 +1813,8 @@ void MacroAssembler::quotient32(Register rhs, Register srcDest,
   }
 }
 
-void MacroAssembler::remainder32(Register rhs, Register srcDest,
+void MacroAssembler::remainder32(Register rhs,
+                                 Register srcDest,
                                  bool isUnsigned) {
   if (isUnsigned) {
     ma_modu32(srcDest, srcDest, rhs);
