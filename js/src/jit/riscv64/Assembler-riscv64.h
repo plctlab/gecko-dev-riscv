@@ -293,6 +293,7 @@ class Assembler : public AssemblerShared,
                              BufferOffset dest);
   void processCodeLabels(uint8_t* rawCode);
   BufferOffset nextOffset() { return m_buffer.nextOffset(); }
+  void comment(const char* msg) { spew("; %s", msg); }
   
 #ifdef JS_JITSPEW
   inline void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3) {
@@ -445,7 +446,7 @@ class Assembler : public AssemblerShared,
     Assembler::WriteLoad64Instructions(inst, ScratchRegister, (uint64_t)dest);
     Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
                   (ScratchRegister.code() << kRs1Shift) | (0x0 << kImm12Shift);
-    *reinterpret_cast<Instr*>(inst) = jalr_;
+    *reinterpret_cast<Instr*>(inst + 6 * kInstrSize) = jalr_;
   }
   static void WriteLoad64Instructions(Instruction* inst0,
                                       Register reg,

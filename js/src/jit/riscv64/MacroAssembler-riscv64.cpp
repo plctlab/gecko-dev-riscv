@@ -393,7 +393,7 @@ void MacroAssemblerRiscv64::ma_compareF32(Register rd,
       flt_s(rd, cmp2, cmp1);
       break;
   }
-  if(cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
+  if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
     Register scratch = temps.Acquire();
     CompareIsNanF32(scratch, cmp1, cmp2);
@@ -432,7 +432,7 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd,
       flt_d(rd, cmp2, cmp1);
       break;
   }
-  if(cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
+  if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
     Register scratch = temps.Acquire();
     CompareIsNanF32(scratch, cmp1, cmp2);
@@ -2103,9 +2103,21 @@ template void MacroAssembler::storeUnboxedValue(
     const BaseObjectElementIndex& dest,
     MIRType slotType);
 
-uint32_t MacroAssembler::pushFakeReturnAddress(Register) {
-  MOZ_CRASH();
+// ===============================================================
+// Jit Frames.
+
+uint32_t MacroAssembler::pushFakeReturnAddress(Register scratch) {
+  CodeLabel cl;
+
+  ma_li(scratch, &cl);
+  Push(scratch);
+  bind(&cl);
+  uint32_t retAddr = currentOffset();
+
+  addCodeLabel(cl);
+  return retAddr;
 }
+
 void MacroAssembler::atomicEffectOp64(const Synchronization&,
                                       AtomicOp,
                                       Register64,
@@ -2399,15 +2411,27 @@ void MacroAssembler::callWithABINoProfiler(const Address& fun,
   callWithABIPost(stackAdjust, result);
 }
 
-void MacroAssembler::ceilDoubleToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::ceilDoubleToInt32(FloatRegister src,
+                                       Register dest,
+                                       Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Ceil_w_d(dest, src, scratch);
+  ma_b(scratch, Imm32(1), fail, NotEqual);
 }
-void MacroAssembler::ceilFloat32ToInt32(FloatRegister, Register, Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::ceilFloat32ToInt32(FloatRegister src,
+                                       Register dest,
+                                       Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Ceil_w_s(dest, src, scratch);
+  ma_b(scratch, Imm32(1), fail, NotEqual);
 }
-void MacroAssembler::comment(const char*) {
-  MOZ_CRASH();
+void MacroAssembler::comment(const char* msg) {
+  Assembler::comment(msg);
 }
+
 void MacroAssembler::compareExchange64(const Synchronization&,
                                        const Address&,
                                        Register64,
@@ -2468,34 +2492,34 @@ void MacroAssembler::compareExchange(Scalar::Type,
                                      Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::convertInt64ToDouble(Register64, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::convertInt64ToDouble(Register64 src, FloatRegister dest) {
+  fcvt_d_l(dest, src.scratchReg());
 }
-void MacroAssembler::convertInt64ToFloat32(Register64, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::convertInt64ToFloat32(Register64 src, FloatRegister dest) {
+  fcvt_s_l(dest, src.scratchReg());
 }
-void MacroAssembler::convertIntPtrToDouble(Register, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::convertIntPtrToDouble(Register src, FloatRegister dest) {
+  fcvt_d_l(dest, src);
 }
-void MacroAssembler::convertUInt64ToDouble(Register64,
-                                           FloatRegister,
-                                           Register) {
-  MOZ_CRASH();
+void MacroAssembler::convertUInt64ToDouble(Register64 src,
+                                           FloatRegister dest,
+                                           Register tmp) {
+  fcvt_d_lu(dest, src.scratchReg());
 }
-void MacroAssembler::convertUInt64ToFloat32(Register64,
-                                            FloatRegister,
-                                            Register) {
-  MOZ_CRASH();
+void MacroAssembler::convertUInt64ToFloat32(Register64 src,
+                                           FloatRegister dest,
+                                           Register tmp) {
+  fcvt_s_lu(dest, src.scratchReg());
 }
 void MacroAssembler::copySignDouble(FloatRegister,
                                     FloatRegister,
                                     FloatRegister) {
   MOZ_CRASH();
 }
-void MacroAssembler::enterFakeExitFrameForWasm(Register,
-                                               Register,
-                                               ExitFrameType) {
-  MOZ_CRASH();
+void MacroAssembler::enterFakeExitFrameForWasm(Register cxreg,
+                                               Register scratch,
+                                               ExitFrameType type) {
+  enterFakeExitFrame(cxreg, scratch, type);
 }
 void MacroAssembler::flexibleDivMod32(Register rhs,
                                       Register srcDest,
@@ -2593,12 +2617,12 @@ void MacroAssembler::moveValue(const Value& src, const ValueOperand& dest) {
 void MacroAssembler::nearbyIntDouble(RoundingMode,
                                      FloatRegister,
                                      FloatRegister) {
-  MOZ_CRASH();
+  MOZ_CRASH("not supported on this platform");
 }
 void MacroAssembler::nearbyIntFloat32(RoundingMode,
                                       FloatRegister,
                                       FloatRegister) {
-  MOZ_CRASH();
+  MOZ_CRASH("not supported on this platform");
 }
 
 void MacroAssembler::oolWasmTruncateCheckF32ToI32(FloatRegister input,
@@ -2751,8 +2775,16 @@ void MacroAssembler::oolWasmTruncateCheckF64ToI64(FloatRegister input,
   wasmTrap(wasm::Trap::IntegerOverflow, off);
 }
 void MacroAssembler::patchCallToNop(uint8_t* call) {
-  MOZ_CRASH();
+  uint32_t* p = reinterpret_cast<uint32_t*>(call) - 7;
+  *reinterpret_cast<Instr*>(p) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 1) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 2) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 3) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 4) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 5) = kNopByte;
+  *reinterpret_cast<Instr*>(p + 6) = kNopByte;
 }
+
 void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
   BufferOffset call(callerOffset - 1 * sizeof(uint32_t));
 
@@ -2777,7 +2809,11 @@ void MacroAssembler::patchNearAddressMove(CodeLocationLabel loc,
   PatchDataWithValueCheck(loc, ImmPtr(target.raw()), ImmPtr(nullptr));
 }
 void MacroAssembler::patchNopToCall(uint8_t* call, uint8_t* target) {
-  MOZ_CRASH();
+  uint32_t* p = reinterpret_cast<uint32_t*>(call) - 7;
+  Assembler::WriteLoad64Instructions((Instruction*)p, ScratchRegister, (uint64_t)target);
+  Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
+                (ScratchRegister.code() << kRs1Shift) | (0x0 << kImm12Shift);
+  *reinterpret_cast<Instr*>(p + 6) = jalr_;
 }
 void MacroAssembler::Pop(Register reg) {
   ma_pop(reg);
@@ -3566,8 +3602,11 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
 }
 
 // Branches when done from within riscv code.
-void MacroAssemblerRiscv64::ma_b(Register lhs, Address addr, Label* label,
-                                 Condition c, JumpKind jumpKind) {
+void MacroAssemblerRiscv64::ma_b(Register lhs,
+                                 Address addr,
+                                 Label* label,
+                                 Condition c,
+                                 JumpKind jumpKind) {
   ScratchRegisterScope scratch(asMasm());
   MOZ_ASSERT(lhs != scratch);
   ma_load(scratch, addr, SizeDouble);
@@ -4947,7 +4986,8 @@ void MacroAssemblerRiscv64::Popcnt64(Register rd,
 }
 #endif
 
-void MacroAssemblerRiscv64::ma_div_branch_overflow(Register rd, Register rj,
+void MacroAssemblerRiscv64::ma_div_branch_overflow(Register rd,
+                                                   Register rj,
                                                    Register rk,
                                                    Label* overflow) {
   ScratchRegisterScope scratch(asMasm());
@@ -4956,17 +4996,22 @@ void MacroAssemblerRiscv64::ma_div_branch_overflow(Register rd, Register rj,
   divw(rd, rj, rk);
 }
 
-void MacroAssemblerRiscv64::ma_div_branch_overflow(Register rd, Register rj,
-                                                   Imm32 imm, Label* overflow) {
+void MacroAssemblerRiscv64::ma_div_branch_overflow(Register rd,
+                                                   Register rj,
+                                                   Imm32 imm,
+                                                   Label* overflow) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   ma_li(scratch, imm);
   ma_div_branch_overflow(rd, rj, scratch, overflow);
 }
 
-void MacroAssemblerRiscv64::ma_mod_mask(Register src, Register dest,
-                                        Register hold, Register remain,
-                                        int32_t shift, Label* negZero) {
+void MacroAssemblerRiscv64::ma_mod_mask(Register src,
+                                        Register dest,
+                                        Register hold,
+                                        Register remain,
+                                        int32_t shift,
+                                        Label* negZero) {
   // MATH:
   // We wish to compute x % (1<<y) - 1 for a known constant, y.
   // First, let b = (1<<y) and C = (1<<y)-1, then think of the 32 bit
@@ -5039,8 +5084,10 @@ void MacroAssemblerRiscv64::ma_mod_mask(Register src, Register dest,
   bind(&done);
 }
 
-void MacroAssemblerRiscv64::ma_fmovz(FloatFormat fmt, FloatRegister fd,
-                                     FloatRegister fj, Register rk) {
+void MacroAssemblerRiscv64::ma_fmovz(FloatFormat fmt,
+                                     FloatRegister fd,
+                                     FloatRegister fj,
+                                     Register rk) {
   Label done;
   ma_b(rk, zero, &done, Assembler::NotEqual);
   if (fmt == SingleFloat) {

@@ -404,6 +404,7 @@ class Simulator {
 
   static bool FLAG_riscv_trap_to_simulator_debugger;
   static bool FLAG_trace_sim;
+  static bool FLAG_riscv_print_watchpoint;
   // Registers are declared in order.
   enum Register {
     no_reg = -1,
