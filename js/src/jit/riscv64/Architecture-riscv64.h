@@ -397,10 +397,14 @@ struct FloatRegister {
     MOZ_ASSERT(!invalid_);
     return sizeof(double);
   }
-  uint32_t numAlignedAliased() const { MOZ_CRASH(); }
-  FloatRegister alignedAliased(uint32_t) { MOZ_CRASH(); }
-  SetType alignedOrDominatedAliasedSet() const { MOZ_CRASH(); }
-
+  uint32_t numAlignedAliased() { return numAliased(); }
+  FloatRegister alignedAliased(uint32_t aliasIdx) {
+    MOZ_ASSERT(aliasIdx < numAliased());
+    return aliased(aliasIdx);
+  }
+  SetType alignedOrDominatedAliasedSet() const {
+    return SetType(1) << code();
+  }
   static constexpr RegTypeName DefaultType = RegTypeName::Float64;
 
   template <RegTypeName Name = DefaultType>

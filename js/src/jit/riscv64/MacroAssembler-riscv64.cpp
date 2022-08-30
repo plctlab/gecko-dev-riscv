@@ -367,27 +367,37 @@ void MacroAssemblerRiscv64::ma_compareF32(Register rd,
                                           FloatRegister cmp1,
                                           FloatRegister cmp2) {
   switch (cc) {
+    case DoubleEqualOrUnordered:
     case DoubleEqual:
       feq_s(rd, cmp1, cmp2);
       break;
+    case DoubleNotEqualOrUnordered:
     case DoubleNotEqual:
       feq_s(rd, cmp1, cmp2);
       NegateBool(rd, rd);
       break;
+    case DoubleLessThanOrUnordered:
     case DoubleLessThan:
       flt_s(rd, cmp1, cmp2);
       break;
+    case DoubleGreaterThanOrEqualOrUnordered:
     case DoubleGreaterThanOrEqual:
       fle_s(rd, cmp2, cmp1);
       break;
+    case DoubleLessThanOrEqualOrUnordered:
     case DoubleLessThanOrEqual:
       fle_s(rd, cmp1, cmp2);
       break;
+    case DoubleGreaterThanOrUnordered:
     case DoubleGreaterThan:
       flt_s(rd, cmp2, cmp1);
       break;
-    default:
-      MOZ_CRASH("UNREACHABLE");
+  }
+  if(cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    CompareIsNanF32(scratch, cmp1, cmp2);
+    or_(rd, rd, scratch);
   }
 }
 
@@ -396,27 +406,37 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd,
                                           FloatRegister cmp1,
                                           FloatRegister cmp2) {
   switch (cc) {
+    case DoubleEqualOrUnordered:
     case DoubleEqual:
       feq_d(rd, cmp1, cmp2);
       break;
+    case DoubleNotEqualOrUnordered:
     case DoubleNotEqual:
       feq_d(rd, cmp1, cmp2);
       NegateBool(rd, rd);
       break;
+    case DoubleLessThanOrUnordered:
     case DoubleLessThan:
       flt_d(rd, cmp1, cmp2);
       break;
+    case DoubleGreaterThanOrEqualOrUnordered:
     case DoubleGreaterThanOrEqual:
       fle_d(rd, cmp2, cmp1);
       break;
+    case DoubleLessThanOrEqualOrUnordered:
     case DoubleLessThanOrEqual:
       fle_d(rd, cmp1, cmp2);
       break;
+    case DoubleGreaterThanOrUnordered:
     case DoubleGreaterThan:
       flt_d(rd, cmp2, cmp1);
       break;
-    default:
-      MOZ_CRASH("UNREACHABLE");
+  }
+  if(cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    CompareIsNanF32(scratch, cmp1, cmp2);
+    or_(rd, rd, scratch);
   }
 }
 

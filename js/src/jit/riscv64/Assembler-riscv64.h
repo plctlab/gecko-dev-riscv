@@ -369,7 +369,9 @@ class Assembler : public AssemblerShared,
     DoubleGreaterThanOrUnordered,
     DoubleGreaterThanOrEqualOrUnordered,
     DoubleLessThanOrUnordered,
-    DoubleLessThanOrEqualOrUnordered
+    DoubleLessThanOrEqualOrUnordered,
+    FIRST_UNORDERED = DoubleUnordered,
+    LAST_UNORDERED = DoubleLessThanOrEqualOrUnordered
   };
 
   
@@ -407,7 +409,6 @@ class Assembler : public AssemblerShared,
     disassembleInstr(x, JitSpew_Codegen);
     CheckTrampolinePoolQuick();
   }
-
   virtual void emit(ShortInstr x) { MOZ_CRASH(); }
   virtual void emit(uint64_t x) { MOZ_CRASH(); }
   virtual void emit(uint32_t x) { m_buffer.putInt(x); }
@@ -429,12 +430,28 @@ class Assembler : public AssemblerShared,
   static void PatchDataWithValueCheck(CodeLocationLabel label,
                                       PatchedImmPtr newValue,
                                       PatchedImmPtr expectedValue);
-  static void PatchWrite_Imm32(CodeLocationLabel, Imm32) { MOZ_CRASH(); }
+  static void PatchWrite_Imm32(CodeLocationLabel label, Imm32 imm);
 
-  static void PatchWrite_NearCall(CodeLocationLabel, CodeLocationLabel) {
-    MOZ_CRASH();
+  static void PatchWrite_NearCall(CodeLocationLabel start,
+                                  CodeLocationLabel toCall) {
+    Instruction* inst = (Instruction*)start.raw();
+    uint8_t* dest = toCall.raw();
+
+    // Overwrite whatever instruction used to be here with a call.
+    // Always use long jump for two reasons:
+    // - Jump has to be the same size because of PatchWrite_NearCallSize.
+    // - Return address has to be at the end of replaced block.
+    // Short jump wouldn't be more efficient.
+    Assembler::WriteLoad64Instructions(inst, ScratchRegister, (uint64_t)dest);
+    Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
+                  (ScratchRegister.code() << kRs1Shift) | (0x0 << kImm12Shift);
+    *reinterpret_cast<Instr*>(inst) = jalr_;
   }
-  static uint32_t PatchWrite_NearCallSize() { MOZ_CRASH(); }
+  static void WriteLoad64Instructions(Instruction* inst0,
+                                      Register reg,
+                                      uint64_t value);
+
+  static uint32_t PatchWrite_NearCallSize() { return 7; }
 
   static void ToggleToJmp(CodeLocationLabel) { MOZ_CRASH(); }
   static void ToggleToCmp(CodeLocationLabel) { MOZ_CRASH(); }

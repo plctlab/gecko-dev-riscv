@@ -603,6 +603,63 @@ void Assembler::set_target_value_at(Instruction* pc, uint64_t target) {
   MOZ_ASSERT(target_address_at(pc) == target);
 }
 
+void Assembler::WriteLoad64Instructions(Instruction* inst0,
+                                        Register reg,
+                                        uint64_t value) {
+  // Initialize rd with an address
+  // Pointers are 48 bits
+  // 6 fixed instructions are generated
+  MOZ_ASSERT((value & 0xfff0000000000000ll) == 0);
+  int64_t a6 = value & 0x3f;                      // bits 0:5. 6 bits
+  int64_t b11 = (value >> 6) & 0x7ff;             // bits 6:11. 11 bits
+  int64_t high_31 = (value >> 17) & 0x7fffffff;   // 31 bits
+  int64_t high_20 = ((high_31 + 0x800) >> 12);  // 19 bits
+  int64_t low_12 = high_31 & 0xfff;             // 12 bits
+  Instr lui_ = LUI | (reg.code() << kRdShift) |
+               ((int32_t)high_20 << kImm20Shift);  // lui(rd, (int32_t)high_20);
+  *reinterpret_cast<Instr*>(inst0) = lui_;
+
+  Instr addi_ =
+      OP_IMM | (reg.code() << kRdShift) | (0b000 << kFunct3Shift) |
+      (reg.code() << kRs1Shift) |
+      (low_12 << kImm12Shift);  // addi(rd, rd, low_12);  // 31 bits in rd.
+  *reinterpret_cast<Instr*>(inst0 + 1 * kInstrSize) = addi_;
+
+  Instr slli_ =
+      OP_IMM | (reg.code() << kRdShift) | (0b001 << kFunct3Shift) |
+      (reg.code() << kRs1Shift) |
+      (11 << kImm12Shift);  // slli(rd, rd, 11);      // Space for next 11 bis
+  *reinterpret_cast<Instr*>(inst0 + 2 * kInstrSize) = slli_;
+
+  Instr ori_b11 = OP_IMM | (reg.code() << kRdShift) | (0b110 << kFunct3Shift) |
+                  (reg.code() << kRs1Shift) |
+                  (b11 << kImm12Shift);  // ori(rd, rd, b11);      // 11 bits
+                                         // are put in. 42 bit in rd
+  *reinterpret_cast<Instr*>(inst0 + 3 * kInstrSize) = ori_b11;
+
+  *reinterpret_cast<Instr*>(inst0 + 4 * kInstrSize) =
+      slli_;  // slli(rd, rd, 6);       // Space for next 6 bits
+
+  Instr ori_a6 = OP_IMM | (reg.code() << kRdShift) | (0b110 << kFunct3Shift) |
+                 (reg.code() << kRs1Shift) |
+                 (a6 << kImm12Shift);  // ori(rd, rd, a6);       // 6 bits are
+                                       // put in. 48 bis in rd
+  *reinterpret_cast<Instr*>(inst0 + 5 * kInstrSize) = ori_a6;
+}
+
+// This just stomps over memory with 32 bits of raw data. Its purpose is to
+// overwrite the call of JITed code with 32 bits worth of an offset. This will
+// is only meant to function on code that has been invalidated, so it should
+// be totally safe. Since that instruction will never be executed again, a
+// ICache flush should not be necessary
+void Assembler::PatchWrite_Imm32(CodeLocationLabel label, Imm32 imm) {
+  // Raw is going to be the return address.
+  uint32_t* raw = (uint32_t*)label.raw();
+  // Overwrite the 4 bytes before the return address, which will
+  // end up being the call instruction.
+  *(raw - 1) = imm.value;
+}
+
 void Assembler::target_at_put(BufferOffset pos,
                               BufferOffset target_pos,
                               bool trampoline) {
