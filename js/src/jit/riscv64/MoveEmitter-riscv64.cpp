@@ -308,7 +308,8 @@ void MoveEmitterRiscv64::emitDoubleMove(const MoveOperand& from,
 }
 
 Address MoveEmitterRiscv64::cycleSlot(uint32_t slot, uint32_t subslot) const {
-  MOZ_CRASH("Unimplement on riscv");
+  int32_t offset = masm.framePushed() - pushedAtCycle_;
+  return Address(StackPointer, offset + slot * sizeof(double) + subslot);
 }
 
 int32_t MoveEmitterRiscv64::getAdjustedOffset(const MoveOperand& operand) {

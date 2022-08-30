@@ -15,111 +15,90 @@ namespace jit {
 class LIRGeneratorRiscv64 : public LIRGeneratorShared {
  protected:
   LIRGeneratorRiscv64(MIRGenerator* gen, MIRGraph& graph, LIRGraph& lirGraph)
-      : LIRGeneratorShared(gen, graph, lirGraph) {
-    MOZ_CRASH();
-  }
+      : LIRGeneratorShared(gen, graph, lirGraph) {}
 
-  LBoxAllocation useBoxFixed(MDefinition*, Register, Register,
-                             bool useAtStart = false) {
-    MOZ_CRASH();
-  }
+  LTableSwitch* newLTableSwitch(const LAllocation& in,
+                                const LDefinition& inputCopy,
+                                MTableSwitch* ins);
+  LTableSwitchV* newLTableSwitchV(MTableSwitch* ins);
 
-  LAllocation useByteOpRegister(MDefinition*) { MOZ_CRASH(); }
-  LAllocation useByteOpRegisterAtStart(MDefinition*) { MOZ_CRASH(); }
-  LAllocation useByteOpRegisterOrNonDoubleConstant(MDefinition*) {
-    MOZ_CRASH();
-  }
-  LDefinition tempByteOpRegister() { MOZ_CRASH(); }
-  LDefinition tempToUnbox() { MOZ_CRASH(); }
-  bool needTempForPostBarrier() { MOZ_CRASH(); }
-  void lowerUntypedPhiInput(MPhi*, uint32_t, LBlock*, size_t) { MOZ_CRASH(); }
-  void lowerInt64PhiInput(MPhi*, uint32_t, LBlock*, size_t) { MOZ_CRASH(); }
-  void defineInt64Phi(MPhi*, size_t) { MOZ_CRASH(); }
-  void lowerForShift(LInstructionHelper<1, 2, 0>*, MDefinition*, MDefinition*,
-                     MDefinition*) {
-    MOZ_CRASH();
-  }
-  void lowerUrshD(MUrsh*) { MOZ_CRASH(); }
-  void lowerPowOfTwoI(MPow*) { MOZ_CRASH(); }
-  template <typename T>
-  void lowerForALU(T, MDefinition*, MDefinition*, MDefinition* v = nullptr) {
-    MOZ_CRASH();
-  }
-  template <typename T>
-  void lowerForFPU(T, MDefinition*, MDefinition*, MDefinition* v = nullptr) {
-    MOZ_CRASH();
-  }
-  template <typename T>
-  void lowerForALUInt64(T, MDefinition*, MDefinition*,
-                        MDefinition* v = nullptr) {
-    MOZ_CRASH();
-  }
-  void lowerForMulInt64(LMulI64*, MMul*, MDefinition*,
-                        MDefinition* v = nullptr) {
-    MOZ_CRASH();
-  }
-  template <typename T>
-  void lowerForShiftInt64(T, MDefinition*, MDefinition*,
-                          MDefinition* v = nullptr) {
-    MOZ_CRASH();
-  }
-  void lowerForBitAndAndBranch(LBitAndAndBranch*, MInstruction*, MDefinition*,
-                               MDefinition*) {
-    MOZ_CRASH();
-  }
-  void lowerForCompareI64AndBranch(MTest*, MCompare*, JSOp, MDefinition*,
-                                   MDefinition*, MBasicBlock*, MBasicBlock*) {
-    MOZ_CRASH();
-  }
+  void lowerForShift(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir,
+                     MDefinition* lhs, MDefinition* rhs);
+  template <size_t Temps>
+  void lowerForShiftInt64(
+      LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, Temps>* ins,
+      MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
 
-  void lowerConstantDouble(double, MInstruction*) { MOZ_CRASH(); }
-  void lowerConstantFloat32(float, MInstruction*) { MOZ_CRASH(); }
-  void lowerTruncateDToInt32(MTruncateToInt32*) { MOZ_CRASH(); }
-  void lowerTruncateFToInt32(MTruncateToInt32*) { MOZ_CRASH(); }
-  void lowerBuiltinInt64ToFloatingPoint(MBuiltinInt64ToFloatingPoint* ins) {
-    MOZ_CRASH();
-  }
-  void lowerWasmBuiltinTruncateToInt64(MWasmBuiltinTruncateToInt64* ins) {
-    MOZ_CRASH();
-  }
-  void lowerWasmBuiltinTruncateToInt32(MWasmBuiltinTruncateToInt32* ins) {
-    MOZ_CRASH();
-  }
-  void lowerDivI(MDiv*) { MOZ_CRASH(); }
-  void lowerModI(MMod*) { MOZ_CRASH(); }
-  void lowerDivI64(MDiv*) { MOZ_CRASH(); }
-  void lowerWasmBuiltinDivI64(MWasmBuiltinDivI64* div) { MOZ_CRASH(); }
-  void lowerModI64(MMod*) { MOZ_CRASH(); }
-  void lowerWasmBuiltinModI64(MWasmBuiltinModI64* mod) { MOZ_CRASH(); }
-  void lowerNegI(MInstruction*, MDefinition*) { MOZ_CRASH(); }
-  void lowerNegI64(MInstruction*, MDefinition*) { MOZ_CRASH(); }
-  void lowerMulI(MMul*, MDefinition*, MDefinition*) { MOZ_CRASH(); }
-  void lowerUDiv(MDiv*) { MOZ_CRASH(); }
-  void lowerUMod(MMod*) { MOZ_CRASH(); }
-  void lowerWasmSelectI(MWasmSelect* select) { MOZ_CRASH(); }
-  void lowerWasmSelectI64(MWasmSelect* select) { MOZ_CRASH(); }
-  void lowerWasmCompareAndSelect(MWasmSelect* ins, MDefinition* lhs,
-                                 MDefinition* rhs, MCompare::CompareType compTy,
-                                 JSOp jsop) {
-    MOZ_CRASH();
-  }
-  bool canSpecializeWasmCompareAndSelect(MCompare::CompareType compTy,
-                                         MIRType insTy) {
-    MOZ_CRASH();
-  }
+  void lowerForALU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir,
+                   MDefinition* input);
+  void lowerForALU(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir,
+                   MDefinition* lhs, MDefinition* rhs);
+  void lowerForALUInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES, 0>* ins,
+                        MDefinition* mir, MDefinition* input);
+  void lowerForALUInt64(
+      LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins,
+      MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
+  void lowerForMulInt64(LMulI64* ins, MMul* mir, MDefinition* lhs,
+                        MDefinition* rhs);
 
-  void lowerBigIntLsh(MBigIntLsh*) { MOZ_CRASH(); }
-  void lowerBigIntRsh(MBigIntRsh*) { MOZ_CRASH(); }
-  void lowerBigIntDiv(MBigIntDiv*) { MOZ_CRASH(); }
-  void lowerBigIntMod(MBigIntMod*) { MOZ_CRASH(); }
+  void lowerForFPU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir,
+                   MDefinition* src);
+  template <size_t Temps>
+  void lowerForFPU(LInstructionHelper<1, 2, Temps>* ins, MDefinition* mir,
+                   MDefinition* lhs, MDefinition* rhs);
 
-  void lowerAtomicLoad64(MLoadUnboxedScalar*) { MOZ_CRASH(); }
-  void lowerAtomicStore64(MStoreUnboxedScalar*) { MOZ_CRASH(); }
+  void lowerForCompareI64AndBranch(MTest* mir, MCompare* comp, JSOp op,
+                                   MDefinition* left, MDefinition* right,
+                                   MBasicBlock* ifTrue, MBasicBlock* ifFalse);
+  void lowerForBitAndAndBranch(LBitAndAndBranch* baab, MInstruction* mir,
+                               MDefinition* lhs, MDefinition* rhs);
 
-  LTableSwitch* newLTableSwitch(LAllocation, LDefinition, MTableSwitch*) {
-    MOZ_CRASH();
-  }
-  LTableSwitchV* newLTableSwitchV(MTableSwitch*) { MOZ_CRASH(); }
+  // Returns a box allocation. reg2 is ignored on 64-bit platforms.
+  LBoxAllocation useBoxFixed(MDefinition* mir, Register reg1, Register reg2,
+                             bool useAtStart = false);
+
+  LAllocation useByteOpRegister(MDefinition* mir);
+  LAllocation useByteOpRegisterAtStart(MDefinition* mir);
+  LAllocation useByteOpRegisterOrNonDoubleConstant(MDefinition* mir);
+
+  LDefinition tempToUnbox();
+
+  bool needTempForPostBarrier() { return true; }
+
+  void lowerUntypedPhiInput(MPhi* phi, uint32_t inputPosition, LBlock* block,
+                            size_t lirIndex);
+  void lowerInt64PhiInput(MPhi*, uint32_t, LBlock*, size_t);
+  void defineInt64Phi(MPhi*, size_t);
+
+  void lowerNegI(MInstruction* ins, MDefinition* input);
+  void lowerNegI64(MInstruction* ins, MDefinition* input);
+  void lowerMulI(MMul* mul, MDefinition* lhs, MDefinition* rhs);
+  void lowerDivI(MDiv* div);
+  void lowerDivI64(MDiv* div);
+  void lowerModI(MMod* mod);
+  void lowerModI64(MMod* mod);
+  void lowerUDiv(MDiv* div);
+  void lowerUDivI64(MDiv* div);
+  void lowerUMod(MMod* mod);
+  void lowerUModI64(MMod* mod);
+  void lowerUrshD(MUrsh* mir);
+  void lowerPowOfTwoI(MPow* mir);
+  void lowerBigIntDiv(MBigIntDiv* ins);
+  void lowerBigIntMod(MBigIntMod* ins);
+  void lowerBigIntLsh(MBigIntLsh* ins);
+  void lowerBigIntRsh(MBigIntRsh* ins);
+  void lowerTruncateDToInt32(MTruncateToInt32* ins);
+  void lowerTruncateFToInt32(MTruncateToInt32* ins);
+  void lowerBuiltinInt64ToFloatingPoint(MBuiltinInt64ToFloatingPoint* ins);
+  void lowerWasmSelectI(MWasmSelect* select);
+  void lowerWasmSelectI64(MWasmSelect* select);
+  void lowerWasmBuiltinTruncateToInt64(MWasmBuiltinTruncateToInt64* ins);
+  void lowerWasmBuiltinTruncateToInt32(MWasmBuiltinTruncateToInt32* ins);
+  void lowerWasmBuiltinDivI64(MWasmBuiltinDivI64* div);
+  void lowerWasmBuiltinModI64(MWasmBuiltinModI64* mod);
+
+  void lowerAtomicLoad64(MLoadUnboxedScalar* ins);
+  void lowerAtomicStore64(MStoreUnboxedScalar* ins);
 };
 
 typedef LIRGeneratorRiscv64 LIRGeneratorSpecific;

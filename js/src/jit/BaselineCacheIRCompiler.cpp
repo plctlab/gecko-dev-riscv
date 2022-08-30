@@ -441,9 +441,12 @@ bool BaselineCacheIRCompiler::emitLoadDynamicSlotResult(ObjOperandId objId,
   Register obj = allocator.useRegister(masm, objId);
   AutoScratchRegisterMaybeOutput scratch(allocator, masm, output);
   AutoScratchRegister scratch2(allocator, masm);
-
+  
+  JitSpew(JitSpew_Codegen, "load32");
   masm.load32(stubAddress(offsetOffset), scratch);
+  JitSpew(JitSpew_Codegen, "loadPtr");
   masm.loadPtr(Address(obj, NativeObject::offsetOfSlots()), scratch2);
+  JitSpew(JitSpew_Codegen, "loadValue");
   masm.loadValue(BaseIndex(scratch2, scratch, TimesOne), output.valueReg());
   return true;
 }
