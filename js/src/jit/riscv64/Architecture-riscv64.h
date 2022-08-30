@@ -279,7 +279,7 @@ class FloatRegisters {
     ft11 = f31
   };
 
-  enum Kind : uint8_t { Double, Single, NumTypes };
+  enum Kind : uint8_t { Double, NumTypes, Single };
 
   typedef FPRegisterID Code;
   typedef FPRegisterID Encoding;
@@ -380,17 +380,22 @@ struct FloatRegister {
   bool operator==(FloatRegister other) const {
     return code() == other.code();
   }
-  bool aliases(FloatRegister) const { MOZ_CRASH(); }
-  uint32_t numAliased() const { MOZ_CRASH(); }
-  FloatRegister aliased(uint32_t) { MOZ_CRASH(); }
-  bool equiv(FloatRegister) const { MOZ_CRASH(); }
+  bool aliases(FloatRegister other) const {
+    return other.encoding_ == encoding_;
+  }
+  uint32_t numAliased() const { return 1; }
+  FloatRegister aliased(uint32_t aliasIdx) const {
+    MOZ_ASSERT(aliasIdx == 0);
+    return *this;
+  }
+  // Ensure that two floating point registers' types are equivalent.
+  bool equiv(FloatRegister other) const {
+    MOZ_ASSERT(!invalid_);
+    return kind_ == other.kind_;
+  }
   constexpr uint32_t size() const {
     MOZ_ASSERT(!invalid_);
-    if (kind_ == FloatRegisters::Double) {
-      return sizeof(double);
-    }
-    MOZ_ASSERT(kind_ == FloatRegisters::Single);
-    return sizeof(float);
+    return sizeof(double);
   }
   uint32_t numAlignedAliased() const { MOZ_CRASH(); }
   FloatRegister alignedAliased(uint32_t) { MOZ_CRASH(); }

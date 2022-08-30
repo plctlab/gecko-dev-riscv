@@ -447,6 +447,8 @@ class Assembler : public AssemblerShared,
     label->target()->bind(currentOffset());
   }
   uint32_t currentOffset() { return nextOffset().getOffset(); }
+  void retarget(Label* label, Label* target);
+  static uint32_t NopSize() { return 4; }
 
   static uintptr_t GetPointer(uint8_t*) { MOZ_CRASH(); }
 

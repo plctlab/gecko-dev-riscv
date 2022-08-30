@@ -434,6 +434,11 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_compareF64(Register rd, DoubleCondition cc, FloatRegister cmp1,
                   FloatRegister cmp2);
 
+  void CompareIsNotNanF32(Register rd, FPURegister cmp1, FPURegister cmp2);
+  void CompareIsNotNanF64(Register rd, FPURegister cmp1, FPURegister cmp2);
+  void CompareIsNanF32(Register rd, FPURegister cmp1, FPURegister cmp2);
+  void CompareIsNanF64(Register rd, FPURegister cmp1, FPURegister cmp2);
+  
   void ma_call(ImmPtr dest);
 
   void ma_jump(ImmPtr dest);
@@ -542,6 +547,13 @@ class MacroAssemblerRiscv64 : public Assembler {
   // Floor double to signed word.
   void Floor_w_d(Register rd, FPURegister fs, Register result = InvalidReg);
 
+  void Clz32(Register rd, Register rs);
+  void Ctz32(Register rd, Register rs);
+  void Popcnt32(Register rd, Register rs, Register scratch);
+
+  void Popcnt64(Register rd, Register rs, Register scratch);
+  void Ctz64(Register rd, Register rs);
+  void Clz64(Register rd, Register rs);
   inline void NegateBool(Register rd, Register rs) { xori(rd, rs, 1); }
 };
 
@@ -742,6 +754,15 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
     splitTag(value, tag);
   }
 
+  void moveIfZero(Register dst, Register src, Register cond) {
+    ScratchRegisterScope scratch(asMasm());
+    MOZ_ASSERT(dst != scratch && cond != scratch);
+    Label done;
+    ma_branch(&done, NotEqual, cond, zero);
+    mv(dst, src);
+    bind(&done);
+  }
+  
   void moveIfNotZero(Register dst, Register src, Register cond) {
     ScratchRegisterScope scratch(asMasm());
     MOZ_ASSERT(dst != scratch && cond != scratch);

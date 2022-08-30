@@ -526,11 +526,11 @@ void MacroAssembler::remainder32(Register rhs, Register srcDest,
 }
 
 void MacroAssembler::divFloat32(FloatRegister src, FloatRegister dest) {
-  fdiv_s(dest, dest, src);
+  as_fdiv_s(dest, dest, src);
 }
 
 void MacroAssembler::divDouble(FloatRegister src, FloatRegister dest) {
-  fdiv_d(dest, dest, src);
+  as_fdiv_d(dest, dest, src);
 }
 
 void MacroAssembler::neg64(Register64 reg) { as_sub_d(reg.reg, zero, reg.reg); }
