@@ -949,8 +949,12 @@ void MacroAssembler::branchTestDouble(Condition cond,
   branchTestDouble(cond, tag, label);
 }
 
-void MacroAssembler::branchTestDoubleTruthy(bool, FloatRegister, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestDoubleTruthy(bool b, FloatRegister value,
+                                            Label* label) {
+  ScratchDoubleScope fpscratch(*this);
+  loadConstantDouble(0.0, fpscratch);
+  DoubleCondition cond = b ? DoubleNotEqual : DoubleEqualOrUnordered;
+  branchDouble(value, fpscratch, label, cond);
 }
 void MacroAssembler::branchTestGCThing(Condition cond,
                                        const Address& address,
@@ -1132,13 +1136,19 @@ void MacroAssembler::branchTestObject(Condition cond,
   Register tag = extractTag(address, scratch2);
   branchTestObject(cond, tag, label);
 }
-void MacroAssembler::branchTestPrimitive(Condition,
-                                         const ValueOperand&,
-                                         Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestPrimitive(Condition cond,
+                                         const ValueOperand& value,
+                                         Label* label) {
+  UseScratchRegisterScope temps(this);
+  Register scratch2 = temps.Acquire();
+  splitTag(value, scratch2);
+  branchTestPrimitive(cond, scratch2, label);
 }
-void MacroAssembler::branchTestPrimitive(Condition, Register, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestPrimitive(Condition cond, Register tag,
+                                         Label* label) {
+  MOZ_ASSERT(cond == Equal || cond == NotEqual);
+  ma_b(tag, ImmTag(JS::detail::ValueUpperExclPrimitiveTag), label,
+       (cond == Equal) ? Below : AboveOrEqual);
 }
 template <class L>
 void MacroAssembler::branchTestPtr(Condition cond,
@@ -1546,11 +1556,11 @@ void MacroAssembler::fallibleUnboxPtr(const BaseIndex& src,
 void MacroAssembler::flexibleLshift32(Register src, Register dest) {
   lshift32(src, dest);
 }
-void MacroAssembler::flexibleRshift32Arithmetic(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::flexibleRshift32Arithmetic(Register src, Register dest) {
+  rshift32Arithmetic(src, dest);
 }
-void MacroAssembler::flexibleRshift32(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::flexibleRshift32(Register src, Register dest) {
+  rshift32(src, dest);
 }
 void MacroAssembler::inc64(AbsoluteAddress dest) {
   UseScratchRegisterScope temps(this);
@@ -1592,65 +1602,82 @@ void MacroAssembler::lshiftPtr(Imm32 imm, Register dest) {
   MOZ_ASSERT(0 <= imm.value && imm.value < 64);
   slli(dest, dest, imm.value);
 }
-void MacroAssembler::maxDouble(FloatRegister, FloatRegister, bool) {
-  MOZ_CRASH();
+void MacroAssembler::maxDouble(FloatRegister other, FloatRegister srcDest,
+                               bool handleNaN) {
+  Float64Max(srcDest, srcDest, other);
 }
-void MacroAssembler::maxFloat32(FloatRegister, FloatRegister, bool) {
-  MOZ_CRASH();
+void MacroAssembler::maxFloat32(FloatRegister other, FloatRegister srcDest,
+                               bool handleNaN) {
+  Float32Max(srcDest, srcDest, other);
 }
-void MacroAssembler::memoryBarrier(MemoryBarrierBits) {
-  MOZ_CRASH();
+void MacroAssembler::memoryBarrier(MemoryBarrierBits barrier) {
+  if (barrier) {
+    as_dbar(0);
+  }
 }
-void MacroAssembler::minDouble(FloatRegister, FloatRegister, bool) {
-  MOZ_CRASH();
+void MacroAssembler::minDouble(FloatRegister other, FloatRegister srcDest,
+                               bool handleNaN) {
+  Float64Min(srcDest, srcDest, other);
 }
-void MacroAssembler::minFloat32(FloatRegister, FloatRegister, bool) {
-  MOZ_CRASH();
+void MacroAssembler::minFloat32(FloatRegister other, FloatRegister srcDest,
+                               bool handleNaN) {
+  Float32Min(srcDest, srcDest, other);
 }
-void MacroAssembler::move16SignExtend(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::move16SignExtend(Register src, Register dest) {
+  slli(dest, src, xlen - 16);
+  srai(dest, dest, xlen - 16);
 }
-void MacroAssembler::move16To64SignExtend(Register, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::move16To64SignExtend(Register src, Register64 dest) {
+  move32To64SignExtend(src, dest);
+  move16SignExtend(dest.reg, dest.reg);
 }
-void MacroAssembler::move32SignExtendToPtr(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::move32SignExtendToPtr(Register src, Register dest) {
+  slliw(dest, src, 0);
 }
-void MacroAssembler::move32To64SignExtend(Register, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::move32To64SignExtend(Register src, Register64 dest) {
+  slliw(dest.reg, src, 0);
 }
-void MacroAssembler::move32To64ZeroExtend(Register, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::move32To64ZeroExtend(Register src, Register64 dest) {
+  slli(dest.reg, src, 32);
+  srli(dest.reg, dest.reg, 32);
 }
-void MacroAssembler::move32ZeroExtendToPtr(Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::move32ZeroExtendToPtr(Register src, Register64 dest) {
+  slli(dest.reg, src, 32);
+  srli(dest.reg, dest.reg, 32);
 }
-void MacroAssembler::move64(Imm64, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::move64(Register64 src, Register64 dest) {
+  movePtr(src.reg, dest.reg);
 }
-void MacroAssembler::move64(Register64, Register64) {
-  MOZ_CRASH();
+
+void MacroAssembler::move64(Imm64 imm, Register64 dest) {
+  movePtr(ImmWord(imm.value), dest.reg);
 }
-void MacroAssembler::move64To32(Register64, Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::move64To32(Register64 src, Register dest) {
+  slliw(dest, src.reg, 0);
 }
-void MacroAssembler::move8SignExtend(Register, Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::move8SignExtend(Register src, Register dest) {
+  slli(dest, src, xlen - 8);
+  srai(dest, dest, xlen - 8);
 }
-void MacroAssembler::move8To64SignExtend(Register, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::move8To64SignExtend(Register src, Register64 dest) {
+  move32To64SignExtend(src, dest);
+  move8SignExtend(dest.reg, dest.reg);
 }
-void MacroAssembler::moveDoubleToGPR64(FloatRegister, Register64) {
-  MOZ_CRASH();
+void MacroAssembler::moveDoubleToGPR64(FloatRegister src, Register64 dest) {
+  moveFromDouble(src, dest.reg);
 }
-void MacroAssembler::moveFloat32ToGPR(FloatRegister, Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::moveGPR64ToDouble(Register64 src, FloatRegister dest) {
+  moveToDouble(src.reg, dest);
 }
-void MacroAssembler::moveGPR64ToDouble(Register64, FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::moveFloat32ToGPR(FloatRegister src, Register dest) {
+  moveFromFloat32(src, dest);
 }
-void MacroAssembler::moveGPRToFloat32(Register, FloatRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::moveGPRToFloat32(Register src, FloatRegister dest) {
+  moveToFloat32(src, dest);
 }
 void MacroAssembler::mul32(Register rhs, Register srcDest) {
   mulw(srcDest, srcDest, rhs);
@@ -1797,11 +1824,12 @@ void MacroAssembler::orPtr(Imm32 imm, Register dest) {
 void MacroAssembler::patchSub32FromStackPtr(CodeOffset, Imm32) {
   MOZ_CRASH();
 }
-void MacroAssembler::popcnt32(Register, Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::popcnt32(Register input, Register output, Register tmp) {
+  Popcnt32(output, input, tmp);
 }
-void MacroAssembler::popcnt64(Register64, Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::popcnt64(Register64 input, Register64 output,
+                              Register tmp) {
+  Popcnt64(output, input, tmp);
 }
 void MacroAssembler::quotient32(Register rhs,
                                 Register srcDest,
@@ -1828,11 +1856,22 @@ void MacroAssembler::rotateLeft64(Imm32, Register64, Register64, Register) {
 void MacroAssembler::rotateLeft64(Register, Register64, Register64, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::rotateLeft(Imm32, Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateLeft(Imm32 count, Register input, Register dest) {
+  if (count.value) {
+    ScratchRegisterScope scratch(asMasm());
+    srli(scratch, rt, (32 - (count.value % 32)) % 32);
+    slli(rd, rt, count.value % 32);
+    or_(rd, rd, scratch);
+  } else {
+    ma_move(dest, input);
+  }
 }
-void MacroAssembler::rotateLeft(Register, Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateLeft(Register count, Register input, Register dest) {
+  ScratchRegisterScope scratch(asMasm());
+  sub(scratch, zero, count);
+  srl(rd, rt, scratch);
+  sll(scratch, rt, shift);
+  or_(rd, rd, scratch);
 }
 void MacroAssembler::rotateRight64(Imm32, Register64, Register64, Register) {
   MOZ_CRASH();
@@ -1840,11 +1879,23 @@ void MacroAssembler::rotateRight64(Imm32, Register64, Register64, Register) {
 void MacroAssembler::rotateRight64(Register, Register64, Register64, Register) {
   MOZ_CRASH();
 }
-void MacroAssembler::rotateRight(Imm32, Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateRight(Imm32 count, Register input, Register dest) {
+  if (count.value) {
+    ScratchRegisterScope scratch(asMasm());
+    srli(scratch, rt, count.value % 32);
+    slli(dest, input, (32 - (count.value % 32)) % 32);
+    or_(dest, dest, scratch);
+  } else {
+    ma_move(dest, input);
+  }
 }
-void MacroAssembler::rotateRight(Register, Register, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateRight(Register count, Register input,
+                                 Register dest) {
+    ScratchRegisterScope scratch(asMasm());
+    sub(scratch, zero, count);
+    sll(scratch, input, scratch);
+    srl(dest, input, count);
+    or_(dest, dest, scratch);
 }
 void MacroAssembler::rshift32Arithmetic(Register src, Register dest) {
   sraw(dest, dest, src);

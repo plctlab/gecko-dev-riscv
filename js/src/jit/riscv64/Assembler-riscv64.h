@@ -454,9 +454,9 @@ class Assembler : public AssemblerShared,
 
   static uint32_t PatchWrite_NearCallSize() { return 7; }
 
-  static void ToggleToJmp(CodeLocationLabel) { MOZ_CRASH(); }
-  static void ToggleToCmp(CodeLocationLabel) { MOZ_CRASH(); }
-  static void ToggleCall(CodeLocationLabel, bool) { MOZ_CRASH(); }
+  static void ToggleToJmp(CodeLocationLabel inst_);
+  static void ToggleToCmp(CodeLocationLabel inst_);
+  static void ToggleCall(CodeLocationLabel inst_, bool) { MOZ_CRASH(); }
 
   static void Bind(uint8_t* rawCode, const CodeLabel& label);
   // label operations

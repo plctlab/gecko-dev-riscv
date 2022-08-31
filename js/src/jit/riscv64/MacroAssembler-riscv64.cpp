@@ -1947,7 +1947,7 @@ void MacroAssemblerRiscv64Compat::handleFailureWithHandlerTail(
 
 CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
   CodeOffset ret(nextOffset().getOffset());
-  jump(label);
+  ma_branch(label);
   return ret;
 }
 

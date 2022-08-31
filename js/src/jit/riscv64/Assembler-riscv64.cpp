@@ -1120,6 +1120,22 @@ void Assembler::break_(uint32_t code, bool break_as_stop) {
   lui(zero_reg, code);
 }
 
+void Assembler::ToggleToJmp(CodeLocationLabel inst_) {
+  MOZ_CRASH();
+}
+
+void Assembler::ToggleToCmp(CodeLocationLabel inst_) {
+  Instruction* inst = (Instruction*)inst_.raw();
+
+  // toggledJump is allways used for short jumps.
+  MOZ_ASSERT(IsJal(inst->InstructionBits()));
+  // Replace "jal zero_reg, offset" with "addu16i_d $zero, $zero, offset"
+  int32_t offset = inst->Imm20JValue();
+  MOZ_ASSERT(is_int12(offset));
+  Instr addi_ = OP-IMM | (0b000 << kFunct3Shift) | (offset << kImm12Shift);  // addi(zero, zero, low_12);
+  *reinterpret_cast<Instr*>(inst) = addi_;
+}
+
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)
     : available_(assembler->GetScratchRegisterList()),
       old_available_(*available_) {}
