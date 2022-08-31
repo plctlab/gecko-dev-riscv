@@ -1645,6 +1645,7 @@ void MacroAssembler::move32To64SignExtend(Register src, Register64 dest) {
 void MacroAssembler::move32To64ZeroExtend(Register src, Register64 dest) {
   slli(dest.reg, src, 32);
   srli(dest.reg, dest.reg, 32);
+
 }
 void MacroAssembler::move32ZeroExtendToPtr(Register src, Register dest) {
   slli(dest, src, 32);
