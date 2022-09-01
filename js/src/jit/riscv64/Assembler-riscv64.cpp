@@ -1120,6 +1120,84 @@ void Assembler::break_(uint32_t code, bool break_as_stop) {
   lui(zero_reg, code);
 }
 
+void Assembler::ToggleToJmp(CodeLocationLabel inst_) {
+  Instruction* inst = (Instruction*)inst_.raw();
+  MOZ_ASSERT(IsAddi(inst->InstructionBits()));
+  int32_t offset = inst->Imm12Value();
+  MOZ_ASSERT(is_int12(offset));
+  Instr jal_ = JAL | (0b000 << kFunct3Shift) |
+               (offset & 0xff000) |          // bits 19-12
+               ((offset & 0x800) << 9) |     // bit  11
+               ((offset & 0x7fe) << 20) |    // bits 10-1
+               ((offset & 0x100000) << 11);  // bit  20  
+  // jal(zero, offset);
+  *reinterpret_cast<Instr*>(inst) = jal_;
+}
+
+void Assembler::ToggleToCmp(CodeLocationLabel inst_) {
+  Instruction* inst = (Instruction*)inst_.raw();
+
+  // toggledJump is allways used for short jumps.
+  MOZ_ASSERT(IsJal(inst->InstructionBits()));
+  // Replace "jal zero_reg, offset" with "addi $zero, $zero, offset"
+  int32_t offset = inst->Imm20JValue();
+  MOZ_ASSERT(is_int12(offset));
+  Instr addi_ = OP_IMM | (0b000 << kFunct3Shift) | (offset << kImm12Shift);  // addi(zero, zero, low_12);
+  *reinterpret_cast<Instr*>(inst) = addi_;
+}
+
+// void Assembler::TraceJumpRelocations(JSTracer* trc, JitCode* code,
+//                                      CompactBufferReader& reader) {
+//   while (reader.more()) {
+//     JitCode* child =
+//         CodeFromJump((Instruction*)(code->raw() + reader.readUnsigned()));
+//     TraceManuallyBarrieredEdge(trc, &child, "rel32");
+//   }
+// }
+
+// static void TraceOneDataRelocation(JSTracer* trc,
+//                                    mozilla::Maybe<AutoWritableJitCode>& awjc,
+//                                    JitCode* code, Instruction* inst) {
+//   void* ptr = (void*)Assembler::ExtractLoad64Value(inst);
+//   void* prior = ptr;
+
+//   // Data relocations can be for Values or for raw pointers. If a Value is
+//   // zero-tagged, we can trace it as if it were a raw pointer. If a Value
+//   // is not zero-tagged, we have to interpret it as a Value to ensure that the
+//   // tag bits are masked off to recover the actual pointer.
+//   uintptr_t word = reinterpret_cast<uintptr_t>(ptr);
+//   if (word >> JSVAL_TAG_SHIFT) {
+//     // This relocation is a Value with a non-zero tag.
+//     Value v = Value::fromRawBits(word);
+//     TraceManuallyBarrieredEdge(trc, &v, "jit-masm-value");
+//     ptr = (void*)v.bitsAsPunboxPointer();
+//   } else {
+//     // This relocation is a raw pointer or a Value with a zero tag.
+//     // No barrier needed since these are constants.
+//     TraceManuallyBarrieredGenericPointerEdge(
+//         trc, reinterpret_cast<gc::Cell**>(&ptr), "jit-masm-ptr");
+//   }
+
+//   if (ptr != prior) {
+//     if (awjc.isNothing()) {
+//       awjc.emplace(code);
+//     }
+//     Assembler::UpdateLoad64Value(inst, uint64_t(ptr));
+//   }
+// }
+
+// /* static */
+// void Assembler::TraceDataRelocations(JSTracer* trc, JitCode* code,
+//                                      CompactBufferReader& reader) {
+//   mozilla::Maybe<AutoWritableJitCode> awjc;
+//   while (reader.more()) {
+//     size_t offset = reader.readUnsigned();
+//     Instruction* inst = (Instruction*)(code->raw() + offset);
+//     TraceOneDataRelocation(trc, awjc, code, inst);
+//   }
+// }
+
+
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)
     : available_(assembler->GetScratchRegisterList()),
       old_available_(*available_) {}

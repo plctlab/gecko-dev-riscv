@@ -72,6 +72,7 @@ namespace jit {
 
 bool Simulator::FLAG_trace_sim = false;
 bool Simulator::FLAG_riscv_trap_to_simulator_debugger = false;
+bool Simulator::FLAG_riscv_print_watchpoint = false;
 
 static void UNIMPLEMENTED() {
   printf("UNIMPLEMENTED instruction.\n");
@@ -2134,10 +2135,12 @@ bool Simulator::isWatchpoint(uint32_t code) {
 void Simulator::printWatchpoint(uint32_t code) {
   RiscvDebugger dbg(this);
   ++break_count_;
-  printf("\n---- break %d marker: %20" PRIi64 "  (instr count: %20" PRIi64
-         ") ----\n",
-         code, break_count_, icount_);
-  dbg.printAllRegs();  // Print registers and continue running.
+  if (FLAG_riscv_print_watchpoint) {
+    printf("\n---- break %d marker: %20" PRIi64 "  (instr count: %20" PRIi64
+           ") ----\n",
+           code, break_count_, icount_);
+    dbg.printAllRegs();  // Print registers and continue running.
+  }
 }
 
 void Simulator::handleStop(uint32_t code) {

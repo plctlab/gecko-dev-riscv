@@ -293,6 +293,7 @@ class Assembler : public AssemblerShared,
                              BufferOffset dest);
   void processCodeLabels(uint8_t* rawCode);
   BufferOffset nextOffset() { return m_buffer.nextOffset(); }
+  void comment(const char* msg) { spew("; %s", msg); }
   
 #ifdef JS_JITSPEW
   inline void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3) {
@@ -445,7 +446,7 @@ class Assembler : public AssemblerShared,
     Assembler::WriteLoad64Instructions(inst, ScratchRegister, (uint64_t)dest);
     Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
                   (ScratchRegister.code() << kRs1Shift) | (0x0 << kImm12Shift);
-    *reinterpret_cast<Instr*>(inst) = jalr_;
+    *reinterpret_cast<Instr*>(inst + 6 * kInstrSize) = jalr_;
   }
   static void WriteLoad64Instructions(Instruction* inst0,
                                       Register reg,
@@ -453,9 +454,14 @@ class Assembler : public AssemblerShared,
 
   static uint32_t PatchWrite_NearCallSize() { return 7; }
 
-  static void ToggleToJmp(CodeLocationLabel) { MOZ_CRASH(); }
-  static void ToggleToCmp(CodeLocationLabel) { MOZ_CRASH(); }
-  static void ToggleCall(CodeLocationLabel, bool) { MOZ_CRASH(); }
+  static void TraceJumpRelocations(JSTracer* trc, JitCode* code,
+                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+  static void TraceDataRelocations(JSTracer* trc, JitCode* code,
+                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+
+  static void ToggleToJmp(CodeLocationLabel inst_);
+  static void ToggleToCmp(CodeLocationLabel inst_);
+  static void ToggleCall(CodeLocationLabel inst_, bool) { MOZ_CRASH(); }
 
   static void Bind(uint8_t* rawCode, const CodeLabel& label);
   // label operations
