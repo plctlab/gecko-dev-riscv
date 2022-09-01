@@ -2139,7 +2139,7 @@ void Simulator::printWatchpoint(uint32_t code) {
     printf("\n---- break %d marker: %20" PRIi64 "  (instr count: %20" PRIi64
            ") ----\n",
            code, break_count_, icount_);
-    dbg.printAllRegs(); // Print registers and continue running.
+    dbg.printAllRegs();  // Print registers and continue running.
   }
 }
 
