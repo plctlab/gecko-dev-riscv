@@ -454,6 +454,11 @@ class Assembler : public AssemblerShared,
 
   static uint32_t PatchWrite_NearCallSize() { return 7; }
 
+  static void TraceJumpRelocations(JSTracer* trc, JitCode* code,
+                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+  static void TraceDataRelocations(JSTracer* trc, JitCode* code,
+                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+
   static void ToggleToJmp(CodeLocationLabel inst_);
   static void ToggleToCmp(CodeLocationLabel inst_);
   static void ToggleCall(CodeLocationLabel inst_, bool) { MOZ_CRASH(); }

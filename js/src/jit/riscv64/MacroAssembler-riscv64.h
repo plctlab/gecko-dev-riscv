@@ -78,13 +78,6 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   void assertNoGCThings() const { MOZ_CRASH(); }
 
-  static void TraceJumpRelocations(JSTracer*, JitCode*, CompactBufferReader&) {
-    MOZ_CRASH();
-  }
-  static void TraceDataRelocations(JSTracer*, JitCode*, CompactBufferReader&) {
-    MOZ_CRASH();
-  }
-
   static bool SupportsFloatingPoint() { return true; }
   static bool SupportsUnalignedAccesses() { return true; }
   static bool SupportsFastUnalignedFPAccesses() { return true; }

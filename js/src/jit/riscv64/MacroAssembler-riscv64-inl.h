@@ -697,7 +697,12 @@ void MacroAssembler::branchPtr(Condition cond,
                                Register lhs,
                                ImmPtr rhs,
                                Label* label) {
-  ma_b(lhs, rhs, label, cond);
+  if (rhs.value == nullptr) {
+    MOZ_ASSERT(cond == Zero || cond == NonZero);
+    ma_b(lhs, lhs, label, cond);
+  } else {
+    ma_b(lhs, rhs, label, cond);
+  }
 }
 
 void MacroAssembler::branchPtr(Condition cond,
@@ -954,7 +959,7 @@ void MacroAssembler::branchTestDoubleTruthy(bool b, FloatRegister value,
   ScratchDoubleScope fpscratch(*this);
   loadConstantDouble(0.0, fpscratch);
   DoubleCondition cond = b ? DoubleNotEqual : DoubleEqualOrUnordered;
-  branchDouble(value, fpscratch, label, cond);
+  branchDouble(cond, value, fpscratch, label);
 }
 void MacroAssembler::branchTestGCThing(Condition cond,
                                        const Address& address,
@@ -1612,7 +1617,7 @@ void MacroAssembler::maxFloat32(FloatRegister other, FloatRegister srcDest,
 }
 void MacroAssembler::memoryBarrier(MemoryBarrierBits barrier) {
   if (barrier) {
-    as_dbar(0);
+    sync();
   }
 }
 void MacroAssembler::minDouble(FloatRegister other, FloatRegister srcDest,
@@ -1641,9 +1646,9 @@ void MacroAssembler::move32To64ZeroExtend(Register src, Register64 dest) {
   slli(dest.reg, src, 32);
   srli(dest.reg, dest.reg, 32);
 }
-void MacroAssembler::move32ZeroExtendToPtr(Register src, Register64 dest) {
-  slli(dest.reg, src, 32);
-  srli(dest.reg, dest.reg, 32);
+void MacroAssembler::move32ZeroExtendToPtr(Register src, Register dest) {
+  slli(dest, src, 32);
+  srli(dest, dest, 32);
 }
 void MacroAssembler::move64(Register64 src, Register64 dest) {
   movePtr(src.reg, dest.reg);
@@ -1666,18 +1671,17 @@ void MacroAssembler::move8To64SignExtend(Register src, Register64 dest) {
   move8SignExtend(dest.reg, dest.reg);
 }
 void MacroAssembler::moveDoubleToGPR64(FloatRegister src, Register64 dest) {
-  moveFromDouble(src, dest.reg);
+  fmv_x_d(dest.reg, src);
 }
 
 void MacroAssembler::moveGPR64ToDouble(Register64 src, FloatRegister dest) {
-  moveToDouble(src.reg, dest);
+  fmv_d_x(dest, src.reg);
 }
 void MacroAssembler::moveFloat32ToGPR(FloatRegister src, Register dest) {
-  moveFromFloat32(src, dest);
+  fmv_x_w(dest, src);
 }
-
 void MacroAssembler::moveGPRToFloat32(Register src, FloatRegister dest) {
-  moveToFloat32(src, dest);
+  fmv_w_x(dest, src);
 }
 void MacroAssembler::mul32(Register rhs, Register srcDest) {
   mulw(srcDest, srcDest, rhs);
@@ -1829,7 +1833,7 @@ void MacroAssembler::popcnt32(Register input, Register output, Register tmp) {
 }
 void MacroAssembler::popcnt64(Register64 input, Register64 output,
                               Register tmp) {
-  Popcnt64(output, input, tmp);
+  Popcnt64(output.reg, input.reg, tmp);
 }
 void MacroAssembler::quotient32(Register rhs,
                                 Register srcDest,
@@ -1859,19 +1863,19 @@ void MacroAssembler::rotateLeft64(Register, Register64, Register64, Register) {
 void MacroAssembler::rotateLeft(Imm32 count, Register input, Register dest) {
   if (count.value) {
     ScratchRegisterScope scratch(asMasm());
-    srli(scratch, rt, (32 - (count.value % 32)) % 32);
-    slli(rd, rt, count.value % 32);
-    or_(rd, rd, scratch);
+    srli(scratch, input, (32 - (count.value % 32)) % 32);
+    slli(dest, input, count.value % 32);
+    or_(dest, dest, scratch);
   } else {
-    ma_move(dest, input);
+    mv(dest, input);
   }
 }
 void MacroAssembler::rotateLeft(Register count, Register input, Register dest) {
   ScratchRegisterScope scratch(asMasm());
   sub(scratch, zero, count);
-  srl(rd, rt, scratch);
-  sll(scratch, rt, shift);
-  or_(rd, rd, scratch);
+  srl(dest, input, scratch);
+  sll(scratch, input, count);
+  or_(dest, dest, scratch);
 }
 void MacroAssembler::rotateRight64(Imm32, Register64, Register64, Register) {
   MOZ_CRASH();
@@ -1882,11 +1886,11 @@ void MacroAssembler::rotateRight64(Register, Register64, Register64, Register) {
 void MacroAssembler::rotateRight(Imm32 count, Register input, Register dest) {
   if (count.value) {
     ScratchRegisterScope scratch(asMasm());
-    srli(scratch, rt, count.value % 32);
+    srli(scratch, input, count.value % 32);
     slli(dest, input, (32 - (count.value % 32)) % 32);
     or_(dest, dest, scratch);
   } else {
-    ma_move(dest, input);
+    mv(dest, input);
   }
 }
 void MacroAssembler::rotateRight(Register count, Register input,
