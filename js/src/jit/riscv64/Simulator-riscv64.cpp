@@ -4416,7 +4416,7 @@ int64_t Simulator::call(uint8_t* entry, int argument_count, ...) {
   // Setup the arguments.
   for (int i = 0; i < argument_count; i++) {
     js::jit::Register argReg;
-    if (GetIntArgReg(i, argReg)) {
+    if (GetIntArgReg(i, &argReg)) {
       setRegister(argReg.code(), va_arg(parameters, int64_t));
     } else {
       stack_argument[i] = va_arg(parameters, int64_t);

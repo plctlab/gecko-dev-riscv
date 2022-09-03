@@ -697,8 +697,7 @@ void MacroAssembler::branchPtr(Condition cond,
                                Register lhs,
                                ImmPtr rhs,
                                Label* label) {
-  if (rhs.value == nullptr) {
-    MOZ_ASSERT(cond == Zero || cond == NonZero);
+  if (rhs.value == nullptr && (cond == Zero || cond == NonZero)) {
     ma_b(lhs, lhs, label, cond);
   } else {
     ma_b(lhs, rhs, label, cond);
@@ -1011,8 +1010,11 @@ void MacroAssembler::branchTestInt32(Condition cond,
   Register tag = extractTag(address, scratch2);
   branchTestInt32(cond, tag, label);
 }
-void MacroAssembler::branchTestInt32Truthy(bool, const ValueOperand&, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestInt32Truthy(bool b, const ValueOperand& value,
+                                           Label* label) {
+  ScratchRegisterScope scratch(*this);
+  ExtractBits(scratch, value.valueReg(), 0, 32);
+  ma_b(scratch, scratch, label, b ? NonZero : Zero);
 }
 void MacroAssembler::branchTestMagic(Condition cond,
                                      Register tag,

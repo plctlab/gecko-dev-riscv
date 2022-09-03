@@ -182,7 +182,8 @@ class Registers {
       (1 << Registers::ra) | (1 << Registers::fp) | (1 << Registers::s1) |
       (1 << Registers::s2) | (1 << Registers::s3) | (1 << Registers::s4) |
       (1 << Registers::s5) | (1 << Registers::s6) | (1 << Registers::s7) |
-      (1 << Registers::s8);
+      (1 << Registers::s8) | (1 << Registers::s9) | (1 << Registers::s10) |
+      (1 << Registers::s11);
 
   static const SetType SingleByteRegs = VolatileMask | NonVolatileMask;
 
