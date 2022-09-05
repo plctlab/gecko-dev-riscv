@@ -361,9 +361,15 @@ struct FloatRegister {
     return FloatRegister(Code(code));
   }
   bool isSimd128() const { MOZ_CRASH(); }
-  bool isInvalid() const { MOZ_CRASH(); }
-  FloatRegister asSingle() const { MOZ_CRASH(); }
-  FloatRegister asDouble() const { MOZ_CRASH(); }
+  bool isInvalid() const { return invalid_; }
+  FloatRegister asSingle() const {
+    MOZ_ASSERT(!invalid_);
+    return FloatRegister(Encoding(encoding_), FloatRegisters::Single);
+  }
+  FloatRegister asDouble() const {
+    MOZ_ASSERT(!invalid_);
+    return FloatRegister(Encoding(encoding_), FloatRegisters::Double);
+  }
   FloatRegister asSimd128() const { MOZ_CRASH(); }
   constexpr Code code() const {
     // assert(!invalid_);
