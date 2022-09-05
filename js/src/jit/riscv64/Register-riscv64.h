@@ -102,6 +102,7 @@ static constexpr FloatRegister InvalidFloatReg{};
 
 static constexpr FloatRegister ScratchFloat32Reg{FloatRegisters::ft10};
 static constexpr FloatRegister ScratchDoubleReg{FloatRegisters::ft10};
+static constexpr FloatRegister ScratchDoubleReg2{FloatRegisters::fs11};
 
 static constexpr Register OsrFrameReg{Registers::a3};
 static constexpr Register PreBarrierReg{Registers::a1};

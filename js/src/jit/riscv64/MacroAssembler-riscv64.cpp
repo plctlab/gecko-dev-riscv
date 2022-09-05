@@ -3651,11 +3651,15 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
                                  Label* label,
                                  Condition c,
                                  JumpKind jumpKind) {
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
-  MOZ_ASSERT(lhs != scratch);
-  ma_li(scratch, imm);
-  ma_b(lhs, Register(scratch), label, c, jumpKind);
+  if ((c == NonZero || c == Zero) && imm.value == 0) {
+    ma_b(lhs, lhs, label, c, jumpKind);
+  } else {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    MOZ_ASSERT(lhs != scratch);
+    ma_li(scratch, imm);
+    ma_b(lhs, Register(scratch), label, c, jumpKind);
+  }
 }
 
 void MacroAssemblerRiscv64::ma_b(Address addr,

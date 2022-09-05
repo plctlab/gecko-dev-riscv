@@ -476,7 +476,7 @@ void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
 }
 
 uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
-  DEBUG_PRINTF("\tExtractLoad64Value:");
+  DEBUG_PRINTF("\tExtractLoad64Value: \tpc:%p ", inst0);
   Instruction* instr1 = inst0 + 1 * kInstrSize;
   if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
    //Li64
@@ -502,7 +502,7 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       imm += (int64_t)instr5->Imm12Value();
       imm <<= 12;
       imm += (int64_t)instr7->Imm12Value();
-      DEBUG_PRINTF("\tpc:%p imm:%ld\n", inst0, imm);
+      DEBUG_PRINTF("imm:%ld\n", imm);
       return imm;
     } else {
       MOZ_CRASH();

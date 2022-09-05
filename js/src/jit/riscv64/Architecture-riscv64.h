@@ -189,10 +189,9 @@ class Registers {
 
   static const SetType NonAllocatableMask =
       (1 << Registers::zero) |  // Always be zero.
+      (1 << Registers::t4) |    // Scratch reg
       (1 << Registers::t5) |    // Scratch reg
       (1 << Registers::t6) |    // call reg
-      (1 << Registers::s9) |    // Scratch reg
-      (1 << Registers::s10) |    // Scratch reg
       (1 << Registers::s11) |    // Scratch reg
       (1 << Registers::ra) | (1 << Registers::tp) | (1 << Registers::sp) |
       (1 << Registers::fp) | (1 << Registers::gp) ;
@@ -324,7 +323,8 @@ class FloatRegisters {
   static const SetType VolatileMask = AllMask & ~NonVolatileMask;
 
   static const SetType NonAllocatableMask =
-        SetType((1 << FloatRegisters::ft10) | (1 << FloatRegisters::ft11));
+      SetType((1 << FloatRegisters::fs11) | (1 << FloatRegisters::ft10) |
+              (1 << FloatRegisters::ft11));
 
   static const SetType AllocatableMask = AllMask & ~NonAllocatableMask;
 };

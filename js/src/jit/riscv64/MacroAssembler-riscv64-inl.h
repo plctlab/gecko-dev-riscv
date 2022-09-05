@@ -1315,26 +1315,37 @@ void MacroAssembler::branchToComputedAddress(const BaseIndex& addr) {
   loadPtr(addr, scratch2);
   branch(scratch2);
 }
-void MacroAssembler::branchTruncateDoubleMaybeModUint32(FloatRegister,
-                                                        Register,
-                                                        Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateDoubleMaybeModUint32(FloatRegister src,
+                                                        Register dest,
+                                                        Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_d(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
 
-void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister,
-                                                 Register,
-                                                 Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister src,
+                                                 Register dest, Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_d(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
-void MacroAssembler::branchTruncateFloat32MaybeModUint32(FloatRegister,
-                                                         Register,
-                                                         Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateFloat32MaybeModUint32(FloatRegister src,
+                                                         Register dest,
+                                                         Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_s(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
-void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister,
-                                                  Register,
-                                                  Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister src,
+                                                  Register dest, Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_s(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
 void MacroAssembler::byteSwap16SignExtend(Register) {
   MOZ_CRASH();
