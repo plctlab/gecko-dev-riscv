@@ -697,8 +697,7 @@ void MacroAssembler::branchPtr(Condition cond,
                                Register lhs,
                                ImmPtr rhs,
                                Label* label) {
-  if (rhs.value == nullptr) {
-    MOZ_ASSERT(cond == Zero || cond == NonZero);
+  if (rhs.value == nullptr && (cond == Zero || cond == NonZero)) {
     ma_b(lhs, lhs, label, cond);
   } else {
     ma_b(lhs, rhs, label, cond);
@@ -1011,8 +1010,11 @@ void MacroAssembler::branchTestInt32(Condition cond,
   Register tag = extractTag(address, scratch2);
   branchTestInt32(cond, tag, label);
 }
-void MacroAssembler::branchTestInt32Truthy(bool, const ValueOperand&, Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTestInt32Truthy(bool b, const ValueOperand& value,
+                                           Label* label) {
+  ScratchRegisterScope scratch(*this);
+  ExtractBits(scratch, value.valueReg(), 0, 32);
+  ma_b(scratch, scratch, label, b ? NonZero : Zero);
 }
 void MacroAssembler::branchTestMagic(Condition cond,
                                      Register tag,
@@ -1313,26 +1315,37 @@ void MacroAssembler::branchToComputedAddress(const BaseIndex& addr) {
   loadPtr(addr, scratch2);
   branch(scratch2);
 }
-void MacroAssembler::branchTruncateDoubleMaybeModUint32(FloatRegister,
-                                                        Register,
-                                                        Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateDoubleMaybeModUint32(FloatRegister src,
+                                                        Register dest,
+                                                        Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_d(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
 
-void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister,
-                                                 Register,
-                                                 Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateDoubleToInt32(FloatRegister src,
+                                                 Register dest, Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_d(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
-void MacroAssembler::branchTruncateFloat32MaybeModUint32(FloatRegister,
-                                                         Register,
-                                                         Label*) {
-  MOZ_CRASH();
+void MacroAssembler::branchTruncateFloat32MaybeModUint32(FloatRegister src,
+                                                         Register dest,
+                                                         Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_s(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
-void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister,
-                                                  Register,
-                                                  Label*) {
-  MOZ_CRASH();
+
+void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister src,
+                                                  Register dest, Label* fail) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Trunc_w_s(dest, src, scratch);
+  ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
 void MacroAssembler::byteSwap16SignExtend(Register) {
   MOZ_CRASH();
@@ -1645,6 +1658,7 @@ void MacroAssembler::move32To64SignExtend(Register src, Register64 dest) {
 void MacroAssembler::move32To64ZeroExtend(Register src, Register64 dest) {
   slli(dest.reg, src, 32);
   srli(dest.reg, dest.reg, 32);
+
 }
 void MacroAssembler::move32ZeroExtendToPtr(Register src, Register dest) {
   slli(dest, src, 32);

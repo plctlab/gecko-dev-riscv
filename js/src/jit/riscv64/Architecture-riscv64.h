@@ -182,16 +182,16 @@ class Registers {
       (1 << Registers::ra) | (1 << Registers::fp) | (1 << Registers::s1) |
       (1 << Registers::s2) | (1 << Registers::s3) | (1 << Registers::s4) |
       (1 << Registers::s5) | (1 << Registers::s6) | (1 << Registers::s7) |
-      (1 << Registers::s8);
+      (1 << Registers::s8) | (1 << Registers::s9) | (1 << Registers::s10) |
+      (1 << Registers::s11);
 
   static const SetType SingleByteRegs = VolatileMask | NonVolatileMask;
 
   static const SetType NonAllocatableMask =
       (1 << Registers::zero) |  // Always be zero.
+      (1 << Registers::t4) |    // Scratch reg
       (1 << Registers::t5) |    // Scratch reg
       (1 << Registers::t6) |    // call reg
-      (1 << Registers::s9) |    // Scratch reg
-      (1 << Registers::s10) |    // Scratch reg
       (1 << Registers::s11) |    // Scratch reg
       (1 << Registers::ra) | (1 << Registers::tp) | (1 << Registers::sp) |
       (1 << Registers::fp) | (1 << Registers::gp) ;
@@ -323,7 +323,8 @@ class FloatRegisters {
   static const SetType VolatileMask = AllMask & ~NonVolatileMask;
 
   static const SetType NonAllocatableMask =
-        SetType((1 << FloatRegisters::ft10) | (1 << FloatRegisters::ft11));
+      SetType((1 << FloatRegisters::fs11) | (1 << FloatRegisters::ft10) |
+              (1 << FloatRegisters::ft11));
 
   static const SetType AllocatableMask = AllMask & ~NonAllocatableMask;
 };
@@ -360,9 +361,15 @@ struct FloatRegister {
     return FloatRegister(Code(code));
   }
   bool isSimd128() const { MOZ_CRASH(); }
-  bool isInvalid() const { MOZ_CRASH(); }
-  FloatRegister asSingle() const { MOZ_CRASH(); }
-  FloatRegister asDouble() const { MOZ_CRASH(); }
+  bool isInvalid() const { return invalid_; }
+  FloatRegister asSingle() const {
+    MOZ_ASSERT(!invalid_);
+    return FloatRegister(Encoding(encoding_), FloatRegisters::Single);
+  }
+  FloatRegister asDouble() const {
+    MOZ_ASSERT(!invalid_);
+    return FloatRegister(Encoding(encoding_), FloatRegisters::Double);
+  }
   FloatRegister asSimd128() const { MOZ_CRASH(); }
   constexpr Code code() const {
     // assert(!invalid_);

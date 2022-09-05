@@ -233,8 +233,8 @@ class Assembler : public AssemblerShared,
   static bool FLAG_riscv_debug;
 
   Assembler()
-      : scratch_register_list_((1 << t5.code()) | (1 << s9.code()) |
-                               (1 << s10.code())),
+      : scratch_register_list_((1 << t5.code()) | (1 << t4.code()) |
+                               (1 << t6.code())),
 #ifdef JS_JITSPEW
         printer(nullptr),
 #endif
@@ -583,25 +583,6 @@ class ABIArgGenerator {
 };
 
 
-static const uint32_t NumIntArgRegs = 8;
-static const uint32_t NumFloatArgRegs = 8;
-
-static inline bool GetIntArgReg(uint32_t usedIntArgs, Register& out) {
-  if (usedIntArgs < NumIntArgRegs) {
-    out = Register::FromCode(a0.code() + usedIntArgs);
-    return true;
-  }
-  return false;
-}
-
-static inline bool GetFloatArgReg(uint32_t usedFloatArgs, FloatRegister* out) {
-  if (usedFloatArgs < NumFloatArgRegs) {
-    *out = FloatRegister::FromCode(fa0.code() + usedFloatArgs);
-    return true;
-  }
-  return false;
-}
-
 
 class BlockTrampolinePoolScope {
   public:
@@ -692,6 +673,50 @@ class Operand {
   friend class Assembler;
   friend class MacroAssembler;
 };
+
+
+static const uint32_t NumIntArgRegs = 8;
+static const uint32_t NumFloatArgRegs = 8;
+static inline bool GetIntArgReg(uint32_t usedIntArgs, Register* out) {
+  if (usedIntArgs < NumIntArgRegs) {
+    *out = Register::FromCode(a0.code() + usedIntArgs);
+    return true;
+  }
+  return false;
+}
+
+static inline bool GetFloatArgReg(uint32_t usedFloatArgs, FloatRegister* out) {
+  if (usedFloatArgs < NumFloatArgRegs) {
+    *out = FloatRegister::FromCode(fa0.code() + usedFloatArgs);
+    return true;
+  }
+  return false;
+}
+
+// Get a register in which we plan to put a quantity that will be used as an
+// integer argument. This differs from GetIntArgReg in that if we have no more
+// actual argument registers to use we will fall back on using whatever
+// CallTempReg* don't overlap the argument registers, and only fail once those
+// run out too.
+static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
+                                       uint32_t usedFloatArgs, Register* out) {
+  // NOTE: We can't properly determine which regs are used if there are
+  // float arguments. If this is needed, we will have to guess.
+  MOZ_ASSERT(usedFloatArgs == 0);
+
+  if (GetIntArgReg(usedIntArgs, out)) {
+    return true;
+  }
+  // Unfortunately, we have to assume things about the point at which
+  // GetIntArgReg returns false, because we need to know how many registers it
+  // can allocate.
+  usedIntArgs -= NumIntArgRegs;
+  if (usedIntArgs >= NumCallTempNonArgRegs) {
+    return false;
+  }
+  *out = CallTempNonArgRegs[usedIntArgs];
+  return true;
+}
 
 }  // namespace jit
 }  // namespace js

@@ -1290,9 +1290,6 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
 
 typedef MacroAssemblerRiscv64Compat MacroAssemblerSpecific;
 
-static inline bool GetTempRegForIntArg(uint32_t, uint32_t, Register*) {
-  MOZ_CRASH();
-}
 
 }  // namespace jit
 }  // namespace js

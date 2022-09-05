@@ -1996,6 +1996,8 @@ CodeOffset MacroAssembler::call(Register reg) {
   return CodeOffset(currentOffset());
 }
 CodeOffset MacroAssembler::call(wasm::SymbolicAddress target) {
+  UseScratchRegisterScope temps(this);
+  temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   movePtr(target, CallReg);
   return call(CallReg);
 }
@@ -2308,6 +2310,8 @@ void MacroAssembler::branchValueIsNurseryCell(Condition cond,
   branchValueIsNurseryCellImpl(cond, value, temp, label);
 }
 void MacroAssembler::call(const Address& addr) {
+  UseScratchRegisterScope temps(this);
+    temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   loadPtr(addr, CallReg);
   call(CallReg);
 }
@@ -2392,6 +2396,8 @@ void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
   // Load the callee in scratch2, no instruction between the movePtr and
   // call should clobber it. Note that we can't use fun because it may be
   // one of the IntArg registers clobbered before the call.
+  UseScratchRegisterScope temps(this);
+    temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   movePtr(fun, CallReg);
 
   uint32_t stackAdjust;
@@ -2403,6 +2409,8 @@ void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
 void MacroAssembler::callWithABINoProfiler(const Address& fun,
                                            MoveOp::Type result) {
   // Load the callee in scratch2, as above.
+  UseScratchRegisterScope temps(this);
+    temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   loadPtr(fun, CallReg);
 
   uint32_t stackAdjust;
@@ -3643,11 +3651,15 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
                                  Label* label,
                                  Condition c,
                                  JumpKind jumpKind) {
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
-  MOZ_ASSERT(lhs != scratch);
-  ma_li(scratch, imm);
-  ma_b(lhs, Register(scratch), label, c, jumpKind);
+  if ((c == NonZero || c == Zero) && imm.value == 0) {
+    ma_b(lhs, lhs, label, c, jumpKind);
+  } else {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    MOZ_ASSERT(lhs != scratch);
+    ma_li(scratch, imm);
+    ma_b(lhs, Register(scratch), label, c, jumpKind);
+  }
 }
 
 void MacroAssemblerRiscv64::ma_b(Address addr,
@@ -4678,6 +4690,8 @@ void MacroAssemblerRiscv64::ma_fld_s(FloatRegister ft, const BaseIndex& src) {
 }
 
 void MacroAssemblerRiscv64::ma_call(ImmPtr dest) {
+  UseScratchRegisterScope temps(this);
+    temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   asMasm().ma_liPatchable(CallReg, dest);
   jalr(CallReg, 0);
 }

@@ -102,6 +102,7 @@ static constexpr FloatRegister InvalidFloatReg{};
 
 static constexpr FloatRegister ScratchFloat32Reg{FloatRegisters::ft10};
 static constexpr FloatRegister ScratchDoubleReg{FloatRegisters::ft10};
+static constexpr FloatRegister ScratchDoubleReg2{FloatRegisters::fs11};
 
 static constexpr Register OsrFrameReg{Registers::a3};
 static constexpr Register PreBarrierReg{Registers::a1};
@@ -110,8 +111,8 @@ static constexpr Register CallTempReg0{Registers::t0};
 static constexpr Register CallTempReg1{Registers::t1};
 static constexpr Register CallTempReg2{Registers::t2};
 static constexpr Register CallTempReg3{Registers::t3};
-static constexpr Register CallTempReg4{Registers::t4};
-static constexpr Register CallTempReg5{Registers::t5};
+static constexpr Register CallTempReg4{Registers::a6};
+static constexpr Register CallTempReg5{Registers::a7};
 static constexpr Register InvalidReg{Registers::invalid_reg};
 static constexpr Register CallTempNonArgRegs[] = {t0, t1, t2, t3};
 static const uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
