@@ -456,6 +456,7 @@ void MacroAssemblerRiscv64Compat::movePtr(ImmPtr imm, Register dest) {
 }
 void MacroAssemblerRiscv64Compat::movePtr(wasm::SymbolicAddress imm,
                                           Register dest) {
+  BlockTrampolinePoolFor(6);
   append(wasm::SymbolicAccess(CodeOffset(nextOffset().getOffset()), imm));
   ma_liPatchable(dest, ImmWord(-1));
 }
@@ -1953,6 +1954,7 @@ CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
 
 CodeOffset MacroAssemblerRiscv64Compat::toggledCall(JitCode* target,
                                                     bool enabled) {
+  BlockTrampolinePoolFor(6);
   BufferOffset bo = nextOffset();
   CodeOffset offset(bo.getOffset());
   UseScratchRegisterScope temps(this);
@@ -2325,6 +2327,7 @@ void MacroAssembler::call(ImmWord target) {
 }
 
 void MacroAssembler::call(JitCode* c) {
+  BlockTrampolinePoolFor(6);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   BufferOffset bo = m_buffer.nextOffset();
@@ -3244,6 +3247,7 @@ void MacroAssemblerRiscv64::ma_liPatchable(Register dest,
 }
 
 void MacroAssemblerRiscv64::ma_li(Register dest, ImmGCPtr ptr) {
+  BlockTrampolinePoolFor(6);
   writeDataRelocation(ptr);
   ma_liPatchable(dest, ImmPtr(ptr.value));
 }
@@ -3251,6 +3255,7 @@ void MacroAssemblerRiscv64::ma_li(Register dest, Imm32 imm) {
   RV_li(dest, imm.value);
 }
 void MacroAssemblerRiscv64::ma_li(Register dest, CodeLabel* label) {
+  BlockTrampolinePoolFor(6);
   BufferOffset bo = m_buffer.nextOffset();
   JitSpew(JitSpew_Codegen, ".load CodeLabel %p", label);
   ma_liPatchable(dest, ImmWord(/* placeholder */ 0));
@@ -4306,6 +4311,7 @@ void MacroAssemblerRiscv64::ma_neg(Register rd, const Operand& rt) {
 }
 
 void MacroAssemblerRiscv64::ma_jump(ImmPtr dest) {
+  BlockTrampolinePoolFor(6);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   asMasm().ma_liPatchable(scratch, dest);
@@ -4690,6 +4696,7 @@ void MacroAssemblerRiscv64::ma_fld_s(FloatRegister ft, const BaseIndex& src) {
 }
 
 void MacroAssemblerRiscv64::ma_call(ImmPtr dest) {
+  BlockTrampolinePoolFor(6);
   UseScratchRegisterScope temps(this);
     temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   asMasm().ma_liPatchable(CallReg, dest);

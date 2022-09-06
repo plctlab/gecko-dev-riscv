@@ -95,7 +95,7 @@ class MacroAssembler;
 inline Imm32 Imm64::secondHalf() const { return hi(); }
 inline Imm32 Imm64::firstHalf() const { return low(); }
 
-static constexpr uint32_t ABIStackAlignment = 16;
+static constexpr uint32_t ABIStackAlignment = 8;
 static constexpr uint32_t CodeAlignment = 16;
 static constexpr uint32_t JitStackAlignment = 16;
 static constexpr uint32_t JitStackValueAlignment =
@@ -256,6 +256,7 @@ class Assembler : public AssemblerShared,
   static uint32_t GetNopFill();
   static uint32_t AsmPoolMaxOffset;
   static uint32_t GetPoolMaxOffset();
+  bool reserve(size_t size);
   bool oom() const;
   void setPrinter(Sprinter* sp) {
 #ifdef JS_JITSPEW
@@ -482,7 +483,7 @@ class Assembler : public AssemblerShared,
     MOZ_CRASH();
   }
 
-  void setUnlimitedBuffer() { MOZ_CRASH(); }
+  void setUnlimitedBuffer() { m_buffer.setUnlimited(); }
 
   GeneralRegisterSet* GetScratchRegisterList() { return &scratch_register_list_; }
 

@@ -502,12 +502,28 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       imm += (int64_t)instr5->Imm12Value();
       imm <<= 12;
       imm += (int64_t)instr7->Imm12Value();
-      DEBUG_PRINTF("imm:%ld\n", imm);
+      DEBUG_PRINTF("imm:%lx\n", imm);
       return imm;
     } else {
       MOZ_CRASH();
     }
   } else {
+          DEBUG_PRINTF("\n");
+    Instruction* instr0 = inst0;
+    Instruction* instr2 = inst0 + 2 * kInstrSize;
+    Instruction* instr3 = inst0 + 3 * kInstrSize;
+    Instruction* instr4 = inst0 + 4 * kInstrSize;
+    Instruction* instr5 = inst0 + 5 * kInstrSize;
+    Instruction* instr6 = inst0 + 6 * kInstrSize;
+    Instruction* instr7 = inst0 + 7 * kInstrSize;
+      disassembleInstr(instr0->InstructionBits());
+      disassembleInstr(instr1->InstructionBits());
+      disassembleInstr(instr2->InstructionBits());
+      disassembleInstr(instr3->InstructionBits());
+      disassembleInstr(instr4->InstructionBits());
+      disassembleInstr(instr5->InstructionBits());
+      disassembleInstr(instr6->InstructionBits());
+      disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     //Li48
     return target_address_at(inst0);
@@ -562,6 +578,7 @@ void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
   disassembleInstr(instr5->InstructionBits());
   disassembleInstr(instr6->InstructionBits());
   disassembleInstr(instr7->InstructionBits());
+  MOZ_ASSERT(ExtractLoad64Value(pc) == value);
   } else {
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     set_target_value_at(pc, value);
@@ -1146,6 +1163,11 @@ void Assembler::ToggleToCmp(CodeLocationLabel inst_) {
   *reinterpret_cast<Instr*>(inst) = addi_;
 }
 
+bool Assembler::reserve(size_t size) {
+  // This buffer uses fixed-size chunks so there's no point in reserving
+  // now vs. on-demand.
+  return !oom();
+}
 // void Assembler::TraceJumpRelocations(JSTracer* trc, JitCode* code,
 //                                      CompactBufferReader& reader) {
 //   while (reader.more()) {
@@ -1249,7 +1271,6 @@ void Assembler::retarget(Label* label, Label* target) {
   }
   label->reset();
 }
-
 
 }  // namespace jit
 }  // namespace js
