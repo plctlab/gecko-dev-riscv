@@ -72,7 +72,6 @@ class MacroAssemblerRiscv64 : public Assembler {
   size_t numCodeLabels() const { MOZ_CRASH(); }
   CodeLabel codeLabel(size_t) { MOZ_CRASH(); }
 
-  bool reserve(size_t size) { MOZ_CRASH(); }
   bool appendRawCode(const uint8_t* code, size_t numBytes) { MOZ_CRASH(); }
   bool swapBuffer(wasm::Bytes& bytes) { MOZ_CRASH(); }
 
@@ -658,6 +657,7 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
   }
 
   void branch(JitCode* c) {
+    BlockTrampolinePoolFor(6);
     UseScratchRegisterScope temps(this);
     Register scratch = temps.Acquire();
     BufferOffset bo = m_buffer.nextOffset();
@@ -723,11 +723,13 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
   }
 
   CodeOffset movWithPatch(ImmWord imm, Register dest) {
+    BlockTrampolinePoolFor(8);
     CodeOffset offset = CodeOffset(currentOffset());
     ma_liPatchable(dest, imm, Li64);
     return offset;
   }
   CodeOffset movWithPatch(ImmPtr imm, Register dest) {
+    BlockTrampolinePoolFor(6);
     CodeOffset offset = CodeOffset(currentOffset());
     ma_liPatchable(dest, imm);
     return offset;
