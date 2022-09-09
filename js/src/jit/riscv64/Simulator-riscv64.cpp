@@ -654,7 +654,7 @@ void RiscvDebugger::Debug() {
           cur += kInstrSize;
         }
       } else if (strcmp(cmd, "trace") == 0) {
-        UNIMPLEMENTED();
+         Simulator::FLAG_trace_sim = true;
       } else if (strcmp(cmd, "break") == 0 || strcmp(cmd, "b") == 0 ||
                  strcmp(cmd, "tbreak") == 0) {
         bool is_tbreak = strcmp(cmd, "tbreak") == 0;
@@ -2123,7 +2123,16 @@ void Simulator::SoftwareInterrupt() {
       handleStop(code);
     }
   } else {
-    UNSUPPORTED();
+//     uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
+//     switch (JSOp(code)) { 
+// #define EMIT_OP(OP, ...)  \
+//       case JSOp::OP:\
+//            std::cout << #OP << std::endl; \
+//            break;
+//     FOR_EACH_OPCODE(EMIT_OP);
+// #undef EMIT_OP
+//     }
+    DieOrDebug();
   }
 }
 

@@ -175,14 +175,14 @@ void MacroAssembler::branchSub32(Condition cond,
                                  Label* label) {
   switch (cond) {
     case Overflow:
-      ma_sub32TestOverflow(dest, dest, src, overflow);
+      ma_sub32TestOverflow(dest, dest, src, label);
       break;
     case NonZero:
     case Zero:
     case Signed:
     case NotSigned:
       ma_sub32(dest, dest, src);
-      ma_b(dest, dest, overflow, cond);
+      ma_b(dest, dest, label, cond);
       break;
     default:
       MOZ_CRASH("NYI");
