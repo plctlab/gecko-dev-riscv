@@ -3604,7 +3604,7 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
     if (is_trampoline_emitted() && jumpKind == LongJump) {
       if (cond != Always) {
         Label skip;
-        Condition neg_cond = NegateCondition(cond);
+        Condition neg_cond = InvertCondition(cond);
         ma_branch(&skip, neg_cond, rs, rt);
         BranchLong(L);
         bind(&skip);
@@ -3701,11 +3701,11 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
       break;
     case Signed:
       MOZ_ASSERT(lhs == rhs);
-      ma_branch(label, GreaterThan, lhs, Operand(zero), jumpKind);
+      ma_branch(label, LessThan, lhs, Operand(zero), jumpKind);
       break;
     case NotSigned:
       MOZ_ASSERT(lhs == rhs);
-      ma_branch(label, LessThan, lhs, Operand(zero), jumpKind);
+      ma_branch(label, GreaterThan, lhs, Operand(zero), jumpKind);
       break;
     default: {
       ma_branch(label, c, lhs, rhs, jumpKind);
