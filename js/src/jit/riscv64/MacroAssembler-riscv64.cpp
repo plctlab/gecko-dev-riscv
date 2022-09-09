@@ -3601,7 +3601,7 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
       EmitConstPoolWithJumpIfNeeded();
     }
   } else {
-    if (is_trampoline_emitted() && jumpKind == LongJump) {
+    if (is_trampoline_emitted() && jumpKind == LongJump) {  bgt a0 zero L
       if (cond != Always) {
         Label skip;
         Condition neg_cond = NegateCondition(cond);

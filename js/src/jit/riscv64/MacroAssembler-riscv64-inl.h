@@ -172,7 +172,7 @@ template <typename T>
 void MacroAssembler::branchSub32(Condition cond,
                                  T src,
                                  Register dest,
-                                 Label* overflow) {
+                                 Label* label) {
   switch (cond) {
     case Overflow:
       ma_sub32TestOverflow(dest, dest, src, overflow);
