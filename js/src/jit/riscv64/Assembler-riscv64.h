@@ -267,6 +267,8 @@ class Assembler : public AssemblerShared,
     MOZ_ASSERT(!isFinished);
     isFinished = true;
   }
+
+  bool swapBuffer(wasm::Bytes& bytes);
   // Size of the instruction stream, in bytes.
   size_t size() const;
   // Size of the data table, in bytes.
@@ -456,13 +458,13 @@ class Assembler : public AssemblerShared,
   static uint32_t PatchWrite_NearCallSize() { return 7; }
 
   static void TraceJumpRelocations(JSTracer* trc, JitCode* code,
-                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+                                   CompactBufferReader& reader);
   static void TraceDataRelocations(JSTracer* trc, JitCode* code,
-                                   CompactBufferReader& reader){ MOZ_CRASH(); }
+                                   CompactBufferReader& reader);
 
   static void ToggleToJmp(CodeLocationLabel inst_);
   static void ToggleToCmp(CodeLocationLabel inst_);
-  static void ToggleCall(CodeLocationLabel inst_, bool) { MOZ_CRASH(); }
+  static void ToggleCall(CodeLocationLabel inst_, bool enable);
 
   static void Bind(uint8_t* rawCode, const CodeLabel& label);
   // label operations
@@ -545,6 +547,8 @@ class Assembler : public AssemblerShared,
       dataRelocations_.writeUnsigned(nextOffset().getOffset());
     }
   }
+
+  bool appendRawCode(const uint8_t* code, size_t numBytes);
 
   void assertNoGCThings() const {
 #ifdef DEBUG

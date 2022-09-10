@@ -392,6 +392,12 @@ void MacroAssemblerRiscv64::ma_compareF32(Register rd,
     case DoubleGreaterThan:
       flt_s(rd, cmp2, cmp1);
       break;
+    case DoubleOrdered:
+      CompareIsNotNanF32(rd, cmp1, cmp2);
+      return;
+    case DoubleUnordered:
+      CompareIsNanF32(rd, cmp1, cmp2);
+      return;
   }
   if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
@@ -431,6 +437,12 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd,
     case DoubleGreaterThan:
       flt_d(rd, cmp2, cmp1);
       break;
+    case DoubleOrdered:
+      CompareIsNotNanF64(rd, cmp1, cmp2);
+      return;
+    case DoubleUnordered:
+      CompareIsNanF64(rd, cmp1, cmp2);
+      return;
   }
   if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
@@ -1963,9 +1975,7 @@ CodeOffset MacroAssemblerRiscv64Compat::toggledCall(JitCode* target,
   ma_liPatchable(ScratchRegister, ImmPtr(target->raw()));
   if (enabled) {
     jalr(ScratchRegister);
-    nop();
   } else {
-    nop();
     nop();
   }
   MOZ_ASSERT_IF(!oom(), nextOffset().getOffset() - offset.offset() ==

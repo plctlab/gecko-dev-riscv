@@ -2,7 +2,7 @@
 ac_add_options --enable-application=js
 
 # Enable optimization for speed
-ac_add_options  --disable-optimize
+ac_add_options  --enable-optimize
 
 # Disable debug checks to better match a release build of Firefox.
 ac_add_options --enable-debug
