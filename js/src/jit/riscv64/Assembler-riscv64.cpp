@@ -63,6 +63,18 @@ void Assembler::nop() {
 // Size of the instruction stream, in bytes.
 size_t Assembler::size() const { return m_buffer.size(); }
 
+bool Assembler::swapBuffer(wasm::Bytes& bytes) {
+  // For now, specialize to the one use case. As long as wasm::Bytes is a
+  // Vector, not a linked-list of chunks, there's not much we can do other
+  // than copy.
+  MOZ_ASSERT(bytes.empty());
+  if (!bytes.resize(bytesNeeded())) {
+    return false;
+  }
+  m_buffer.executableCopy(bytes.begin());
+  return true;
+}
+
 // Size of the relocation table, in bytes.
 size_t Assembler::jumpRelocationTableBytes() const {
   return jumpRelocations_.length();
@@ -1168,56 +1180,62 @@ bool Assembler::reserve(size_t size) {
   // now vs. on-demand.
   return !oom();
 }
-// void Assembler::TraceJumpRelocations(JSTracer* trc, JitCode* code,
-//                                      CompactBufferReader& reader) {
-//   while (reader.more()) {
-//     JitCode* child =
-//         CodeFromJump((Instruction*)(code->raw() + reader.readUnsigned()));
-//     TraceManuallyBarrieredEdge(trc, &child, "rel32");
-//   }
-// }
 
-// static void TraceOneDataRelocation(JSTracer* trc,
-//                                    mozilla::Maybe<AutoWritableJitCode>& awjc,
-//                                    JitCode* code, Instruction* inst) {
-//   void* ptr = (void*)Assembler::ExtractLoad64Value(inst);
-//   void* prior = ptr;
+static JitCode* CodeFromJump(Instruction* jump) {
+  uint8_t* target = (uint8_t*)Assembler::ExtractLoad64Value(jump);
+  return JitCode::FromExecutable(target);
+}
 
-//   // Data relocations can be for Values or for raw pointers. If a Value is
-//   // zero-tagged, we can trace it as if it were a raw pointer. If a Value
-//   // is not zero-tagged, we have to interpret it as a Value to ensure that the
-//   // tag bits are masked off to recover the actual pointer.
-//   uintptr_t word = reinterpret_cast<uintptr_t>(ptr);
-//   if (word >> JSVAL_TAG_SHIFT) {
-//     // This relocation is a Value with a non-zero tag.
-//     Value v = Value::fromRawBits(word);
-//     TraceManuallyBarrieredEdge(trc, &v, "jit-masm-value");
-//     ptr = (void*)v.bitsAsPunboxPointer();
-//   } else {
-//     // This relocation is a raw pointer or a Value with a zero tag.
-//     // No barrier needed since these are constants.
-//     TraceManuallyBarrieredGenericPointerEdge(
-//         trc, reinterpret_cast<gc::Cell**>(&ptr), "jit-masm-ptr");
-//   }
+void Assembler::TraceJumpRelocations(JSTracer* trc, JitCode* code,
+                                     CompactBufferReader& reader) {
+  while (reader.more()) {
+    JitCode* child =
+        CodeFromJump((Instruction*)(code->raw() + reader.readUnsigned()));
+    TraceManuallyBarrieredEdge(trc, &child, "rel32");
+  }
+}
 
-//   if (ptr != prior) {
-//     if (awjc.isNothing()) {
-//       awjc.emplace(code);
-//     }
-//     Assembler::UpdateLoad64Value(inst, uint64_t(ptr));
-//   }
-// }
+static void TraceOneDataRelocation(JSTracer* trc,
+                                   mozilla::Maybe<AutoWritableJitCode>& awjc,
+                                   JitCode* code, Instruction* inst) {
+  void* ptr = (void*)Assembler::ExtractLoad64Value(inst);
+  void* prior = ptr;
 
-// /* static */
-// void Assembler::TraceDataRelocations(JSTracer* trc, JitCode* code,
-//                                      CompactBufferReader& reader) {
-//   mozilla::Maybe<AutoWritableJitCode> awjc;
-//   while (reader.more()) {
-//     size_t offset = reader.readUnsigned();
-//     Instruction* inst = (Instruction*)(code->raw() + offset);
-//     TraceOneDataRelocation(trc, awjc, code, inst);
-//   }
-// }
+  // Data relocations can be for Values or for raw pointers. If a Value is
+  // zero-tagged, we can trace it as if it were a raw pointer. If a Value
+  // is not zero-tagged, we have to interpret it as a Value to ensure that the
+  // tag bits are masked off to recover the actual pointer.
+  uintptr_t word = reinterpret_cast<uintptr_t>(ptr);
+  if (word >> JSVAL_TAG_SHIFT) {
+    // This relocation is a Value with a non-zero tag.
+    Value v = Value::fromRawBits(word);
+    TraceManuallyBarrieredEdge(trc, &v, "jit-masm-value");
+    ptr = (void*)v.bitsAsPunboxPointer();
+  } else {
+    // This relocation is a raw pointer or a Value with a zero tag.
+    // No barrier needed since these are constants.
+    TraceManuallyBarrieredGenericPointerEdge(
+        trc, reinterpret_cast<gc::Cell**>(&ptr), "jit-masm-ptr");
+  }
+
+  if (ptr != prior) {
+    if (awjc.isNothing()) {
+      awjc.emplace(code);
+    }
+    Assembler::UpdateLoad64Value(inst, uint64_t(ptr));
+  }
+}
+
+/* static */
+void Assembler::TraceDataRelocations(JSTracer* trc, JitCode* code,
+                                     CompactBufferReader& reader) {
+  mozilla::Maybe<AutoWritableJitCode> awjc;
+  while (reader.more()) {
+    size_t offset = reader.readUnsigned();
+    Instruction* inst = (Instruction*)(code->raw() + offset);
+    TraceOneDataRelocation(trc, awjc, code, inst);
+  }
+}
 
 
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)
@@ -1271,6 +1289,43 @@ void Assembler::retarget(Label* label, Label* target) {
   }
   label->reset();
 }
+
+  bool Assembler::appendRawCode(const uint8_t* code, size_t numBytes) {
+    if (m_buffer.oom()) {
+      return false;
+    }
+    while (numBytes > SliceSize) {
+      m_buffer.putBytes(SliceSize, code);
+      numBytes -= SliceSize;
+      code += SliceSize;
+    }
+    m_buffer.putBytes(numBytes, code);
+    return !m_buffer.oom();
+  }
+
+  void Assembler::ToggleCall(CodeLocationLabel inst_, bool enabled) {
+    Instruction* i0 = (Instruction*)inst_.raw();
+    Instruction* i1 = (Instruction*)(inst_.raw() + 1 * kInstrSize);
+    Instruction* i2 = (Instruction*)(inst_.raw() + 2 * kInstrSize);
+    Instruction* i3 = (Instruction*)(inst_.raw() + 3 * kInstrSize);
+    Instruction* i4 = (Instruction*)(inst_.raw() + 4 * kInstrSize);
+    Instruction* i5 = (Instruction*)(inst_.raw() + 5 * kInstrSize);
+    Instruction* i6 = (Instruction*)(inst_.raw() + 6 * kInstrSize);
+
+    MOZ_ASSERT(IsLui(i0->InstructionBits()));
+    MOZ_ASSERT(IsAddi(i1->InstructionBits()));
+    MOZ_ASSERT(IsSlli(i2->InstructionBits()));
+    MOZ_ASSERT(IsOri(i3->InstructionBits()));
+    MOZ_ASSERT(IsSlli(i4->InstructionBits()));
+    MOZ_ASSERT(IsOri(i5->InstructionBits()));
+    if (enabled) {
+      Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
+                    (i5->RdValue() << kRs1Shift) | (0x0 << kImm12Shift);
+      *((Instr*)i6) = jalr_;
+    } else {
+      *((Instr*)i6) = kNopByte;
+    }
+  }
 
 }  // namespace jit
 }  // namespace js

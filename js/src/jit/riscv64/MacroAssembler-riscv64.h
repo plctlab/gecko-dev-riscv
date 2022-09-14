@@ -67,23 +67,9 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   MoveResolver moveResolver_;
 
-  size_t preBarrierTableBytes() const { MOZ_CRASH(); }
-
-  size_t numCodeLabels() const { MOZ_CRASH(); }
-  CodeLabel codeLabel(size_t) { MOZ_CRASH(); }
-
-  bool appendRawCode(const uint8_t* code, size_t numBytes) { MOZ_CRASH(); }
-  bool swapBuffer(wasm::Bytes& bytes) { MOZ_CRASH(); }
-
-  void assertNoGCThings() const { MOZ_CRASH(); }
-
   static bool SupportsFloatingPoint() { return true; }
   static bool SupportsUnalignedAccesses() { return true; }
   static bool SupportsFastUnalignedFPAccesses() { return true; }
-  template <typename T>
-  void j(Condition, T) {
-    MOZ_CRASH();
-  }
   void haltingAlign(int alignment) {
     // TODO(loong64): Implement a proper halting align.
     nopAlign(alignment);
@@ -711,7 +697,7 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
 
   static size_t ToggledCallSize(uint8_t* code) {
     // Four instructions used in: MacroAssemblerRiscv64Compat::toggledCall
-    return 4 * sizeof(uint32_t);
+    return 7 * sizeof(uint32_t);
   }
 
   CodeOffset pushWithPatch(ImmWord imm) {

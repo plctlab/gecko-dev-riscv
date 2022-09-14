@@ -2124,12 +2124,12 @@ void Simulator::SoftwareInterrupt() {
     }
   } else {
 //     uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
-//     switch (JSOp(code)) { 
+//     switch (LNode::Opcode(code)) { 
 // #define EMIT_OP(OP, ...)  \
-//       case JSOp::OP:\
+//       case LNode::Opcode::OP:\
 //            std::cout << #OP << std::endl; \
 //            break;
-//     FOR_EACH_OPCODE(EMIT_OP);
+//     LIR_OPCODE_LIST(EMIT_OP);
 // #undef EMIT_OP
 //     }
     DieOrDebug();
