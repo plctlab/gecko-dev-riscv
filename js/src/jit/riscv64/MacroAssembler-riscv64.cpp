@@ -1392,11 +1392,11 @@ void MacroAssemblerRiscv64Compat::testUndefinedSet(Condition cond,
 
 void MacroAssemblerRiscv64Compat::unboxInt32(const ValueOperand& operand,
                                              Register dest) {
-  slli(dest, operand.valueReg(), 0);
+  slliw(dest, operand.valueReg(), 0);
 }
 
 void MacroAssemblerRiscv64Compat::unboxInt32(Register src, Register dest) {
-  slli(dest, src, 0);
+  slliw(dest, src, 0);
 }
 
 void MacroAssemblerRiscv64Compat::unboxInt32(const Address& src,
