@@ -10,7 +10,6 @@
 #include "jit/riscv64/MacroAssembler-riscv64.h"
 
 #include "jsmath.h"
-
 #include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/JitFrames.h"
@@ -470,7 +469,7 @@ void MacroAssemblerRiscv64Compat::movePtr(wasm::SymbolicAddress imm,
                                           Register dest) {
   BlockTrampolinePoolFor(6);
   append(wasm::SymbolicAccess(CodeOffset(nextOffset().getOffset()), imm));
-  ma_liPatchable(dest, ImmWord(-1));
+  ma_liPatchable(dest, ImmWord(-1), Li64);
 }
 
 bool MacroAssemblerRiscv64Compat::buildOOLFakeExitFrame(void* fakeReturnAddr) {
@@ -2013,10 +2012,6 @@ CodeOffset MacroAssembler::call(wasm::SymbolicAddress target) {
   movePtr(target, CallReg);
   return call(CallReg);
 }
-CodeOffset MacroAssembler::callWithPatch() {
-  MOZ_CRASH();
-  return CodeOffset(currentOffset());
-}
 CodeOffset MacroAssembler::farJumpWithPatch() {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
@@ -2806,17 +2801,40 @@ void MacroAssembler::patchCallToNop(uint8_t* call) {
   *reinterpret_cast<Instr*>(p + 6) = kNopByte;
 }
 
-void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
-  BufferOffset call(callerOffset - 1 * sizeof(uint32_t));
 
+CodeOffset MacroAssembler::callWithPatch() {
+  DEBUG_PRINTF("\tcallWithPatch\n");
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  int32_t imm32 = 1 * sizeof(uint32_t);
+  int32_t Hi20 = ((imm32 + 0x800) >> 12);
+  int32_t Lo12 = imm32 << 20 >> 20;
+  auipc(scratch, Hi20);  // Read PC + Hi20 into scratch.
+  jalr(scratch, Lo12);   // jump PC + Hi20 + Lo12
+  DEBUG_PRINTF("\tret %d\n", currentOffset());
+  return CodeOffset(currentOffset());
+}
+
+void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
+  DEBUG_PRINTF("\tpatchCall\n");
+  BufferOffset call(callerOffset - 1 * sizeof(uint32_t));
+  DEBUG_PRINTF("\tcallerOffset %d\n", callerOffset);
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
-  if (is_int12(offset)) {
-    MOZ_CRASH();
+  if (is_int32(offset)) {
+    Instruction* jalr_ = (Instruction*)editSrc(call);
+    Instruction* auipc_ = (Instruction*)editSrc(BufferOffset(callerOffset - 2*sizeof(uint32_t)));
+    disassembleInstr(jalr_->InstructionBits());
+    disassembleInstr(auipc_->InstructionBits());
+    DEBUG_PRINTF("\t\n");
+    DEBUG_PRINTF("\t\n");
+    MOZ_ASSERT(IsJalr(jalr_->InstructionBits()) &&
+               IsAuipc(auipc_->InstructionBits()));
+    int32_t Hi20 = (((int32_t)offset + 0x800) >> 12);
+    int32_t Lo12 = (int32_t)offset << 20 >> 20;
+    *(Instr*)auipc_ = SetAuipcOffset(Hi20, auipc_->InstructionBits());
+    *(Instr*)jalr_ = SetJalrOffset(Lo12, jalr_->InstructionBits());
   } else {
-    uint32_t u32Offset = callerOffset - 4 * sizeof(uint32_t);
-    uint32_t* u32 =
-        reinterpret_cast<uint32_t*>(editSrc(BufferOffset(u32Offset)));
-    *u32 = calleeOffset - callerOffset;
+    MOZ_CRASH();
   }
 }
 void MacroAssembler::patchFarJump(CodeOffset farJump, uint32_t targetOffset) {

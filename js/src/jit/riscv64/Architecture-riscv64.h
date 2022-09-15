@@ -26,9 +26,10 @@ static const uint32_t SimdMemoryAlignment =
 static const uint32_t WasmStackAlignment = 16;
 static const uint32_t WasmTrapInstructionLength = 4;
 
-// See comments in wasm::GenerateFunctionPrologue.
+// See comments in wasm::GenerateFunctionPrologue.  The difference between these
+// is the size of the largest callable prologue on the platform.
 static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
-static constexpr uint32_t WasmCheckedTailEntryOffset = 1u;
+static constexpr uint32_t WasmCheckedTailEntryOffset = 20u;
 
 // RISCV64 has 32 64-bit integer registers, x0 though x31.
 //  The program counter is not accessible as a register.
@@ -507,7 +508,7 @@ static const uint32_t SpillSlotSize =
     std::max(sizeof(Registers::RegisterContent),
              sizeof(FloatRegisters::RegisterContent));
 
-inline uint32_t GetRISCV64Flags() { MOZ_CRASH(); }
+inline uint32_t GetRISCV64Flags() { return 0; }
 
 }  // namespace jit
 }  // namespace js
