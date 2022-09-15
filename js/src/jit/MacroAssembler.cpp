@@ -2209,7 +2209,7 @@ void MacroAssembler::assumeUnreachable(const char* output) {
   breakpoint();
 }
 
-void MacroAssembler::printf(const char* output) {
+void MacroAssembler::Printf(const char* output) {
 #ifdef JS_MASM_VERBOSE
   AllocatableRegisterSet regs(RegisterSet::Volatile());
   LiveRegisterSet save(regs.asLiveSet());
@@ -2227,7 +2227,7 @@ void MacroAssembler::printf(const char* output) {
 #endif
 }
 
-void MacroAssembler::printf(const char* output, Register value) {
+void MacroAssembler::Printf(const char* output, Register value) {
 #ifdef JS_MASM_VERBOSE
   AllocatableRegisterSet regs(RegisterSet::Volatile());
   LiveRegisterSet save(regs.asLiveSet());

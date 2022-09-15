@@ -5149,8 +5149,8 @@ class MacroAssembler : public MacroAssemblerSpecific {
 
   void assumeUnreachable(const char* output);
 
-  void printf(const char* output);
-  void printf(const char* output, Register value);
+  void Printf(const char* output);
+  void Printf(const char* output, Register value);
 
 #define DISPATCH_FLOATING_POINT_OP(method, type, arg1d, arg1f, arg2) \
   MOZ_ASSERT(IsFloatingPointType(type));                             \
