@@ -3852,6 +3852,14 @@ void Simulator::DecodeRVIType() {
       if (instr_.Imm12Value() == 0) {  // ECALL
         SoftwareInterrupt();
       } else if (instr_.Imm12Value() == 1) {  // EBREAK
+        uint8_t code = get_ebreak_code(instr_.instr());
+        if (code == kWasmTrapCode) {
+          uint8_t* newPC;
+          if (wasm::HandleIllegalInstruction(registerState(), &newPC)) {
+            set_pc(int64_t(newPC));
+            return;
+          }
+        }
         SoftwareInterrupt();
       } else {
         UNSUPPORTED();

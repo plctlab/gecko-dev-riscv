@@ -548,6 +548,9 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ByteSwap(Register dest, Register src, int operand_size,
                 Register scratch);
 
+  void Ror(Register rd, Register rs, const Operand& rt);
+  void Dror(Register rd, Register rs, const Operand& rt);
+
   void Float32Max(FPURegister dst, FPURegister src1, FPURegister src2);
   void Float32Min(FPURegister dst, FPURegister src1, FPURegister src2);
   void Float64Max(FPURegister dst, FPURegister src1, FPURegister src2);

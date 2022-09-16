@@ -2042,7 +2042,7 @@ CodeOffset MacroAssembler::nopPatchableToCall() {
 }
 CodeOffset MacroAssembler::wasmTrapInstruction() {
   CodeOffset offset(currentOffset());
-  ebreak();  // TODO: as_teq(zero, zero, WASM_TRAP)
+  break_(kWasmTrapCode);  // TODO: as_teq(zero, zero, WASM_TRAP)
   return offset;
 }
 size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet set) {
@@ -2817,12 +2817,12 @@ CodeOffset MacroAssembler::callWithPatch() {
 
 void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
   DEBUG_PRINTF("\tpatchCall\n");
-  BufferOffset call(callerOffset - 1 * sizeof(uint32_t));
+  BufferOffset call(callerOffset - 2 * sizeof(uint32_t));
   DEBUG_PRINTF("\tcallerOffset %d\n", callerOffset);
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
   if (is_int32(offset)) {
-    Instruction* jalr_ = (Instruction*)editSrc(call);
-    Instruction* auipc_ = (Instruction*)editSrc(BufferOffset(callerOffset - 2*sizeof(uint32_t)));
+    Instruction* auipc_ = (Instruction*)editSrc(call);
+    Instruction* jalr_ = (Instruction*)editSrc(BufferOffset(callerOffset - 1*sizeof(uint32_t)));
     disassembleInstr(jalr_->InstructionBits());
     disassembleInstr(auipc_->InstructionBits());
     DEBUG_PRINTF("\t\n");
@@ -5322,6 +5322,54 @@ void MacroAssemblerRiscv64::BranchFalseF(Register rs, Label* target) {
   }
 }
 
+
+void MacroAssemblerRiscv64::Ror(Register rd, Register rs, const Operand& rt) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  BlockTrampolinePoolScope block_trampoline_pool(this);
+  if (rt.is_reg()) {
+    negw(scratch, rt.rm());
+    sllw(scratch, rs, scratch);
+    srlw(rd, rs, rt.rm());
+    or_(rd, scratch, rd);
+    sext_w(rd, rd);
+  } else {
+    int64_t ror_value = rt.immediate() % 32;
+    if (ror_value == 0) {
+      mv(rd, rs);
+      return;
+    } else if (ror_value < 0) {
+      ror_value += 32;
+    }
+    srliw(scratch, rs, ror_value);
+    slliw(rd, rs, 32 - ror_value);
+    or_(rd, scratch, rd);
+    sext_w(rd, rd);
+  }
+}
+
+void MacroAssemblerRiscv64::Dror(Register rd, Register rs, const Operand& rt) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  BlockTrampolinePoolScope block_trampoline_pool(this);
+  if (rt.is_reg()) {
+    negw(scratch, rt.rm());
+    sll(scratch, rs, scratch);
+    srl(rd, rs, rt.rm());
+    or_(rd, scratch, rd);
+  } else {
+    int64_t dror_value = rt.immediate() % 64;
+    if (dror_value == 0) {
+      mv(rd, rs);
+      return;
+    } else if (dror_value < 0) {
+      dror_value += 64;
+    }
+    srli(scratch, rs, dror_value);
+    slli(rd, rs, 64 - dror_value);
+    or_(rd, scratch, rd);
+  }
+}
 
 }  // namespace jit
 }  // namespace js
