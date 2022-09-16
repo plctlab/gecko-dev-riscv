@@ -476,7 +476,10 @@ class Assembler : public AssemblerShared,
   void retarget(Label* label, Label* target);
   static uint32_t NopSize() { return 4; }
 
-  static uintptr_t GetPointer(uint8_t*) { MOZ_CRASH(); }
+  static uintptr_t GetPointer(uint8_t* instPtr) {
+    Instruction* inst = (Instruction*)instPtr;
+    return Assembler::ExtractLoad64Value(inst);
+  }
 
   static bool HasRoundInstruction(RoundingMode) { return false; }
 

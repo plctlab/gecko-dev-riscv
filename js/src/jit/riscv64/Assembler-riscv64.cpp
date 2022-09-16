@@ -455,8 +455,10 @@ uintptr_t Assembler::target_address_at(Instruction* pc) {
     // Assemble the 64 bit value.
     int64_t addr = (int64_t)(instr0->Imm20UValue() << kImm20Shift) +
                    (int64_t)instr1->Imm12Value();
+    MOZ_ASSERT(instr2->Imm12Value() == 11);
     addr <<= 11;
     addr |= (int64_t)instr3->Imm12Value();
+    MOZ_ASSERT(instr4->Imm12Value() == 6);
     addr <<= 6;
     addr |= (int64_t)instr5->Imm12Value();
 
@@ -508,10 +510,13 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
         IsAddi(*reinterpret_cast<Instr*>(instr7))) {
       int64_t imm = (int64_t)(inst0->Imm20UValue() << kImm20Shift) +
                      (int64_t)instr1->Imm12Value();
+      MOZ_ASSERT(instr2->Imm12Value() == 12);
       imm <<= 12;
       imm += (int64_t)instr3->Imm12Value();
+      MOZ_ASSERT(instr4->Imm12Value() == 12);
       imm <<= 12;
       imm += (int64_t)instr5->Imm12Value();
+      MOZ_ASSERT(instr6->Imm12Value() == 12);
       imm <<= 12;
       imm += (int64_t)instr7->Imm12Value();
       DEBUG_PRINTF("imm:%lx\n", imm);
@@ -520,7 +525,7 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       MOZ_CRASH();
     }
   } else {
-          DEBUG_PRINTF("\n");
+    DEBUG_PRINTF("\n");
     Instruction* instr0 = inst0;
     Instruction* instr2 = inst0 + 2 * kInstrSize;
     Instruction* instr3 = inst0 + 3 * kInstrSize;
@@ -528,14 +533,14 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
     Instruction* instr5 = inst0 + 5 * kInstrSize;
     Instruction* instr6 = inst0 + 6 * kInstrSize;
     Instruction* instr7 = inst0 + 7 * kInstrSize;
-      disassembleInstr(instr0->InstructionBits());
-      disassembleInstr(instr1->InstructionBits());
-      disassembleInstr(instr2->InstructionBits());
-      disassembleInstr(instr3->InstructionBits());
-      disassembleInstr(instr4->InstructionBits());
-      disassembleInstr(instr5->InstructionBits());
-      disassembleInstr(instr6->InstructionBits());
-      disassembleInstr(instr7->InstructionBits());
+    disassembleInstr(instr0->InstructionBits());
+    disassembleInstr(instr1->InstructionBits());
+    disassembleInstr(instr2->InstructionBits());
+    disassembleInstr(instr3->InstructionBits());
+    disassembleInstr(instr4->InstructionBits());
+    disassembleInstr(instr5->InstructionBits());
+    disassembleInstr(instr6->InstructionBits());
+    disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     //Li48
     return target_address_at(inst0);
@@ -635,6 +640,7 @@ void Assembler::set_target_value_at(Instruction* pc, uint64_t target) {
 void Assembler::WriteLoad64Instructions(Instruction* inst0,
                                         Register reg,
                                         uint64_t value) {
+  DEBUG_PRINTF("\tWriteLoad64Instructions\n");
   // Initialize rd with an address
   // Pointers are 48 bits
   // 6 fixed instructions are generated
@@ -666,6 +672,10 @@ void Assembler::WriteLoad64Instructions(Instruction* inst0,
                                          // are put in. 42 bit in rd
   *reinterpret_cast<Instr*>(inst0 + 3 * kInstrSize) = ori_b11;
 
+  slli_ =
+      OP_IMM | (reg.code() << kRdShift) | (0b001 << kFunct3Shift) |
+      (reg.code() << kRs1Shift) |
+      (6 << kImm12Shift);  // slli(rd, rd, 6);      // Space for next 11 bis
   *reinterpret_cast<Instr*>(inst0 + 4 * kInstrSize) =
       slli_;  // slli(rd, rd, 6);       // Space for next 6 bits
 
@@ -674,6 +684,14 @@ void Assembler::WriteLoad64Instructions(Instruction* inst0,
                  (a6 << kImm12Shift);  // ori(rd, rd, a6);       // 6 bits are
                                        // put in. 48 bis in rd
   *reinterpret_cast<Instr*>(inst0 + 5 * kInstrSize) = ori_a6;
+  disassembleInstr((inst0 + 0 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 1 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 2 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 3 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 4 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 5 * kInstrSize) ->InstructionBits());
+  disassembleInstr((inst0 + 6 * kInstrSize) ->InstructionBits());
+  MOZ_ASSERT(ExtractLoad64Value(inst0) == value);
 }
 
 // This just stomps over memory with 32 bits of raw data. Its purpose is to

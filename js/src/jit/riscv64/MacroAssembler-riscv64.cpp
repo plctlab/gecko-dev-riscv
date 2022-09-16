@@ -1965,6 +1965,7 @@ CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
 
 CodeOffset MacroAssemblerRiscv64Compat::toggledCall(JitCode* target,
                                                     bool enabled) {
+  DEBUG_PRINTF("\ttoggledCall\n");
   BlockTrampolinePoolFor(6);
   BufferOffset bo = nextOffset();
   CodeOffset offset(bo.getOffset());
@@ -2826,7 +2827,6 @@ void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
     disassembleInstr(jalr_->InstructionBits());
     disassembleInstr(auipc_->InstructionBits());
     DEBUG_PRINTF("\t\n");
-    DEBUG_PRINTF("\t\n");
     MOZ_ASSERT(IsJalr(jalr_->InstructionBits()) &&
                IsAuipc(auipc_->InstructionBits()));
     int32_t Hi20 = (((int32_t)offset + 0x800) >> 12);
@@ -2850,6 +2850,8 @@ void MacroAssembler::patchNearAddressMove(CodeLocationLabel loc,
 void MacroAssembler::patchNopToCall(uint8_t* call, uint8_t* target) {
   uint32_t* p = reinterpret_cast<uint32_t*>(call) - 7;
   Assembler::WriteLoad64Instructions((Instruction*)p, ScratchRegister, (uint64_t)target);
+  DEBUG_PRINTF("\tpatchNopToCall %lu %lu\n", (uint64_t)target, ExtractLoad64Value((Instruction*)p));
+  MOZ_ASSERT(ExtractLoad64Value((Instruction*)p) == (uint64_t)target);
   Instr jalr_ = JALR | (ra.code() << kRdShift) | (0x0 << kFunct3Shift) |
                 (ScratchRegister.code() << kRs1Shift) | (0x0 << kImm12Shift);
   *reinterpret_cast<Instr*>(p + 6) = jalr_;
@@ -3265,6 +3267,7 @@ void MacroAssemblerRiscv64::ma_liPatchable(Register dest, ImmPtr imm) {
 void MacroAssemblerRiscv64::ma_liPatchable(Register dest,
                                            ImmWord imm,
                                            LiFlags flags) {
+  DEBUG_PRINTF("\tma_liPatchable\n");
   if (Li64 == flags) {
     m_buffer.ensureSpace(8 * sizeof(uint32_t));
     li_constant(dest, imm.value);
