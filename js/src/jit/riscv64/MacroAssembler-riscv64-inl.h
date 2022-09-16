@@ -1370,7 +1370,7 @@ void MacroAssembler::clz32(Register src, Register dest, bool knownNotZero) {
   Clz32(dest, src);
 }
 void MacroAssembler::clz64(Register64 src, Register dest) {
-  Clz32(dest, src.reg);
+  Clz64(dest, src.reg);
 }
 
 void MacroAssembler::ctz64(Register64 src, Register dest) {
@@ -1868,52 +1868,47 @@ void MacroAssembler::remainder32(Register rhs,
     ma_mod32(srcDest, srcDest, rhs);
   }
 }
-void MacroAssembler::rotateLeft64(Imm32, Register64, Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateLeft64(Imm32 count, Register64 src, Register64 dest,
+                                  Register temp) {
+  Dror(dest.reg, src.reg, Operand(64 - (count.value % 64)));
 }
-void MacroAssembler::rotateLeft64(Register, Register64, Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateLeft64(Register count, Register64 src,
+                                  Register64 dest, Register temp) {
+  ScratchRegisterScope scratch(asMasm());
+  ma_mod32(scratch, count, Operand(64));
+  negw(scratch, scratch);
+  addi(scratch, scratch, 64);
+  Dror(dest.reg, src.reg, Operand(scratch));
 }
+
 void MacroAssembler::rotateLeft(Imm32 count, Register input, Register dest) {
-  if (count.value) {
-    ScratchRegisterScope scratch(asMasm());
-    srli(scratch, input, (32 - (count.value % 32)) % 32);
-    slli(dest, input, count.value % 32);
-    or_(dest, dest, scratch);
-  } else {
-    mv(dest, input);
-  }
+  JitSpew(JitSpew_Codegen,"[ rotateLeft\n");
+  Ror(dest, input, Operand(32 - (count.value % 32)));
+  JitSpew(JitSpew_Codegen,"]\n");
 }
 void MacroAssembler::rotateLeft(Register count, Register input, Register dest) {
+  JitSpew(JitSpew_Codegen,"[ rotateLeft\n");
   ScratchRegisterScope scratch(asMasm());
-  sub(scratch, zero, count);
-  srl(dest, input, scratch);
-  sll(scratch, input, count);
-  or_(dest, dest, scratch);
+  ma_mod32(scratch, count, Operand(32));
+  negw(scratch, scratch);
+  addi(scratch, scratch, 32);
+  Ror(dest, input, Operand(scratch));
+  JitSpew(JitSpew_Codegen,"]\n");
 }
-void MacroAssembler::rotateRight64(Imm32, Register64, Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateRight64(Register count, Register64 src,
+                                   Register64 dest, Register temp) {
+  Dror(dest.reg, src.reg, Operand(count));
 }
-void MacroAssembler::rotateRight64(Register, Register64, Register64, Register) {
-  MOZ_CRASH();
+void MacroAssembler::rotateRight64(Imm32 count, Register64 src, Register64 dest,
+                                   Register temp) {
+  Dror(dest.reg, src.reg, Operand(count.value));
 }
 void MacroAssembler::rotateRight(Imm32 count, Register input, Register dest) {
-  if (count.value) {
-    ScratchRegisterScope scratch(asMasm());
-    srli(scratch, input, count.value % 32);
-    slli(dest, input, (32 - (count.value % 32)) % 32);
-    or_(dest, dest, scratch);
-  } else {
-    mv(dest, input);
-  }
+  Ror(dest, input, Operand(count.value));
 }
 void MacroAssembler::rotateRight(Register count, Register input,
                                  Register dest) {
-    ScratchRegisterScope scratch(asMasm());
-    sub(scratch, zero, count);
-    sll(scratch, input, scratch);
-    srl(dest, input, count);
-    or_(dest, dest, scratch);
+  Ror(dest, input, Operand(count));
 }
 void MacroAssembler::rshift32Arithmetic(Register src, Register dest) {
   sraw(dest, dest, src);

@@ -15,6 +15,7 @@ namespace jit {
 //   debugger.
 const uint32_t kMaxWatchpointCode = 31;
 const uint32_t kMaxStopCode = 127;
+const uint32_t kWasmTrapCode = 6;
 static_assert(kMaxWatchpointCode < kMaxStopCode);
 
 // On RISCV all instructions are 32 bits, except for RVC.

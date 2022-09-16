@@ -697,7 +697,6 @@ void wasm::GenerateFunctionPrologue(MacroAssembler& masm,
   GenerateCallablePrologue(masm, &dummy);
 
   // Check that we did not overshoot the space budget for the prologue.
-  printf("%d %d",masm.currentOffset() - offsets->begin, WasmCheckedTailEntryOffset);
   MOZ_ASSERT_IF(!masm.oom(), masm.currentOffset() - offsets->begin <=
                                  WasmCheckedTailEntryOffset);
 
