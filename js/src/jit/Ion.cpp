@@ -868,6 +868,7 @@ const SafepointIndex* IonScript::getSafepointIndex(uint32_t disp) const {
 const OsiIndex* IonScript::getOsiIndex(uint32_t disp) const {
   const OsiIndex* end = osiIndices() + numOsiIndices();
   for (const OsiIndex* it = osiIndices(); it != end; ++it) {
+    printf("%d\n", it->returnPointDisplacement());
     if (it->returnPointDisplacement() == disp) {
       return it;
     }
@@ -881,6 +882,7 @@ const OsiIndex* IonScript::getOsiIndex(uint8_t* retAddr) const {
           (void*)this, (void*)method(), method()->raw());
 
   MOZ_ASSERT(containsCodeAddress(retAddr));
+  printf("%p\n", retAddr);
   uint32_t disp = retAddr - method()->raw();
   return getOsiIndex(disp);
 }
