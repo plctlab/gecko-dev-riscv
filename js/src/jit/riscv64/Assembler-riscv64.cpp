@@ -413,18 +413,19 @@ bool Assembler::oom() const {
   return m_buffer.oom() || jumpRelocations_.oom() || dataRelocations_.oom();
 }
 
-void Assembler::disassembleInstr(Instr instr, bool enable_spew) {
+int Assembler::disassembleInstr(Instr instr, bool enable_spew) {
   if (!FLAG_riscv_debug && !enable_spew)
-    return;
+    return -1;
   disasm::NameConverter converter;
   disasm::Disassembler disasm(converter);
   EmbeddedVector<char, 128> disasm_buffer;
 
-  disasm.InstructionDecode(disasm_buffer, reinterpret_cast<byte*>(&instr));
+  int size = disasm.InstructionDecode(disasm_buffer, reinterpret_cast<byte*>(&instr));
   DEBUG_PRINTF("%s\n", disasm_buffer.start());
   if(enable_spew) {
     JitSpew(JitSpew_Codegen,"%s", disasm_buffer.start());
   }
+  return size;
 }
 
 void Assembler::BlockTrampolinePoolFor(int instructions) {
@@ -533,14 +534,6 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
     Instruction* instr5 = inst0 + 5 * kInstrSize;
     Instruction* instr6 = inst0 + 6 * kInstrSize;
     Instruction* instr7 = inst0 + 7 * kInstrSize;
-    disassembleInstr(instr0->InstructionBits());
-    disassembleInstr(instr1->InstructionBits());
-    disassembleInstr(instr2->InstructionBits());
-    disassembleInstr(instr3->InstructionBits());
-    disassembleInstr(instr4->InstructionBits());
-    disassembleInstr(instr5->InstructionBits());
-    disassembleInstr(instr6->InstructionBits());
-    disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     //Li48
     return target_address_at(inst0);

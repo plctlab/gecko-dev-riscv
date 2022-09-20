@@ -251,6 +251,12 @@ class Assembler : public AssemblerShared,
     unbound_labels_count_ = 0;
     block_buffer_growth_ = false;
     internal_trampoline_exception_ = false;
+
+    char* str = getenv("RISCV_DEBUG");
+    
+    if (str != nullptr && strlen(str) == strlen("true") && strcmp(str, "true") == 0) {
+      FLAG_riscv_debug = true;
+    }
   }
   static uint32_t NopFill;
   static uint32_t GetNopFill();
@@ -381,7 +387,7 @@ class Assembler : public AssemblerShared,
   
   Register getStackPointer() const { return StackPointer; }
   void flushBuffer() {}
-  static void disassembleInstr(Instr instr, bool enable_spew = false);
+  static int disassembleInstr(Instr instr, bool enable_spew = false);
   int target_at(BufferOffset pos, bool is_internal);
   uint32_t next_link(Label* label, bool is_internal);
   static uintptr_t target_address_at(Instruction* pos);
@@ -455,7 +461,7 @@ class Assembler : public AssemblerShared,
                                       Register reg,
                                       uint64_t value);
 
-  static uint32_t PatchWrite_NearCallSize() { return 7; }
+  static uint32_t PatchWrite_NearCallSize() { return 7  * sizeof(uint32_t); }
 
   static void TraceJumpRelocations(JSTracer* trc, JitCode* code,
                                    CompactBufferReader& reader);
