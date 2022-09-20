@@ -186,6 +186,10 @@ SimulatorProcess* SimulatorProcess::singleton_ = nullptr;
 
 int64_t Simulator::StopSimAt = -1;
 
+static bool IsFlag(const char* found, const char* flag) {
+  return strlen(found) == strlen(flag) && strcmp(found, flag) == 0;
+}
+
 Simulator* Simulator::Create() {
   auto sim = MakeUnique<Simulator>();
   if (!sim) {
@@ -197,10 +201,14 @@ Simulator* Simulator::Create() {
   }
 
   int64_t stopAt;
-  char* stopAtStr = getenv("MIPS_SIM_STOP_AT");
+  char* stopAtStr = getenv("RISCV_SIM_STOP_AT");
   if (stopAtStr && sscanf(stopAtStr, "%" PRIi64, &stopAt) == 1) {
     fprintf(stderr, "\nStopping simulation at icount %" PRIi64 "\n", stopAt);
     Simulator::StopSimAt = stopAt;
+  }
+  char* str = getenv("RISCV_TRACE_SIM");
+  if(str != nullptr && IsFlag(str, "true")) {
+    FLAG_trace_sim = true;
   }
 
   return sim.release();

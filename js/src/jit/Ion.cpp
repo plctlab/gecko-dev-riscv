@@ -868,7 +868,8 @@ const SafepointIndex* IonScript::getSafepointIndex(uint32_t disp) const {
 const OsiIndex* IonScript::getOsiIndex(uint32_t disp) const {
   const OsiIndex* end = osiIndices() + numOsiIndices();
   for (const OsiIndex* it = osiIndices(); it != end; ++it) {
-    printf("%d\n", it->returnPointDisplacement());
+    printf("\t%d\t", it->returnPointDisplacement());
+    Assembler::disassembleInstr(((Instruction*)(method()->raw() + it->returnPointDisplacement()))-> InstructionBits());
     if (it->returnPointDisplacement() == disp) {
       return it;
     }
@@ -882,7 +883,17 @@ const OsiIndex* IonScript::getOsiIndex(uint8_t* retAddr) const {
           (void*)this, (void*)method(), method()->raw());
 
   MOZ_ASSERT(containsCodeAddress(retAddr));
-  printf("%p\n", retAddr);
+  printf("\tion[\t");
+  for (size_t i = method()->offsetOfCode();
+       i < method()->instructionsSize();) {
+    printf("\toffset:%zu \t", i);
+    int size = Assembler::disassembleInstr(
+        ((Instruction*)(method()->raw() + i))->InstructionBits());
+    i = i + size;
+  }
+  printf("\t]\t");
+  printf("\t%p\t", retAddr);
+  Assembler::disassembleInstr(((Instruction*)retAddr) -> InstructionBits());
   uint32_t disp = retAddr - method()->raw();
   return getOsiIndex(disp);
 }
