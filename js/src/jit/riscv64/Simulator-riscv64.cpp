@@ -1784,7 +1784,7 @@ void Simulator::SoftwareInterrupt() {
         break;
       }
       case Args_Int_Double: {
-        double dval0 = getFpuRegisterDouble(12);
+        double dval0 = getFpuRegisterDouble(fa0);
         Prototype_Int_Double target =
             reinterpret_cast<Prototype_Int_Double>(external);
         int64_t result = target(dval0);
@@ -1831,7 +1831,7 @@ void Simulator::SoftwareInterrupt() {
         break;
       }
       case Args_Int_IntDoubleIntInt: {
-        double dval = getFpuRegisterDouble(fa1);
+        double dval = getFpuRegisterDouble(fa0);
         Prototype_Int_IntDoubleIntInt target =
             reinterpret_cast<Prototype_Int_IntDoubleIntInt>(external);
         int64_t result = target(arg0, dval, arg2, arg3);
@@ -1900,7 +1900,7 @@ void Simulator::SoftwareInterrupt() {
         break;
       }
       case Args_Double_IntDouble: {
-        double dval1 = getFpuRegisterDouble(fa1);
+        double dval1 = getFpuRegisterDouble(fa0);
         Prototype_Double_IntDouble target =
             reinterpret_cast<Prototype_Double_IntDouble>(external);
         double dresult = target(arg0, dval1);
@@ -1908,7 +1908,7 @@ void Simulator::SoftwareInterrupt() {
         break;
       }
       case Args_Int_IntDouble: {
-        double dval1 = getFpuRegisterDouble(fa1);
+        double dval1 = getFpuRegisterDouble(fa0);
         Prototype_Int_IntDouble target =
             reinterpret_cast<Prototype_Int_IntDouble>(external);
         int64_t result = target(arg0, dval1);

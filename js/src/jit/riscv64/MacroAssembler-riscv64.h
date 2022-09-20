@@ -561,6 +561,14 @@ class MacroAssemblerRiscv64 : public Assembler {
                          MaxMinKind kind);
 
   inline void NegateBool(Register rd, Register rs) { xori(rd, rs, 1); }
+
+ protected:
+  void wasmLoadImpl(const wasm::MemoryAccessDesc& access, Register memoryBase,
+                    Register ptr, Register ptrScratch, AnyRegister output,
+                    Register tmp);
+  // void wasmStoreImpl(const wasm::MemoryAccessDesc& access, AnyRegister value,
+  //                    Register memoryBase, Register ptr, Register ptrScratch,
+  //                    Register tmp);
 };
 
 class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
