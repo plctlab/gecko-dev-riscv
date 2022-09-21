@@ -24,7 +24,7 @@ namespace jit {
 static const uint32_t SimdMemoryAlignment =
     16;  // Make it 4 to avoid a bunch of div-by-zero warnings
 static const uint32_t WasmStackAlignment = 16;
-static const uint32_t WasmTrapInstructionLength = 8;
+static const uint32_t WasmTrapInstructionLength = 2 * sizeof(uint32_t);
 
 // See comments in wasm::GenerateFunctionPrologue.  The difference between these
 // is the size of the largest callable prologue on the platform.
