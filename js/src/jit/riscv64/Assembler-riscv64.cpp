@@ -336,6 +336,7 @@ void Assembler::RV_li(Register rd, int64_t imm) {
 }
 
 void Assembler::li_ptr(Register rd, int64_t imm) {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   // Initialize rd with an address
   // Pointers are 48 bits
   // 6 fixed instructions are generated
@@ -355,6 +356,7 @@ void Assembler::li_ptr(Register rd, int64_t imm) {
 
 
 void Assembler::li_constant(Register rd, int64_t imm) {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   DEBUG_PRINTF("li_constant(%d, %lx <%ld>)\n", ToNumber(rd), imm, imm);
   lui(rd, (imm + (1LL << 47) + (1LL << 35) + (1LL << 23) + (1LL << 11)) >>
               48);  // Bits 63:48
@@ -523,6 +525,15 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       DEBUG_PRINTF("imm:%lx\n", imm);
       return imm;
     } else {
+      FLAG_riscv_debug = true;
+      disassembleInstr(inst0->InstructionBits());
+      disassembleInstr(instr1->InstructionBits());
+      disassembleInstr(instr2->InstructionBits());
+      disassembleInstr(instr3->InstructionBits());
+      disassembleInstr(instr4->InstructionBits());
+      disassembleInstr(instr5->InstructionBits());
+      disassembleInstr(instr6->InstructionBits());
+      disassembleInstr(instr7->InstructionBits());
       MOZ_CRASH();
     }
   } else {
@@ -1145,6 +1156,7 @@ void Assembler::CheckTrampolinePool() {
 
 // Break / Trap instructions.
 void Assembler::break_(uint32_t code, bool break_as_stop) {
+  BlockTrampolinePoolFor(3);
   // We need to invalidate breaks that could be stops as well because the
   // simulator expects a char pointer after the stop instruction.
   // See constants-mips.h for explanation.

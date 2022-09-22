@@ -447,7 +447,6 @@ void wasm::ClearExitFP(MacroAssembler& masm, Register scratch) {
 
 static void GenerateCallablePrologue(MacroAssembler& masm, uint32_t* entry) {
   AutoCreatedBy acb(masm, "GenerateCallablePrologue");
-
   masm.setFramePushed(0);
 
   // ProfilingFrameIterator needs to know the offsets of several key
@@ -694,6 +693,9 @@ void wasm::GenerateFunctionPrologue(MacroAssembler& masm,
   MOZ_ASSERT_IF(!masm.oom(), masm.currentOffset() - offsets->begin ==
                                  WasmCheckedCallEntryOffset);
   uint32_t dummy;
+#ifdef JS_CODEGEN_RISCV64
+  BlockTrampolinePoolScope block_trampoline_pool(&masm);
+#endif
   GenerateCallablePrologue(masm, &dummy);
 
   // Check that we did not overshoot the space budget for the prologue.
