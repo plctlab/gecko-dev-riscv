@@ -3049,14 +3049,55 @@ void MacroAssembler::setupUnalignedABICall(Register scratch) {
   ma_and(StackPointer, StackPointer, Imm32(~(ABIStackAlignment - 1)));
   storePtr(scratch, Address(StackPointer, 0));
 }
-void MacroAssembler::shiftIndex32AndAdd(Register, int, Register) {
-  MOZ_CRASH();
+void MacroAssembler::shiftIndex32AndAdd(Register indexTemp32, int shift,
+                                        Register pointer) {
+  if (IsShiftInScaleRange(shift)) {
+    computeEffectiveAddress(
+        BaseIndex(pointer, indexTemp32, ShiftToScale(shift)), pointer);
+    return;
+  }
+  lshift32(Imm32(shift), indexTemp32);
+  addPtr(indexTemp32, pointer);
 }
 void MacroAssembler::speculationBarrier() {
   MOZ_CRASH();
 }
-void MacroAssembler::storeRegsInMask(LiveRegisterSet, Address, Register) {
-  MOZ_CRASH();
+void MacroAssembler::storeRegsInMask(LiveRegisterSet set, Address dest,
+                                     Register) {
+  FloatRegisterSet fpuSet(set.fpus().reduceSetForPush());
+  unsigned numFpu = fpuSet.size();
+  int32_t diffF = fpuSet.getPushSizeInBytes();
+  int32_t diffG = set.gprs().size() * sizeof(intptr_t);
+
+  MOZ_ASSERT(dest.offset >= diffG + diffF);
+
+  for (GeneralRegisterBackwardIterator iter(set.gprs()); iter.more(); ++iter) {
+    diffG -= sizeof(intptr_t);
+    dest.offset -= sizeof(intptr_t);
+    storePtr(*iter, dest);
+  }
+  MOZ_ASSERT(diffG == 0);
+
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
+
+  for (FloatRegisterBackwardIterator iter(fpuSet); iter.more(); ++iter) {
+    FloatRegister reg = *iter;
+    diffF -= reg.size();
+    numFpu -= 1;
+    dest.offset -= reg.size();
+    if (reg.isDouble()) {
+      storeDouble(reg, dest);
+    } else if (reg.isSingle()) {
+      storeFloat32(reg, dest);
+    } else {
+      MOZ_CRASH("Unknown register type.");
+    }
+  }
+  MOZ_ASSERT(numFpu == 0);
+  diffF -= diffF % sizeof(uintptr_t);
+  MOZ_ASSERT(diffF == 0);
 }
 void MacroAssembler::truncDoubleToInt32(FloatRegister src,
                                         Register dest,
