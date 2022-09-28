@@ -1,0 +1,41 @@
+name: Build and test
+on: [push]
+jobs:
+  Spidermonkey:
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm util-linux-libs autoconf2.13 rustup zip python-setuptools rustup python-pip=22.2.2 python-dulwich wasi-libc++  glibc make wget cmake ninja git llvm clang lld python gcc-libs readline zlib sh mercurial git gcc devtools base-devel
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Set env
+        run: |
+          mkdir mozbuild
+          MOZCONFIG=$PWD/riscv64config/riscv64-debug
+          MOZBUILD_STATE_PATH=./mozbuild
+          MACH_BUILD_PYTHON_NATIVE_PACKAGE=system
+          echo "MACH_BUILD_PYTHON_NATIVE_PACKAGE=$MACH_BUILD_PYTHON_NATIVE_PACKAGE" >> $GITHUB_ENV
+          echo "MOZCONFIG=$MOZCONFIG" >> $GITHUB_ENV
+          echo "MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH" >> $GITHUB_ENV
+      - name: Prepare
+        run: |
+          rustup toolchain update --profile minimal 1.62.1
+          rustup default 1.62.1
+      - name: Build
+        run: |
+          extra-riscv64-build -c
+      - name: Check
+        run: |
+          cd obj
+          make -C js/src check-jstests check-jit-test \
+            JSTESTS_EXTRA_ARGS="--format=none --exclude-random --wpt=disabled" \
+            JITTEST_EXTRA_ARGS="--format=none --timeout 300" \
+            JITTEST_TEST_ARGS="basic"
+      - name: run jit-test
+        run: ./mach jit-test
+      - name: run jstest
+        run: ./mach jstest
+
