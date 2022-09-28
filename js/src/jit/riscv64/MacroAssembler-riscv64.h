@@ -109,6 +109,8 @@ class MacroAssemblerRiscv64 : public Assembler {
                 LoadStoreExtension extension = SignExtend);
   void ma_store(Imm32 imm, Address address, LoadStoreSize size = SizeWord,
                 LoadStoreExtension extension = SignExtend);
+  void ma_storeDouble(FloatRegister dest, Address address);
+  void ma_storeFloat(FloatRegister dest, Address address);
   void ma_liPatchable(Register dest, Imm32 imm);
   void ma_liPatchable(Register dest, ImmPtr imm);
   void ma_liPatchable(Register dest, ImmWord imm, LiFlags flags = Li48);
@@ -566,9 +568,9 @@ class MacroAssemblerRiscv64 : public Assembler {
   void wasmLoadImpl(const wasm::MemoryAccessDesc& access, Register memoryBase,
                     Register ptr, Register ptrScratch, AnyRegister output,
                     Register tmp);
-  // void wasmStoreImpl(const wasm::MemoryAccessDesc& access, AnyRegister value,
-  //                    Register memoryBase, Register ptr, Register ptrScratch,
-  //                    Register tmp);
+  void wasmStoreImpl(const wasm::MemoryAccessDesc& access, AnyRegister value,
+                     Register memoryBase, Register ptr, Register ptrScratch,
+                     Register tmp);
 };
 
 class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {

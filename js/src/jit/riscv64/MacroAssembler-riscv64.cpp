@@ -1073,6 +1073,43 @@ void MacroAssemblerRiscv64::ma_store(Register data,
   }
 }
 
+// Memory.
+void MacroAssemblerRiscv64::ma_storeDouble(FloatRegister dest, Address address) {
+  int16_t encodedOffset;
+  Register base;
+
+  if (!is_int12(address.offset)) {
+    UseScratchRegisterScope temps(this);
+    Register ScratchRegister = temps.Acquire();
+    ma_li(ScratchRegister, Imm32(address.offset));
+    add(ScratchRegister, address.base, ScratchRegister);
+    base = ScratchRegister;
+    encodedOffset = 0;
+  } else {
+    encodedOffset = address.offset;
+    base = address.base;
+  }
+  fsd(dest, base, encodedOffset);
+}
+
+void MacroAssemblerRiscv64::ma_storeFloat(FloatRegister dest, Address address) {
+  int16_t encodedOffset;
+  Register base;
+
+  if (!is_int12(address.offset)) {
+    UseScratchRegisterScope temps(this);
+    Register ScratchRegister = temps.Acquire();
+    ma_li(ScratchRegister, Imm32(address.offset));
+    add(ScratchRegister, address.base, ScratchRegister);
+    base = ScratchRegister;
+    encodedOffset = 0;
+  } else {
+    encodedOffset = address.offset;
+    base = address.base;
+  }
+  fsw(dest, base, encodedOffset);
+}
+
 void MacroAssemblerRiscv64::computeScaledAddress(const BaseIndex& address,
                                                  Register dest) {
   Register base = address.base;
@@ -1157,7 +1194,40 @@ void MacroAssemblerRiscv64Compat::wasmStoreI64Impl(
   MOZ_ASSERT(offset < asMasm().wasmMaxOffsetGuardLimit());
   MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
 
-  MOZ_CRASH("Unimplement riscv");
+  // Maybe add the offset.
+  if (offset) {
+    asMasm().addPtr(ImmWord(offset), ptrScratch);
+    ptr = ptrScratch;
+  }
+
+  asMasm().memoryBarrierBefore(access.sync());
+
+  switch (access.type()) {
+    case Scalar::Int8:
+    case Scalar::Uint8:
+      add(ptrScratch, memoryBase, ptr);
+      sb(value.reg, ptrScratch, 0);
+      break;
+    case Scalar::Int16:
+    case Scalar::Uint16:
+      add(ptrScratch, memoryBase, ptr);
+      sh(value.reg, ptrScratch, 0);
+      break;
+    case Scalar::Int32:
+    case Scalar::Uint32:
+      add(ptrScratch, memoryBase, ptr);
+      sw(value.reg, ptrScratch, 0);
+      break;
+    case Scalar::Int64:
+      add(ptrScratch, memoryBase, ptr);
+      sd(value.reg, ptrScratch, 0);
+      break;
+    default:
+      MOZ_CRASH("unexpected array type");
+  }
+
+  asMasm().append(access, asMasm().size() - 4);
+  asMasm().memoryBarrierAfter(access.sync());
 }
 
 void MacroAssemblerRiscv64Compat::profilerEnterFrame(Register framePtr,
@@ -3272,20 +3342,18 @@ void MacroAssembler::wasmLoadI64(const wasm::MemoryAccessDesc& access,
   wasmLoadI64Impl(access, memoryBase, ptr, ptrScratch, output, InvalidReg);
 }
 
-void MacroAssembler::wasmStore(const wasm::MemoryAccessDesc&,
-                               AnyRegister,
-                               Register,
-                               Register,
-                               Register) {
-  MOZ_CRASH();
+void MacroAssembler::wasmStore(const wasm::MemoryAccessDesc& access,
+                               AnyRegister value, Register memoryBase,
+                               Register ptr, Register ptrScratch) {
+  wasmStoreImpl(access, value, memoryBase, ptr, ptrScratch, InvalidReg);
 }
-void MacroAssembler::wasmStoreI64(const wasm::MemoryAccessDesc&,
-                                  Register64,
-                                  Register,
-                                  Register,
-                                  Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmStoreI64(const wasm::MemoryAccessDesc& access,
+                                  Register64 value, Register memoryBase,
+                                  Register ptr, Register ptrScratch) {
+  wasmStoreI64Impl(access, value, memoryBase, ptr, ptrScratch, InvalidReg);
 }
+
 void MacroAssembler::wasmTruncateDoubleToInt32(FloatRegister,
                                                Register,
                                                bool,
@@ -5556,6 +5624,74 @@ void MacroAssemblerRiscv64::wasmLoadImpl(const wasm::MemoryAccessDesc& access,
   asMasm().append(access, asMasm().size() - 4);
   asMasm().memoryBarrierAfter(access.sync());
 }
+
+void MacroAssemblerRiscv64::wasmStoreImpl(
+    const wasm::MemoryAccessDesc& access, AnyRegister value,
+    Register memoryBase, Register ptr, Register ptrScratch, Register tmp) {
+  uint32_t offset = access.offset();
+  MOZ_ASSERT(offset < asMasm().wasmMaxOffsetGuardLimit());
+  MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
+
+  // Maybe add the offset.
+  if (offset) {
+    asMasm().addPtr(ImmWord(offset), ptrScratch);
+    ptr = ptrScratch;
+  }
+
+  unsigned byteSize = access.byteSize();
+  bool isSigned;
+  bool isFloat = false;
+
+  switch (access.type()) {
+    case Scalar::Int8:
+      isSigned = true;
+      break;
+    case Scalar::Uint8:
+      isSigned = false;
+      break;
+    case Scalar::Int16:
+      isSigned = true;
+      break;
+    case Scalar::Uint16:
+      isSigned = false;
+      break;
+    case Scalar::Int32:
+      isSigned = true;
+      break;
+    case Scalar::Uint32:
+      isSigned = false;
+      break;
+    case Scalar::Int64:
+      isSigned = true;
+      break;
+    case Scalar::Float64:
+      isFloat = true;
+      break;
+    case Scalar::Float32:
+      isFloat = true;
+      break;
+    default:
+      MOZ_CRASH("unexpected array type");
+  }
+
+  BaseIndex address(memoryBase, ptr, TimesOne);
+  asMasm().memoryBarrierBefore(access.sync());
+  if (isFloat) {
+    if (byteSize == 4) {
+      asMasm().ma_fst_s(value.fpu(), address);
+    } else {
+      asMasm().ma_fst_d(value.fpu(), address);
+    }
+  } else {
+    asMasm().ma_store(value.gpr(), address,
+                      static_cast<LoadStoreSize>(8 * byteSize),
+                      isSigned ? SignExtend : ZeroExtend);
+  }
+  // Only the last emitted instruction is a memory access.
+  asMasm().append(access, asMasm().size() - 4);
+  asMasm().memoryBarrierAfter(access.sync());
+}
+
 
 }  // namespace jit
 }  // namespace js
