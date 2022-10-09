@@ -23,18 +23,15 @@ jobs:
           rustup toolchain update --profile minimal 1.62.1
           rustup default 1.62.1
           rustup target add riscv64gc-unknown-linux-gnu
+      - name: Cross compile zlib
+        run: |
+          git clone https://github.com/madler/zlib.git
+          cd zlib
+          prefix=$HOME CC=riscv64-linux-gnu-gcc ./configure
+          make
       - name: Build
-        run: |
-          ./mach build
-      - name: Check
-        run: |
-          cd obj
-          make -C js/src check-jstests check-jit-test \
-            JSTESTS_EXTRA_ARGS="--format=none --exclude-random --wpt=disabled" \
-            JITTEST_EXTRA_ARGS="--format=none --timeout 300" \
-            JITTEST_TEST_ARGS="basic"
+        run: ./mach build
       - name: run jit-test
         run: ./mach jit-test
-      - name: run jstest
+      - name: run jstest    
         run: ./mach jstest
-

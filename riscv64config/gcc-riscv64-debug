@@ -33,7 +33,7 @@ ac_add_options --disable-jemalloc
 
 # System libraries
 ac_add_options --without-system-icu
-ac_add_options --with-system-zlib
+ac_add_options --without-system-zlib
 
 
 # Features
