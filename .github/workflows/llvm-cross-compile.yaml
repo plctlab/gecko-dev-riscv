@@ -1,0 +1,57 @@
+name: Build and test
+on: [push]
+jobs:
+  Spidermonkey:
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm compiler-rt lib32-glibc libc++ util-linux-libs autoconf2.13 rustup zip python-setuptools rustup python-pip=22.2.2 python-dulwich wasi-libc++  glibc make wget cmake ninja git llvm clang lld python gcc-libs readline zlib sh mercurial git gcc devtools base-devel
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Set env
+        run: |
+          mkdir mozbuild
+          MOZCONFIG=$PWD/riscv64config/riscv64-debug
+          MOZBUILD_STATE_PATH=./mozbuild
+          MACH_BUILD_PYTHON_NATIVE_PACKAGE=system
+          echo "MACH_BUILD_PYTHON_NATIVE_PACKAGE=$MACH_BUILD_PYTHON_NATIVE_PACKAGE" >> $GITHUB_ENV
+          echo "MOZCONFIG=$MOZCONFIG" >> $GITHUB_ENV
+          echo "MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH" >> $GITHUB_ENV
+      - name: Prepare
+        run: |
+          rustup toolchain update --profile minimal 1.62.1
+          rustup default 1.62.1
+          rustup target add riscv64gc-unknown-linux-gnu
+      - name: compile compiler-rt
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git clone https://github.com/llvm/llvm-project.git
+          echo "$PWD"
+          echo "$home"
+          cmake -S ./llvm-project/compiler-rt -DCOMPILER_RT_BUILD_LIBFUZZER=OFF -DCOMPILER_RT_BUILD_SANITIZERS=OFF -DCOMPILER_RT_BUILD_PROFILE=OFF -DCOMPILER_RT_BUILD_MEMPROF=OFF -DCOMPILER_RT_BUILD_ORC=OFF -DCOMPILER_RT_BUILD_BUILTINS=ON -DCOMPILER_RT_BAREMETAL_BUILD=ON -DCOMPILER_RT_INCLUDE_TESTS=OFF -DCOMPILER_RT_HAS_FPIC_FLAG=OFF -DCOMPILER_RT_DEFAULT_TARGET_ONLY=On -DCOMPILER_RT_OS_DIR=riscv64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Generic -DCMAKE_SYSTEM_PROCESSOR=riscv64 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCMAKE_SIZEOF_VOID_P=8 -DCMAKE_ASM_COMPILER_TARGET=riscv64-none-elf -DCMAKE_C_COMPILER_TARGET=riscv64-none-elf -DCMAKE_C_COMPILER_WORKS=ON -DCMAKE_CXX_COMPILER_WORKS=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS="-nodefaultlibs -fno-exceptions -mno-relax -Wno-macro-redefined -fPIC" -DCMAKE_INSTALL_PREFIX=/usr -Wno-dev
+          make -j $(nproc)
+      - name: Build lld
+        run: |
+          mkdir build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=lld -DCMAKE_INSTALL_PREFIX=/usr/local ../llvm-project/llvm
+          make install
+          ln -s /usr/local/ld.lld /usr/bin/ld
+      - name: Build
+        run: |
+          /usr/sbin/clang --rtlib=/llvm-project/compiler-rt --sysroot=/usr/lib -std=gnu99 --target=riscv64-linux-gnu -fuse-ld=bfd -Wl,--version
+      - name: Check
+        run: |
+          cd obj
+          make -C js/src check-jstests check-jit-test \
+            JSTESTS_EXTRA_ARGS="--format=none --exclude-random --wpt=disabled" \
+            JITTEST_EXTRA_ARGS="--format=none --timeout 300" \
+            JITTEST_TEST_ARGS="basic"
+      - name: run jit-test
+        run: ./mach jit-test
+      - name: run jstest
+        run: ./mach jstest
+
