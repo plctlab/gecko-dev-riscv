@@ -1857,6 +1857,7 @@ void MacroAssemblerRiscv64Compat::tagValue(JSValueType type,
   UseScratchRegisterScope temps(this);
   Register ScratchRegister = temps.Acquire();
   MOZ_ASSERT(dest.valueReg() != ScratchRegister);
+  JitSpew(JitSpew_Codegen, "[ tagValue");
   if (payload != dest.valueReg()) {
     mv(dest.valueReg(), payload);
   }
@@ -1866,6 +1867,7 @@ void MacroAssemblerRiscv64Compat::tagValue(JSValueType type,
   if (type == JSVAL_TYPE_INT32 || type == JSVAL_TYPE_BOOLEAN) {
     InsertBits(dest.valueReg(), zero, 32, JSVAL_TAG_SHIFT - 32);
   }
+  JitSpew(JitSpew_Codegen, "]");
 }
 
 void MacroAssemblerRiscv64Compat::pushValue(ValueOperand val) {
@@ -4271,7 +4273,7 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
     }
     if (cond != Always) {
       Label skip;
-      Condition neg_cond = NegateCondition(cond);
+      Condition neg_cond = InvertCondition(cond);
       BranchShort(&skip, neg_cond, rs, rt);
       BranchLong(L);
       bind(&skip);
@@ -4385,7 +4387,7 @@ void MacroAssemblerRiscv64::ma_b(Register lhs,
       break;
     case NotSigned:
       MOZ_ASSERT(lhs == rhs);
-      ma_branch(label, GreaterThan, lhs, Operand(zero), jumpKind);
+      ma_branch(label, GreaterThanOrEqual, lhs, Operand(zero), jumpKind);
       break;
     default: {
       ma_branch(label, c, lhs, rhs, jumpKind);

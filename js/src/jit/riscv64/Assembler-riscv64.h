@@ -356,12 +356,6 @@ class Assembler : public AssemblerShared,
     NonZero,
   };
 
-    // Returns the equivalent of !cc.
-  inline Condition NegateCondition(Condition cc) {
-    MOZ_ASSERT(cc != Always);
-    return static_cast<Condition>(cc ^ 1);
-  }
-
   enum DoubleCondition {
     // These conditions will only evaluate to true if the comparison is ordered
     // - i.e. neither operand is NaN.

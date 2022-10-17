@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifdef JS_SIMULATOR_RISCV64
 #include "jit/riscv64/Simulator-riscv64.h"
-
+#include "jit/CacheIR.h"
 #include "mozilla/Casting.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/IntegerPrintfMacros.h"
@@ -2868,6 +2868,115 @@ static inline bool is_invalid_fsqrt(T src1) {
   return (src1 < 0);
 }
 
+int Simulator::loadLinkedW(uint64_t addr, SimInstruction* instr) {
+  if ((addr & 3) == 0) {
+    if (handleWasmSegFault(addr, 4)) {
+      return -1;
+    }
+
+    volatile int32_t* ptr = reinterpret_cast<volatile int32_t*>(addr);
+    int32_t value = *ptr;
+    lastLLValue_ = value;
+    LLAddr_ = addr;
+    printf("LLAddr_: %lu\n", LLAddr_);
+    // Note that any memory write or "external" interrupt should reset this
+    // value to false.
+    LLBit_ = true;
+    return value;
+  }
+  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
+         reinterpret_cast<intptr_t>(instr));
+  MOZ_CRASH();
+  return 0;
+}
+
+int Simulator::storeConditionalW(uint64_t addr, int value,
+                                 SimInstruction* instr) {
+  // Correct behavior in this case, as defined by architecture, is to just
+  // return 0, but there is no point at allowing that. It is certainly an
+  // indicator of a bug.
+  if (addr != LLAddr_) {
+    printf("SC to bad address: 0x%016" PRIx64 ", pc=0x%016" PRIx64
+           ", expected: 0x%016" PRIx64 "\n",
+           addr, reinterpret_cast<intptr_t>(instr), LLAddr_);
+    MOZ_CRASH();
+  }
+
+  if ((addr & 3) == 0) {
+    SharedMem<int32_t*> ptr =
+        SharedMem<int32_t*>::shared(reinterpret_cast<int32_t*>(addr));
+
+    if (!LLBit_) {
+      return 1;
+    }
+
+    LLBit_ = false;
+    LLAddr_ = 0;
+    int32_t expected = int32_t(lastLLValue_);
+    int32_t old =
+        AtomicOperations::compareExchangeSeqCst(ptr, expected, int32_t(value));
+    return (old == expected) ? 0 : 1;
+  }
+  printf("Unaligned SC at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
+         reinterpret_cast<intptr_t>(instr));
+  MOZ_CRASH();
+  return 0;
+}
+
+int64_t Simulator::loadLinkedD(uint64_t addr, SimInstruction* instr) {
+  if ((addr & kPointerAlignmentMask) == 0) {
+    if (handleWasmSegFault(addr, 8)) {
+      return -1;
+    }
+
+    volatile int64_t* ptr = reinterpret_cast<volatile int64_t*>(addr);
+    int64_t value = *ptr;
+    lastLLValue_ = value;
+    LLAddr_ = addr;
+    // Note that any memory write or "external" interrupt should reset this
+    // value to false.
+    LLBit_ = true;
+    return value;
+  }
+  printf("Unaligned write at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
+         reinterpret_cast<intptr_t>(instr));
+  MOZ_CRASH();
+  return 0;
+}
+
+int Simulator::storeConditionalD(uint64_t addr, int64_t value,
+                                 SimInstruction* instr) {
+  // Correct behavior in this case, as defined by architecture, is to just
+  // return 0, but there is no point at allowing that. It is certainly an
+  // indicator of a bug.
+  if (addr != LLAddr_) {
+    printf("SC to bad address: 0x%016" PRIx64 ", pc=0x%016" PRIx64
+           ", expected: 0x%016" PRIx64 "\n",
+           addr, reinterpret_cast<intptr_t>(instr), LLAddr_);
+    MOZ_CRASH();
+  }
+
+  if ((addr & kPointerAlignmentMask) == 0) {
+    SharedMem<int64_t*> ptr =
+        SharedMem<int64_t*>::shared(reinterpret_cast<int64_t*>(addr));
+
+    if (!LLBit_) {
+      return 1;
+    }
+
+    LLBit_ = false;
+    LLAddr_ = 0;
+    int64_t expected = lastLLValue_;
+    int64_t old =
+        AtomicOperations::compareExchangeSeqCst(ptr, expected, int64_t(value));
+    return (old == expected) ? 0 : 1;
+  }
+  printf("Unaligned SC at 0x%016" PRIx64 ", pc=0x%016" PRIxPTR "\n", addr,
+         reinterpret_cast<intptr_t>(instr));
+  MOZ_CRASH();
+  return 0;
+}
+
 void Simulator::DecodeRVRAType() {
   // TODO(riscv): Add macro for RISCV A extension
   // Special handling for A extension instructions because it uses func5
@@ -2875,10 +2984,14 @@ void Simulator::DecodeRVRAType() {
   // Memory address lock or other synchronizaiton behaviors.
   switch (instr_.InstructionBits() & kRATypeMask) {
     case RO_LR_W: {
-      MOZ_CRASH();
+      sreg_t addr = rs1();
+      set_rd(loadLinkedW(addr, &instr_));
+      break;
     }
     case RO_SC_W: {
-      MOZ_CRASH();
+      sreg_t addr = rs1();
+      set_rd(storeConditionalW(addr, static_cast<int32_t>(rs2()), &instr_));
+      break;
     }
     case RO_AMOSWAP_W: {
       if ((rs1() & 0x3) != 0) {
@@ -2963,10 +3076,14 @@ void Simulator::DecodeRVRAType() {
     }
 #ifdef JS_CODEGEN_RISCV64
     case RO_LR_D: {
-      MOZ_CRASH();
+      sreg_t addr = rs1();
+      set_rd(loadLinkedD(addr, &instr_));
+      break;
     }
     case RO_SC_D: {
-      MOZ_CRASH();
+      sreg_t addr = rs1();
+      set_rd(storeConditionalD(addr, static_cast<int64_t>(rs2()), &instr_));
+      break;
     }
     case RO_AMOSWAP_D: {
       set_rd(amo<int64_t>(
