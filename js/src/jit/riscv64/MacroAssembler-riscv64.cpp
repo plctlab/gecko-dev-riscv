@@ -84,7 +84,7 @@ void MacroAssemblerRiscv64::ma_cmp_set(Register rd,
     switch (c) {
       case Equal:
       case BelowOrEqual:
-        ma_sltu(rd, rd, Operand(1));
+        ma_sltu(rd, rj, Operand(1));
         break;
       case NotEqual:
       case Above:
@@ -109,7 +109,7 @@ void MacroAssemblerRiscv64::ma_cmp_set(Register rd,
         }
         break;
       case Zero:
-        ma_sltu(rd, rd, Operand(1));
+        ma_sltu(rd, rj, Operand(1));
         break;
       case NonZero:
         sltu(rd, zero, rj);
@@ -3840,63 +3840,82 @@ void MacroAssembler::wasmStoreI64(const wasm::MemoryAccessDesc& access,
   wasmStoreI64Impl(access, value, memoryBase, ptr, ptrScratch, InvalidReg);
 }
 
-void MacroAssembler::wasmTruncateDoubleToInt32(FloatRegister,
-                                               Register,
-                                               bool,
-                                               Label*) {
+void MacroAssembler::wasmTruncateDoubleToInt32(FloatRegister input,
+                                               Register output,
+                                               bool isSaturating,
+                                               Label* oolEntry) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateDoubleToInt64(FloatRegister,
-                                               Register64,
-                                               bool,
-                                               Label*,
-                                               Label*,
-                                               FloatRegister) {
+
+void MacroAssembler::wasmTruncateDoubleToInt64(FloatRegister input,
+                                               Register64 output,
+                                               bool isSaturating,
+                                               Label* oolEntry,
+                                               Label* oolRejoin,
+                                               FloatRegister tempDouble) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateDoubleToUInt32(FloatRegister,
-                                                Register,
-                                                bool,
-                                                Label*) {
+// FTINTRZ behaves as follows:
+//
+// on NaN it produces zero
+// on too large it produces INT_MAX (for appropriate type)
+// on too small it produces INT_MIN (ditto)
+
+void MacroAssembler::wasmTruncateDoubleToUInt32(FloatRegister input,
+                                                Register output,
+                                                bool isSaturating,
+                                                Label* oolEntry) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateDoubleToUInt64(FloatRegister,
-                                                Register64,
-                                                bool,
-                                                Label*,
-                                                Label*,
-                                                FloatRegister) {
+void MacroAssembler::wasmTruncateDoubleToUInt64(FloatRegister input,
+                                                Register64 output_,
+                                                bool isSaturating,
+                                                Label* oolEntry,
+                                                Label* oolRejoin,
+                                                FloatRegister tempDouble) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateFloat32ToInt32(FloatRegister,
-                                                Register,
-                                                bool,
-                                                Label*) {
+void MacroAssembler::wasmTruncateFloat32ToInt32(FloatRegister input,
+                                                Register output,
+                                                bool isSaturating,
+                                                Label* oolEntry) {
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
+  Trunc_w_s(output, input, ScratchRegister);
+  ma_b(ScratchRegister, Imm32(1), oolEntry, Assembler::NotEqual);
+}
+
+void MacroAssembler::wasmTruncateFloat32ToInt64(FloatRegister input,
+                                                Register64 output,
+                                                bool isSaturating,
+                                                Label* oolEntry,
+                                                Label* oolRejoin,
+                                                FloatRegister tempFloat) {
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
+  Trunc_l_s(output.reg, input, ScratchRegister);
+  ma_b(ScratchRegister, Imm32(1), oolEntry, Assembler::NotEqual);
+
+  if (isSaturating) {
+    bind(oolRejoin);
+}
+}
+
+void MacroAssembler::wasmTruncateFloat32ToUInt32(FloatRegister input,
+                                                 Register output,
+                                                 bool isSaturating,
+                                                 Label* oolEntry) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateFloat32ToInt64(FloatRegister,
-                                                Register64,
-                                                bool,
-                                                Label*,
-                                                Label*,
-                                                FloatRegister) {
+void MacroAssembler::wasmTruncateFloat32ToUInt64(FloatRegister input,
+                                                 Register64 output_,
+                                                 bool isSaturating,
+                                                 Label* oolEntry,
+                                                 Label* oolRejoin,
+                                                 FloatRegister tempFloat) {
   MOZ_CRASH();
 }
-void MacroAssembler::wasmTruncateFloat32ToUInt32(FloatRegister,
-                                                 Register,
-                                                 bool,
-                                                 Label*) {
-  MOZ_CRASH();
-}
-void MacroAssembler::wasmTruncateFloat32ToUInt64(FloatRegister,
-                                                 Register64,
-                                                 bool,
-                                                 Label*,
-                                                 Label*,
-                                                 FloatRegister) {
-  MOZ_CRASH();
-}
-// TODO(loong64): widenInt32 should be nop?
+// TODO(riscv64): widenInt32 should be nop?
 void MacroAssembler::widenInt32(Register r) {
   move32To64SignExtend(r, Register64(r));
 }
