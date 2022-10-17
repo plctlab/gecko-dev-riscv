@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifdef JS_SIMULATOR_RISCV64
 #include "jit/riscv64/Simulator-riscv64.h"
-#include "jit/CacheIR.h"
+
 #include "mozilla/Casting.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/IntegerPrintfMacros.h"
