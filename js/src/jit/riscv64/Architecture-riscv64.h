@@ -493,8 +493,8 @@ struct FloatRegister {
     return set;
   }
 
-inline bool hasUnaliasedDouble() { MOZ_CRASH(); }
-inline bool hasMultiAlias() { MOZ_CRASH(); }
+inline bool hasUnaliasedDouble() { return false; }
+inline bool hasMultiAlias() { return false; }
 
 static const uint32_t ShadowStackSpace = 0;
 static const uint32_t JumpImmediateRange = INT32_MAX;

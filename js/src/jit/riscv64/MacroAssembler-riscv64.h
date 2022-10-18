@@ -483,6 +483,8 @@ class MacroAssemblerRiscv64 : public Assembler {
   void RoundFloatingPointToInteger(Register rd, FPURegister fs, Register result,
                                    TruncFunc trunc);
 
+  void Clear_if_nan_d(Register rd, FPURegister fs);
+  void Clear_if_nan_s(Register rd, FPURegister fs);
   // Convert double to unsigned word.
   void Trunc_uw_d(Register rd, FPURegister fs, Register result = InvalidReg);
 
