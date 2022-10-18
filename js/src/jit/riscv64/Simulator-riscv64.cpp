@@ -1154,7 +1154,7 @@ void Simulator::setFpuRegisterHi(int fpureg, int32_t value) {
 void Simulator::setFpuRegisterFloat(int fpureg, float value) {
   MOZ_ASSERT((fpureg >= 0) &&
              (fpureg < Simulator::FPURegister::kNumFPURegisters));
-  *mozilla::BitwiseCast<float*>(&FPUregisters_[fpureg]) = value;
+  *mozilla::BitwiseCast<int64_t*>(&FPUregisters_[fpureg]) = box_float(value);
 }
 
 void Simulator::setFpuRegisterFloat(int fpureg, Float32 value) {
