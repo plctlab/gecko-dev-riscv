@@ -1144,36 +1144,37 @@ void MacroAssemblerRiscv64Compat::wasmLoadI64Impl(
   }
 
   asMasm().memoryBarrierBefore(access.sync());
-
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
   switch (access.type()) {
     case Scalar::Int8:
-      add(ptrScratch, memoryBase, ptr);
-      lb(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lb(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Uint8:
-      add(ptrScratch, memoryBase, ptr);
-      lbu(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lbu(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Int16:
-      add(ptrScratch, memoryBase, ptr);
-      lh(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lh(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Uint16:
-      add(ptrScratch, memoryBase, ptr);
-      lhu(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lhu(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Int32:
-      add(ptrScratch, memoryBase, ptr);
-      lw(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lw(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Uint32:
       // TODO(loong64): Why need zero-extension here?
-      add(ptrScratch, memoryBase, ptr);
-      lwu(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      lwu(output.reg, ScratchRegister, 0);
       break;
     case Scalar::Int64:
-      add(ptrScratch, memoryBase, ptr);
-      ld(output.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      ld(output.reg, ScratchRegister, 0);
       break;
     default:
       MOZ_CRASH("unexpected array type");
@@ -1201,26 +1202,27 @@ void MacroAssemblerRiscv64Compat::wasmStoreI64Impl(
   }
 
   asMasm().memoryBarrierBefore(access.sync());
-
+  UseScratchRegisterScope temps(this);
+  Register ScratchRegister = temps.Acquire();
   switch (access.type()) {
     case Scalar::Int8:
     case Scalar::Uint8:
-      add(ptrScratch, memoryBase, ptr);
-      sb(value.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      sb(value.reg, ScratchRegister, 0);
       break;
     case Scalar::Int16:
     case Scalar::Uint16:
-      add(ptrScratch, memoryBase, ptr);
-      sh(value.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      sh(value.reg, ScratchRegister, 0);
       break;
     case Scalar::Int32:
     case Scalar::Uint32:
-      add(ptrScratch, memoryBase, ptr);
-      sw(value.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      sw(value.reg, ScratchRegister, 0);
       break;
     case Scalar::Int64:
-      add(ptrScratch, memoryBase, ptr);
-      sd(value.reg, ptrScratch, 0);
+      add(ScratchRegister, memoryBase, ptr);
+      sd(value.reg, ScratchRegister, 0);
       break;
     default:
       MOZ_CRASH("unexpected array type");
