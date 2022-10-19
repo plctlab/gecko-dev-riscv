@@ -1418,11 +1418,18 @@ void Simulator::TraceMemWrDouble(sreg_t addr, double value) {
 // load/store (e.g., trapping)
 template <typename T>
 T Simulator::ReadMem(sreg_t addr, Instruction* instr) {
+  int i = sizeof(T);
+  if (addr == 0x00000001) {
+    printf("2\n");
+  }
+  if (handleWasmSegFault(addr, sizeof(T))) {
+    return -1;
+  }
   if (addr >= 0 && addr < 0x400) {
     // This has to be a nullptr-dereference, drop into debugger.
     printf("Memory read from bad address: 0x%08" REGIx_FORMAT
-           " , pc=0x%08" PRIxPTR " \n",
-           addr, reinterpret_cast<intptr_t>(instr));
+           " , pc=0x%08" PRIxPTR " %d \n",
+           addr, reinterpret_cast<intptr_t>(instr), i);
     DieOrDebug();
   }
   T* ptr = reinterpret_cast<T*>(addr);
@@ -1432,6 +1439,10 @@ T Simulator::ReadMem(sreg_t addr, Instruction* instr) {
 
 template <typename T>
 void Simulator::WriteMem(sreg_t addr, T value, Instruction* instr) {
+  if (handleWasmSegFault(addr, sizeof(T))) {
+    value = -1;
+    return ;
+  }
   if (addr >= 0 && addr < 0x400) {
     // This has to be a nullptr-dereference, drop into debugger.
     printf("Memory write to bad address: 0x%08" REGIx_FORMAT

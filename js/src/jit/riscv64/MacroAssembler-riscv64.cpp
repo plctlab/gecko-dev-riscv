@@ -6159,39 +6159,40 @@ void MacroAssemblerRiscv64::wasmLoadImpl(const wasm::MemoryAccessDesc& access,
   }
 
   asMasm().memoryBarrierBefore(access.sync());
-
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   switch (access.type()) {
     case Scalar::Int8:
-      add(ptrScratch, memoryBase, ptr);
-      lb(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lb(output.gpr(), scratch, 0);
       break;
     case Scalar::Uint8:
-      add(ptrScratch, memoryBase, ptr);
-      lbu(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lbu(output.gpr(), scratch, 0);
       break;
     case Scalar::Int16:
-      add(ptrScratch, memoryBase, ptr);
-      lh(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lh(output.gpr(), scratch, 0);
       break;
     case Scalar::Uint16:
-      add(ptrScratch, memoryBase, ptr);
-      lhu(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lhu(output.gpr(), scratch, 0);
       break;
     case Scalar::Int32:
-      add(ptrScratch, memoryBase, ptr);
-      lw(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lw(output.gpr(), scratch, 0);
       break;
     case Scalar::Uint32:
-      add(ptrScratch, memoryBase, ptr);
-      lwu(output.gpr(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      lwu(output.gpr(), scratch, 0);
       break;
     case Scalar::Float64:
-      add(ptrScratch, memoryBase, ptr);
-      fld(output.fpu(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      fld(output.fpu(), scratch, 0);
       break;
     case Scalar::Float32:
-      add(ptrScratch, memoryBase, ptr);
-      flw(output.fpu(), ptrScratch, 0);
+      add(scratch, memoryBase, ptr);
+      flw(output.fpu(), scratch, 0);
       break;
     default:
       MOZ_CRASH("unexpected array type");
