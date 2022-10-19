@@ -1805,10 +1805,7 @@ void CodeGenerator::visitCopySignF(LCopySignF* ins) {
   FloatRegister rhs = ToFloatRegister(ins->getOperand(1));
   FloatRegister output = ToFloatRegister(ins->getDef(0));
 
-  Register lhsi = ToRegister(ins->getTemp(0));
-  Register rhsi = ToRegister(ins->getTemp(1));
-
-  MOZ_CRASH("visitCopySignF");
+  masm.fsgnj_s(output, lhs, rhs);
 }
 
 void CodeGenerator::visitCopySignD(LCopySignD* ins) {
@@ -1816,10 +1813,7 @@ void CodeGenerator::visitCopySignD(LCopySignD* ins) {
   FloatRegister rhs = ToFloatRegister(ins->getOperand(1));
   FloatRegister output = ToFloatRegister(ins->getDef(0));
 
-  Register lhsi = ToRegister(ins->getTemp(0));
-  Register rhsi = ToRegister(ins->getTemp(1));
-
-  MOZ_CRASH("visitCopySignD");
+  masm.fsgnj_d(output, lhs, rhs);
 }
 
 void CodeGenerator::visitValue(LValue* value) {
