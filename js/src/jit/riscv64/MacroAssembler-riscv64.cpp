@@ -446,7 +446,7 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd,
   if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
     Register scratch = temps.Acquire();
-    CompareIsNanF32(scratch, cmp1, cmp2);
+    CompareIsNanF64(scratch, cmp1, cmp2);
     or_(rd, rd, scratch);
   }
 }
