@@ -696,7 +696,7 @@ void CodeGenerator::visitExtendInt32ToInt64(LExtendInt32ToInt64* lir) {
   Register output = ToRegister(lir->output());
 
   if (lir->mir()->isUnsigned()) {
-    masm.move32To64ZeroExtend(output, Register64(ToRegister(input)));
+    masm.move32To64ZeroExtend(ToRegister(input), Register64(output));
   } else {
     masm.slliw(output, ToRegister(input), 0);
   }
