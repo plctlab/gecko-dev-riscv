@@ -133,6 +133,12 @@ class MacroAssemblerRiscv64 : public Assembler {
             Label* l,
             Condition c,
             JumpKind jumpKind = LongJump);
+  void BranchAndLinkShort(Label* L);
+  void BranchAndLink(Label* label);
+  void BranchAndLinkShort(int32_t offset);
+  void BranchAndLinkShortHelper(int32_t offset, Label* L);
+  void BranchAndLinkLong(Label* L);
+  void GenPCRelativeJumpAndLink(Register rd, int32_t imm32);
 
 #define DEFINE_INSTRUCTION(instr)                   \
   void instr(Register rd, Register rj, Operand rt); \
