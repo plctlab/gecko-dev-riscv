@@ -12,13 +12,14 @@
 #include "jit/JitFrames.h"
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
+#include "jit/mips-shared/SharedICHelpers-mips-shared.h"
 #ifdef JS_ION_PERF
 #  include "jit/PerfSpewer.h"
 #endif
-#include "jit/riscv64/SharedICHelpers-riscv64.h"
 #include "jit/VMFunctions.h"
 #include "vm/JitActivation.h"  // js::jit::JitActivation
 #include "vm/JSContext.h"
+#include "vm/Realm.h"
 
 #include "jit/MacroAssembler-inl.h"
 

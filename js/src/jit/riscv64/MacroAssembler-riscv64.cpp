@@ -2117,7 +2117,7 @@ bool MacroAssembler::convertUInt64ToDoubleNeedsTemp() {
   return false;
 }
 CodeOffset MacroAssembler::call(Label* label) {
-  jump(label);
+  BranchAndLink(label);
   return CodeOffset(currentOffset());
 }
 CodeOffset MacroAssembler::call(Register reg) {
@@ -6271,6 +6271,53 @@ void MacroAssemblerRiscv64::wasmStoreImpl(
   asMasm().memoryBarrierAfter(access.sync());
 }
 
+void MacroAssemblerRiscv64::GenPCRelativeJumpAndLink(Register rd,
+                                                     int32_t imm32) {
+  MOZ_ASSERT(is_int32(imm32 + 0x800));
+  int32_t Hi20 = ((imm32 + 0x800) >> 12);
+  int32_t Lo12 = imm32 << 20 >> 20;
+  auipc(rd, Hi20);  // Read PC + Hi20 into scratch.
+  jalr(rd, Lo12);   // jump PC + Hi20 + Lo12
+}
+
+void MacroAssemblerRiscv64::BranchAndLinkLong(Label* L) {
+  // Generate position independent long branch and link.
+  BlockTrampolinePoolScope block_trampoline_pool(this);
+  int32_t imm;
+  imm = branch_long_offset(L);
+  GenPCRelativeJumpAndLink(t6, imm);
+}
+
+void MacroAssemblerRiscv64::BranchAndLinkShortHelper(int32_t offset, Label* L) {
+  MOZ_ASSERT(L == nullptr || offset == 0);
+  offset = GetOffset(offset, L, OffsetSize::kOffset21);
+  jal(offset);
+}
+
+void MacroAssemblerRiscv64::BranchAndLinkShort(int32_t offset) {
+  MOZ_ASSERT(is_int21(offset));
+  BranchAndLinkShortHelper(offset, nullptr);
+}
+
+void MacroAssemblerRiscv64::BranchAndLinkShort(Label* L) {
+  BranchAndLinkShortHelper(0, L);
+}
+
+void MacroAssemblerRiscv64::BranchAndLink(Label* L) {
+  if (L->bound()) {
+    if (is_near(L)) {
+      BranchAndLinkShort(L);
+    } else {
+      BranchAndLinkLong(L);
+    }
+  } else {
+    if (is_trampoline_emitted()) {
+      BranchAndLinkLong(L);
+    } else {
+      BranchAndLinkShort(L);
+    }
+  }
+}
 
 }  // namespace jit
 }  // namespace js
