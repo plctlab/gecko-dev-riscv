@@ -3031,44 +3031,75 @@ void MacroAssembler::comment(const char* msg) {
   Assembler::comment(msg);
 }
 
-void MacroAssembler::compareExchange64(const Synchronization&,
-                                       const Address&,
-                                       Register64,
-                                       Register64,
-                                       Register64) {
-  MOZ_CRASH();
+template <typename T>
+static void CompareExchange64(MacroAssembler& masm,
+                              const wasm::MemoryAccessDesc* access,
+                              const Synchronization& sync, const T& mem,
+                              Register64 expect, Register64 replace,
+                              Register64 output) {
+  MOZ_ASSERT(expect != output && replace != output);
+  ScratchRegisterScope scratch(masm);
+  UseScratchRegisterScope temps(&masm);
+  Register scratch2 = temps.Acquire();
+  masm.computeEffectiveAddress(mem, scratch);
+
+  Label tryAgain;
+  Label exit;
+
+  masm.memoryBarrierBefore(sync);
+
+  masm.bind(&tryAgain);
+
+  if (access) {
+    masm.append(*access, masm.size());
+  }
+  
+  masm.lr_d(true, true, output.reg, scratch);
+
+  masm.ma_b(output.reg, expect.reg, &exit, Assembler::NotEqual, ShortJump);
+  masm.movePtr(replace.reg, scratch2);
+  masm.sc_d(true, true, scratch, scratch2, scratch);
+  masm.ma_b(scratch2, Register(scratch2), &tryAgain, Assembler::Zero,
+            ShortJump);
+
+  masm.memoryBarrierAfter(sync);
+
+  masm.bind(&exit);
 }
-void MacroAssembler::compareExchange64(const Synchronization&,
-                                       const BaseIndex&,
-                                       Register64,
-                                       Register64,
-                                       Register64) {
-  MOZ_CRASH();
+
+
+void MacroAssembler::compareExchange64(const Synchronization& sync,
+                                       const Address& mem, Register64 expect,
+                                       Register64 replace, Register64 output) {
+  CompareExchange64(*this, nullptr, sync, mem, expect, replace, output);
 }
-void MacroAssembler::compareExchangeJS(Scalar::Type,
-                                       const Synchronization&,
-                                       const Address&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       AnyRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::compareExchange64(const Synchronization& sync,
+                                       const BaseIndex& mem, Register64 expect,
+                                       Register64 replace, Register64 output) {
+  CompareExchange64(*this, nullptr, sync, mem, expect, replace, output);
 }
-void MacroAssembler::compareExchangeJS(Scalar::Type,
-                                       const Synchronization&,
-                                       const BaseIndex&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       AnyRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::compareExchangeJS(Scalar::Type arrayType,
+                                       const Synchronization& sync,
+                                       const Address& mem, Register oldval,
+                                       Register newval, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register temp, AnyRegister output) {
+  CompareExchangeJS(*this, arrayType, sync, mem, oldval, newval, valueTemp,
+                    offsetTemp, maskTemp, temp, output);
 }
+
+void MacroAssembler::compareExchangeJS(Scalar::Type arrayType,
+                                       const Synchronization& sync,
+                                       const BaseIndex& mem, Register oldval,
+                                       Register newval, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register temp, AnyRegister output) {
+  CompareExchangeJS(*this, arrayType, sync, mem, oldval, newval, valueTemp,
+                    offsetTemp, maskTemp, temp, output);
+}
+
 void MacroAssembler::compareExchange(Scalar::Type,
                                      const Synchronization&,
                                      const Address&,
