@@ -3031,44 +3031,75 @@ void MacroAssembler::comment(const char* msg) {
   Assembler::comment(msg);
 }
 
-void MacroAssembler::compareExchange64(const Synchronization&,
-                                       const Address&,
-                                       Register64,
-                                       Register64,
-                                       Register64) {
-  MOZ_CRASH();
+template <typename T>
+static void CompareExchange64(MacroAssembler& masm,
+                              const wasm::MemoryAccessDesc* access,
+                              const Synchronization& sync, const T& mem,
+                              Register64 expect, Register64 replace,
+                              Register64 output) {
+  MOZ_ASSERT(expect != output && replace != output);
+  ScratchRegisterScope scratch(masm);
+  UseScratchRegisterScope temps(&masm);
+  Register scratch2 = temps.Acquire();
+  masm.computeEffectiveAddress(mem, scratch);
+
+  Label tryAgain;
+  Label exit;
+
+  masm.memoryBarrierBefore(sync);
+
+  masm.bind(&tryAgain);
+
+  if (access) {
+    masm.append(*access, masm.size());
+  }
+  
+  masm.lr_d(true, true, output.reg, scratch);
+
+  masm.ma_b(output.reg, expect.reg, &exit, Assembler::NotEqual, ShortJump);
+  masm.movePtr(replace.reg, scratch2);
+  masm.sc_d(true, true, scratch, scratch2, scratch);
+  masm.ma_b(scratch2, Register(scratch2), &tryAgain, Assembler::Zero,
+            ShortJump);
+
+  masm.memoryBarrierAfter(sync);
+
+  masm.bind(&exit);
 }
-void MacroAssembler::compareExchange64(const Synchronization&,
-                                       const BaseIndex&,
-                                       Register64,
-                                       Register64,
-                                       Register64) {
-  MOZ_CRASH();
+
+
+void MacroAssembler::compareExchange64(const Synchronization& sync,
+                                       const Address& mem, Register64 expect,
+                                       Register64 replace, Register64 output) {
+  CompareExchange64(*this, nullptr, sync, mem, expect, replace, output);
 }
-void MacroAssembler::compareExchangeJS(Scalar::Type,
-                                       const Synchronization&,
-                                       const Address&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       AnyRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::compareExchange64(const Synchronization& sync,
+                                       const BaseIndex& mem, Register64 expect,
+                                       Register64 replace, Register64 output) {
+  CompareExchange64(*this, nullptr, sync, mem, expect, replace, output);
 }
-void MacroAssembler::compareExchangeJS(Scalar::Type,
-                                       const Synchronization&,
-                                       const BaseIndex&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       AnyRegister) {
-  MOZ_CRASH();
+
+void MacroAssembler::compareExchangeJS(Scalar::Type arrayType,
+                                       const Synchronization& sync,
+                                       const Address& mem, Register oldval,
+                                       Register newval, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register temp, AnyRegister output) {
+  CompareExchangeJS(*this, arrayType, sync, mem, oldval, newval, valueTemp,
+                    offsetTemp, maskTemp, temp, output);
 }
+
+void MacroAssembler::compareExchangeJS(Scalar::Type arrayType,
+                                       const Synchronization& sync,
+                                       const BaseIndex& mem, Register oldval,
+                                       Register newval, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register temp, AnyRegister output) {
+  CompareExchangeJS(*this, arrayType, sync, mem, oldval, newval, valueTemp,
+                    offsetTemp, maskTemp, temp, output);
+}
+
 void MacroAssembler::compareExchange(Scalar::Type,
                                      const Synchronization&,
                                      const Address&,
@@ -3405,16 +3436,22 @@ void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
   if (is_int32(offset)) {
     Instruction* auipc_ = (Instruction*)editSrc(call);
-    Instruction* jalr_ = (Instruction*)editSrc(BufferOffset(callerOffset - 1*sizeof(uint32_t)));
-    disassembleInstr(jalr_->InstructionBits());
+    Instruction* jalr_ = (Instruction*)editSrc(
+        BufferOffset(callerOffset - 1 * sizeof(uint32_t)));
+    DEBUG_PRINTF("\t%p %lu\n\t", auipc_, callerOffset - 2 * sizeof(uint32_t));
     disassembleInstr(auipc_->InstructionBits());
+    DEBUG_PRINTF("\t%p %lu\n\t", jalr_, callerOffset - 1 * sizeof(uint32_t));
+    disassembleInstr(jalr_->InstructionBits());
     DEBUG_PRINTF("\t\n");
     MOZ_ASSERT(IsJalr(jalr_->InstructionBits()) &&
                IsAuipc(auipc_->InstructionBits()));
+    MOZ_ASSERT(jalr_->RdValue() == ra.code());
+    MOZ_ASSERT(auipc_->RdValue() == jalr_->Rs1Value());
     int32_t Hi20 = (((int32_t)offset + 0x800) >> 12);
     int32_t Lo12 = (int32_t)offset << 20 >> 20;
-    *(Instr*)auipc_ = SetAuipcOffset(Hi20, auipc_->InstructionBits());
-    *(Instr*)jalr_ = SetJalrOffset(Lo12, jalr_->InstructionBits());
+    instr_at_put(call, SetAuipcOffset(Hi20, auipc_->InstructionBits()));
+    instr_at_put(BufferOffset(callerOffset - 1 * sizeof(uint32_t)),
+                 SetJalrOffset(Lo12, jalr_->InstructionBits()));
   } else {
     MOZ_CRASH();
   }
@@ -3492,8 +3529,10 @@ void MacroAssembler::PopStackPtr() {
   loadPtr(Address(StackPointer, 0), StackPointer);
   adjustFrame(-int32_t(sizeof(intptr_t)));
 }
-void MacroAssembler::PushBoxed(FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::PushBoxed(FloatRegister reg) {
+  subFromStackPtr(Imm32(sizeof(double)));
+  boxDouble(reg, Address(getStackPointer(), 0));
+  adjustFrame(sizeof(double));
 }
 
 void MacroAssembler::Push(Register reg) {
@@ -4378,7 +4417,7 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
       if (cond != Always) {
         Label skip;
         Condition neg_cond = InvertCondition(cond);
-        ma_branch(&skip, neg_cond, rs, rt);
+        BranchShort(&skip, neg_cond, rs, rt);
         BranchLong(L);
         bind(&skip);
       } else {

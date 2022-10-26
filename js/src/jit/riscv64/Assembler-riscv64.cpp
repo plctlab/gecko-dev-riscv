@@ -152,7 +152,8 @@ void Assembler::WritePoolGuard(BufferOffset branch, Instruction* dest,
                   ((off & 0x7fe) << 20) |    // bits 10-1
                   ((off & 0x100000) << 11);  // bit  20
   Instr instr = JAL | (imm20 & kImm20Mask);
-  *reinterpret_cast<Instr*>(dest) = instr;
+  dest->SetInstructionBits(instr);
+  // *reinterpret_cast<Instr*>(dest) = instr;
 }
 
 void Assembler::WritePoolHeader(uint8_t* start, Pool* p, bool isNatural) {
@@ -752,7 +753,8 @@ void Assembler::target_at_put(BufferOffset pos,
         instr_at_put(BufferOffset(pos.getOffset() + 4), kNopByte);
       } else {
         MOZ_RELEASE_ASSERT(is_int32(offset + 0x800));
-
+        MOZ_ASSERT(instruction->RdValue() ==
+                   editSrc(BufferOffset(pos.getOffset() + 4))->Rs1Value());
         int32_t Hi20 = (((int32_t)offset + 0x800) >> 12);
         int32_t Lo12 = (int32_t)offset << 20 >> 20;
 
@@ -770,7 +772,6 @@ void Assembler::target_at_put(BufferOffset pos,
       UNIMPLEMENTED_RISCV();
       break;
   }
-  disassembleInstr(instr);
 }
 
 const int kEndOfChain = -1;
@@ -876,6 +877,7 @@ void Assembler::bind(Label* label, BufferOffset boff) {
       int dist = dest.getOffset() - fixup_pos;
       next = next_link(label, false);
       DEBUG_PRINTF("\t%p fixup: %d next: %d\n", label, fixup_pos, next);
+      DEBUG_PRINTF("\t   fixup: %d dest: %d dist: %d %d %d\n",fixup_pos,dest.getOffset(), dist, nextOffset().getOffset(),  currentOffset());
       Instruction* instruction = editSrc(b);
       Instr instr = instruction->InstructionBits();
       if (IsBranch(instr)) {
