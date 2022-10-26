@@ -69,11 +69,6 @@
 #include "wasm/WasmTypeDecls.h"
 namespace js {
 namespace jit {
-
-#define DEBUG_PRINTF(...) \
-  if (FLAG_riscv_debug) { \
-    printf(__VA_ARGS__);  \
-  }
 struct ScratchFloat32Scope : public AutoFloatRegisterScope {
   explicit ScratchFloat32Scope(MacroAssembler& masm)
       : AutoFloatRegisterScope(masm, ScratchFloat32Reg) {}
@@ -420,7 +415,13 @@ class Assembler : public AssemblerShared,
   virtual void BlockTrampolinePoolFor(int instructions);
 
   void instr_at_put(BufferOffset offset, Instr instr) {
+    DEBUG_PRINTF("\t[instr_at_put\n");
+    DEBUG_PRINTF("\t%p %d \n\t", editSrc(offset), offset.getOffset());
+    disassembleInstr(editSrc(offset)->InstructionBits());
+    DEBUG_PRINTF("\t");
     *reinterpret_cast<Instr*>(editSrc(offset)) = instr;
+    disassembleInstr(editSrc(offset)->InstructionBits());
+    DEBUG_PRINTF("\t]\n");
   }
 
   static Condition InvertCondition(Condition);

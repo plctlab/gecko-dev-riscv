@@ -3436,16 +3436,22 @@ void MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset) {
   int32_t offset = BufferOffset(calleeOffset).getOffset() - call.getOffset();
   if (is_int32(offset)) {
     Instruction* auipc_ = (Instruction*)editSrc(call);
-    Instruction* jalr_ = (Instruction*)editSrc(BufferOffset(callerOffset - 1*sizeof(uint32_t)));
-    disassembleInstr(jalr_->InstructionBits());
+    Instruction* jalr_ = (Instruction*)editSrc(
+        BufferOffset(callerOffset - 1 * sizeof(uint32_t)));
+    DEBUG_PRINTF("\t%p %lu\n\t", auipc_, callerOffset - 2 * sizeof(uint32_t));
     disassembleInstr(auipc_->InstructionBits());
+    DEBUG_PRINTF("\t%p %lu\n\t", jalr_, callerOffset - 1 * sizeof(uint32_t));
+    disassembleInstr(jalr_->InstructionBits());
     DEBUG_PRINTF("\t\n");
     MOZ_ASSERT(IsJalr(jalr_->InstructionBits()) &&
                IsAuipc(auipc_->InstructionBits()));
+    MOZ_ASSERT(jalr_->RdValue() == ra.code());
+    MOZ_ASSERT(auipc_->RdValue() == jalr_->Rs1Value());
     int32_t Hi20 = (((int32_t)offset + 0x800) >> 12);
     int32_t Lo12 = (int32_t)offset << 20 >> 20;
-    *(Instr*)auipc_ = SetAuipcOffset(Hi20, auipc_->InstructionBits());
-    *(Instr*)jalr_ = SetJalrOffset(Lo12, jalr_->InstructionBits());
+    instr_at_put(call, SetAuipcOffset(Hi20, auipc_->InstructionBits()));
+    instr_at_put(BufferOffset(callerOffset - 1 * sizeof(uint32_t)),
+                 SetJalrOffset(Lo12, jalr_->InstructionBits()));
   } else {
     MOZ_CRASH();
   }
@@ -3523,8 +3529,10 @@ void MacroAssembler::PopStackPtr() {
   loadPtr(Address(StackPointer, 0), StackPointer);
   adjustFrame(-int32_t(sizeof(intptr_t)));
 }
-void MacroAssembler::PushBoxed(FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::PushBoxed(FloatRegister reg) {
+  subFromStackPtr(Imm32(sizeof(double)));
+  boxDouble(reg, Address(getStackPointer(), 0));
+  adjustFrame(sizeof(double));
 }
 
 void MacroAssembler::Push(Register reg) {
@@ -4409,7 +4417,7 @@ void MacroAssemblerRiscv64::ma_branch(Label* L,
       if (cond != Always) {
         Label skip;
         Condition neg_cond = InvertCondition(cond);
-        ma_branch(&skip, neg_cond, rs, rt);
+        BranchShort(&skip, neg_cond, rs, rt);
         BranchLong(L);
         bind(&skip);
       } else {
