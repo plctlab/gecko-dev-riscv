@@ -410,7 +410,13 @@ class Assembler : public AssemblerShared,
   }
   virtual void emit(ShortInstr x) { MOZ_CRASH(); }
   virtual void emit(uint64_t x) { MOZ_CRASH(); }
-  virtual void emit(uint32_t x) { m_buffer.putInt(x); }
+  virtual void emit(uint32_t x) {
+    DEBUG_PRINTF("0x%lx(%x): uint32_t: %d",
+                 (uint64_t)editSrc(
+                     BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
+                 currentOffset(), x);
+    m_buffer.putInt(x);
+  }
 
   virtual void BlockTrampolinePoolFor(int instructions);
 

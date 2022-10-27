@@ -3691,54 +3691,60 @@ void MacroAssembler::truncFloat32ToInt32(FloatRegister src,
   Round_w_s(dest, src, scratch);
   ma_b(scratch, Imm32(1), fail, NotEqual);
 }
-void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc&,
-                                        AtomicOp,
-                                        Register,
-                                        const Address&,
-                                        Register,
-                                        Register,
-                                        Register) {
-  MOZ_CRASH();
+void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc& access,
+                                        AtomicOp op, Register value,
+                                        const Address& mem, Register valueTemp,
+                                        Register offsetTemp,
+                                        Register maskTemp) {
+  AtomicEffectOp(*this, &access, access.type(), access.sync(), op, mem, value,
+                 valueTemp, offsetTemp, maskTemp);
 }
-void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc&,
-                                        AtomicOp,
-                                        Register,
-                                        const BaseIndex&,
-                                        Register,
-                                        Register,
-                                        Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc& access,
+                                        AtomicOp op, Register value,
+                                        const BaseIndex& mem,
+                                        Register valueTemp, Register offsetTemp,
+                                        Register maskTemp) {
+  AtomicEffectOp(*this, &access, access.type(), access.sync(), op, mem, value,
+                 valueTemp, offsetTemp, maskTemp);
 }
-void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc&,
-                                          const Address&,
-                                          Register64,
-                                          Register64) {
-  MOZ_CRASH();
+
+template <typename T>
+static void WasmAtomicExchange64(MacroAssembler& masm,
+                                 const wasm::MemoryAccessDesc& access,
+                                 const T& mem, Register64 value,
+                                 Register64 output) {
+  AtomicExchange64(masm, &access, access.sync(), mem, value, output);
 }
-void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc&,
-                                          const BaseIndex&,
-                                          Register64,
-                                          Register64) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc& access,
+                                          const Address& mem, Register64 src,
+                                          Register64 output) {
+  WasmAtomicExchange64(*this, access, mem, src, output);
 }
-void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc&,
-                                        const Address&,
-                                        Register,
-                                        Register,
-                                        Register,
-                                        Register,
-                                        Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmAtomicExchange64(const wasm::MemoryAccessDesc& access,
+                                          const BaseIndex& mem, Register64 src,
+                                          Register64 output) {
+  WasmAtomicExchange64(*this, access, mem, src, output);
 }
-void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc&,
-                                        const BaseIndex&,
-                                        Register,
-                                        Register,
-                                        Register,
-                                        Register,
-                                        Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc& access,
+                                        const Address& mem, Register value,
+                                        Register valueTemp, Register offsetTemp,
+                                        Register maskTemp, Register output) {
+  AtomicExchange(*this, &access, access.type(), access.sync(), mem, value,
+                 valueTemp, offsetTemp, maskTemp, output);
 }
+
+void MacroAssembler::wasmAtomicExchange(const wasm::MemoryAccessDesc& access,
+                                        const BaseIndex& mem, Register value,
+                                        Register valueTemp, Register offsetTemp,
+                                        Register maskTemp, Register output) {
+  AtomicExchange(*this, &access, access.type(), access.sync(), mem, value,
+                 valueTemp, offsetTemp, maskTemp, output);
+}
+
 void MacroAssembler::wasmAtomicFetchOp64(const wasm::MemoryAccessDesc& access,
                                          AtomicOp op, Register64 value,
                                          const Address& mem, Register64 temp,
