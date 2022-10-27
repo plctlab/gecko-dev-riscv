@@ -278,7 +278,7 @@ void CodeGeneratorRiscv64::visitOutOfLineTableSwitch(
   masm.haltingAlign(sizeof(void*));
   masm.bind(ool->jumpLabel());
   masm.addCodeLabel(*ool->jumpLabel());
-
+  masm.CheckTrampolinePoolQuick(mir->numCases() * sizeof(uint64_t));
   for (size_t i = 0; i < mir->numCases(); i++) {
     LBlock* caseblock = skipTrivialBlocks(mir->getCase(i))->lir();
     Label* caseheader = caseblock->label();
