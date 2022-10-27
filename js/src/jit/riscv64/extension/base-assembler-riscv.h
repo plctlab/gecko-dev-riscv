@@ -118,6 +118,7 @@ class AssemblerRiscvBase {
   virtual void emit(Instr x) = 0;
   virtual void emit(ShortInstr x) = 0;
   virtual void emit(uint64_t x) = 0;
+  virtual uint32_t currentOffset()=0;
 
   virtual void BlockTrampolinePoolFor(int instructions) = 0;
   // Instruction generation.
