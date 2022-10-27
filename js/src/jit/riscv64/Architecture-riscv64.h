@@ -432,8 +432,15 @@ struct FloatRegister {
   
   static TypedRegisterSet<FloatRegister> ReduceSetForPush(
       const TypedRegisterSet<FloatRegister>& s);
-  uint32_t getRegisterDumpOffsetInBytes() { MOZ_CRASH(); }
-  static Code FromName(const char* name) { MOZ_CRASH(); }
+
+  uint32_t getRegisterDumpOffsetInBytes() {
+#ifdef ENABLE_WASM_SIMD
+#error "Needs more careful logic if SIMD is enabled"
+#endif
+
+    return code() * sizeof(double);
+  }
+  static Code FromName(const char* name);
 
   // This is used in static initializers, so produce a bogus value instead of
   // crashing.
