@@ -1347,12 +1347,29 @@ void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister src,
   Trunc_w_s(dest, src, scratch);
   ma_b(scratch, Imm32(0), fail, Assembler::Equal);
 }
-void MacroAssembler::byteSwap16SignExtend(Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::byteSwap16SignExtend(Register src) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  andi(scratch, src, 0xFF);
+  slli(scratch, scratch, 8);
+  andi(src, src, 0xFF00);
+  and_(src, src, scratch);
+  slliw(src, src, 16);
+  sraiw(src, src, 16);
 }
-void MacroAssembler::byteSwap16ZeroExtend(Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::byteSwap16ZeroExtend(Register src) {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  andi(scratch, src, 0xFF);
+  slli(scratch, scratch, 8);
+  andi(src, src, 0xFF00);
+  and_(src, src, scratch);
+  slliw(src, src, 16);
+  srliw(src, src, 16);
 }
+
 void MacroAssembler::byteSwap32(Register src) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
