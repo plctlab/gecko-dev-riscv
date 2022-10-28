@@ -410,7 +410,13 @@ class Assembler : public AssemblerShared,
   }
   virtual void emit(ShortInstr x) { MOZ_CRASH(); }
   virtual void emit(uint64_t x) { MOZ_CRASH(); }
-  virtual void emit(uint32_t x) { m_buffer.putInt(x); }
+  virtual void emit(uint32_t x) {
+    DEBUG_PRINTF("0x%lx(%x): uint32_t: %d\n",
+                 (uint64_t)editSrc(
+                     BufferOffset(nextOffset().getOffset() - sizeof(Instr))),
+                 currentOffset(), x);
+    m_buffer.putInt(x);
+  }
 
   virtual void BlockTrampolinePoolFor(int instructions);
 
@@ -504,9 +510,13 @@ class Assembler : public AssemblerShared,
   void CheckTrampolinePool();
 
   void CheckTrampolinePoolQuick(uint32_t extra_instructions = 0) {
-    DEBUG_PRINTF("\tpc_offset:%d %d\n", currentOffset(),
-                 next_buffer_check_ - extra_instructions * kInstrSize);
-    if (currentOffset() >= next_buffer_check_ - extra_instructions * kInstrSize) {
+    DEBUG_PRINTF(
+        "\tCheckTrampolinePoolQuick:%d %ld %d\n", currentOffset(),
+        int64_t(next_buffer_check_ - extra_instructions * kInstrSize),
+        int64_t(currentOffset()) >=
+            int64_t(next_buffer_check_ - int64_t(extra_instructions * kInstrSize)));
+    if (int64_t(currentOffset()) >=
+        int64_t(next_buffer_check_ - int64_t(extra_instructions * kInstrSize))) {
       CheckTrampolinePool();
     }
   }

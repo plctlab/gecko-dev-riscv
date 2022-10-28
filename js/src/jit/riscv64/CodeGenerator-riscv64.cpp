@@ -274,7 +274,7 @@ void CodeGeneratorRiscv64::visitOutOfLineBailout(OutOfLineBailout* ool) {
 void CodeGeneratorRiscv64::visitOutOfLineTableSwitch(
     OutOfLineTableSwitch* ool) {
   MTableSwitch* mir = ool->mir();
-
+  masm.nop();
   masm.haltingAlign(sizeof(void*));
   masm.bind(ool->jumpLabel());
   masm.addCodeLabel(*ool->jumpLabel());

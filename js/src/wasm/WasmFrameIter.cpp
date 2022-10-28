@@ -588,6 +588,7 @@ static void GenerateCallableEpilogue(MacroAssembler& masm, unsigned framePushed,
     *ret = masm.currentOffset();
     masm.addToStackPtr(Imm32(sizeof(Frame)));
     masm.jalr(zero, ra, 0);
+    masm.nop();
   }
 #elif defined(JS_CODEGEN_ARM64)
 

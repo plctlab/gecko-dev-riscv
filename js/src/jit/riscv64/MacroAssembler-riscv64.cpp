@@ -2107,7 +2107,8 @@ void MacroAssembler::subFromStackPtr(Imm32 imm32) {
 }
 
 void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
-  MOZ_CRASH();
+  Round_w_d(output, input);
+  slti(output, output, 0);
 }
 
 //{{{ check_macroassembler_style
