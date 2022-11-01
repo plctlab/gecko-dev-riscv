@@ -505,9 +505,6 @@ void RiscvDebugger::Debug() {
           sim_->set_pc(sim_->get_pc() + kInstrSize);
         }
       } else if ((strcmp(cmd, "c") == 0) || (strcmp(cmd, "cont") == 0)) {
-        // Execute the one instruction we broke at with breakpoints disabled.
-        sim_->InstructionDecode(
-            reinterpret_cast<Instruction*>(sim_->get_pc()));
         // Leave the debugger shell.
         done = true;
       } else if ((strcmp(cmd, "p") == 0) || (strcmp(cmd, "print") == 0)) {
@@ -663,6 +660,7 @@ void RiscvDebugger::Debug() {
         }
       } else if (strcmp(cmd, "trace") == 0) {
          Simulator::FLAG_trace_sim = true;
+         Simulator::FLAG_riscv_print_watchpoint = true;
       } else if (strcmp(cmd, "break") == 0 || strcmp(cmd, "b") == 0 ||
                  strcmp(cmd, "tbreak") == 0) {
         bool is_tbreak = strcmp(cmd, "tbreak") == 0;
@@ -1728,7 +1726,11 @@ void Simulator::SoftwareInterrupt() {
     if (single_stepping_) {
       single_step_callback_(single_step_callback_arg_, this, nullptr);
     }
-
+    if(FLAG_trace_sim) {
+      printf("Call to host function at %p with args %ld, %ld, %ld, %ld, %ld, %ld\n",
+        reinterpret_cast<void*>(external),
+        arg0, arg1, arg2, arg3, arg4, arg5);
+    }
     switch (redirection->type()) {
       case Args_General0: {
         Prototype_General0 target =
@@ -2146,16 +2148,16 @@ void Simulator::SoftwareInterrupt() {
       handleStop(code);
     }
   } else {
-//     uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
-//     switch (LNode::Opcode(code)) { 
-// #define EMIT_OP(OP, ...)  \
-//       case LNode::Opcode::OP:\
-//            std::cout << #OP << std::endl; \
-//            break;
-//     LIR_OPCODE_LIST(EMIT_OP);
-// #undef EMIT_OP
-//     }
-    DieOrDebug();
+    uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
+    switch (LNode::Opcode(code)) { 
+#define EMIT_OP(OP, ...)  \
+      case LNode::Opcode::OP:\
+           std::cout << #OP << std::endl; \
+           break;
+    LIR_OPCODE_LIST(EMIT_OP);
+#undef EMIT_OP
+    }
+    //DieOrDebug();
   }
 }
 
@@ -2356,7 +2358,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
 
   if (watch_address_ != nullptr) {
     printf("  0x%012" PRIxPTR " :  0x%016" REGIx_FORMAT "  %14" REGId_FORMAT
-           " ",
+           " \n",
            reinterpret_cast<intptr_t>(watch_address_), *watch_address_,
            *watch_address_);
     if (watch_value_ != *watch_address_) {
@@ -2398,16 +2400,15 @@ void Simulator::execute() {
     if (enableStopSimAt && (icount_ == Simulator::StopSimAt)) {
       RiscvDebugger dbg(this);
       dbg.Debug();
-    } else {
-      if (single_stepping_) {
-        single_step_callback_(single_step_callback_arg_, this,
-                              (void*)program_counter);
-      }
-      Instruction* instr =
-          reinterpret_cast<Instruction*>(program_counter);
-      InstructionDecode(instr);
-      icount_++;
     }
+    if (single_stepping_) {
+      single_step_callback_(single_step_callback_arg_, this,
+                            (void*)program_counter);
+    }
+    Instruction* instr =
+        reinterpret_cast<Instruction*>(program_counter);
+    InstructionDecode(instr);
+    icount_++;
     program_counter = get_pc();
   }
 

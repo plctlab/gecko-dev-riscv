@@ -208,7 +208,8 @@ class Registers {
   static const SetType WrapperMask = VolatileMask;
 };
 
-typedef uint8_t PackedRegisterMask;
+// Smallest integer type that can hold a register bitmask.
+typedef uint32_t PackedRegisterMask;
 
 class FloatRegisters {
  public:
