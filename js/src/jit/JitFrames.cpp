@@ -2280,7 +2280,10 @@ uintptr_t MachineState::read(Register reg) const {
 
 template <typename T>
 T MachineState::read(FloatRegister reg) const {
+#if !defined(JS_CODEGEN_RISCV64)
+// RISCV64 always store FloatRegister as 64bit.
   MOZ_ASSERT(reg.size() == sizeof(T));
+#endif
 
 #if !defined(JS_CODEGEN_NONE) && !defined(JS_CODEGEN_WASM32)
   if (state_.is<BailoutState>()) {
