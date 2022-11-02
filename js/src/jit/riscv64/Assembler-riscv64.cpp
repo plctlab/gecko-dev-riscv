@@ -538,14 +538,14 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       MOZ_CRASH();
     }
   } else {
-    DEBUG_PRINTF("\n");
-    Instruction* instr0 = inst0;
-    Instruction* instr2 = inst0 + 2 * kInstrSize;
-    Instruction* instr3 = inst0 + 3 * kInstrSize;
-    Instruction* instr4 = inst0 + 4 * kInstrSize;
-    Instruction* instr5 = inst0 + 5 * kInstrSize;
-    Instruction* instr6 = inst0 + 6 * kInstrSize;
-    Instruction* instr7 = inst0 + 7 * kInstrSize;
+    // DEBUG_PRINTF("\n");
+    // Instruction* instr0 = inst0;
+    // Instruction* instr2 = inst0 + 2 * kInstrSize;
+    // Instruction* instr3 = inst0 + 3 * kInstrSize;
+    // Instruction* instr4 = inst0 + 4 * kInstrSize;
+    // Instruction* instr5 = inst0 + 5 * kInstrSize;
+    // Instruction* instr6 = inst0 + 6 * kInstrSize;
+    // Instruction* instr7 = inst0 + 7 * kInstrSize;
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     //Li48
     return target_address_at(inst0);

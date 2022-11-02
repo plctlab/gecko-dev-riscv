@@ -3101,28 +3101,6 @@ void MacroAssembler::compareExchangeJS(Scalar::Type arrayType,
                     offsetTemp, maskTemp, temp, output);
 }
 
-void MacroAssembler::compareExchange(Scalar::Type,
-                                     const Synchronization&,
-                                     const Address&,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register) {
-  MOZ_CRASH();
-}
-void MacroAssembler::compareExchange(Scalar::Type,
-                                     const Synchronization&,
-                                     const BaseIndex&,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register,
-                                     Register) {
-  MOZ_CRASH();
-}
 void MacroAssembler::convertInt64ToDouble(Register64 src, FloatRegister dest) {
   fcvt_d_l(dest, src.scratchReg());
 }
@@ -3142,10 +3120,9 @@ void MacroAssembler::convertUInt64ToFloat32(Register64 src,
                                            Register tmp) {
   fcvt_s_lu(dest, src.scratchReg());
 }
-void MacroAssembler::copySignDouble(FloatRegister,
-                                    FloatRegister,
-                                    FloatRegister) {
-  MOZ_CRASH();
+void MacroAssembler::copySignDouble(FloatRegister lhs, FloatRegister rhs,
+                                    FloatRegister output) {
+  fsgnj_d(output, lhs, rhs);
 }
 void MacroAssembler::enterFakeExitFrameForWasm(Register cxreg,
                                                Register scratch,
@@ -3825,39 +3802,167 @@ void MacroAssembler::wasmBoundsCheck64(Condition cond, Register64 index,
   ma_b(index.reg, scratch2, ok, cond);
 }
 
-void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc&,
-                                           const Address&,
-                                           Register64,
-                                           Register64,
-                                           Register64) {
-  MOZ_CRASH();
+void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc& access,
+                                           const Address& mem,
+                                           Register64 expect,
+                                           Register64 replace,
+                                           Register64 output) {
+  CompareExchange64(*this, &access, access.sync(), mem, expect, replace,
+                    output);
 }
-void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc&,
-                                           const BaseIndex&,
-                                           Register64,
-                                           Register64,
-                                           Register64) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmCompareExchange64(const wasm::MemoryAccessDesc& access,
+                                           const BaseIndex& mem,
+                                           Register64 expect,
+                                           Register64 replace,
+                                           Register64 output) {
+  CompareExchange64(*this, &access, access.sync(), mem, expect, replace,
+                    output);
 }
-void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc&,
-                                         const Address&,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register) {
-  MOZ_CRASH();
+
+template <typename T>
+static void CompareExchange(MacroAssembler& masm,
+                            const wasm::MemoryAccessDesc* access,
+                            Scalar::Type type, const Synchronization& sync,
+                            const T& mem, Register oldval, Register newval,
+                            Register valueTemp, Register offsetTemp,
+                            Register maskTemp, Register output) {
+  bool signExtend = Scalar::isSignedIntType(type);
+  unsigned nbytes = Scalar::byteSize(type);
+
+  switch (nbytes) {
+    case 1:
+    case 2:
+      break;
+    case 4:
+      MOZ_ASSERT(valueTemp == InvalidReg);
+      MOZ_ASSERT(offsetTemp == InvalidReg);
+      MOZ_ASSERT(maskTemp == InvalidReg);
+      break;
+    default:
+      MOZ_CRASH();
+  }
+
+  Label again, end;
+  UseScratchRegisterScope temps(&masm);
+  Register SecondScratchReg = temps.Acquire();
+  masm.computeEffectiveAddress(mem, SecondScratchReg);
+
+  if (nbytes == 4) {
+    masm.memoryBarrierBefore(sync);
+    masm.bind(&again);
+
+    if (access) {
+      masm.append(*access, masm.size());
+    }
+    
+    masm.lr_w(true, true, output, SecondScratchReg);
+    masm.ma_b(output, oldval, &end, Assembler::NotEqual, ShortJump);
+    masm.mv(ScratchRegister, newval);
+    masm.sc_w(true, true, ScratchRegister, SecondScratchReg, ScratchRegister);
+    masm.ma_b(ScratchRegister, ScratchRegister, &again, Assembler::NonZero,
+              ShortJump);
+
+    masm.memoryBarrierAfter(sync);
+    masm.bind(&end);
+
+    return;
+  }
+
+  masm.andi(offsetTemp, SecondScratchReg, 3);
+  masm.subPtr(offsetTemp, SecondScratchReg);
+#if !MOZ_LITTLE_ENDIAN()
+  masm.as_xori(offsetTemp, offsetTemp, 3);
+#endif
+  masm.slli(offsetTemp, offsetTemp, 3);
+  masm.ma_li(maskTemp, Imm32(UINT32_MAX >> ((4 - nbytes) * 8)));
+  masm.sll(maskTemp, maskTemp, offsetTemp);
+  masm.nor(maskTemp, zero, maskTemp);
+
+  masm.memoryBarrierBefore(sync);
+
+  masm.bind(&again);
+
+  if (access) {
+    masm.append(*access, masm.size());
+  }
+
+  masm.lr_w(true, true, ScratchRegister, SecondScratchReg);
+
+  masm.srl(output, ScratchRegister, offsetTemp);
+
+  switch (nbytes) {
+    case 1:
+      if (signExtend) {
+        masm.SignExtendByte(valueTemp, oldval);
+        masm.SignExtendByte(output, output);
+      } else {
+        masm.andi(valueTemp, oldval, 0xff);
+        masm.andi(output, output, 0xff);
+      }
+      break;
+    case 2:
+      if (signExtend) {
+        masm.SignExtendShort(valueTemp, oldval);
+        masm.SignExtendShort(output, output);
+      } else {
+        masm.andi(valueTemp, oldval, 0xffff);
+        masm.andi(output, output, 0xffff);
+      }
+      break;
+  }
+
+  masm.ma_b(output, valueTemp, &end, Assembler::NotEqual, ShortJump);
+
+  masm.sll(valueTemp, newval, offsetTemp);
+  masm.and_(ScratchRegister, ScratchRegister, maskTemp);
+  masm.or_(ScratchRegister, ScratchRegister, valueTemp);
+  masm.sc_w(true, true, ScratchRegister, SecondScratchReg, ScratchRegister);
+
+  masm.ma_b(ScratchRegister, ScratchRegister, &again, Assembler::NonZero,
+            ShortJump);
+
+  masm.memoryBarrierAfter(sync);
+
+  masm.bind(&end);
 }
-void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc&,
-                                         const BaseIndex&,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register,
-                                         Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::compareExchange(Scalar::Type type,
+                                     const Synchronization& sync,
+                                     const Address& mem, Register oldval,
+                                     Register newval, Register valueTemp,
+                                     Register offsetTemp, Register maskTemp,
+                                     Register output) {
+  CompareExchange(*this, nullptr, type, sync, mem, oldval, newval, valueTemp,
+                  offsetTemp, maskTemp, output);
+}
+
+void MacroAssembler::compareExchange(Scalar::Type type,
+                                     const Synchronization& sync,
+                                     const BaseIndex& mem, Register oldval,
+                                     Register newval, Register valueTemp,
+                                     Register offsetTemp, Register maskTemp,
+                                     Register output) {
+  CompareExchange(*this, nullptr, type, sync, mem, oldval, newval, valueTemp,
+                  offsetTemp, maskTemp, output);
+}
+
+void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc& access,
+                                         const Address& mem, Register oldval,
+                                         Register newval, Register valueTemp,
+                                         Register offsetTemp, Register maskTemp,
+                                         Register output) {
+  CompareExchange(*this, &access, access.type(), access.sync(), mem, oldval,
+                  newval, valueTemp, offsetTemp, maskTemp, output);
+}
+
+void MacroAssembler::wasmCompareExchange(const wasm::MemoryAccessDesc& access,
+                                         const BaseIndex& mem, Register oldval,
+                                         Register newval, Register valueTemp,
+                                         Register offsetTemp, Register maskTemp,
+                                         Register output) {
+  CompareExchange(*this, &access, access.type(), access.sync(), mem, oldval,
+                  newval, valueTemp, offsetTemp, maskTemp, output);
 }
 
 void MacroAssembler::wasmLoad(const wasm::MemoryAccessDesc& access,

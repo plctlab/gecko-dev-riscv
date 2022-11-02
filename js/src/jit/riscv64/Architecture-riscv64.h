@@ -362,7 +362,7 @@ struct FloatRegister {
     uint32_t code = i & 0x1f;
     return FloatRegister(Code(code));
   }
-  bool isSimd128() const { MOZ_CRASH(); }
+  bool isSimd128() const { return false; }
   bool isInvalid() const { return invalid_; }
   FloatRegister asSingle() const {
     MOZ_ASSERT(!invalid_);
@@ -404,7 +404,11 @@ struct FloatRegister {
   }
   constexpr uint32_t size() const {
     MOZ_ASSERT(!invalid_);
-    return sizeof(double);
+    if (kind_ == FloatRegisters::Double) {
+      return sizeof(double);
+    }
+    MOZ_ASSERT(kind_ == FloatRegisters::Single);
+    return sizeof(float);
   }
   uint32_t numAlignedAliased() { return numAliased(); }
   FloatRegister alignedAliased(uint32_t aliasIdx) {

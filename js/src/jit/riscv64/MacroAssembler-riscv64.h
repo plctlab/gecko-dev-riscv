@@ -1108,6 +1108,22 @@ class MacroAssemblerRiscv64Compat : public MacroAssemblerRiscv64 {
   void load16ZeroExtend(const Address& address, Register dest);
   void load16ZeroExtend(const BaseIndex& src, Register dest);
 
+  void SignExtendByte(Register rd, Register rs) {
+    slli(rd, rs, xlen - 8);
+    srai(rd, rd, xlen - 8);
+  }
+
+  void SignExtendShort(Register rd, Register rs) {
+    slli(rd, rs, xlen - 16);
+    srai(rd, rd, xlen - 16);
+  }
+
+  void SignExtendWord(Register rd, Register rs) { sext_w(rd, rs); }
+  void ZeroExtendWord(Register rd, Register rs) {
+    slli(rd, rs, 32);
+    srli(rd, rd, 32);
+  }
+
   template <typename S>
   void load16UnalignedZeroExtend(const S& src, Register dest) {
     load16ZeroExtend(src, dest);

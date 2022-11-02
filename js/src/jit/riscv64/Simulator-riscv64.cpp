@@ -2148,16 +2148,16 @@ void Simulator::SoftwareInterrupt() {
       handleStop(code);
     }
   } else {
-    uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
-    switch (LNode::Opcode(code)) { 
-#define EMIT_OP(OP, ...)  \
-      case LNode::Opcode::OP:\
-           std::cout << #OP << std::endl; \
-           break;
-    LIR_OPCODE_LIST(EMIT_OP);
-#undef EMIT_OP
-    }
-    //DieOrDebug();
+//     uint8_t code = get_ebreak_code(instr_.instr()) - kMaxStopCode - 1;
+//     switch (LNode::Opcode(code)) { 
+// #define EMIT_OP(OP, ...)  \
+//       case LNode::Opcode::OP:\
+//            std::cout << #OP << std::endl; \
+//            break;
+//     LIR_OPCODE_LIST(EMIT_OP);
+// #undef EMIT_OP
+//     }
+    DieOrDebug();
   }
 }
 
@@ -2401,14 +2401,14 @@ void Simulator::execute() {
       RiscvDebugger dbg(this);
       dbg.Debug();
     }
-    if (single_stepping_) {
-      single_step_callback_(single_step_callback_arg_, this,
-                            (void*)program_counter);
-    }
-    Instruction* instr =
-        reinterpret_cast<Instruction*>(program_counter);
-    InstructionDecode(instr);
-    icount_++;
+      if (single_stepping_) {
+        single_step_callback_(single_step_callback_arg_, this,
+                              (void*)program_counter);
+      }
+      Instruction* instr =
+          reinterpret_cast<Instruction*>(program_counter);
+      InstructionDecode(instr);
+      icount_++;
     program_counter = get_pc();
   }
 
@@ -2894,7 +2894,6 @@ int Simulator::loadLinkedW(uint64_t addr, SimInstruction* instr) {
     int32_t value = *ptr;
     lastLLValue_ = value;
     LLAddr_ = addr;
-    printf("LLAddr_: %lu\n", LLAddr_);
     // Note that any memory write or "external" interrupt should reset this
     // value to false.
     LLBit_ = true;
