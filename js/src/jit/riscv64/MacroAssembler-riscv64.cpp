@@ -2107,8 +2107,10 @@ void MacroAssembler::subFromStackPtr(Imm32 imm32) {
 }
 
 void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
+  JitSpew(JitSpew_Codegen, "[ clampDoubleToUint8");
   Round_w_d(output, input);
-  slti(output, output, 0);
+  clampIntToUint8(output);
+  JitSpew(JitSpew_Codegen, "]");
 }
 
 //{{{ check_macroassembler_style
@@ -3756,25 +3758,22 @@ void MacroAssembler::atomicEffectOp64(const Synchronization& sync, AtomicOp op,
                                       Register64 temp) {
   AtomicFetchOp64(*this, nullptr, sync, op, value, mem, temp, temp);
 }
-void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc&,
-                                       AtomicOp,
-                                       Register,
-                                       const Address&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register) {
-  MOZ_CRASH();
+void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc& access,
+                                       AtomicOp op, Register value,
+                                       const Address& mem, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register output) {
+  AtomicFetchOp(*this, &access, access.type(), access.sync(), op, mem, value,
+                valueTemp, offsetTemp, maskTemp, output);
 }
-void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc&,
-                                       AtomicOp,
-                                       Register,
-                                       const BaseIndex&,
-                                       Register,
-                                       Register,
-                                       Register,
-                                       Register) {
-  MOZ_CRASH();
+
+void MacroAssembler::wasmAtomicFetchOp(const wasm::MemoryAccessDesc& access,
+                                       AtomicOp op, Register value,
+                                       const BaseIndex& mem, Register valueTemp,
+                                       Register offsetTemp, Register maskTemp,
+                                       Register output) {
+  AtomicFetchOp(*this, &access, access.type(), access.sync(), op, mem, value,
+                valueTemp, offsetTemp, maskTemp, output);
 }
 void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
                                        Register boundsCheckLimit, Label* ok) {
