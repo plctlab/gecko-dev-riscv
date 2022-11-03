@@ -1382,21 +1382,20 @@ void MacroAssembler::byteSwap64(Register64 src) {
 }
 void MacroAssembler::clampIntToUint8(Register reg) {
   // If reg is < 0, then we want to clamp to 0.
-  Label skip;
+  Label skip, skip2;
   slti(ScratchRegister, reg, 0);
-  ma_branch(&skip, Equal, ScratchRegister, Operand(1));
-  mv(reg, zero);
+  ma_branch(&skip, NotEqual, ScratchRegister, Operand(1));
+  ma_li(reg, Imm32(0));
+  jump(&skip2);
   bind(&skip);
   // If reg is >= 255, then we want to clamp to 255.
-  Label skip2;
   UseScratchRegisterScope temps(this);
   Register SecondScratchReg = temps.Acquire();
-  ma_li(SecondScratchReg, Imm32(255));
-  slti(ScratchRegister, reg, 255);
-  ma_branch(&skip2, NotEqual, ScratchRegister, Operand(1));
-  mv(reg, SecondScratchReg);
+  ma_branch(&skip2, LessThanOrEqual, reg, Operand(255));
+  ma_li(reg, Imm32(255));
   bind(&skip2);
 }
+
 void MacroAssembler::clz32(Register src, Register dest, bool knownNotZero) {
   Clz32(dest, src);
 }

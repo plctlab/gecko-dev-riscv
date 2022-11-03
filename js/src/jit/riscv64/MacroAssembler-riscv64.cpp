@@ -2107,8 +2107,10 @@ void MacroAssembler::subFromStackPtr(Imm32 imm32) {
 }
 
 void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
+  JitSpew(JitSpew_Codegen, "[ clampDoubleToUint8");
   Round_w_d(output, input);
-  slti(output, output, 0);
+  clampIntToUint8(output);
+  JitSpew(JitSpew_Codegen, "]");
 }
 
 //{{{ check_macroassembler_style
