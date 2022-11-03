@@ -495,6 +495,10 @@ void Assembler::PatchDataWithValueCheck(CodeLocationLabel label,
 
 uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
   DEBUG_PRINTF("\tExtractLoad64Value: \tpc:%p ", inst0);
+  if(IsJal(*reinterpret_cast<Instr*>(inst0))) {
+    int offset = inst0->Imm20JValue();
+    inst0 = inst0 + offset;
+  }
   Instruction* instr1 = inst0 + 1 * kInstrSize;
   if(IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
    //Li64
@@ -528,6 +532,7 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
     } else {
       FLAG_riscv_debug = true;
       disassembleInstr(inst0->InstructionBits());
+      disassembleInstr(inst0->InstructionBits());
       disassembleInstr(instr1->InstructionBits());
       disassembleInstr(instr2->InstructionBits());
       disassembleInstr(instr3->InstructionBits());
@@ -538,14 +543,23 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
       MOZ_CRASH();
     }
   } else {
-    // DEBUG_PRINTF("\n");
-    // Instruction* instr0 = inst0;
-    // Instruction* instr2 = inst0 + 2 * kInstrSize;
-    // Instruction* instr3 = inst0 + 3 * kInstrSize;
-    // Instruction* instr4 = inst0 + 4 * kInstrSize;
-    // Instruction* instr5 = inst0 + 5 * kInstrSize;
-    // Instruction* instr6 = inst0 + 6 * kInstrSize;
-    // Instruction* instr7 = inst0 + 7 * kInstrSize;
+    DEBUG_PRINTF("\n");
+    Instruction* instrf1 = (inst0 - 1 * kInstrSize);
+    Instruction* instr2 = inst0 + 2 * kInstrSize;
+    Instruction* instr3 = inst0 + 3 * kInstrSize;
+    Instruction* instr4 = inst0 + 4 * kInstrSize;
+    Instruction* instr5 = inst0 + 5 * kInstrSize;
+    Instruction* instr6 = inst0 + 6 * kInstrSize;
+    Instruction* instr7 = inst0 + 7 * kInstrSize;
+    disassembleInstr(instrf1->InstructionBits());
+    disassembleInstr(inst0->InstructionBits());
+    disassembleInstr(instr1->InstructionBits());
+    disassembleInstr(instr2->InstructionBits());
+    disassembleInstr(instr3->InstructionBits());
+    disassembleInstr(instr4->InstructionBits());
+    disassembleInstr(instr5->InstructionBits());
+    disassembleInstr(instr6->InstructionBits());
+    disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     //Li48
     return target_address_at(inst0);
