@@ -2017,10 +2017,10 @@ void MacroAssembler::spectreBoundsCheckPtr(Register index,
   branchPtr(Assembler::BelowOrEqual, length, index, failure);
 }
 void MacroAssembler::spectreMovePtr(Condition, Register, Register) {
-  MOZ_CRASH();
+  MOZ_CRASH("spectreMovePtr");
 }
 void MacroAssembler::spectreZeroRegister(Condition, Register, Register) {
-  MOZ_CRASH();
+  MOZ_CRASH("spectreZeroRegister");
 }
 void MacroAssembler::sqrtDouble(FloatRegister src, FloatRegister dest) {
   fsqrt_d(dest, src);
