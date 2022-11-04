@@ -2083,7 +2083,7 @@ CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
 CodeOffset MacroAssemblerRiscv64Compat::toggledCall(JitCode* target,
                                                     bool enabled) {
   DEBUG_PRINTF("\ttoggledCall\n");
-  BlockTrampolinePoolFor(6);
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   BufferOffset bo = nextOffset();
   CodeOffset offset(bo.getOffset());
   UseScratchRegisterScope temps(this);
@@ -3061,7 +3061,7 @@ static void CompareExchange64(MacroAssembler& masm,
 
   masm.ma_b(output.reg, expect.reg, &exit, Assembler::NotEqual, ShortJump);
   masm.movePtr(replace.reg, scratch2);
-  masm.sc_d(true, true, scratch, scratch2, scratch);
+  masm.sc_d(true, true, scratch2, scratch, scratch2);
   masm.ma_b(scratch2, Register(scratch2), &tryAgain, Assembler::Zero,
             ShortJump);
 
