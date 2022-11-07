@@ -487,33 +487,33 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   template <typename TruncFunc>
   void RoundFloatingPointToInteger(Register rd, FPURegister fs, Register result,
-                                   TruncFunc trunc);
+                                   TruncFunc trunc, bool Inexact = false);
 
   void Clear_if_nan_d(Register rd, FPURegister fs);
   void Clear_if_nan_s(Register rd, FPURegister fs);
   // Convert double to unsigned word.
-  void Trunc_uw_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_uw_d(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert double to signed word.
-  void Trunc_w_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_w_d(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert double to unsigned long.
-  void Trunc_ul_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_ul_d(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert singled to signed long.
-  void Trunc_l_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_l_d(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert single to signed word.
-  void Trunc_w_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_w_s(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert single to unsigned word.
-  void Trunc_uw_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_uw_s(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert single to unsigned long.
-  void Trunc_ul_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_ul_s(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
 
   // Convert singled to signed long.
-  void Trunc_l_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Trunc_l_s(Register rd, FPURegister fs, Register result = InvalidReg,bool Inexact = false );
   
   // Round double functions
   void Trunc_d_d(FPURegister fd, FPURegister fs, FPURegister fpu_scratch);
@@ -529,22 +529,22 @@ class MacroAssemblerRiscv64 : public Assembler {
 
   
   // Round single to signed word.
-  void Round_w_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Round_w_s(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   // Round double to signed word.
-  void Round_w_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Round_w_d(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   // Ceil single to signed word.
-  void Ceil_w_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Ceil_w_s(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   // Ceil double to signed word.
-  void Ceil_w_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Ceil_w_d(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   // Floor single to signed word.
-  void Floor_w_s(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Floor_w_s(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   // Floor double to signed word.
-  void Floor_w_d(Register rd, FPURegister fs, Register result = InvalidReg);
+  void Floor_w_d(Register rd, FPURegister fs, Register result = InvalidReg, bool Inexact = false);
 
   void Clz32(Register rd, Register rs);
   void Ctz32(Register rd, Register rs);
