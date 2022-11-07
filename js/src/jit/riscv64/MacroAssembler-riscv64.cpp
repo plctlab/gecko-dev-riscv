@@ -622,7 +622,8 @@ void MacroAssemblerRiscv64::RoundFloatingPointToInteger(
     Register rd,
     FPURegister fs,
     Register result,
-    CvtFunc fcvt_generator) {
+    CvtFunc fcvt_generator,
+    bool Inexact) {
   // Save csr_fflags to scratch & clear exception flags
   if (result != Register::Invalid()) {
     BlockTrampolinePoolScope block_trampoline_pool(this);
@@ -630,6 +631,7 @@ void MacroAssemblerRiscv64::RoundFloatingPointToInteger(
     Register scratch = temps.Acquire();
 
     int exception_flags = kInvalidOperation;
+    if(Inexact) exception_flags |= kInexact;
     csrrci(scratch, csr_fflags, exception_flags);
 
     // actual conversion instruction
@@ -651,81 +653,89 @@ void MacroAssemblerRiscv64::RoundFloatingPointToInteger(
 
 void MacroAssemblerRiscv64::Trunc_uw_d(Register rd,
                                        FPURegister fs,
-                                       Register result) {
+                                       Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_wu_d(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_w_d(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_d(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_uw_s(Register rd,
                                        FPURegister fs,
-                                       Register result) {
+                                       Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_wu_s(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_w_s(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_s(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 void MacroAssemblerRiscv64::Trunc_ul_d(Register rd,
                                        FPURegister fs,
-                                       Register result) {
+                                       Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_lu_d(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_l_d(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_l_d(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_ul_s(Register rd,
                                        FPURegister fs,
-                                       Register result) {
+                                       Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_lu_s(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Trunc_l_s(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                       bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_l_s(dst, src, RTZ);
-      });
+      }, Inexact);
 }
 
 void MacroAssemblerRiscv64::Floor_d_d(FPURegister dst,
@@ -778,62 +788,74 @@ void MacroAssemblerRiscv64::Round_s_s(FPURegister dst,
 
 void MacroAssemblerRiscv64::Round_w_s(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                      bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_s(dst, src, RNE);
-      });
+      },
+      Inexact);
 }
 
 void MacroAssemblerRiscv64::Round_w_d(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                      bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_d(dst, src, RNE);
-      });
+      },
+      Inexact);
 }
 
 void MacroAssemblerRiscv64::Ceil_w_s(Register rd,
                                      FPURegister fs,
-                                     Register result) {
+                                     Register result,
+                                     bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_s(dst, src, RUP);
-      });
+      },
+      Inexact);
 }
 
 void MacroAssemblerRiscv64::Ceil_w_d(Register rd,
                                      FPURegister fs,
-                                     Register result) {
+                                     Register result,
+                                     bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_d(dst, src, RUP);
-      });
+      },
+      Inexact);
 }
 
 void MacroAssemblerRiscv64::Floor_w_s(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                      bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_s(dst, src, RDN);
-      });
+      },
+      Inexact);
 }
 
 void MacroAssemblerRiscv64::Floor_w_d(Register rd,
                                       FPURegister fs,
-                                      Register result) {
+                                      Register result,
+                                      bool Inexact) {
   RoundFloatingPointToInteger(
       rd, fs, result,
       [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
         tasm->fcvt_w_d(dst, src, RDN);
-      });
+      },
+      Inexact);
 }
 
 // Checks whether a double is representable as a 32-bit integer. If so, the
@@ -849,7 +871,7 @@ void MacroAssemblerRiscv64Compat::convertDoubleToInt32(FloatRegister src,
   }
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  Trunc_w_d(dest, src, scratch);
+  Trunc_w_d(dest, src, scratch, true);
   ma_b(scratch, Imm32(0), fail, Equal);
 }
 
@@ -863,7 +885,7 @@ void MacroAssemblerRiscv64Compat::convertDoubleToPtr(FloatRegister src,
   }
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  Trunc_l_d(dest, src, scratch);
+  Trunc_l_d(dest, src, scratch, true);
   ma_b(scratch, Imm32(0), fail, Equal);
 }
 
@@ -881,7 +903,7 @@ void MacroAssemblerRiscv64Compat::convertFloat32ToInt32(
   }
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  Trunc_w_s(dest, src, scratch);
+  Trunc_w_s(dest, src, scratch, true);
   ma_b(scratch, Imm32(0), fail, Equal);
 }
 
