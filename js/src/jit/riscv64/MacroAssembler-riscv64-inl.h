@@ -1349,25 +1349,36 @@ void MacroAssembler::branchTruncateFloat32ToInt32(FloatRegister src,
 }
 
 void MacroAssembler::byteSwap16SignExtend(Register src) {
+  JitSpew(JitSpew_Codegen,"[ %s\n", __FUNCTION__);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  andi(scratch, src, 0xFF);
-  slli(scratch, scratch, 8);
-  andi(src, src, 0xFF00);
-  and_(src, src, scratch);
+  Register scratch2 = temps.Acquire();
+  // src 0xFFFFFFFFFFFF8000
+  andi(scratch, src, 0xFF);  // 
+  slli(scratch, scratch, 8); // scratch 0x00
+  ma_li(scratch2, 0xFF00);   // scratch2 0xFF00
+  and_(src, src, scratch2);  // src 0x8000
+  srli(src, src, 8);         // src 0x0080
+  or_(src, src, scratch);   // src 0x0080
   slliw(src, src, 16);
   sraiw(src, src, 16);
+  JitSpew(JitSpew_Codegen,"]");
 }
 
 void MacroAssembler::byteSwap16ZeroExtend(Register src) {
+  JitSpew(JitSpew_Codegen,"[ %s\n", __FUNCTION__);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
+  Register scratch2 = temps.Acquire();
   andi(scratch, src, 0xFF);
   slli(scratch, scratch, 8);
-  andi(src, src, 0xFF00);
-  and_(src, src, scratch);
+  ma_li(scratch2, 0xFF00);
+  and_(src, src, scratch2);
+  srli(src, src, 8);
+  or_(src, src, scratch);
   slliw(src, src, 16);
   srliw(src, src, 16);
+  JitSpew(JitSpew_Codegen,"]");
 }
 
 void MacroAssembler::byteSwap32(Register src) {
