@@ -468,6 +468,10 @@ class MacroAssemblerRiscv64 : public Assembler {
   void BranchTrueF(Register rs, Label* target);
   void BranchFalseF(Register rs, Label* target);
 
+  void moveFromDoubleHi(FloatRegister src, Register dest) {
+    fmv_x_d(dest, src);
+    srli(dest, dest, 32);
+  }
   // Bit field starts at bit pos and extending for size bits is extracted from
   // rs and stored zero/sign-extended and right-justified in rt
   void ExtractBits(Register rt, Register rs, uint16_t pos, uint16_t size,
