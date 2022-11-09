@@ -3876,12 +3876,46 @@ void MacroAssembler::truncDoubleToInt32(FloatRegister src,
   bind(&done);
 }
 void MacroAssembler::truncFloat32ToInt32(FloatRegister src,
-                                         Register dest,
-                                         Label* fail) {
+                                        Register dest,
+                                        Label* fail) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  Round_w_s(dest, src, scratch);
+  Label zeroCase, done;
+  // Convert scalar to signed 32-bit fixed-point, rounding toward zero.
+  // In the case of overflow, the output is saturated.
+  // In the case of NaN and -0, the output is zero.
+  RoundFloatingPointToInteger(
+      dest, src, scratch,
+      [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
+        tasm->fcvt_w_s(dst, src, RTZ);
+      },
+      false);
   ma_b(scratch, Imm32(1), fail, NotEqual);
+  // If the output was zero, worry about special cases.
+  branch32(Assembler::Equal, dest, Imm32(0), &zeroCase);
+  jump(&done);
+  // Handle the case of a zero output:
+  // 1. The input may have been NaN, requiring a failure.
+  // 2. The input may have been in (-1,-0], requiring a failure.
+  // 3. +0, return 0.
+  {
+    bind(&zeroCase);
+
+    // If input is a negative number that truncated to zero, the real
+    // output should be the non-integer -0.
+    // The use of "lt" instead of "lo" also catches unordered NaN input.
+    ScratchDoubleScope fscratch(*this);
+    fmv_w_x(fscratch, zero);
+    ma_compareF32(scratch, DoubleLessThan, src, fscratch);
+    ma_b(scratch, Imm32(1), fail, Equal);
+
+    // Check explicitly for -0, bitwise.
+    fmv_x_w(dest, src);
+    branchTestPtr(Assembler::Signed, dest, dest, fail);
+    movePtr(ImmPtr(0), dest);
+  }
+
+  bind(&done);
 }
 void MacroAssembler::wasmAtomicEffectOp(const wasm::MemoryAccessDesc& access,
                                         AtomicOp op, Register value,
