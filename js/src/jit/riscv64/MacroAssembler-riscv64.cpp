@@ -3051,8 +3051,24 @@ void MacroAssembler::ceilDoubleToInt32(FloatRegister src,
                                        Label* fail) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
+  ScratchDoubleScope fscratch(*this);
+  Label performCeil, done;
+  // If x < -1 or x > 0 then perform ceil.
+  loadConstantDouble(0, fscratch);
+  branchDouble(Assembler::DoubleGreaterThan, src, fscratch, &performCeil);
+  loadConstantDouble(-1.0, fscratch);
+  branchDouble(Assembler::DoubleLessThanOrEqual, src, fscratch, &performCeil);
+
+  // If binary value is not zero, the input was not 0, so we bail.
+  {
+    moveFromDoubleHi(src, scratch);
+    branch32(Assembler::NotEqual, scratch, zero, fail);
+  }
+
+  bind(&performCeil);
   Ceil_w_d(dest, src, scratch);
   ma_b(scratch, Imm32(1), fail, NotEqual);
+  bind(&done);
 }
 
 void MacroAssembler::ceilFloat32ToInt32(FloatRegister src,
@@ -3060,8 +3076,23 @@ void MacroAssembler::ceilFloat32ToInt32(FloatRegister src,
                                        Label* fail) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
+  ScratchDoubleScope fscratch(*this);
+  Label performCeil, done;
+  // If x < -1 or x > 0 then perform ceil.
+  loadConstantFloat32(0, fscratch);
+  branchFloat(Assembler::DoubleGreaterThan, src, fscratch, &performCeil);
+  loadConstantFloat32(-1.0, fscratch);
+  branchFloat(Assembler::DoubleLessThanOrEqual, src, fscratch, &performCeil);
+
+  // If binary value is not zero, the input was not 0, so we bail.
+  {
+    fmv_x_w(scratch, src);
+    branch32(Assembler::NotEqual, scratch, zero, fail);
+  }
+  bind(&performCeil);
   Ceil_w_s(dest, src, scratch);
   ma_b(scratch, Imm32(1), fail, NotEqual);
+  bind(&done);
 }
 void MacroAssembler::comment(const char* msg) {
   Assembler::comment(msg);
@@ -3608,6 +3639,72 @@ void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
   MOZ_ASSERT(diff == 0);
 }
 
+void MacroAssembler::roundFloat32ToInt32(FloatRegister src,
+                                         Register dest,
+                                         FloatRegister temp,
+                                         Label* fail) {
+  JitSpew(JitSpew_Codegen, "[ %s", __FUNCTION__);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  ScratchDoubleScope fscratch(*this);
+  Label negative, done;
+  // Branch to a slow path if input < 0.0 due to complicated rounding rules.
+  // Note that Fcmp with NaN unsets the negative flag.
+  fmv_w_x(temp, zero);
+  ma_compareF32(scratch, DoubleLessThan, src, temp);
+  ma_branch(&negative, Equal, scratch, Operand(1));
+  // Handle the simple case of a positive input, and also -0 and NaN.
+  // Rounding proceeds with consideration of the fractional part of the input:
+  // 1. If > 0.5, round to integer with higher absolute value (so, up).
+  // 2. If < 0.5, round to integer with lower absolute value (so, down).
+  // 3. If = 0.5, round to +Infinity (so, up).
+  {
+    // Convert to signed 32-bit integer, rounding halfway cases away from zero.
+    // In the case of overflow, the output is saturated.
+    // In the case of NaN and -0, the output is zero.
+    RoundFloatingPointToInteger(
+    dest, src, scratch,
+    [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
+      tasm->fcvt_w_s(dst, src, RMM);
+    },
+    false);
+    ma_b(scratch, Imm32(1), fail, NotEqual);
+    jump(&done);
+  }
+
+  // Handle the complicated case of a negative input.
+  // Rounding proceeds with consideration of the fractional part of the input:
+  // 1. If > 0.5, round to integer with higher absolute value (so, down).
+  // 2. If < 0.5, round to integer with lower absolute value (so, up).
+  // 3. If = 0.5, round to +Infinity (so, up).
+  bind(&negative);
+  {
+    // Inputs in [-0.5, 0) need 0.5 added; other negative inputs need
+    // the biggest double less than 0.5.
+    Label join;
+    loadConstantFloat32(GetBiggestNumberLessThan(0.5), temp);
+    loadConstantFloat32(-0.5, fscratch);
+    branchFloat(Assembler::DoubleLessThan, src, fscratch, &join);
+    loadConstantFloat32(0.5, temp);
+    bind(&join);
+    addFloat32(src, temp);
+    // Round all values toward -Infinity.
+    // In the case of overflow, the output is saturated.
+    // NaN and -0 are already handled by the "positive number" path above.
+    RoundFloatingPointToInteger(
+    dest, temp, scratch,
+    [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
+      tasm->fcvt_w_s(dst, src, RDN);
+    },
+    false);
+    ma_b(scratch, Imm32(1), fail, NotEqual);
+    // If output is zero, then the actual result is -0. Fail.
+    branchTest32(Assembler::Zero, dest, dest, fail);
+  }
+  bind(&done);
+  JitSpew(JitSpew_Codegen, "]");
+}
+
 void MacroAssembler::roundDoubleToInt32(FloatRegister src,
                                         Register dest,
                                         FloatRegister temp,
@@ -3673,15 +3770,7 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src,
   bind(&done);
   JitSpew(JitSpew_Codegen, "]");
 }
-void MacroAssembler::roundFloat32ToInt32(FloatRegister src,
-                                         Register dest,
-                                         FloatRegister temp,
-                                         Label* fail) {
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
-  Round_w_s(dest, src, scratch);
-  ma_b(scratch, Imm32(1), fail, NotEqual);
-}
+
 void MacroAssembler::setupUnalignedABICall(Register scratch) {
   MOZ_ASSERT(!IsCompilingWasm(), "wasm should only use aligned ABI calls");
   setupNativeABICall();
