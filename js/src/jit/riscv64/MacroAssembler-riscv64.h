@@ -329,8 +329,11 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_fld_d(FloatRegister dest, const BaseIndex& src);
   void ma_fld_s(FloatRegister dest, const BaseIndex& src);
 
-  void ma_mv(FloatRegister src, ValueOperand dest);
-  void ma_mv(ValueOperand src, FloatRegister dest);
+  void ma_fmv_d(FloatRegister src, ValueOperand dest);
+  void ma_fmv_d(ValueOperand src, FloatRegister dest);
+
+  void ma_fmv_w(FloatRegister src, ValueOperand dest);
+  void ma_fmv_w(ValueOperand src, FloatRegister dest);
 
   void ma_fld_s(FloatRegister ft, Address address);
   void ma_fld_d(FloatRegister ft, Address address);
