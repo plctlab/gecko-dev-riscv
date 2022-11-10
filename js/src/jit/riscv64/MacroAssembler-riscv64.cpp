@@ -1015,18 +1015,13 @@ void MacroAssemblerRiscv64::ma_load(Register dest,
   }
 }
 
-void MacroAssemblerRiscv64::ma_store(Register data,
-                                     const BaseIndex& dest,
+void MacroAssemblerRiscv64::ma_store(Register data, const BaseIndex& dest,
                                      LoadStoreSize size,
                                      LoadStoreExtension extension) {
   UseScratchRegisterScope temps(this);
-  Register address = temps.Acquire();
-  // Make sure that scratch contains absolute address so that
-  // offset is 0.
-  computeScaledAddress(dest, address);
-  // with offset=0 ScratchRegister will not be used in ma_store()
-  // so we can use it as a parameter here
-  ma_store(data, Address(address, 0), size, extension);
+  Register scratch2 = temps.Acquire();
+  asMasm().computeScaledAddress(dest, scratch2);
+  asMasm().ma_store(data, Address(scratch2, dest.offset), size, extension);
 }
 
 void MacroAssemblerRiscv64::ma_store(Imm32 imm,
