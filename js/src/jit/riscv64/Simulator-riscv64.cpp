@@ -1709,6 +1709,8 @@ void Simulator::SoftwareInterrupt() {
     intptr_t arg3 = getRegister(a3);
     intptr_t arg4 = getRegister(a4);
     intptr_t arg5 = getRegister(a5);
+    intptr_t arg6 = getRegister(a6);
+    intptr_t arg7 = getRegister(a7);
 
     // This is dodgy but it works because the C entry stubs are never moved.
     // See comment in codegen-arm.cc and bug 1242173.
@@ -1727,9 +1729,9 @@ void Simulator::SoftwareInterrupt() {
       single_step_callback_(single_step_callback_arg_, this, nullptr);
     }
     if(FLAG_trace_sim) {
-      printf("Call to host function at %p with args %ld, %ld, %ld, %ld, %ld, %ld\n",
+      printf("Call to host function at %p with args %ld, %ld, %ld, %ld, %ld, %ld, %ld, %ld\n",
         reinterpret_cast<void*>(external),
-        arg0, arg1, arg2, arg3, arg4, arg5);
+        arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
     }
     switch (redirection->type()) {
       case Args_General0: {
@@ -1787,7 +1789,6 @@ void Simulator::SoftwareInterrupt() {
       case Args_General7: {
         Prototype_General7 target =
             reinterpret_cast<Prototype_General7>(external);
-        int64_t arg6 = getRegister(a6);
         int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6);
         setCallResult(result);
         break;
@@ -1795,8 +1796,6 @@ void Simulator::SoftwareInterrupt() {
       case Args_General8: {
         Prototype_General8 target =
             reinterpret_cast<Prototype_General8>(external);
-        int64_t arg6 = getRegister(a6);
-        int64_t arg7 = getRegister(a7);
         int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
         setCallResult(result);
         break;
