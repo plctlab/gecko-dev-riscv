@@ -3310,7 +3310,7 @@ void Simulator::DecodeRVRFPType() {
         case 0b000: {
           if (instr_.Rs2Value() == 0b00000) {
             // RO_FMV_X_W
-            set_rd(sext_xlen(getFpuRegister(rs1_reg())));
+            set_rd(sext32(getFpuRegister(rs1_reg())));
           } else {
             UNSUPPORTED();
           }
