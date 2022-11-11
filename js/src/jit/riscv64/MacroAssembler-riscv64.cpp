@@ -2573,7 +2573,7 @@ static void AtomicEffectOp(MacroAssembler& masm,
       masm.andi(valueTemp, valueTemp, 0xff);
       break;
     case 2:
-      masm.ma_and(valueTemp, value, Imm32(0xffff));
+      masm.ma_and(valueTemp, valueTemp, Imm32(0xffff));
       break;
   }
 
