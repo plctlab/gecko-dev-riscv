@@ -2148,10 +2148,12 @@ bool MacroAssembler::convertUInt64ToDoubleNeedsTemp() {
   return false;
 }
 CodeOffset MacroAssembler::call(Label* label) {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   BranchAndLink(label);
   return CodeOffset(currentOffset());
 }
 CodeOffset MacroAssembler::call(Register reg) {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   jalr(reg, 0);
   return CodeOffset(currentOffset());
 }
@@ -2179,6 +2181,7 @@ CodeOffset MacroAssembler::moveNearAddressWithPatch(Register dest) {
   return movWithPatch(ImmPtr(nullptr), dest);
 }
 CodeOffset MacroAssembler::nopPatchableToCall() {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   // riscv64
   nop();  // lui(rd, (int32_t)high_20);
   nop();  // addi(rd, rd, low_12);  // 31 bits in rd.
@@ -3456,6 +3459,7 @@ void MacroAssembler::patchCallToNop(uint8_t* call) {
 
 
 CodeOffset MacroAssembler::callWithPatch() {
+  BlockTrampolinePoolScope block_trampoline_pool(this);
   DEBUG_PRINTF("\tcallWithPatch\n");
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
