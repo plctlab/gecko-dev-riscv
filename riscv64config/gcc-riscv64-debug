@@ -1,32 +1,29 @@
 # Compiler
-export CC="/usr/sbin/clang --rtlib=/__w/gecko-dev/gecko-dev/llvm-project/compiler-rt -fuse-ld=/usr/sbin/lld"
-export CXX="/usr/sbin/clang++ -stdlib=libc++"
-export LLVMCONFIG=/usr/sbin/llvm-config
+export CC=/usr/sbin/riscv64-linux-gnu-gcc
+export CXX=/usr/sbin/riscv64-linux-gnu-g++
+#export LLVMCONFIG=/usr/sbin/llvm-config
 #export LLVM_CONFIG=$HOME/.mozbuild/clang/bin/llvm-config
-export AR=/usr/sbin/llvm-ar
-export NM=/usr/sbin/llvm-nm
-export RANLIB=/usr/sbin/llvm-ranlib
+export AR=/usr/sbin/riscv64-linux-gnu-gcc-ar
+export NM=/usr/sbin/riscv64-linux-gnu-gcc-nm
+#export RANLIB=/usr/sbin/llvm-ranlib
 #export CBINDGEN=$HOME/.mozbuild/cbindgen/cbindgen
 
 ac_add_options --prefix=/usr
 ac_add_options --enable-release
 ac_add_options --enable-hardening
 ac_add_options --enable-rust-simd
-ac_add_options --enable-linker=lld
 
 # Build only the JS shell
 ac_add_options --enable-application=js
 
 # Enable optimization for speed
-ac_add_options --disable-optimize
+ac_add_options --enable-optimize
 
 # Disable debug checks to better match a release build of Firefox.
 ac_add_options --enable-debug
 
 # Use a separate objdir for optimized builds to allow easy
 # switching between optimized and debug builds while developing.
-
-mk_add_options MOZ_OBJDIR=${PWD@Q}/obj
 
 ac_add_options --target=riscv64-unknown-linux-gnu
 ac_add_options --disable-bootstrap
@@ -36,11 +33,11 @@ ac_add_options --disable-jemalloc
 
 # System libraries
 ac_add_options --without-system-icu
-ac_add_options --with-system-zlib
+ac_add_options --without-system-zlib
 
 
 # Features
-ac_add_options --enable-readline
+#ac_add_options --enable-readline
 ac_add_options --enable-shared-js
 ac_add_options --enable-tests
 ac_add_options --with-intl-api

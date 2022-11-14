@@ -1,0 +1,37 @@
+name: Build and test
+on: [push]
+jobs:
+  Spidermonkey:
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm ccache sccache riscv64-linux-gnu-gcc compiler-rt lib32-glibc libc++ util-linux-libs autoconf2.13 rustup zip python-setuptools rustup python-pip=22.2.2 python-dulwich wasi-libc++  glibc make wget cmake ninja git llvm clang lld python gcc-libs readline zlib sh mercurial git gcc devtools base-devel
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set env
+        run: |
+          mkdir mozbuild
+          MOZCONFIG=$PWD/riscv64config/gcc-riscv64-debug
+          MOZBUILD_STATE_PATH=./mozbuild
+          MACH_BUILD_PYTHON_NATIVE_PACKAGE=system
+          echo "MACH_BUILD_PYTHON_NATIVE_PACKAGE=$MACH_BUILD_PYTHON_NATIVE_PACKAGE" >> $GITHUB_ENV
+          echo "MOZCONFIG=$MOZCONFIG" >> $GITHUB_ENV
+          echo "MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH" >> $GITHUB_ENV
+      - name: Prepare
+        run: |
+          rustup toolchain update --profile minimal 1.62.1
+          rustup default 1.62.1
+          rustup target add riscv64gc-unknown-linux-gnu
+      - name: Cross compile zlib
+        run: |
+          git clone https://github.com/madler/zlib.git
+          cd zlib
+          prefix=$HOME CC=riscv64-linux-gnu-gcc ./configure
+          make
+      - name: Build
+        run: ./mach build
+      - name: run jit-test
+        run: ./mach jit-test
+      - name: run jstest    
+        run: ./mach jstest
