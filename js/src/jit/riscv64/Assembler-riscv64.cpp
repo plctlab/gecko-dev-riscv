@@ -413,7 +413,8 @@ ABIArg ABIArgGenerator::next(MIRType type) {
 }
 
 bool Assembler::oom() const {
-  return m_buffer.oom() || jumpRelocations_.oom() || dataRelocations_.oom();
+  return AssemblerShared::oom() || m_buffer.oom() || jumpRelocations_.oom() ||
+         dataRelocations_.oom();
 }
 
 int Assembler::disassembleInstr(Instr instr, bool enable_spew) {
