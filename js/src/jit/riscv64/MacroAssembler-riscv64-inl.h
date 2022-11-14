@@ -2029,7 +2029,8 @@ void MacroAssembler::spectreBoundsCheckPtr(Register index,
 void MacroAssembler::spectreMovePtr(Condition, Register, Register) {
   MOZ_CRASH("spectreMovePtr");
 }
-void MacroAssembler::spectreZeroRegister(Condition, Register, Register) {
+void MacroAssembler::spectreZeroRegister(Condition cond, Register scratch,
+                                         Register dest) {
   MOZ_CRASH("spectreZeroRegister");
 }
 void MacroAssembler::sqrtDouble(FloatRegister src, FloatRegister dest) {
