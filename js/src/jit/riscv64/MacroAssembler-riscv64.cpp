@@ -3585,6 +3585,8 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
   Label negative, done;
   // Branch to a slow path if input < 0.0 due to complicated rounding rules.
   // Note that Fcmp with NaN unsets the negative flag.
+  fmv_x_d(scratch, src);
+  ma_branch(fail, Equal, scratch, Operand(0x8000000000000000));
   fmv_d_x(temp, zero);
   ma_compareF64(scratch, DoubleLessThan, src, temp);
   ma_branch(&negative, Equal, scratch, Operand(1));
@@ -4271,6 +4273,9 @@ void MacroAssemblerRiscv64::ma_li(Register dest, ImmGCPtr ptr) {
 void MacroAssemblerRiscv64::ma_li(Register dest, Imm32 imm) {
   RV_li(dest, imm.value);
 }
+void MacroAssemblerRiscv64::ma_li(Register dest, Imm64 imm) {
+  RV_li(dest, imm.value);
+}
 void MacroAssemblerRiscv64::ma_li(Register dest, CodeLabel* label) {
   BlockTrampolinePoolFor(6);
   BufferOffset bo = m_buffer.nextOffset();
@@ -4402,7 +4407,7 @@ bool MacroAssemblerRiscv64::BranchShortHelper(int32_t offset, Label* L,
   Register scratch = Register();
   if (rt.is_imm()) {
     scratch = temps.Acquire();
-    ma_li(scratch, Imm32(rt.immediate()));
+    ma_li(scratch, Imm64(rt.immediate()));
   } else {
     MOZ_ASSERT(rt.is_reg());
     scratch = rt.rm();

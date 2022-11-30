@@ -112,6 +112,7 @@ class MacroAssemblerRiscv64 : public Assembler {
   void ma_liPatchable(Register dest, ImmWord imm, LiFlags flags = Li48);
   void ma_li(Register dest, ImmGCPtr ptr);
   void ma_li(Register dest, Imm32 imm);
+  void ma_li(Register dest, Imm64 imm);
   void ma_li(Register dest, intptr_t imm) { RV_li(dest, imm); }
   void ma_li(Register dest, CodeLabel* label);
   void ma_li(Register dest, ImmWord imm);
