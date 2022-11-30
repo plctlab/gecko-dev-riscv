@@ -6980,7 +6980,7 @@ bool CacheIRCompiler::emitIndirectTruncateInt32Result(Int32OperandId valId) {
 
 bool CacheIRCompiler::emitCallPrintString(const char* str) {
   JitSpew(JitSpew_Codegen, "%s", __FUNCTION__);
-  masm.printf(str);
+  masm.Printf(str);
   return true;
 }
 

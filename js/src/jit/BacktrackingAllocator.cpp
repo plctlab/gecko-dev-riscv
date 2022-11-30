@@ -3183,7 +3183,6 @@ bool BacktrackingAllocator::tryAllocateRegister(PhysicalRegister& r,
   for (LiveRange::BundleLinkIterator iter = bundle->rangesBegin(); iter;
        iter++) {
     LiveRange* range = LiveRange::get(*iter);
-
     // All ranges in the bundle must be compatible with the physical register.
     MOZ_ASSERT(range->vreg().isCompatible(r.reg));
 

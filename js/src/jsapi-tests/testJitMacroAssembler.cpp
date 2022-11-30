@@ -24,7 +24,8 @@ using namespace js::jit;
 using mozilla::NegativeInfinity;
 using mozilla::PositiveInfinity;
 
-#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64) || \
+    defined(JS_CODEGEN_RISCV64s)
 
 BEGIN_TEST(testJitMacroAssembler_flexibleDivMod) {
   TempAllocator tempAlloc(&cx->tempLifoAlloc());
@@ -73,7 +74,7 @@ BEGIN_TEST(testJitMacroAssembler_flexibleDivMod) {
                       &fail);
         masm.jump(&next);
         masm.bind(&fail);
-        masm.printf("Failed");
+        masm.Printf("Failed");
         masm.breakpoint();
 
         masm.bind(&next);
@@ -124,7 +125,7 @@ BEGIN_TEST(testJitMacroAssembler_flexibleRemainder) {
       masm.branch32(Assembler::NotEqual, AbsoluteAddress(&divisor), rhs, &fail);
       masm.jump(&next);
       masm.bind(&fail);
-      masm.printf("Failed\n");
+      masm.Printf("Failed\n");
       masm.breakpoint();
 
       masm.bind(&next);
@@ -174,7 +175,7 @@ BEGIN_TEST(testJitMacroAssembler_flexibleQuotient) {
       masm.branch32(Assembler::NotEqual, AbsoluteAddress(&divisor), rhs, &fail);
       masm.jump(&next);
       masm.bind(&fail);
-      masm.printf("Failed\n");
+      masm.Printf("Failed\n");
       masm.breakpoint();
 
       masm.bind(&next);
@@ -243,24 +244,24 @@ bool shiftTest(JSContext* cx, const char* name,
       masm.jump(&next);
 
       masm.bind(&outputFail);
-      masm.printf("Incorrect output (got %d) ", lhsOutput);
+      masm.Printf("Incorrect output (got %d) ", lhsOutput);
       masm.jump(&dump);
 
       masm.bind(&clobberRhs);
-      masm.printf("rhs clobbered %d", rhs);
+      masm.Printf("rhs clobbered %d", rhs);
       masm.jump(&dump);
 
       masm.bind(&clobberEcx);
-      masm.printf("ecx clobbered");
+      masm.Printf("ecx clobbered");
       masm.jump(&dump);
 
       masm.bind(&dump);
       masm.mov(ImmPtr(lhsOutput.name()), lhsOutput);
-      masm.printf("(lhsOutput/srcDest) %s ", lhsOutput);
+      masm.Printf("(lhsOutput/srcDest) %s ", lhsOutput);
       masm.mov(ImmPtr(name), lhsOutput);
-      masm.printf("%s ", lhsOutput);
+      masm.Printf("%s ", lhsOutput);
       masm.mov(ImmPtr(rhs.name()), lhsOutput);
-      masm.printf("(shift/rhs) %s \n", lhsOutput);
+      masm.Printf("(shift/rhs) %s \n", lhsOutput);
       // Breakpoint to force test failure.
       masm.breakpoint();
       masm.bind(&next);
@@ -415,7 +416,7 @@ BEGIN_TEST(testJitMacroAssembler_truncateDoubleToInt64) {
       masm.storeDouble(input, Operand(esp, 0));                               \
       masm.truncateDoubleToInt64(Address(esp, 0), Address(esp, 0), temp);     \
       masm.branch64(Assembler::Equal, Address(esp, 0), Imm64(OUTPUT), &next); \
-      masm.printf("truncateDoubleToInt64(" #INPUT ") failed\n");              \
+      masm.Printf("truncateDoubleToInt64(" #INPUT ") failed\n");              \
       masm.breakpoint();                                                      \
       masm.bind(&next);                                                       \
     }
@@ -466,7 +467,7 @@ BEGIN_TEST(testJitMacroAssembler_truncateDoubleToUInt64) {
       masm.truncateDoubleToUInt64(Address(esp, 0), Address(esp, 0), temp,     \
                                   floatTemp);                                 \
       masm.branch64(Assembler::Equal, Address(esp, 0), Imm64(OUTPUT), &next); \
-      masm.printf("truncateDoubleToUInt64(" #INPUT ") failed\n");             \
+      masm.Printf("truncateDoubleToUInt64(" #INPUT ") failed\n");             \
       masm.breakpoint();                                                      \
       masm.bind(&next);                                                       \
     }
@@ -524,7 +525,7 @@ BEGIN_TEST(testJitMacroAssembler_branchDoubleNotInInt64Range) {
         masm.jump(&next);                                               \
         masm.bind(&fail);                                               \
       }                                                                 \
-      masm.printf("branchDoubleNotInInt64Range(" #INPUT ") failed\n");  \
+      masm.Printf("branchDoubleNotInInt64Range(" #INPUT ") failed\n");  \
       masm.breakpoint();                                                \
       masm.bind(&next);                                                 \
     }
@@ -579,7 +580,7 @@ BEGIN_TEST(testJitMacroAssembler_branchDoubleNotInUInt64Range) {
         masm.jump(&next);                                                \
         masm.bind(&fail);                                                \
       }                                                                  \
-      masm.printf("branchDoubleNotInUInt64Range(" #INPUT ") failed\n");  \
+      masm.Printf("branchDoubleNotInUInt64Range(" #INPUT ") failed\n");  \
       masm.breakpoint();                                                 \
       masm.bind(&next);                                                  \
     }
@@ -639,7 +640,7 @@ BEGIN_TEST(testJitMacroAssembler_lshift64) {
       masm.move32(Imm32(SHIFT), shift);                                     \
       masm.lshift64(shift, input);                                          \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);         \
-      masm.printf("lshift64(" #SHIFT ", " #INPUT ") failed\n");             \
+      masm.Printf("lshift64(" #SHIFT ", " #INPUT ") failed\n");             \
       masm.breakpoint();                                                    \
       masm.bind(&next);                                                     \
     }                                                                       \
@@ -648,7 +649,7 @@ BEGIN_TEST(testJitMacroAssembler_lshift64) {
       masm.move64(Imm64(INPUT), input);                                     \
       masm.lshift64(Imm32(SHIFT & 0x3f), input);                            \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);         \
-      masm.printf("lshift64(Imm32(" #SHIFT "&0x3f), " #INPUT ") failed\n"); \
+      masm.Printf("lshift64(Imm32(" #SHIFT "&0x3f), " #INPUT ") failed\n"); \
       masm.breakpoint();                                                    \
       masm.bind(&next);                                                     \
     }
@@ -709,7 +710,7 @@ BEGIN_TEST(testJitMacroAssembler_rshift64Arithmetic) {
       masm.move32(Imm32(SHIFT), shift);                                   \
       masm.rshift64Arithmetic(shift, input);                              \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);       \
-      masm.printf("rshift64Arithmetic(" #SHIFT ", " #INPUT ") failed\n"); \
+      masm.Printf("rshift64Arithmetic(" #SHIFT ", " #INPUT ") failed\n"); \
       masm.breakpoint();                                                  \
       masm.bind(&next);                                                   \
     }                                                                     \
@@ -718,7 +719,7 @@ BEGIN_TEST(testJitMacroAssembler_rshift64Arithmetic) {
       masm.move64(Imm64(INPUT), input);                                   \
       masm.rshift64Arithmetic(Imm32(SHIFT & 0x3f), input);                \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);       \
-      masm.printf("rshift64Arithmetic(Imm32(" #SHIFT "&0x3f), " #INPUT    \
+      masm.Printf("rshift64Arithmetic(Imm32(" #SHIFT "&0x3f), " #INPUT    \
                   ") failed\n");                                          \
       masm.breakpoint();                                                  \
       masm.bind(&next);                                                   \
@@ -779,7 +780,7 @@ BEGIN_TEST(testJitMacroAssembler_rshift64) {
       masm.move32(Imm32(SHIFT), shift);                                     \
       masm.rshift64(shift, input);                                          \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);         \
-      masm.printf("rshift64(" #SHIFT ", " #INPUT ") failed\n");             \
+      masm.Printf("rshift64(" #SHIFT ", " #INPUT ") failed\n");             \
       masm.breakpoint();                                                    \
       masm.bind(&next);                                                     \
     }                                                                       \
@@ -788,7 +789,7 @@ BEGIN_TEST(testJitMacroAssembler_rshift64) {
       masm.move64(Imm64(INPUT), input);                                     \
       masm.rshift64(Imm32(SHIFT & 0x3f), input);                            \
       masm.branch64(Assembler::Equal, input, Imm64(OUTPUT), &next);         \
-      masm.printf("rshift64(Imm32(" #SHIFT "&0x3f), " #INPUT ") failed\n"); \
+      masm.Printf("rshift64(Imm32(" #SHIFT "&0x3f), " #INPUT ") failed\n"); \
       masm.breakpoint();                                                    \
       masm.bind(&next);                                                     \
     }

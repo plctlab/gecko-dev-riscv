@@ -516,6 +516,8 @@ bool BaselineCodeGen<Handler>::emitOutOfLinePostBarrierSlot() {
   masm.push(ra);
 #elif defined(JS_CODEGEN_LOONG64)
   masm.push(ra);
+#elif defined(JS_CODEGEN_RISCV64)
+  masm.push(ra);
 #endif
   masm.pushValue(R0);
 
@@ -632,6 +634,7 @@ bool BaselineCompilerCodeGen::emitNextIC() {
 
 template <>
 bool BaselineInterpreterCodeGen::emitNextIC() {
+  AutoCreatedBy acb(masm, "emitNextIC");
   saveInterpreterPCReg();
   masm.loadPtr(frame.addressOfInterpreterICEntry(), ICStubReg);
   masm.loadPtr(Address(ICStubReg, ICEntry::offsetOfFirstStub()), ICStubReg);
