@@ -210,6 +210,7 @@ void Assembler::RV_li(Register rd, int64_t imm) {
     return;
   } else {
     // 64-bit case: divide imm into two 32-bit parts, upper and lower
+    UseScratchRegisterScope temps(this);
     int64_t up_32 = imm >> 32;
     int64_t low_32 = imm & 0xffffffffull;
     Register temp_reg = rd;
@@ -217,8 +218,6 @@ void Assembler::RV_li(Register rd, int64_t imm) {
     if (up_32 == 0 || low_32 == 0) {
       // No temp register is needed
     } else {
-      UseScratchRegisterScope temps(this);
-      BlockTrampolinePoolScope block_trampoline_pool(this);
       temp_reg = temps.hasAvailable() ? temps.Acquire() : InvalidReg;
     }
     if (temp_reg != InvalidReg) {
@@ -565,6 +564,10 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
 void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
   DEBUG_PRINTF("\tUpdateLoad64Value: pc: %p\tvalue: %lx\n", pc, value);
   Instruction* instr1 = pc + 1 * kInstrSize;
+  if(IsJal(*reinterpret_cast<Instr*>(pc))) {
+    pc = pc + pc->Imm20JValue();
+    instr1 = pc + 1 * kInstrSize;
+  }
   if (IsAddiw(*reinterpret_cast<Instr*>(instr1))) {
     Instruction* instr0 = pc;
     Instruction* instr2 = pc + 2 * kInstrSize;
@@ -615,6 +618,21 @@ void Assembler::UpdateLoad64Value(Instruction* pc, uint64_t value) {
     disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(ExtractLoad64Value(pc) == value);
   } else {
+    Instruction* instr0 = pc;
+    Instruction* instr2 = pc + 2 * kInstrSize;
+    Instruction* instr3 = pc + 3 * kInstrSize;
+    Instruction* instr4 = pc + 4 * kInstrSize;
+    Instruction* instr5 = pc + 5 * kInstrSize;
+    Instruction* instr6 = pc + 6 * kInstrSize;
+    Instruction* instr7 = pc + 7 * kInstrSize;
+    disassembleInstr(instr0->InstructionBits());
+    disassembleInstr(instr1->InstructionBits());
+    disassembleInstr(instr2->InstructionBits());
+    disassembleInstr(instr3->InstructionBits());
+    disassembleInstr(instr4->InstructionBits());
+    disassembleInstr(instr5->InstructionBits());
+    disassembleInstr(instr6->InstructionBits());
+    disassembleInstr(instr7->InstructionBits());
     MOZ_ASSERT(IsAddi(*reinterpret_cast<Instr*>(instr1)));
     set_target_value_at(pc, value);
   }
@@ -867,7 +885,8 @@ uint32_t Assembler::next_link(Label* L, bool is_internal) {
 }
 
 void Assembler::bind(Label* label, BufferOffset boff) {
-  JitSpew(JitSpew_Codegen, ".set Llabel %p", label);
+  JitSpew(JitSpew_Codegen, ".set Llabel %p %d", label, currentOffset());
+  DEBUG_PRINTF(".set Llabel %p\n", label);
   // If our caller didn't give us an explicit target to bind to
   // then we want to bind to the location of the next instruction
   BufferOffset dest = boff.assigned() ? boff : nextOffset();
@@ -958,7 +977,6 @@ bool Assembler::is_near_branch(Label* L) {
 
 int32_t Assembler::branch_long_offset(Label* L) {
   intptr_t target_pos;
-
   DEBUG_PRINTF("branch_long_offset: %p to (%d)\n", L, currentOffset());
   if (L->bound()) {
     JitSpew(JitSpew_Codegen, ".use Llabel %p on %d", L, currentOffset());
@@ -997,15 +1015,16 @@ int32_t Assembler::branch_offset_helper(Label* L, OffsetSize bits) {
       target_pos = L->offset();
       JitSpew(JitSpew_Codegen, ".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
-      DEBUG_PRINTF("\tadded to link: %d\n", target_pos);
+      DEBUG_PRINTF("\tLabel  %p added to link: %d\n", L, target_pos);
     } else {
       JitSpew(JitSpew_Codegen, ".use Llabel %p on %d", L, currentOffset());
       L->use(currentOffset());
+      DEBUG_PRINTF("\tLabel  %p added to link: %d\n", L, currentOffset());
       if (!trampoline_emitted_) {
         unbound_labels_count_++;
+        DEBUG_PRINTF("\tunbound_labels_count_ %d\n", unbound_labels_count_);
         next_buffer_check_ -= kTrampolineSlotsSize;
       }
-      DEBUG_PRINTF("\tstarted link\n");
       return kEndOfJumpChain;
     }
   }
@@ -1131,6 +1150,7 @@ void Assembler::CheckTrampolinePool() {
     // First we emit jump, then we emit trampoline pool.
     {
       DEBUG_PRINTF("inserting trampoline pool at %d\n", currentOffset());
+      DEBUG_PRINTF("unbound_labels_count_ %d\n", unbound_labels_count_);
       BlockTrampolinePoolScope block_trampoline_pool(this);
       Label after_pool;
       j(&after_pool);
@@ -1200,7 +1220,7 @@ void Assembler::ToggleToJmp(CodeLocationLabel inst_) {
 
 void Assembler::ToggleToCmp(CodeLocationLabel inst_) {
   Instruction* inst = (Instruction*)inst_.raw();
-
+  
   // toggledJump is allways used for short jumps.
   MOZ_ASSERT(IsJal(inst->InstructionBits()));
   // Replace "jal zero_reg, offset" with "addi $zero, $zero, offset"

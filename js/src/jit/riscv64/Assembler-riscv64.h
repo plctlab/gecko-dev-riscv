@@ -140,6 +140,7 @@ class Assembler : public AssemblerShared,
     int start() { return start_; }
     int end() { return end_; }
     int take_slot() {
+      DEBUG_PRINTF("take_slot free_slot_count_ %d\n", free_slot_count_);
       int trampoline_slot = kInvalidSlotPos;
       if (free_slot_count_ <= 0) {
         // We have run out of space on trampolines.
@@ -517,7 +518,7 @@ class Assembler : public AssemblerShared,
   }
 
   void StartBlockTrampolinePool() {
-    DEBUG_PRINTF("\tStartBlockTrampolinePool\n");
+    DEBUG_PRINTF("\tStartBlockTrampolinePool %ld\n", int64_t(currentOffset()));
     trampoline_pool_blocked_nesting_++;
   }
 

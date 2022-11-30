@@ -2014,7 +2014,7 @@ void MacroAssemblerRiscv64Compat::handleFailureWithHandlerTail(
 
 CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
   CodeOffset ret(nextOffset().getOffset());
-  ma_branch(label);
+  BranchShort(label);
   return ret;
 }
 
@@ -2940,7 +2940,6 @@ void MacroAssembler::callWithABINoProfiler(const Address& fun,
 void MacroAssembler::ceilDoubleToInt32(FloatRegister src, Register dest,
                                        Label* fail) {
   UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
   ScratchDoubleScope fscratch(*this);
   Label performCeil, done;
   // If x < -1 or x > 0 then perform ceil.
@@ -2948,7 +2947,8 @@ void MacroAssembler::ceilDoubleToInt32(FloatRegister src, Register dest,
   branchDouble(Assembler::DoubleGreaterThan, src, fscratch, &performCeil);
   loadConstantDouble(-1.0, fscratch);
   branchDouble(Assembler::DoubleLessThanOrEqual, src, fscratch, &performCeil);
-
+  
+  Register scratch = temps.Acquire();
   // If binary value is not zero, the input was not 0, so we bail.
   {
     moveFromDoubleHi(src, scratch);
@@ -2964,7 +2964,6 @@ void MacroAssembler::ceilDoubleToInt32(FloatRegister src, Register dest,
 void MacroAssembler::ceilFloat32ToInt32(FloatRegister src, Register dest,
                                         Label* fail) {
   UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
   ScratchDoubleScope fscratch(*this);
   Label performCeil, done;
   // If x < -1 or x > 0 then perform ceil.
@@ -2973,6 +2972,7 @@ void MacroAssembler::ceilFloat32ToInt32(FloatRegister src, Register dest,
   loadConstantFloat32(-1.0, fscratch);
   branchFloat(Assembler::DoubleLessThanOrEqual, src, fscratch, &performCeil);
 
+  Register scratch = temps.Acquire();
   // If binary value is not zero, the input was not 0, so we bail.
   {
     fmv_x_w(scratch, src);
@@ -3523,15 +3523,17 @@ void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
 void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
                                          FloatRegister temp, Label* fail) {
   JitSpew(JitSpew_Codegen, "[ %s", __FUNCTION__);
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
   ScratchDoubleScope fscratch(*this);
   Label negative, done;
   // Branch to a slow path if input < 0.0 due to complicated rounding rules.
   // Note that Fcmp with NaN unsets the negative flag.
-  fmv_w_x(temp, zero);
-  ma_compareF32(scratch, DoubleLessThan, src, temp);
-  ma_branch(&negative, Equal, scratch, Operand(1));
+  {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    fmv_w_x(temp, zero);
+    ma_compareF32(scratch, DoubleLessThan, src, temp);
+    ma_branch(&negative, Equal, scratch, Operand(1));
+  }
   // Handle the simple case of a positive input, and also -0 and NaN.
   // Rounding proceeds with consideration of the fractional part of the input:
   // 1. If > 0.5, round to integer with higher absolute value (so, up).
@@ -3541,6 +3543,8 @@ void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
     // Convert to signed 32-bit integer, rounding halfway cases away from zero.
     // In the case of overflow, the output is saturated.
     // In the case of NaN and -0, the output is zero.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     RoundFloatingPointToInteger(
         dest, src, scratch,
         [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
@@ -3570,6 +3574,8 @@ void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
     // Round all values toward -Infinity.
     // In the case of overflow, the output is saturated.
     // NaN and -0 are already handled by the "positive number" path above.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     RoundFloatingPointToInteger(
         dest, temp, scratch,
         [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
@@ -3587,17 +3593,20 @@ void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
 void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
                                         FloatRegister temp, Label* fail) {
   JitSpew(JitSpew_Codegen, "[ %s", __FUNCTION__);
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
+  
   ScratchDoubleScope fscratch(*this);
   Label negative, done;
   // Branch to a slow path if input < 0.0 due to complicated rounding rules.
   // Note that Fcmp with NaN unsets the negative flag.
+  {
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   fmv_x_d(scratch, src);
   ma_branch(fail, Equal, scratch, Operand(0x8000000000000000));
   fmv_d_x(temp, zero);
   ma_compareF64(scratch, DoubleLessThan, src, temp);
   ma_branch(&negative, Equal, scratch, Operand(1));
+  }
   // Handle the simple case of a positive input, and also -0 and NaN.
   // Rounding proceeds with consideration of the fractional part of the input:
   // 1. If > 0.5, round to integer with higher absolute value (so, up).
@@ -3607,6 +3616,8 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
     // Convert to signed 32-bit integer, rounding halfway cases away from zero.
     // In the case of overflow, the output is saturated.
     // In the case of NaN and -0, the output is zero.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();   
     RoundFloatingPointToInteger(
         dest, src, scratch,
         [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
@@ -3636,6 +3647,8 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
     // Round all values toward -Infinity.
     // In the case of overflow, the output is saturated.
     // NaN and -0 are already handled by the "positive number" path above.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
     RoundFloatingPointToInteger(
         dest, temp, scratch,
         [](MacroAssemblerRiscv64* tasm, Register dst, FPURegister src) {
@@ -4411,7 +4424,6 @@ bool MacroAssemblerRiscv64::BranchShortHelper(int32_t offset, Label* L,
   MOZ_ASSERT(L == nullptr || offset == 0);
   MOZ_ASSERT(rt.is_reg() || rt.is_imm());
   UseScratchRegisterScope temps(this);
-  BlockTrampolinePoolScope block_trampoline_pool(this);
   Register scratch = Register();
   if (rt.is_imm()) {
     scratch = temps.Acquire();
@@ -4570,16 +4582,28 @@ void MacroAssemblerRiscv64::BranchShort(Label* L, Condition cond, Register rs,
 void MacroAssemblerRiscv64::BranchLong(Label* L) {
   // Generate position independent long branch.
   BlockTrampolinePoolScope block_trampoline_pool(this);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
   int32_t imm;
   imm = branch_long_offset(L);
-  GenPCRelativeJump(t6, imm);
+  GenPCRelativeJump(scratch, imm);
   EmitConstPoolWithJumpIfNeeded();
+}
+
+void MacroAssemblerRiscv64::BranchAndLinkLong(Label* L) {
+  // Generate position independent long branch and link.
+  BlockTrampolinePoolScope block_trampoline_pool(this);
+  int32_t imm;
+  imm = branch_long_offset(L);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  GenPCRelativeJumpAndLink(scratch, imm);
 }
 
 void MacroAssemblerRiscv64::ma_branch(Label* L, Condition cond, Register rs,
                                       const Operand& rt, JumpKind jumpKind) {
   if (L->used()) {
-    if (jumpKind == ShortJump && BranchShortCheck(0, L, cond, rs, rt)) {
+    if (!is_trampoline_emitted() && jumpKind == ShortJump && BranchShortCheck(0, L, cond, rs, rt)) {
       return;
     }
     if (cond != Always) {
@@ -4593,7 +4617,8 @@ void MacroAssemblerRiscv64::ma_branch(Label* L, Condition cond, Register rs,
       EmitConstPoolWithJumpIfNeeded();
     }
   } else {
-    if (is_trampoline_emitted() && jumpKind == LongJump) {
+    if (is_trampoline_emitted() || jumpKind == LongJump) {
+      BlockTrampolinePoolScope block_trampoline_pool(this);
       if (cond != Always) {
         Label skip;
         Condition neg_cond = InvertCondition(cond);
@@ -6435,13 +6460,6 @@ void MacroAssemblerRiscv64::GenPCRelativeJumpAndLink(Register rd,
   jalr(rd, Lo12);   // jump PC + Hi20 + Lo12
 }
 
-void MacroAssemblerRiscv64::BranchAndLinkLong(Label* L) {
-  // Generate position independent long branch and link.
-  BlockTrampolinePoolScope block_trampoline_pool(this);
-  int32_t imm;
-  imm = branch_long_offset(L);
-  GenPCRelativeJumpAndLink(t6, imm);
-}
 
 void MacroAssemblerRiscv64::BranchAndLinkShortHelper(int32_t offset, Label* L) {
   MOZ_ASSERT(L == nullptr || offset == 0);
