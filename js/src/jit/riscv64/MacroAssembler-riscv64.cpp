@@ -3103,17 +3103,25 @@ void MacroAssembler::flexibleRemainder32(Register rhs, Register srcDest,
 
 void MacroAssembler::floorDoubleToInt32(FloatRegister src, Register dest,
                                         Label* fail) {
+  JitSpew(JitSpew_Codegen, "[ %s", __FUNCTION__);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   Floor_w_d(dest, src, scratch);
   ma_b(scratch, Imm32(1), fail, NotEqual);
+  fmv_x_d(scratch, src);
+  ma_branch(fail, Equal, scratch, Operand(0x8000000000000000));
+  JitSpew(JitSpew_Codegen, "]");
 }
 void MacroAssembler::floorFloat32ToInt32(FloatRegister src, Register dest,
                                          Label* fail) {
+  JitSpew(JitSpew_Codegen, "[ %s", __FUNCTION__);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   Floor_w_s(dest, src, scratch);
   ma_b(scratch, Imm32(1), fail, NotEqual);
+  fmv_x_w(scratch, src);
+  ma_branch(fail, Equal, scratch, Operand(int32_t(0x80000000)));
+  JitSpew(JitSpew_Codegen, "]");
 }
 void MacroAssembler::flush() {}
 void MacroAssembler::loadStoreBuffer(Register ptr, Register buffer) {
