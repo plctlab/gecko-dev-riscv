@@ -866,11 +866,9 @@ void wasm::GenerateJitEntryPrologue(MacroAssembler& masm,
     offsets->begin = masm.currentOffset();
     masm.push(ra);
 #elif defined(JS_CODEGEN_RISCV64)
-    {
-      BlockTrampolinePoolScope block_trampoline_pool(&masm);
-      offsets->begin = masm.currentOffset();
-      masm.push(ra);
-    }
+    BlockTrampolinePoolScope block_trampoline_pool(&masm);
+    offsets->begin = masm.currentOffset();
+    masm.push(ra);
 #elif defined(JS_CODEGEN_ARM64)
     AutoForbidPoolsAndNops afp(&masm,
                                /* number of instructions in scope = */ 4);
@@ -886,7 +884,6 @@ void wasm::GenerateJitEntryPrologue(MacroAssembler& masm,
 #endif
     MOZ_ASSERT_IF(!masm.oom(),
                   PushedRetAddr == masm.currentOffset() - offsets->begin);
-
     // Save jit frame pointer, so unwinding from wasm to jit frames is trivial.
 #if defined(JS_CODEGEN_ARM64)
     static_assert(JitFrameLayout::offsetOfCallerFramePtr() == 0);
