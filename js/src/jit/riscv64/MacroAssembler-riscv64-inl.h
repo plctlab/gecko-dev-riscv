@@ -1587,6 +1587,11 @@ void MacroAssembler::mul32(Imm32 imm, Register srcDest) {
   move32(imm, scratch);
   mul32(scratch, srcDest);
 }
+
+void MacroAssembler::mulHighUnsigned32(Imm32 imm, Register src, Register dest) {
+  MOZ_CRASH("NYI");
+}
+
 void MacroAssembler::mul64(Imm64 imm, const Register64& dest) {
   ScratchRegisterScope scratch(asMasm());
   MOZ_ASSERT(dest.reg != scratch);

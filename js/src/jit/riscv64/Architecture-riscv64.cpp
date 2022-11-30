@@ -8,6 +8,7 @@
 
 #include "jit/FlushICache.h"  // js::jit::FlushICache
 #include "jit/RegisterSets.h"
+#include "jit/Simulator.h"
 namespace js {
 namespace jit {
 Registers::Code Registers::FromName(const char* name) {
