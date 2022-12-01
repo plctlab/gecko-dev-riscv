@@ -2021,11 +2021,11 @@ CodeOffset MacroAssemblerRiscv64Compat::toggledJump(Label* label) {
 CodeOffset MacroAssemblerRiscv64Compat::toggledCall(JitCode* target,
                                                     bool enabled) {
   DEBUG_PRINTF("\ttoggledCall\n");
-  BlockTrampolinePoolScope block_trampoline_pool(this);
-  BufferOffset bo = nextOffset();
-  CodeOffset offset(bo.getOffset());
   UseScratchRegisterScope temps(this);
   Register ScratchRegister = temps.Acquire();
+  BlockTrampolinePoolFor(8);
+  BufferOffset bo = nextOffset();
+  CodeOffset offset(bo.getOffset());
   addPendingJump(bo, ImmPtr(target->raw()), RelocationKind::JITCODE);
   ma_liPatchable(ScratchRegister, ImmPtr(target->raw()));
   if (enabled) {
