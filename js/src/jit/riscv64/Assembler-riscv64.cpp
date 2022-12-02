@@ -527,7 +527,6 @@ uint64_t Assembler::ExtractLoad64Value(Instruction* inst0) {
     } else {
       FLAG_riscv_debug = true;
       disassembleInstr(inst0->InstructionBits());
-      disassembleInstr(inst0->InstructionBits());
       disassembleInstr(instr1->InstructionBits());
       disassembleInstr(instr2->InstructionBits());
       disassembleInstr(instr3->InstructionBits());

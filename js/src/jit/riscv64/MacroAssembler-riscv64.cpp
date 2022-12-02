@@ -460,9 +460,11 @@ void MacroAssemblerRiscv64Compat::movePtr(ImmPtr imm, Register dest) {
 }
 void MacroAssemblerRiscv64Compat::movePtr(wasm::SymbolicAddress imm,
                                           Register dest) {
-  BlockTrampolinePoolFor(6);
+  DEBUG_PRINTF("[ %s\n", __FUNCTION__);
+  BlockTrampolinePoolFor(7);
   append(wasm::SymbolicAccess(CodeOffset(nextOffset().getOffset()), imm));
   ma_liPatchable(dest, ImmWord(-1), Li64);
+  DEBUG_PRINTF("]\n");
 }
 
 bool MacroAssemblerRiscv64Compat::buildOOLFakeExitFrame(void* fakeReturnAddr) {
@@ -2855,13 +2857,15 @@ void MacroAssembler::call(ImmPtr target) {
 void MacroAssembler::call(ImmWord target) { call(ImmPtr((void*)target.value)); }
 
 void MacroAssembler::call(JitCode* c) {
-  BlockTrampolinePoolFor(6);
+  DEBUG_PRINTF("[ %s\n", __FUNCTION__);
+  BlockTrampolinePoolFor(8);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   BufferOffset bo = m_buffer.nextOffset();
   addPendingJump(bo, ImmPtr(c->raw()), RelocationKind::JITCODE);
   ma_liPatchable(scratch, ImmPtr(c->raw()));
   callJitNoProfiler(scratch);
+  DEBUG_PRINTF("]\n");
 }
 
 void MacroAssembler::callWithABIPre(uint32_t* stackAdjust, bool callFromWasm) {
@@ -4310,12 +4314,14 @@ void MacroAssemblerRiscv64::ma_li(Register dest, Imm64 imm) {
   RV_li(dest, imm.value);
 }
 void MacroAssemblerRiscv64::ma_li(Register dest, CodeLabel* label) {
-  BlockTrampolinePoolFor(6);
+  DEBUG_PRINTF("[ %s\n", __FUNCTION__);
+  BlockTrampolinePoolFor(7);
   BufferOffset bo = m_buffer.nextOffset();
   JitSpew(JitSpew_Codegen, ".load CodeLabel %p", label);
   ma_liPatchable(dest, ImmWord(/* placeholder */ 0));
   label->patchAt()->bind(bo.getOffset());
   label->setLinkMode(CodeLabel::MoveImmediate);
+  DEBUG_PRINTF("]\n");
 }
 void MacroAssemblerRiscv64::ma_li(Register dest, ImmWord imm) {
   RV_li(dest, imm.value);
@@ -5316,11 +5322,13 @@ void MacroAssemblerRiscv64::ma_neg(Register rd, const Operand& rt) {
 }
 
 void MacroAssemblerRiscv64::ma_jump(ImmPtr dest) {
-  BlockTrampolinePoolFor(6);
+  DEBUG_PRINTF("[ %s\n", __FUNCTION__);
+  BlockTrampolinePoolFor(8);
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   asMasm().ma_liPatchable(scratch, dest);
   jr(scratch, 0);
+  DEBUG_PRINTF("]\n");
 }
 // fp instructions
 void MacroAssemblerRiscv64::ma_lid(FloatRegister dest, double value) {
@@ -5704,11 +5712,13 @@ void MacroAssemblerRiscv64::ma_fld_s(FloatRegister ft, const BaseIndex& src) {
 }
 
 void MacroAssemblerRiscv64::ma_call(ImmPtr dest) {
-  BlockTrampolinePoolFor(6);
+  DEBUG_PRINTF("[ %s\n", __FUNCTION__);
+  BlockTrampolinePoolFor(8);
   UseScratchRegisterScope temps(this);
   temps.Exclude(GeneralRegisterSet(1 << CallReg.code()));
   asMasm().ma_liPatchable(CallReg, dest);
   jalr(CallReg, 0);
+  DEBUG_PRINTF("]\n");
 }
 
 void MacroAssemblerRiscv64::CompareIsNotNanF32(Register rd, FPURegister cmp1,
