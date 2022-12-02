@@ -61,6 +61,11 @@ class MacroAssemblerRiscv64 : public Assembler {
  public:
   MacroAssemblerRiscv64() {}
 
+#ifdef JS_SIMULATOR_RISCV64
+  // See riscv64/base-constants-riscv.h DebugParameters.
+  void Debug(uint32_t parameters) { break_(parameters, false); }
+#endif
+
   // Perform a downcast. Should be removed by Bug 996602.
   MacroAssembler& asMasm();
   const MacroAssembler& asMasm() const;

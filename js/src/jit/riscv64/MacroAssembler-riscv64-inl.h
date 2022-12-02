@@ -1590,8 +1590,9 @@ void MacroAssembler::mul32(Imm32 imm, Register srcDest) {
 
 void MacroAssembler::mulHighUnsigned32(Imm32 imm, Register src, Register dest) {
   ScratchRegisterScope scratch(asMasm());
-  move32(imm, scratch);
-  mulhu(dest, src, scratch);
+  ma_li(scratch, uint32_t(imm.value));
+  mul(dest, src, scratch);
+  srli(dest, dest, 32);
 }
 
 void MacroAssembler::mul64(Imm64 imm, const Register64& dest) {

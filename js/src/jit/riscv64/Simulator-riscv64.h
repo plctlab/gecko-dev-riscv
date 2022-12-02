@@ -393,6 +393,7 @@ class Simulator {
  public:
   static bool FLAG_riscv_trap_to_simulator_debugger;
   static bool FLAG_trace_sim;
+  static bool FLAG_debug_sim;
   static bool FLAG_riscv_print_watchpoint;
   // Registers are declared in order.
   enum Register {
@@ -976,6 +977,7 @@ class Simulator {
 
   // Stop helper functions.
   bool isWatchpoint(uint32_t code);
+  bool IsTracepoint(uint32_t code);
   void printWatchpoint(uint32_t code);
   void handleStop(uint32_t code);
   bool isStopInstruction(SimInstruction* instr);

@@ -73,6 +73,7 @@ namespace js {
 namespace jit {
 
 bool Simulator::FLAG_trace_sim = false;
+bool Simulator::FLAG_debug_sim = false;
 bool Simulator::FLAG_riscv_trap_to_simulator_debugger = false;
 bool Simulator::FLAG_riscv_print_watchpoint = false;
 
@@ -2177,6 +2178,30 @@ void Simulator::SoftwareInterrupt() {
     uint32_t code = get_ebreak_code(instr_.instr());
     if (isWatchpoint(code)) {
       printWatchpoint(code);
+    } else if (IsTracepoint(code)) {
+        if (!FLAG_debug_sim) {
+          MOZ_CRASH("Add --debug-sim when tracepoint instruction is used.\n");
+        }
+        // printf("%d %d %d %d %d %d %d\n", code, code & LOG_TRACE, code & LOG_REGS,
+        //        code & kDebuggerTracingDirectivesMask, TRACE_ENABLE, TRACE_DISABLE, kDebuggerTracingDirectivesMask);
+        switch (code & kDebuggerTracingDirectivesMask) {
+          case TRACE_ENABLE:
+            if (code & LOG_TRACE) {
+              FLAG_trace_sim = true;
+            }
+            if (code & LOG_REGS) {
+              RiscvDebugger dbg(this);
+              dbg.printAllRegs();
+            }
+            break;
+          case TRACE_DISABLE:
+            if (code & LOG_TRACE) {
+              FLAG_trace_sim = false;
+            }
+            break;
+          default:
+            UNREACHABLE();
+        }
     } else {
       increaseStopCounter(code);
       handleStop(code);
@@ -2198,6 +2223,10 @@ void Simulator::SoftwareInterrupt() {
 // Stop helper functions.
 bool Simulator::isWatchpoint(uint32_t code) {
   return (code <= kMaxWatchpointCode);
+}
+
+bool Simulator::IsTracepoint(uint32_t code) {
+  return (code <= kMaxTracepointCode && code > kMaxWatchpointCode);
 }
 
 void Simulator::printWatchpoint(uint32_t code) {
@@ -2308,7 +2337,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
 
   EmbeddedVector<char, 256> buffer;
 
-  if (FLAG_trace_sim) {
+  if (FLAG_trace_sim || FLAG_debug_sim) {
     SNPrintF(trace_buf_, " ");
     disasm::NameConverter converter;
     disasm::Disassembler dasm(converter);
