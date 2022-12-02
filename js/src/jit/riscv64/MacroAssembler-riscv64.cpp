@@ -2236,7 +2236,7 @@ static void AtomicExchange(MacroAssembler& masm,
     masm.lr_w(true, true, output, scratch);
     masm.or_(scratch2, value, zero);
     masm.sc_w(true, true, scratch2, scratch, scratch2);
-    masm.ma_b(scratch2, Register(scratch2), &again, Assembler::Zero, ShortJump);
+    masm.ma_b(scratch2, Register(scratch2), &again, Assembler::NonZero, ShortJump);
 
     masm.memoryBarrierAfter(sync);
 
@@ -3029,7 +3029,7 @@ static void CompareExchange64(MacroAssembler& masm,
   masm.ma_b(output.reg, expect.reg, &exit, Assembler::NotEqual, ShortJump);
   masm.movePtr(replace.reg, scratch2);
   masm.sc_d(true, true, scratch2, scratch, scratch2);
-  masm.ma_b(scratch2, Register(scratch2), &tryAgain, Assembler::Zero,
+  masm.ma_b(scratch2, Register(scratch2), &tryAgain, Assembler::NonZero,
             ShortJump);
 
   masm.memoryBarrierAfter(sync);

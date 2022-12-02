@@ -1400,6 +1400,64 @@ void Simulator::TraceMemWrDouble(sreg_t addr, double value) {
   }
 }
 
+template <typename T>
+void Simulator::TraceLr(sreg_t addr, T value, sreg_t reg_value) {
+  if (FLAG_trace_sim) {
+    if (std::is_integral<T>::value) {
+      switch (sizeof(T)) {
+        case 4:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int32:%" PRId32
+                   " uint32:%" PRIu32 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int32_t>(value),
+                   static_cast<uint32_t>(value), addr);
+          break;
+        case 8:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRId64 ")    int64:%" PRId64
+                   " uint64:%" PRIu64 " <-- [addr: %" REGIx_FORMAT "]",
+                   reg_value, icount_, static_cast<int64_t>(value),
+                   static_cast<uint64_t>(value), addr);
+          break;
+        default:
+          UNREACHABLE();
+      }
+    } else {
+      UNREACHABLE();
+    }
+  }
+}
+
+template <typename T>
+void Simulator::TraceSc(sreg_t addr, T value) {
+  if (FLAG_trace_sim) {
+    switch (sizeof(T)) {
+      case 4:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRIu64 ")    int32:%" PRId32
+                   " uint32:%" PRIu32 " --> [addr: %" REGIx_FORMAT "]",
+                   getRegister(rd_reg()),
+                   icount_,
+                   static_cast<int32_t>(value),
+                   static_cast<uint32_t>(value),
+                   addr);
+        break;
+      case 8:
+          SNPrintF(trace_buf_,
+                   "%016" REGIx_FORMAT "    (%" PRIu64 ")    int64:%" PRId64
+                   " uint64:%" PRIu64 " --> [addr: %" REGIx_FORMAT "]",
+                   getRegister(rd_reg()),
+                   icount_,
+                   static_cast<int64_t>(value),
+                   static_cast<uint64_t>(value),
+                   addr);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  }
+}
+
 // TODO(RISCV): check whether the specific board supports unaligned load/store
 // (determined by EEI). For now, we assume the board does not support unaligned
 // load/store (e.g., trapping)
@@ -2969,11 +3027,17 @@ void Simulator::DecodeRVRAType() {
     case RO_LR_W: {
       sreg_t addr = rs1();
       set_rd(loadLinkedW(addr, &instr_));
+      TraceLr(addr, getRegister(rd_reg()), getRegister(rd_reg()));
       break;
     }
     case RO_SC_W: {
       sreg_t addr = rs1();
-      set_rd(storeConditionalW(addr, static_cast<int32_t>(rs2()), &instr_));
+      auto value = static_cast<int32_t>(rs2());
+      auto result = storeConditionalW(addr, static_cast<int32_t>(rs2()), &instr_);
+      set_rd(result);
+      if(!result) {
+       TraceSc(addr, value);
+      }
       break;
     }
     case RO_AMOSWAP_W: {
@@ -3061,11 +3125,17 @@ void Simulator::DecodeRVRAType() {
     case RO_LR_D: {
       sreg_t addr = rs1();
       set_rd(loadLinkedD(addr, &instr_));
+      TraceLr(addr, getRegister(rd_reg()), getRegister(rd_reg()));
       break;
     }
     case RO_SC_D: {
       sreg_t addr = rs1();
-      set_rd(storeConditionalD(addr, static_cast<int64_t>(rs2()), &instr_));
+      auto value = static_cast<int64_t>(rs2());
+      auto result = storeConditionalD(addr, static_cast<int64_t>(rs2()), &instr_);
+      set_rd(result);
+      if(!result) {
+       TraceSc(addr, value);
+      }
       break;
     }
     case RO_AMOSWAP_D: {

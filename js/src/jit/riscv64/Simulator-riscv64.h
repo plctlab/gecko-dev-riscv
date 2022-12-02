@@ -710,6 +710,12 @@ class Simulator {
   void TraceMemRdDouble(sreg_t addr, Float64 value, int64_t reg_value);
   void TraceMemRdFloat(sreg_t addr, Float32 value, int64_t reg_value);
 
+  template<typename T>
+  void TraceLr(sreg_t addr, T value, sreg_t reg_value);
+
+  template<typename T>
+  void TraceSc(sreg_t addr, T value);
+
   template <typename T>
   void TraceMemWr(sreg_t addr, T value);
   void TraceMemWrDouble(sreg_t addr, double value);
