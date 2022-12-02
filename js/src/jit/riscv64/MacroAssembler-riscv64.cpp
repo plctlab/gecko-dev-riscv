@@ -353,10 +353,15 @@ void MacroAssemblerRiscv64::ma_compareF32(Register rd, DoubleCondition cc,
       feq_s(rd, cmp1, cmp2);
       break;
     case DoubleNotEqualOrUnordered:
-    case DoubleNotEqual:
+    case DoubleNotEqual:{
+      Label done;
+      CompareIsNanF32(rd, cmp1, cmp2);
+      ma_branch(&done, Equal, rd, Operand(1));
       feq_s(rd, cmp1, cmp2);
+      bind(&done);
       NegateBool(rd, rd);
       break;
+    }
     case DoubleLessThanOrUnordered:
     case DoubleLessThan:
       flt_s(rd, cmp1, cmp2);
@@ -391,15 +396,21 @@ void MacroAssemblerRiscv64::ma_compareF32(Register rd, DoubleCondition cc,
 void MacroAssemblerRiscv64::ma_compareF64(Register rd, DoubleCondition cc,
                                           FloatRegister cmp1,
                                           FloatRegister cmp2) {
+  
   switch (cc) {
     case DoubleEqualOrUnordered:
     case DoubleEqual:
       feq_d(rd, cmp1, cmp2);
       break;
     case DoubleNotEqualOrUnordered:
-    case DoubleNotEqual:
+    case DoubleNotEqual: {
+      Label done;
+      CompareIsNanF64(rd, cmp1, cmp2);
+      ma_branch(&done, Equal, rd, Operand(1));
       feq_d(rd, cmp1, cmp2);
+      bind(&done);
       NegateBool(rd, rd);
+     }
       break;
     case DoubleLessThanOrUnordered:
     case DoubleLessThan:
@@ -424,6 +435,7 @@ void MacroAssemblerRiscv64::ma_compareF64(Register rd, DoubleCondition cc,
       CompareIsNanF64(rd, cmp1, cmp2);
       return;
   }
+  
   if (cc >= FIRST_UNORDERED && cc <= LAST_UNORDERED) {
     UseScratchRegisterScope temps(this);
     Register scratch = temps.Acquire();
