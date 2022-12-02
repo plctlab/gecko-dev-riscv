@@ -11063,6 +11063,9 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
   if (op.getBoolOption("trace-sim")) {
     jit::Simulator::FLAG_trace_sim = true;
   }
+  if (op.getBoolOption("debug-sim")) {
+    jit::Simulator::FLAG_debug_sim = true;
+  }
   if (op.getBoolOption("riscv-trap-to-simulator-debugger")) {
     jit::Simulator::FLAG_riscv_trap_to_simulator_debugger = true;
   }
@@ -11939,6 +11942,7 @@ int main(int argc, char** argv) {
 #endif
 #ifdef JS_SIMULATOR_RISCV64
       !op.addBoolOption('\0', "trace-sim", "print simulator info.") ||
+      !op.addBoolOption('\0', "debug-sim", "debug simulator.") ||
       !op.addBoolOption('\0', "riscv-trap-to-simulator-debugger",
                         "trap into simulator debuggger.") ||
       !op.addIntOption('\0', "riscv-sim-stop-at", "NUMBER",
